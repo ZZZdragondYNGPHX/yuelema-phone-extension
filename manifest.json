@@ -1,0 +1,16 @@
+{
+  "display_name": "约了吗小手机",
+  "loading_order": 100,
+  "js": "index.js",
+  "css": "style.css",
+  "author": "约了吗项目",
+  "version": "0.1.1",
+  "minimum_client_version": "1.18.0",
+  "auto_update": false,
+  "hooks": {
+    "activate": "onActivate",
+    "disable": "onDisable",
+    "delete": "onDelete"
+  }
+}
+
