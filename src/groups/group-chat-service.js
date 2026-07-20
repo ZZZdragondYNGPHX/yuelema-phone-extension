@@ -67,7 +67,7 @@ export async function generateGroupChatReply({ state, groupUid, playerMessage, s
     if (!llmClient || typeof llmClient.chat !== 'function') return failure('group_chat_llm_unavailable');
 
     let resolved;
-    try { resolved = settingsStore.resolveFunction('group_chat'); }
+    try { resolved = settingsStore.resolveFunction('group_chat', { contentMode: built.context.contentMode }); }
     catch { return failure('group_chat_settings_invalid'); }
     if (!resolved?.connectionPreset) return failure('group_chat_connection_missing');
 

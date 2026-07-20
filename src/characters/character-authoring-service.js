@@ -173,14 +173,18 @@ function invalidResult(errors, key) {
     return { ok: false, code: `character_authoring_${key}`, message: errors[key] };
 }
 
-async function generateCandidate({ errors, context, settingsStore, llmClient, signal, makeMessages, functionKey }) {
+function normalizeContentMode(value) {
+    return value === 'NSFW' ? 'NSFW' : 'SFW';
+}
+
+async function generateCandidate({ errors, context, contentMode, settingsStore, llmClient, signal, makeMessages, functionKey }) {
     if (!context) return invalidResult(errors, 'input_invalid');
     if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return invalidResult(errors, 'settings_unavailable');
     if (!llmClient || typeof llmClient.chat !== 'function') return invalidResult(errors, 'llm_unavailable');
 
     let resolved;
     try {
-        resolved = settingsStore.resolveFunction(functionKey);
+        resolved = settingsStore.resolveFunction(functionKey, { contentMode: normalizeContentMode(contentMode) });
     } catch {
         return invalidResult(errors, 'settings_invalid');
     }
@@ -194,7 +198,7 @@ async function generateCandidate({ errors, context, settingsStore, llmClient, si
         });
         const parsed = parseCandidateJson(completion?.text);
         if (!parsed) return invalidResult(errors, 'invalid_json');
-        const candidate = normalizeGeneratedCandidate(parsed);
+        const candidate = normalizeGeneratedCandidate(parsed, { contentMode: normalizeContentMode(contentMode) });
         // Generated or supplied avatar references must never be adopted by an AI draft.
         candidate.公开资料.头像引用 = '';
         return { ok: true, candidate };
@@ -209,9 +213,9 @@ async function generateCandidate({ errors, context, settingsStore, llmClient, si
  * Calls the character_ai_completion binding to fill a new candidate from an editable
  * public-profile projection only. It performs no MVU, UID, patch, storage, or template work.
  */
-export async function generateCharacterCompletionCandidate({ publicProfile, instruction, settingsStore, llmClient, signal } = {}) {
+export async function generateCharacterCompletionCandidate({ publicProfile, instruction, contentMode, settingsStore, llmClient, signal } = {}) {
     const context = buildCharacterCompletionContext({ publicProfile, instruction });
-    return generateCandidate({ errors: COMPLETION_ERRORS, context, settingsStore, llmClient, signal, makeMessages: makeCompletionMessages, functionKey: 'character_ai_completion' });
+    return generateCandidate({ errors: COMPLETION_ERRORS, context, contentMode, settingsStore, llmClient, signal, makeMessages: makeCompletionMessages, functionKey: 'character_ai_completion' });
 }
 
 /**
@@ -220,7 +224,6 @@ export async function generateCharacterCompletionCandidate({ publicProfile, inst
  */
 export async function generateCharacterAuthoringCandidate({ creativeBrief, contentMode, playerPublicProfile, settingsStore, llmClient, signal } = {}) {
     const context = buildCharacterAuthoringContext({ creativeBrief, contentMode, playerPublicProfile });
-    return generateCandidate({ errors: AUTHORING_ERRORS, context, settingsStore, llmClient, signal, makeMessages: makeAuthoringMessages, functionKey: 'character_full_authoring' });
+    return generateCandidate({ errors: AUTHORING_ERRORS, context, contentMode, settingsStore, llmClient, signal, makeMessages: makeAuthoringMessages, functionKey: 'character_full_authoring' });
 }
-
 

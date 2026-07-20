@@ -9,7 +9,7 @@ const requiredFiles = [
     'src/app-shell.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js',
     'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/test/openai-compatible-client.test.mjs',
-    'src/settings/settings-store.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
+    'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
     'src/recommendation/candidate.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/soul-text-match-service.js',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js',
@@ -40,7 +40,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '0.1.7') fail('manifest.version 必须与扩展版本 0.1.7 统一');
+if (manifest.version !== '0.1.8') fail('manifest.version 必须与扩展版本 0.1.8 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
 if (manifest?.hooks?.activate !== 'onActivate') fail('manifest.hooks.activate 必须指向 onActivate');
 if (manifest?.hooks?.disable !== 'onDisable') fail('manifest.hooks.disable 必须指向 onDisable，确保禁用即清理会话密钥');
@@ -52,7 +52,7 @@ const sourceFiles = [
     'src/app-shell.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js',
     'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/test/openai-compatible-client.test.mjs',
-    'src/settings/settings-store.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
+    'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
     'src/recommendation/candidate.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/soul-text-match-service.js',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js',
@@ -127,7 +127,9 @@ console.log('✓ 变量更新订阅与卸载清理接缝');
 
 const settingsStore = await readFile(resolve(root, 'src/settings/settings-store.js'), 'utf8');
 const settingsPanel = await readFile(resolve(root, 'src/settings-panel.js'), 'utf8');
-if (!settingsStore.includes('FUNCTION_KEYS') || !settingsStore.includes('exportJson') || !settingsStore.includes('importJson')) fail('缺少设置预设与安全导入导出层');
+const defaultPromptPresets = await readFile(resolve(root, 'src/settings/default-prompt-presets.js'), 'utf8');
+if (!settingsStore.includes('FUNCTION_KEYS') || !settingsStore.includes('functionModeBindings') || !settingsStore.includes('exportJson') || !settingsStore.includes('importJson')) fail('缺少设置预设与安全导入导出层');
+if (!defaultPromptPresets.includes('builtin_recommendation_sfw') || !defaultPromptPresets.includes('builtin_private_chat_sfw') || !defaultPromptPresets.includes('builtin_character_authoring_sfw')) fail('缺少本地可编辑的默认 SFW/NSFW 提示词预设');
 if (!settingsPanel.includes('unlockSessionKey') || !settingsPanel.includes('fetchModels') || !settingsPanel.includes('functionBindings')) fail('缺少设置 UI 的解锁、模型拉取或功能绑定接线');
 if (!index.includes('createBrowserSettingsStorage') || !index.includes('createOpenAICompatibleClient')) fail('缺少浏览器非机密设置持久化或显式 LLM transport 接线');
 console.log('✓ 非机密设置持久化、会话解锁、模型拉取与功能绑定接线');

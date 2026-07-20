@@ -438,9 +438,10 @@ async function generateMatchDraft({ kind, state, settingsStore, llmClient, signa
     if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return { ok: false, code: `${prefix}_settings_unavailable`, message: errorMessages[`${prefix}_settings_unavailable`] };
     if (!llmClient || typeof llmClient.chat !== 'function') return { ok: false, code: `${prefix}_llm_unavailable`, message: errorMessages[`${prefix}_llm_unavailable`] };
 
+    const context = buildSoulTextMatchContext(state);
     let resolved;
     try {
-        resolved = settingsStore.resolveFunction(functionKey);
+        resolved = settingsStore.resolveFunction(functionKey, { contentMode: context.contentMode });
     } catch {
         return { ok: false, code: `${prefix}_settings_invalid`, message: errorMessages[`${prefix}_settings_invalid`] };
     }
@@ -449,7 +450,7 @@ async function generateMatchDraft({ kind, state, settingsStore, llmClient, signa
     }
 
     try {
-        const messages = kind === 'soul' ? makeSoulMessages(buildSoulTextMatchContext(state), resolved.promptPreset) : makeTextMessages(buildSoulTextMatchContext(state), resolved.promptPreset);
+        const messages = kind === 'soul' ? makeSoulMessages(context, resolved.promptPreset) : makeTextMessages(context, resolved.promptPreset);
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages, signal });
         const parsed = parseResponseJson(completion?.text);
         if (!parsed) return { ok: false, code: `${prefix}_invalid_json`, message: errorMessages[`${prefix}_invalid_json`] };
@@ -502,9 +503,10 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
     if (normalizedMode === 'voice' && !normalizedVoiceText) return candidateFailure('candidate_match_voice_text_invalid');
 
     const functionKey = normalizedMode === 'soul' ? 'soul_match' : 'text_match';
+    const context = buildCandidateMatchContext(state, local.keywordWeights);
     let resolved;
     try {
-        resolved = settingsStore.resolveFunction(functionKey);
+        resolved = settingsStore.resolveFunction(functionKey, { contentMode: context.contentMode });
     } catch {
         return candidateFailure('candidate_match_settings_invalid');
     }
@@ -537,6 +539,5 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
         return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
     }
 }
-
 
 

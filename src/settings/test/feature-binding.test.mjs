@@ -105,13 +105,31 @@ test('selector view model projects only saved preset IDs and names, never connec
         { id: 'fast', name: '快速连接' },
         { id: 'smart', name: '精细连接' },
     ]);
-    assert.deepEqual(model.promptOptions, [
+    assert.equal(model.promptOptions.length, 10);
+    assert.deepEqual(model.promptOptions.slice(-2), [
         { id: 'base', name: '默认提示词' },
         { id: 'creative', name: '创作提示词' },
     ]);
     assert.equal(JSON.stringify(model).includes('https://api.example.invalid'), false);
     assert.equal(JSON.stringify(model).includes('只返回安全的中文草稿。'), false);
     assert.equal(JSON.stringify(model).toLowerCase().includes('apikey'), false);
+});
+
+test('模式化辅助绑定只写入指定模式，不覆盖另一套选择', () => {
+    const store = makeStore();
+    const helper = createFeatureBindingHelper({ settingsStore: store });
+    const nsfw = helper.save('messages_chat', {
+        connectionPresetId: 'smart', promptPresetId: 'creative',
+    }, { contentMode: 'NSFW' });
+    const sfw = helper.getViewModel('messages_chat', { contentMode: 'SFW' });
+
+    assert.equal(nsfw.contentMode, 'NSFW');
+    assert.equal(nsfw.effective.connectionSource, 'mode_binding');
+    assert.deepEqual(store.snapshot().functionModeBindings.chat.NSFW, {
+        connectionPresetId: 'smart', promptPresetId: 'creative',
+    });
+    assert.equal(sfw.selected.promptPresetId, 'builtin_private_chat_sfw');
+    assert.throws(() => helper.getViewModel('messages_chat', { contentMode: 'other' }), errorCode('INVALID_CONTENT_MODE'));
 });
 
 test('选择严格校验已保存 ID、字段和数据结构，不允许未知或未注册入口', () => {

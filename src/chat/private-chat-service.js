@@ -147,7 +147,7 @@ export async function generatePrivateChatReply({ state, sessionUid, npcUid, play
     if (!llmClient || typeof llmClient.chat !== 'function') return { ok: false, code: 'private_chat_llm_unavailable', message: '当前浏览器未提供私聊模型连接。' };
 
     let resolved;
-    try { resolved = settingsStore.resolveFunction('chat'); }
+    try { resolved = settingsStore.resolveFunction('chat', { contentMode: builtContext.context.contentMode }); }
     catch { return { ok: false, code: 'private_chat_settings_invalid', message: '私聊预设无效，请检查设置。' }; }
     if (!resolved.connectionPreset) return { ok: false, code: 'private_chat_connection_missing', message: '请先为“聊天”绑定连接预设或设置默认连接。' };
 

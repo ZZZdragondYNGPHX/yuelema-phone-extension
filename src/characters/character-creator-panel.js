@@ -139,7 +139,7 @@ function safeLibraryMessage(error) {
  * The editor may show the current private draft because the player owns it; normal
  * recommendation cards remain public-projection-only in app-shell/ui-model.
  */
-export function buildCharacterCreatorPanel({ documentRef, actionBridge, characterLibrary, signal, onFeedback, onRegistered, onConfigureFeature = null }) {
+export function buildCharacterCreatorPanel({ documentRef, actionBridge, characterLibrary, signal, contentMode = 'SFW', onFeedback, onRegistered, onConfigureFeature = null }) {
     const section = element('section', { className: 'yl-phone-empty-actions yl-character-editor yl-character-creator' });
 
     const hero = element('article', { className: 'yl-character-hero' });
@@ -224,7 +224,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     const aiChoices = element('div', { className: 'yl-character-ai-choices' });
     const completionCard = element('article', { className: 'yl-character-ai-choice yl-character-ai-choice-completion' });
     if (typeof onConfigureFeature === 'function') {
-        const configureCompletion = element('button', { className: 'yl-feature-options yl-character-feature-options', type: 'button', text: '选项', ariaLabel: '配置 AI 补全预设' });
+        const configureCompletion = element('button', { className: 'yl-feature-options yl-character-feature-options', type: 'button', text: 'AI 设置', ariaLabel: '配置 AI 补全预设' });
         listen(configureCompletion, configureCompletion, 'click', () => onConfigureFeature({ key: 'character_ai_completion', title: 'AI 补全' }), signal);
         completionCard.appendChild(configureCompletion);
     }
@@ -237,7 +237,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
 
     const authoringCard = element('article', { className: 'yl-character-ai-choice yl-character-ai-choice-authoring' });
     if (typeof onConfigureFeature === 'function') {
-        const configureAuthoring = element('button', { className: 'yl-feature-options yl-character-feature-options', type: 'button', text: '选项', ariaLabel: '配置 AI 完整创作预设' });
+        const configureAuthoring = element('button', { className: 'yl-feature-options yl-character-feature-options', type: 'button', text: 'AI 设置', ariaLabel: '配置 AI 完整创作预设' });
         listen(configureAuthoring, configureAuthoring, 'click', () => onConfigureFeature({ key: 'character_full_authoring', title: 'AI 完整创作' }), signal);
         authoringCard.appendChild(configureAuthoring);
     }
@@ -380,7 +380,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         onFeedback(isCompletion ? '正在生成公开资料补全草稿；不会自动登记。' : '正在生成完整角色草稿；不会自动登记。');
         try {
             const result = await (isCompletion
-                ? method({ publicProfile: publicProfileFromForm(form), instruction, signal })
+                ? method({ publicProfile: publicProfileFromForm(form), instruction, contentMode, signal })
                 : method({ creativeBrief: instruction, signal }));
             if (!result?.ok || !result?.candidate) { onFeedback(isCompletion ? 'AI 补全未生成可用草稿；当前草稿未改变。' : 'AI 完整创作未生成可用草稿；当前草稿未改变。'); return; }
             adoptAiCandidate(result.candidate, isCompletion ? 'AI 补全草稿已载入编辑器；请检查私有层、边界和阈值后再登记。' : 'AI 完整创作草稿已载入编辑器；请检查全部字段后再登记。');

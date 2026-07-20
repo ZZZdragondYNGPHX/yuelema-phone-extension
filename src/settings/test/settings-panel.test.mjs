@@ -154,10 +154,10 @@ test('功能绑定为各入口分别呈现并保存，匹配与角色创作绑�
     await saveBinding('character_ai_completion', 'fast', 'creative');
     await saveBinding('character_full_authoring', 'smart', 'base');
 
-    assert.deepEqual(store.snapshot().functionBindings.soul_match, { connectionPresetId: 'fast', promptPresetId: 'base' });
-    assert.deepEqual(store.snapshot().functionBindings.text_match, { connectionPresetId: 'smart', promptPresetId: 'creative' });
-    assert.deepEqual(store.snapshot().functionBindings.character_ai_completion, { connectionPresetId: 'fast', promptPresetId: 'creative' });
-    assert.deepEqual(store.snapshot().functionBindings.character_full_authoring, { connectionPresetId: 'smart', promptPresetId: 'base' });
+    assert.deepEqual(store.snapshot().functionModeBindings.soul_match.SFW, { connectionPresetId: 'fast', promptPresetId: 'base' });
+    assert.deepEqual(store.snapshot().functionModeBindings.text_match.SFW, { connectionPresetId: 'smart', promptPresetId: 'creative' });
+    assert.deepEqual(store.snapshot().functionModeBindings.character_ai_completion.SFW, { connectionPresetId: 'fast', promptPresetId: 'creative' });
+    assert.deepEqual(store.snapshot().functionModeBindings.character_full_authoring.SFW, { connectionPresetId: 'smart', promptPresetId: 'base' });
 });
 
 test('提示词详情不混入连接设置，文案去掉风格措辞且可安全导入导出', async () => {
@@ -195,9 +195,11 @@ test('提示词详情不混入连接设置，文案去掉风格措辞且可安�
     await click(button(panel, '保存提示词预设'));
 
     const saved = store.snapshot().promptPresets;
-    assert.equal(saved.length, 1);
-    assert.match(saved[0].id, /^prompt_/u);
-    const envelope = JSON.parse(saved[0].content);
+    const created = saved.find((preset) => preset.name === '匹配工作流');
+    assert.equal(saved.length, 9);
+    assert.ok(created);
+    assert.match(created.id, /^prompt_/u);
+    const envelope = JSON.parse(created.content);
     assert.deepEqual(envelope.schema, 'yuelema.prompt-entries');
     assert.equal(envelope.entries.length, 2);
     assert.deepEqual(envelope.entries.map((entry) => entry.name), ['公开资料边界', '输出格式']);
@@ -218,8 +220,28 @@ test('提示词详情不混入连接设置，文案去掉风格措辞且可安�
     byAria(importPanel, '提示词预设导入导出 JSON').value = transfer;
     await click(button(importPanel, '导入并覆盖提示词预设'));
     assert.equal(importedStore.snapshot().connectionPresets[0].id, 'preserved_connection');
-    assert.equal(importedStore.snapshot().promptPresets.length, 1);
-    assert.deepEqual(JSON.parse(importedStore.snapshot().promptPresets[0].content).entries.map((entry) => entry.name), ['公开资料边界', '输出格式']);
+    assert.equal(importedStore.snapshot().promptPresets.length, 9);
+    const importedCreated = importedStore.snapshot().promptPresets.find((preset) => preset.name === '匹配工作流');
+    assert.ok(importedCreated);
+    assert.deepEqual(JSON.parse(importedCreated.content).entries.map((entry) => entry.name), ['公开资料边界', '输出格式']);
+});
+
+test('功能绑定设置页会按当前 NSFW 模式保存，不覆盖 SFW 默认预设', async () => {
+    const store = createSettingsStore({ storage: createMemoryStorage() });
+    addConnection(store, 'fast');
+    addSinglePrompt(store, 'custom_nsfw');
+    const { panel } = buildHarness(store, { contentMode: 'NSFW' });
+    const connection = byName(panel, 'chat-connection-preset');
+    const prompt = byName(panel, 'chat-prompt-preset');
+    connection.value = 'fast';
+    prompt.value = 'custom_nsfw';
+    const row = connection.parentNode?.parentNode;
+    const save = row?.querySelectorAll('button').find((node) => node.textContent === '保存此功能绑定');
+    assert.ok(save);
+    await click(save);
+
+    assert.deepEqual(store.snapshot().functionModeBindings.chat.NSFW, { connectionPresetId: 'fast', promptPresetId: 'custom_nsfw' });
+    assert.equal(store.resolveFunction('chat', { contentMode: 'SFW' }).promptPreset.id, 'builtin_private_chat_sfw');
 });
 
 test('个性化内容推荐管理通过导航回调打开偏好次级页，不展开关键词编辑器', async () => {

@@ -1,5 +1,5 @@
 import { append, element, listen } from './dom.js';
-import { FUNCTION_KEYS, YueLeMaSettingsError } from './settings/settings-store.js';
+import { CONTENT_MODES, FUNCTION_KEYS, YueLeMaSettingsError } from './settings/settings-store.js';
 import { unlockSessionKey } from './llm/session-key-store.js';
 import { toPublicLlmError } from './llm/openai-compatible-client.js';
 
@@ -14,6 +14,7 @@ const FUNCTION_LABELS = Object.freeze({
     forum: '论坛',
 });
 const LEGACY_FUNCTION_KEYS = new Set(['character_authoring']);
+const CONTENT_MODE_LABELS = Object.freeze({ SFW: 'SFW', NSFW: 'NSFW' });
 const PROMPT_BUNDLE_SCHEMA = 'yuelema.prompt-preset-bundle';
 const PROMPT_BUNDLE_VERSION = 1;
 const PROMPT_ENTRY_ENVELOPE = 'yuelema.prompt-entries';
@@ -37,6 +38,10 @@ function normalizeSettingsView(value) {
         ['all', 'all'],
     ]);
     return aliases.get(value ?? 'all') ?? 'all';
+}
+
+function normalizeContentMode(value) {
+    return value === 'NSFW' ? 'NSFW' : 'SFW';
 }
 
 function nextId(prefix) {
@@ -244,9 +249,10 @@ function readPromptBundle(rawJson) {
  * Builds the settings console. Only non-secret settings cross the persistence boundary.
  * The API Key input is consumed once by unlockSessionKey and immediately cleared.
  */
-export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender, onNavigate, section, view }) {
+export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender, onNavigate, section, view, contentMode }) {
     const panel = element('section', { className: 'yl-settings-panel' });
     const activeView = normalizeSettingsView(view ?? section);
+    const activeContentMode = normalizeContentMode(contentMode);
     const navigate = typeof onNavigate === 'function' ? onNavigate : () => {};
     let settings;
     try {
@@ -273,7 +279,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             }),
             buildConnectionSection(settings),
             buildPromptSection(settings),
-            buildBindingSection(settings),
+            buildBindingSection(settings, activeContentMode),
             buildPromptTransferSection(settings),
             buildPersonalizationSection(settings, { openPreferences: false, includePreferenceEntry: true }),
         ]);
@@ -444,7 +450,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const section = element('section', { className: 'yl-settings-section yl-prompt-workbench' });
         append(section, [
             sectionHeading('⌘', '提示词预设条目树'),
-            element('p', { className: 'yl-phone-page-description', text: '预设作为根节点，插入位置作为分支，每个提示词条目作为叶节点。点击叶节点即可编辑；启用状态、depth 与 order 会在树上直接显示。' }),
+            element('p', { className: 'yl-phone-page-description', text: '预设作为根节点，插入位置作为分支，每个提示词条目作为叶节点。已预置推荐人物、私聊和角色创作的 SFW/NSFW 默认预设；点击叶节点即可编辑，保存后保留在当前浏览器。' }),
         ]);
         let activeId = null;
         let entries = [];
@@ -861,13 +867,13 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         return section;
     }
 
-    function buildBindingSection(snapshot) {
+    function buildBindingSection(snapshot, selectedContentMode) {
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
-            sectionHeading('⇄', '默认预设与功能绑定'),
+            sectionHeading('⇄', `${CONTENT_MODE_LABELS[selectedContentMode]} 模式预设与功能绑定`),
             element('p', {
                 className: 'yl-phone-page-description',
-                text: '连接与提示词可独立选择。未单独绑定的功能回退到默认预设；此处不提供标签权重设置。',
+                text: '当前只编辑 ' + CONTENT_MODE_LABELS[selectedContentMode] + ' 模式的功能绑定。切换内容模式后会自动显示另一套绑定；连接与提示词可独立选择。未单独绑定的功能回退到默认预设。',
             }),
         ]);
         const connectionOptions = [
@@ -899,9 +905,10 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         }), '默认预设已保存。'), signal));
 
         for (const functionKey of FUNCTION_KEYS.filter((key) => !LEGACY_FUNCTION_KEYS.has(key))) {
-            const binding = snapshot.functionBindings[functionKey];
+            const binding = snapshot.functionModeBindings?.[functionKey]?.[selectedContentMode]
+                ?? snapshot.functionBindings[functionKey];
             const row = element('section', { className: 'yl-settings-binding' });
-            row.appendChild(element('strong', { text: FUNCTION_LABELS[functionKey] }));
+            row.appendChild(element('strong', { text: FUNCTION_LABELS[functionKey] + ' · ' + CONTENT_MODE_LABELS[selectedContentMode] }));
             const connection = selectWithOptions(
                 [{ label: '使用默认连接', value: '' }, ...snapshot.connectionPresets.map((preset) => ({ label: preset.name, value: preset.id }))],
                 binding.connectionPresetId ?? '',
@@ -915,10 +922,14 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                 `${functionKey}-prompt-preset`,
             );
             append(row, [field('连接', connection), field('提示词', prompt)]);
-            row.appendChild(actionButton('保存此功能绑定', async () => updateSettings(() => settingsStore.bindFunction(functionKey, {
-                connectionPresetId: connection.value || null,
-                promptPresetId: prompt.value || null,
-            }), `${FUNCTION_LABELS[functionKey]}绑定已保存。`), signal, { secondary: true }));
+            row.appendChild(actionButton('保存此功能绑定', async () => updateSettings(() => {
+                const next = { connectionPresetId: connection.value || null, promptPresetId: prompt.value || null };
+                if (typeof settingsStore.bindFunctionForContentMode === 'function') {
+                    settingsStore.bindFunctionForContentMode(functionKey, selectedContentMode, next);
+                    return;
+                }
+                settingsStore.bindFunction(functionKey, next);
+            }, `${FUNCTION_LABELS[functionKey]}的 ${CONTENT_MODE_LABELS[selectedContentMode]} 绑定已保存。`), signal, { secondary: true }));
             section.appendChild(row);
         }
         return section;
@@ -950,6 +961,10 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             for (const functionKey of FUNCTION_KEYS) {
                 if (!availablePromptIds.has(document.functionBindings[functionKey].promptPresetId)) {
                     document.functionBindings[functionKey].promptPresetId = null;
+                }
+                for (const contentMode of CONTENT_MODES) {
+                    const binding = document.functionModeBindings?.[functionKey]?.[contentMode];
+                    if (binding && !availablePromptIds.has(binding.promptPresetId)) binding.promptPresetId = null;
                 }
             }
             settingsStore.importJson(JSON.stringify(document));

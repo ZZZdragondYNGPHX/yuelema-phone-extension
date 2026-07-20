@@ -290,12 +290,19 @@ export function createActionBridge({
     }
 
     /** Generates an AI completion from the editor's public projection only; this remains an in-memory draft. */
-    async function generateCharacterCompletionDraft({ publicProfile, instruction, signal } = {}) {
+    async function generateCharacterCompletionDraft({ publicProfile, instruction, contentMode, signal } = {}) {
         const key = actionKey('character_completion_draft', '');
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
         pending.add(key);
         try {
-            return await generateCharacterCompletionCandidate({ publicProfile, instruction, settingsStore, llmClient, signal });
+            return await generateCharacterCompletionCandidate({
+                publicProfile,
+                instruction,
+                contentMode,
+                settingsStore,
+                llmClient,
+                signal,
+            });
         } finally {
             pending.delete(key);
         }

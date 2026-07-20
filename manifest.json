@@ -4,7 +4,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "约了吗项目",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "minimum_client_version": "1.18.0",
   "auto_update": false,
   "hooks": {

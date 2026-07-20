@@ -68,7 +68,7 @@ export async function generateForumPostDraft({ state, groupUid, topic, settingsS
     if (!llmClient || typeof llmClient.chat !== 'function') return failure('forum_llm_unavailable');
 
     let resolved;
-    try { resolved = settingsStore.resolveFunction('forum'); }
+    try { resolved = settingsStore.resolveFunction('forum', { contentMode: built.context.contentMode }); }
     catch { return failure('forum_settings_invalid'); }
     if (!resolved?.connectionPreset) return failure('forum_connection_missing');
 

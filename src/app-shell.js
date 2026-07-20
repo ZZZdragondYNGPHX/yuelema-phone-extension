@@ -5,7 +5,7 @@ import { buildSettingsPanel } from './settings-panel.js';
 import { buildCharacterCreatorPanel } from './characters/character-creator-panel.js';
 import { createLauncherDragController } from './launcher-drag.js';
 
-const UI_VERSION = '0.1.7';
+const UI_VERSION = '0.1.8';
 const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', dislike: '✕' });
@@ -21,8 +21,10 @@ const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
     matches: Object.freeze([{ key: 'soul_match', title: '灵魂匹配' }, { key: 'text_match', title: '语音匹配' }]),
     messages: Object.freeze([{ key: 'chat', title: '私聊' }]),
+    groups: Object.freeze([{ key: 'group_chat', title: '聊天群' }, { key: 'forum', title: '论坛' }]),
     group_chat: Object.freeze([{ key: 'group_chat', title: '聊天群' }]),
     group_forum: Object.freeze([{ key: 'forum', title: '论坛' }]),
+    character_creator: Object.freeze([{ key: 'character_ai_completion', title: 'AI 完善补全' }, { key: 'character_full_authoring', title: 'AI 完整创作' }]),
 });
 
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
@@ -56,6 +58,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let activeOperation = null;
     let operationAutoCloseTimer = null;
     let privateChatRequestGeneration = 0;
+    let featureBindingDialogState = null;
 
     const launcher = element('button', { className: 'yl-phone-launcher', type: 'button', ariaLabel: '打开约了吗小手机', pressed: false, text: '约' });
     launcher.appendChild(element('span', { className: 'yl-phone-launcher-label', text: '约了吗' }));
@@ -392,6 +395,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function closeFeatureBindingDialog() {
         bindingDialog.hidden = true;
         bindingDialogContent.replaceChildren();
+        featureBindingDialogState = null;
     }
     function openFeatureBinding(features, dialogTitle = '功能预设选项') {
         if (!settingsStore || typeof settingsStore.snapshot !== 'function' || typeof settingsStore.bindFunction !== 'function') {
@@ -400,16 +404,20 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         let snapshot;
         try { snapshot = settingsStore.snapshot(); } catch { setFeedback('无法读取已保存的预设。'); return; }
-        bindingDialogTitle.textContent = dialogTitle;
+        const contentMode = currentView.mode === 'NSFW' ? 'NSFW' : 'SFW';
+        featureBindingDialogState = { features, dialogTitle };
+        bindingDialogTitle.textContent = `${dialogTitle} · ${contentMode}`;
         bindingDialogContent.replaceChildren();
         if (!snapshot.connectionPresets.length && !snapshot.promptPresets.length) {
             bindingDialogContent.appendChild(element('p', { className: 'yl-phone-page-description', text: '还没有保存连接或提示词预设。请先在“我的 → 设置 → 连接设置 / 提示词预设”中创建。' }));
         }
         for (const feature of features) {
-            const binding = snapshot.functionBindings?.[feature.key] ?? { connectionPresetId: null, promptPresetId: null };
+            const binding = snapshot.functionModeBindings?.[feature.key]?.[contentMode]
+                ?? snapshot.functionBindings?.[feature.key]
+                ?? { connectionPresetId: null, promptPresetId: null };
             const row = element('section', { className: 'yl-settings-binding yl-feature-binding-row' });
-            row.appendChild(element('strong', { text: feature.title }));
-            row.appendChild(element('p', { className: 'yl-settings-summary', text: '单独保存后只影响此功能；留空时回退到默认预设。' }));
+            row.appendChild(element('strong', { text: feature.title + ' · ' + contentMode }));
+            row.appendChild(element('p', { className: 'yl-settings-summary', text: '单独保存后只影响当前 ' + contentMode + ' 模式；留空时回退到默认预设。' }));
             const connection = element('select', { className: 'yl-settings-control', name: feature.key + '-quick-connection', ariaLabel: feature.title + '连接预设' });
             const prompt = element('select', { className: 'yl-settings-control', name: feature.key + '-quick-prompt', ariaLabel: feature.title + '提示词预设' });
             for (const [value, label] of [['', '使用默认连接'], ...snapshot.connectionPresets.map((preset) => [preset.id, preset.name])]) {
@@ -425,8 +433,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const save = element('button', { className: 'yl-settings-button', type: 'button', text: '保存此功能绑定' });
             listen(save, save, 'click', () => {
                 try {
-                    settingsStore.bindFunction(feature.key, { connectionPresetId: connection.value || null, promptPresetId: prompt.value || null });
-                    setFeedback(feature.title + '预设绑定已保存。');
+                    const next = { connectionPresetId: connection.value || null, promptPresetId: prompt.value || null };
+                    if (typeof settingsStore.bindFunctionForContentMode === 'function') settingsStore.bindFunctionForContentMode(feature.key, contentMode, next);
+                    else settingsStore.bindFunction(feature.key, next);
+                    setFeedback(feature.title + '的 ' + contentMode + ' 预设绑定已保存。');
                 } catch { setFeedback('预设绑定未保存，请确认选择的预设仍存在。'); }
             }, abortController.signal);
             row.appendChild(save); bindingDialogContent.appendChild(row);
@@ -436,7 +446,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function buildFeatureOptionsButton(pageId) {
         const features = FEATURE_BINDING_FOR_PAGE[pageId];
         if (!features) return null;
-        const button = element('button', { className: 'yl-feature-options', type: 'button', text: '选项', ariaLabel: '配置' + (PAGE_COPY[pageId]?.title || '此功能') + '预设' });
+        const button = element('button', { className: 'yl-feature-options', type: 'button', text: '设置', ariaLabel: '配置' + (PAGE_COPY[pageId]?.title || '此功能') + '预设' });
         listen(button, button, 'click', () => openFeatureBinding(features, (PAGE_COPY[pageId]?.title || '功能') + '选项'), abortController.signal);
         return button;
     }
@@ -490,8 +500,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!characterLibrary || typeof actionBridge.registerCharacter !== 'function') return element('div', { className: 'yl-phone-placeholder', text: '角色创作尚未就绪。' });
         return buildCharacterCreatorPanel({
             documentRef, actionBridge, characterLibrary, signal: abortController.signal,
+            contentMode: currentView.mode,
             onFeedback: createOperationFeedbackHandler({ ai: true }),
-            onConfigureFeature: (feature) => openFeatureBinding([feature], feature.title + '选项'),
+            onConfigureFeature: (feature) => openFeatureBinding([feature], feature.title + '设置'),
             onRegistered: () => { refreshState(); setActivePage('profile'); },
         });
     }
@@ -1167,6 +1178,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const section = element('section', { className: 'yl-settings-detail' });
         section.appendChild(buildSettingsPanel({
             settingsStore, llmClient, signal: abortController.signal, view,
+            contentMode: currentView.mode,
             onFeedback: createOperationFeedbackHandler(), onRerender: renderPage, onNavigate: setActivePage,
         }));
         return section;
@@ -1188,6 +1200,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         aboutUnlocked = true;
         setFeedback(`已切换为 ${currentView.mode === 'SFW' ? 'NSFW' : 'SFW'}。`, operationToken);
         refreshState();
+        if (!bindingDialog.hidden && featureBindingDialogState) {
+            openFeatureBinding(featureBindingDialogState.features, featureBindingDialogState.dialogTitle);
+        }
     }
 
     async function runInitialRecommendationCandidate() {
@@ -1236,7 +1251,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(operationClose, operationClose, 'click', hideOperationDialog, abortController.signal);
     listen(bindingDialogClose, bindingDialogClose, 'click', closeFeatureBindingDialog, abortController.signal);
     listen(root, documentRef, "click", (event) => { if (activeHelpAnchor && event.target !== activeHelpAnchor) { helpPopover.hidden = true; activeHelpAnchor = null; } }, abortController.signal);
-    listen(root, documentRef, "keydown", (event) => { if (event.key === "Escape") { if (!operationDialog.hidden) hideOperationDialog(); else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; } else if (open) setOpen(false); } }, abortController.signal);
+    listen(root, documentRef, "keydown", (event) => { if (event.key === "Escape") { if (!operationDialog.hidden) hideOperationDialog(); else if (!bindingDialog.hidden) closeFeatureBindingDialog(); else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; } else if (open) setOpen(false); } }, abortController.signal);
     renderPage();
     return Object.freeze({
         refreshState,

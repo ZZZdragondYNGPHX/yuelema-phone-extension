@@ -120,7 +120,7 @@ export async function generateRecommendationCandidate({ state, settingsStore, ll
     if (!llmClient || typeof llmClient.chat !== 'function') return { ok: false, code: 'recommendation_llm_unavailable', message: '当前浏览器未提供快速模型连接。' };
 
     let resolved;
-    try { resolved = settingsStore.resolveFunction('recommendation_refresh'); }
+    try { resolved = settingsStore.resolveFunction('recommendation_refresh', { contentMode: contentModeOf(state) }); }
     catch { return { ok: false, code: 'recommendation_settings_invalid', message: '推荐刷新预设无效，请检查设置。' }; }
     if (!resolved.connectionPreset) return { ok: false, code: 'recommendation_connection_missing', message: '请先为“推荐刷新”绑定连接预设或设置默认连接。' };
 

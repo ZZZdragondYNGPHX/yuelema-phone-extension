@@ -233,6 +233,10 @@ test('feature option entries are scoped to each requested app surface', () => {
         closeBinding();
 
         click(buttonByPage('groups'));
+        click(pageOption());
+        assert.ok(miniDom.document.querySelector('[name="group_chat-quick-connection"]'));
+        assert.ok(miniDom.document.querySelector('[name="forum-quick-connection"]'));
+        closeBinding();
         click(buttonByText('聊天群'));
         click(pageOption());
         assert.ok(miniDom.document.querySelector('[name="group_chat-quick-connection"]'));
@@ -241,6 +245,13 @@ test('feature option entries are scoped to each requested app surface', () => {
         click(buttonByText('论坛'));
         click(pageOption());
         assert.ok(miniDom.document.querySelector('[name="forum-quick-connection"]'));
+        closeBinding();
+
+        click(buttonByPage('profile'));
+        click(buttonByText('创建角色'));
+        click(pageOption());
+        assert.ok(miniDom.document.querySelector('[name="character_ai_completion-quick-connection"]'));
+        assert.ok(miniDom.document.querySelector('[name="character_full_authoring-quick-connection"]'));
     } finally {
         mounted.destroy();
     }
@@ -556,6 +567,50 @@ test('content-mode failures use the dedicated alert dialog and never restore the
         assert.match(dialog.textContent, /MVU 保存本次修改时出错/u);
         assert.doesNotMatch(dialog.textContent, /Authorization|Bearer|must-not-leak/u);
         assert.equal(miniDom.document.querySelector('.yl-phone-panel .yl-phone-feedback'), null, '页面内不得重新渲染废弃反馈栏');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('打开的功能设置会跟随内容模式刷新到另一套本地预设', async () => {
+    let mode = 'SFW';
+    const store = createSettingsStore({ storage: createMemoryStorage() });
+    const readState = () => {
+        const result = readyReadResult();
+        result.state.软件.内容模式 = mode;
+        return result;
+    };
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        async runMvuAction(kind) {
+            assert.equal(kind, 'toggle_content_mode');
+            mode = 'NSFW';
+            return { ok: true };
+        },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-mode-feature-binding', actionBridge: bridge,
+        settingsStore: store, llmClient: null, characterLibrary: null, readState,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelector('.yl-feature-options'));
+        const prompt = () => miniDom.document.querySelector('[name="recommendation_refresh-quick-prompt"]');
+        const selectedPromptId = () => prompt().querySelectorAll('option').find((option) => option.selected)?.value;
+        assert.equal(selectedPromptId(), 'builtin_recommendation_sfw');
+        assert.match(miniDom.document.querySelector('.yl-feature-binding-modal').textContent, /SFW/u);
+
+        click(buttonByPage('profile'));
+        click(buttonByText('设置'));
+        for (let index = 0; index < 5; index += 1) click(buttonByText('关于软件'));
+        const toggle = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '内容模式切换');
+        assert.ok(toggle);
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change'));
+        await flushUi();
+
+        assert.equal(selectedPromptId(), 'builtin_recommendation_nsfw');
+        assert.match(miniDom.document.querySelector('.yl-feature-binding-modal').textContent, /NSFW/u);
     } finally {
         mounted.destroy();
     }
