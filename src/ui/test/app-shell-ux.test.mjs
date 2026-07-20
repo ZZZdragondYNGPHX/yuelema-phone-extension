@@ -597,7 +597,10 @@ test('打开的功能设置会跟随内容模式刷新到另一套本地预设',
         click(miniDom.document.querySelector('.yl-feature-options'));
         const prompt = () => miniDom.document.querySelector('[name="recommendation_refresh-quick-prompt"]');
         const selectedPromptId = () => prompt().querySelectorAll('option').find((option) => option.selected)?.value;
+        const promptOptionIds = () => prompt().querySelectorAll('option').map((option) => option.value);
         assert.equal(selectedPromptId(), 'builtin_recommendation_sfw');
+        assert.equal(promptOptionIds().includes('builtin_recommendation_sfw'), true);
+        assert.equal(promptOptionIds().includes('builtin_recommendation_nsfw'), false);
         assert.match(miniDom.document.querySelector('.yl-feature-binding-modal').textContent, /SFW/u);
 
         click(buttonByPage('profile'));
@@ -610,6 +613,8 @@ test('打开的功能设置会跟随内容模式刷新到另一套本地预设',
         await flushUi();
 
         assert.equal(selectedPromptId(), 'builtin_recommendation_nsfw');
+        assert.equal(promptOptionIds().includes('builtin_recommendation_nsfw'), true);
+        assert.equal(promptOptionIds().includes('builtin_recommendation_sfw'), false);
         assert.match(miniDom.document.querySelector('.yl-feature-binding-modal').textContent, /NSFW/u);
     } finally {
         mounted.destroy();

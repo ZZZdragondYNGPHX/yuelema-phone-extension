@@ -7,7 +7,7 @@ import { createConnectionPreset } from '../llm/openai-compatible-client.js';
 import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-prompt-presets.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 3;
+export const SETTINGS_SCHEMA_VERSION = 4;
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -31,7 +31,7 @@ const SECRET_FIELD_NAMES = new Set([
 ]);
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
-const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2]);
+const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3]);
 
 export class YueLeMaSettingsError extends Error {
     constructor(code, message) {
@@ -101,17 +101,18 @@ function emptyBinding() {
     return { connectionPresetId: null, promptPresetId: null };
 }
 
-function modeBindingForDefault(functionKey, contentMode, promptIds = null) {
+function modeBindingForDefault(functionKey, contentMode, promptById = null) {
     const promptPresetId = builtinPromptPresetIdFor(functionKey, contentMode);
     return {
         connectionPresetId: null,
-        promptPresetId: promptPresetId && (!promptIds || promptIds.has(promptPresetId)) ? promptPresetId : null,
+        promptPresetId: promptPresetId && (!promptById || promptById.get(promptPresetId)?.contentMode === contentMode)
+            ? promptPresetId : null,
     };
 }
 
 function makeDefaultDocument() {
     const promptPresets = createBuiltinPromptPresets();
-    const promptIds = new Set(promptPresets.map((preset) => preset.id));
+    const promptById = new Map(promptPresets.map((preset) => [preset.id, preset]));
     return {
         schema: SETTINGS_SCHEMA_ID,
         schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -120,7 +121,7 @@ function makeDefaultDocument() {
         defaults: { connectionPresetId: null, promptPresetId: null },
         functionBindings: Object.fromEntries(FUNCTION_KEYS.map((key) => [key, emptyBinding()])),
         functionModeBindings: Object.fromEntries(FUNCTION_KEYS.map((key) => [key, Object.fromEntries(
-            CONTENT_MODES.map((contentMode) => [contentMode, modeBindingForDefault(key, contentMode, promptIds)]),
+            CONTENT_MODES.map((contentMode) => [contentMode, modeBindingForDefault(key, contentMode, promptById)]),
         )])),
         personalization: {
             enabled: true,
@@ -142,7 +143,7 @@ export function normalizePromptPreset(input) {
     const candidate = safeClone(input);
     if (!isPlainObject(candidate)) fail('INVALID_PROMPT_PRESET', '提示词预设必须是对象。');
     const unknown = Object.keys(candidate).filter((key) => ![
-        'id', 'name', 'depth', 'order', 'position', 'enabled', 'content',
+        'id', 'name', 'depth', 'order', 'position', 'enabled', 'content', 'contentMode',
     ].includes(key));
     if (unknown.length > 0) fail('INVALID_PROMPT_PRESET', '提示词预设包含不支持的字段。');
     if (typeof candidate.enabled !== 'boolean') fail('INVALID_PROMPT_PRESET', 'enabled 必须为布尔值。');
@@ -150,13 +151,18 @@ export function normalizePromptPreset(input) {
     if (!PROMPT_POSITIONS.has(position)) {
         fail('INVALID_PROMPT_PRESET', 'position 仅支持 before_character_definition 或 after_character_definition。');
     }
+    const id = cleanId(candidate.id, '提示词预设 ID');
+    const name = cleanText(candidate.name, '提示词预设名称', 1, 80);
+    const inferredMode = /(?:^|[_-])nsfw(?:[_-]|$)/iu.test(id) || /\bNSFW\b/iu.test(name) ? 'NSFW' : 'SFW';
+    const contentMode = candidate.contentMode === undefined ? inferredMode : cleanContentMode(candidate.contentMode);
     return {
-        id: cleanId(candidate.id, '提示词预设 ID'),
-        name: cleanText(candidate.name, '提示词预设名称', 1, 80),
+        id,
+        name,
         depth: cleanInteger(candidate.depth, 'depth', 0, 1000),
         order: cleanInteger(candidate.order, 'order', -1000, 1000),
         position,
         enabled: candidate.enabled,
+        contentMode,
         content: cleanText(candidate.content, 'content', 1, 12_000),
     };
 }
@@ -193,28 +199,37 @@ function appendMissingBuiltinPromptPresets(presets) {
     return next;
 }
 
-function fallbackModeBinding(functionKey, contentMode, genericBinding, defaults, promptIds) {
+function promptIdForContentMode(presetId, contentMode, promptById) {
+    return presetId !== null && promptById.get(presetId)?.contentMode === contentMode ? presetId : null;
+}
+
+function fallbackModeBinding(functionKey, contentMode, genericBinding, defaults, promptById) {
     return {
         // Keep an existing generic connection fallback dynamic. A later change
         // to the default connection must keep behaving as it did before v3.
         connectionPresetId: genericBinding.connectionPresetId,
-        // Existing explicit/global prompt choices win during migration. Built-ins
-        // fill only truly unconfigured target functions.
-        promptPresetId: genericBinding.promptPresetId
-            ?? (defaults.promptPresetId === null ? modeBindingForDefault(functionKey, contentMode, promptIds).promptPresetId : null),
+        // A legacy global prompt may seed only its own content mode. This keeps
+        // a SFW preset from silently becoming an NSFW function binding.
+        promptPresetId: promptIdForContentMode(genericBinding.promptPresetId, contentMode, promptById)
+            ?? promptIdForContentMode(defaults.promptPresetId, contentMode, promptById)
+            ?? modeBindingForDefault(functionKey, contentMode, promptById).promptPresetId,
     };
 }
 
-function validateBindingPresetReferences(binding, functionKey, connectionIds, promptIds) {
+function validateBindingPresetReferences(binding, functionKey, connectionIds, promptById, contentMode = null) {
     if (binding.connectionPresetId !== null && !connectionIds.has(binding.connectionPresetId)) {
         fail('UNKNOWN_PRESET_ID', `${functionKey} 绑定的连接预设不存在。`);
     }
-    if (binding.promptPresetId !== null && !promptIds.has(binding.promptPresetId)) {
+    if (binding.promptPresetId !== null && !promptById.has(binding.promptPresetId)) {
         fail('UNKNOWN_PRESET_ID', `${functionKey} 绑定的提示词预设不存在。`);
+    }
+    if (contentMode !== null && binding.promptPresetId !== null
+        && promptById.get(binding.promptPresetId).contentMode !== contentMode) {
+        fail('PROMPT_MODE_MISMATCH', `${functionKey} 只能绑定 ${contentMode} 提示词预设。`);
     }
 }
 
-function normalizeFunctionModeBindings(input, functionBindings, defaults, connectionIds, promptIds) {
+function normalizeFunctionModeBindings(input, functionBindings, defaults, connectionIds, promptById, { migrateModeMismatch = false } = {}) {
     const candidate = safeClone(input ?? {});
     if (!isPlainObject(candidate) || Object.keys(candidate).some((key) => !FUNCTION_KEYS.includes(key))) {
         fail('INVALID_BINDING', '模式功能绑定包含未知功能。');
@@ -228,11 +243,15 @@ function normalizeFunctionModeBindings(input, functionBindings, defaults, connec
         }
         functionModeBindings[functionKey] = {};
         for (const contentMode of CONTENT_MODES) {
-            const fallback = fallbackModeBinding(functionKey, contentMode, functionBindings[functionKey], defaults, promptIds);
-            const binding = modeBindingsInput && Object.hasOwn(modeBindingsInput, contentMode)
+            const fallback = fallbackModeBinding(functionKey, contentMode, functionBindings[functionKey], defaults, promptById);
+            let binding = modeBindingsInput && Object.hasOwn(modeBindingsInput, contentMode)
                 ? normalizeBinding(modeBindingsInput[contentMode])
                 : fallback;
-            validateBindingPresetReferences(binding, `${functionKey}/${contentMode}`, connectionIds, promptIds);
+            if (migrateModeMismatch && binding.promptPresetId !== null
+                && promptById.get(binding.promptPresetId)?.contentMode !== contentMode) {
+                binding = { ...binding, promptPresetId: fallback.promptPresetId };
+            }
+            validateBindingPresetReferences(binding, `${functionKey}/${contentMode}`, connectionIds, promptById, contentMode);
             functionModeBindings[functionKey][contentMode] = binding;
         }
     }
@@ -305,8 +324,9 @@ export function normalizeSettingsDocument(input) {
         fail('INVALID_SETTINGS', '提示词预设数量无效。');
     }
 
+    const isLegacySchema = candidate.schemaVersion < SETTINGS_SCHEMA_VERSION;
     const connectionPresets = candidate.connectionPresets.map(normalizeConnectionPreset);
-    const promptPresets = candidate.schemaVersion < SETTINGS_SCHEMA_VERSION
+    const promptPresets = isLegacySchema
         ? appendMissingBuiltinPromptPresets(candidate.promptPresets.map(normalizePromptPreset))
         : candidate.promptPresets.map(normalizePromptPreset);
     const connectionIds = new Set(connectionPresets.map((preset) => preset.id));
@@ -314,6 +334,7 @@ export function normalizeSettingsDocument(input) {
     if (connectionIds.size !== connectionPresets.length || promptIds.size !== promptPresets.length) {
         fail('DUPLICATE_PRESET_ID', '预设 ID 不可重复。');
     }
+    const promptById = new Map(promptPresets.map((preset) => [preset.id, preset]));
 
     const defaultsInput = safeClone(candidate.defaults ?? {});
     if (!isPlainObject(defaultsInput) || Object.keys(defaultsInput).some((key) => !['connectionPresetId', 'promptPresetId'].includes(key))) {
@@ -326,7 +347,7 @@ export function normalizeSettingsDocument(input) {
     if (defaults.connectionPresetId !== null && !connectionIds.has(defaults.connectionPresetId)) {
         fail('UNKNOWN_PRESET_ID', '默认连接预设不存在。');
     }
-    if (defaults.promptPresetId !== null && !promptIds.has(defaults.promptPresetId)) {
+    if (defaults.promptPresetId !== null && !promptById.has(defaults.promptPresetId)) {
         fail('UNKNOWN_PRESET_ID', '默认提示词预设不存在。');
     }
 
@@ -337,7 +358,7 @@ export function normalizeSettingsDocument(input) {
     const functionBindings = {};
     for (const functionKey of FUNCTION_KEYS) {
         const binding = normalizeBinding(bindingsInput[functionKey]);
-        validateBindingPresetReferences(binding, functionKey, connectionIds, promptIds);
+        validateBindingPresetReferences(binding, functionKey, connectionIds, promptById);
         functionBindings[functionKey] = binding;
     }
 
@@ -356,7 +377,8 @@ export function normalizeSettingsDocument(input) {
         functionBindings,
         defaults,
         connectionIds,
-        promptIds,
+        promptById,
+        { migrateModeMismatch: isLegacySchema },
     );
 
     const personalization = normalizePersonalization(candidate.personalization);
@@ -455,7 +477,7 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         } catch {
             fail('INVALID_IMPORT_JSON', '设置 JSON 无法解析。');
         }
-        // Re-save a normalized legacy document so v1/v2 users receive the
+        // Re-save a normalized legacy document so v1–v3 users receive the
         // editable built-ins and mode bindings exactly once in local storage.
         return persist(parsed);
     }
@@ -566,7 +588,13 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         const normalizedContentMode = cleanContentMode(contentMode);
         const next = cloneDocument(current());
         const binding = normalizeBinding(input);
-        validateBindingPresetReferences(binding, `${functionKey}/${normalizedContentMode}`, new Set(next.connectionPresets.map((preset) => preset.id)), new Set(next.promptPresets.map((preset) => preset.id)));
+        validateBindingPresetReferences(
+            binding,
+            `${functionKey}/${normalizedContentMode}`,
+            new Set(next.connectionPresets.map((preset) => preset.id)),
+            new Map(next.promptPresets.map((preset) => [preset.id, preset])),
+            normalizedContentMode,
+        );
         next.functionModeBindings[functionKey][normalizedContentMode] = binding;
         return persist(next);
     }
@@ -578,14 +606,19 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         const selectedContentMode = contentMode === undefined ? null : cleanContentMode(contentMode);
         const modeBinding = selectedContentMode === null ? null : source.functionModeBindings[functionKey][selectedContentMode];
         const connectionPresetId = modeBinding?.connectionPresetId ?? binding.connectionPresetId ?? source.defaults.connectionPresetId;
-        const promptPresetId = modeBinding?.promptPresetId ?? binding.promptPresetId ?? source.defaults.promptPresetId;
+        // Live AI functions always declare a content mode. Do not fall through
+        // to a global prompt here: that would make a SFW preset usable in NSFW
+        // (or the reverse) merely because a mode-specific choice was cleared.
+        const promptPresetId = selectedContentMode === null
+            ? binding.promptPresetId ?? source.defaults.promptPresetId
+            : modeBinding?.promptPresetId ?? null;
         return Object.freeze({
             functionKey,
             contentMode: selectedContentMode,
             connectionPreset: connectionPresetId === null ? null : cloneDocument(findById(source.connectionPresets, connectionPresetId)),
             promptPreset: promptPresetId === null ? null : cloneDocument(findById(source.promptPresets, promptPresetId)),
             usedDefaultConnectionPreset: modeBinding?.connectionPresetId == null && binding.connectionPresetId === null,
-            usedDefaultPromptPreset: modeBinding?.promptPresetId == null && binding.promptPresetId === null,
+            usedDefaultPromptPreset: selectedContentMode === null && binding.promptPresetId === null,
             usedModeBinding: modeBinding !== null,
         });
     }

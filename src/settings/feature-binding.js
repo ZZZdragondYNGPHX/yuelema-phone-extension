@@ -95,6 +95,27 @@ function normalizePresetIds(presets, kind) {
     return ids;
 }
 
+function promptContentMode(preset) {
+    if (preset.contentMode === 'SFW' || preset.contentMode === 'NSFW') return preset.contentMode;
+    if (preset.contentMode !== undefined) fail('INVALID_BINDING_DOCUMENT', '提示词预设内容模式无效。');
+    return /(?:^|[_-])nsfw(?:[_-]|$)/iu.test(preset.id) || /\bNSFW\b/iu.test(preset.name) ? 'NSFW' : 'SFW';
+}
+
+function normalizePromptPresetIds(presets) {
+    const ids = new Set();
+    const modes = new Map();
+    for (const preset of presets) {
+        if (!isPlainObject(preset) || typeof preset.id !== 'string' || !ID_PATTERN.test(preset.id)
+            || typeof preset.name !== 'string') {
+            fail('INVALID_BINDING_DOCUMENT', '提示词预设无效。');
+        }
+        if (ids.has(preset.id)) fail('INVALID_BINDING_DOCUMENT', '提示词预设 ID 重复。');
+        ids.add(preset.id);
+        modes.set(preset.id, promptContentMode(preset));
+    }
+    return { ids, modes };
+}
+
 function normalizeStoredSelection(value) {
     if (value === undefined || value === null) return { connectionPresetId: null, promptPresetId: null };
     if (!isPlainObject(value) || Object.keys(value).some((key) => !BINDING_FIELDS.has(key))) {
@@ -116,12 +137,15 @@ function requireSurface(surfaceId) {
     return surface;
 }
 
-function assertKnownPresetIds(selection, connectionIds, promptIds) {
+function assertKnownPresetIds(selection, connectionIds, promptIds, { contentMode = null, promptModes = null } = {}) {
     if (selection.connectionPresetId !== null && !connectionIds.has(selection.connectionPresetId)) {
         fail('UNKNOWN_PRESET_ID', '选择的连接预设不存在。');
     }
     if (selection.promptPresetId !== null && !promptIds.has(selection.promptPresetId)) {
         fail('UNKNOWN_PRESET_ID', '选择的提示词预设不存在。');
+    }
+    if (contentMode !== null && selection.promptPresetId !== null && promptModes?.get(selection.promptPresetId) !== contentMode) {
+        fail('PROMPT_MODE_MISMATCH', `当前 ${contentMode} 模式只能选择对应提示词预设。`);
     }
 }
 
@@ -147,14 +171,16 @@ export function listFeatureBindingSurfaces() {
 
 /**
  * Strictly validate a selector value against the currently saved preset IDs.
- * `null` means inherit the document default for that kind of preset.
+ * `null` means inherit the document default for connections; mode-specific
+ * prompt bindings use `null` to omit an additional prompt preset.
  */
-export function validateFeatureBindingSelection(document, selection) {
+export function validateFeatureBindingSelection(document, selection, { contentMode } = {}) {
     assertSafeDocument(document);
     const connectionIds = normalizePresetIds(document.connectionPresets, '连接');
-    const promptIds = normalizePresetIds(document.promptPresets, '提示词');
+    const { ids: promptIds, modes: promptModes } = normalizePromptPresetIds(document.promptPresets);
+    const selectedContentMode = cleanContentMode(contentMode);
     const normalized = normalizeStoredSelection(selection);
-    assertKnownPresetIds(normalized, connectionIds, promptIds);
+    assertKnownPresetIds(normalized, connectionIds, promptIds, { contentMode: selectedContentMode, promptModes });
     return Object.freeze(normalized);
 }
 
@@ -167,7 +193,7 @@ export function deriveEffectiveFeatureBinding(document, surfaceId, { contentMode
     const surface = requireSurface(surfaceId);
     const selectedContentMode = cleanContentMode(contentMode);
     const connectionIds = normalizePresetIds(document.connectionPresets, '连接');
-    const promptIds = normalizePresetIds(document.promptPresets, '提示词');
+    const { ids: promptIds, modes: promptModes } = normalizePromptPresetIds(document.promptPresets);
     const defaults = normalizeStoredSelection(document.defaults);
     assertKnownPresetIds(defaults, connectionIds, promptIds);
     const genericSelection = normalizeStoredSelection(document.functionBindings[surface.functionKey]);
@@ -175,10 +201,15 @@ export function deriveEffectiveFeatureBinding(document, surfaceId, { contentMode
     const modeSelection = selectedContentMode === null
         ? null
         : normalizeStoredSelection(document.functionModeBindings?.[surface.functionKey]?.[selectedContentMode]);
-    if (modeSelection) assertKnownPresetIds(modeSelection, connectionIds, promptIds);
+    if (modeSelection) assertKnownPresetIds(modeSelection, connectionIds, promptIds, {
+        contentMode: selectedContentMode,
+        promptModes,
+    });
 
     const connectionPresetId = modeSelection?.connectionPresetId ?? genericSelection.connectionPresetId ?? defaults.connectionPresetId;
-    const promptPresetId = modeSelection?.promptPresetId ?? genericSelection.promptPresetId ?? defaults.promptPresetId;
+    const promptPresetId = selectedContentMode === null
+        ? genericSelection.promptPresetId ?? defaults.promptPresetId
+        : modeSelection?.promptPresetId ?? null;
     return Object.freeze({
         surfaceId: surface.id,
         functionKey: surface.functionKey,
@@ -189,8 +220,9 @@ export function deriveEffectiveFeatureBinding(document, surfaceId, { contentMode
             promptPresetId,
             connectionSource: modeSelection?.connectionPresetId !== null && modeSelection?.connectionPresetId !== undefined
                 ? 'mode_binding' : genericSelection.connectionPresetId === null ? (connectionPresetId === null ? 'none' : 'default') : 'binding',
-            promptSource: modeSelection?.promptPresetId !== null && modeSelection?.promptPresetId !== undefined
-                ? 'mode_binding' : genericSelection.promptPresetId === null ? (promptPresetId === null ? 'none' : 'default') : 'binding',
+            promptSource: selectedContentMode !== null
+                ? (modeSelection?.promptPresetId == null ? 'none' : 'mode_binding')
+                : (genericSelection.promptPresetId === null ? (promptPresetId === null ? 'none' : 'default') : 'binding'),
         }),
     });
 }
@@ -210,18 +242,22 @@ export function createFeatureBindingHelper({ settingsStore } = {}) {
 
     function getViewModel(surfaceId, { contentMode } = {}) {
         const document = documentSnapshot();
-        const binding = deriveEffectiveFeatureBinding(document, surfaceId, { contentMode });
+        const selectedContentMode = cleanContentMode(contentMode);
+        const binding = deriveEffectiveFeatureBinding(document, surfaceId, { contentMode: selectedContentMode ?? undefined });
+        const promptOptions = selectedContentMode === null
+            ? document.promptPresets
+            : document.promptPresets.filter((preset) => promptContentMode(preset) === selectedContentMode);
         return Object.freeze({
             ...binding,
             connectionOptions: Object.freeze(selectorOptions(document.connectionPresets)),
-            promptOptions: Object.freeze(selectorOptions(document.promptPresets)),
+            promptOptions: Object.freeze(selectorOptions(promptOptions)),
         });
     }
 
     function save(surfaceId, selection, { contentMode } = {}) {
         const surface = requireSurface(surfaceId);
-        const normalized = validateFeatureBindingSelection(documentSnapshot(), selection);
         const selectedContentMode = cleanContentMode(contentMode);
+        const normalized = validateFeatureBindingSelection(documentSnapshot(), selection, { contentMode: selectedContentMode ?? undefined });
         if (selectedContentMode !== null && typeof settingsStore.bindFunctionForContentMode === 'function') {
             settingsStore.bindFunctionForContentMode(surface.functionKey, selectedContentMode, normalized);
         } else {

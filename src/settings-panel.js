@@ -1,6 +1,6 @@
 import { append, element, listen } from './dom.js';
 import { CONTENT_MODES, FUNCTION_KEYS, YueLeMaSettingsError } from './settings/settings-store.js';
-import { unlockSessionKey } from './llm/session-key-store.js';
+import { hasSessionKey, unlockSessionKey } from './llm/session-key-store.js';
 import { toPublicLlmError } from './llm/openai-compatible-client.js';
 
 const FUNCTION_LABELS = Object.freeze({
@@ -8,7 +8,7 @@ const FUNCTION_LABELS = Object.freeze({
     character_ai_completion: '角色 AI 补全',
     character_full_authoring: '角色完整创作',
     soul_match: '灵魂匹配',
-    text_match: '文字匹配',
+    text_match: '语音匹配',
     recommendation_refresh: '推荐刷新',
     group_chat: '聊天群',
     forum: '论坛',
@@ -177,7 +177,7 @@ function decodePromptEntries(preset) {
     }
 }
 
-function buildPromptPreset({ id, name, entries }) {
+function buildPromptPreset({ id, name, contentMode, entries }) {
     const presetName = cleanEntryText(name, '提示词预设名称', 80);
     if (!Array.isArray(entries) || entries.length === 0 || entries.length > MAX_PROMPT_ENTRIES_PER_PRESET) {
         throw new YueLeMaSettingsError('INVALID_PROMPT_ENTRY', '每个提示词预设必须包含 1–48 个条目。');
@@ -204,6 +204,7 @@ function buildPromptPreset({ id, name, entries }) {
         order: representative.order,
         position: representative.position,
         enabled: representative.enabled,
+        contentMode: contentMode === 'NSFW' ? 'NSFW' : 'SFW',
         content,
     };
 }
@@ -212,7 +213,7 @@ function promptSummary(preset) {
     try {
         const entries = decodePromptEntries(preset);
         const enabled = entries.filter((entry) => entry.enabled).length;
-        return `${preset.name} · ${entries.length} 个条目 · ${enabled} 个启用`;
+        return `${preset.name} · ${preset.contentMode === 'NSFW' ? 'NSFW' : 'SFW'} · ${entries.length} 个条目 · ${enabled} 个启用`;
     } catch {
         return `${preset.name} · 条目数据损坏`;
     }
@@ -309,7 +310,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
             sectionHeading('⚡', '连接预设（OpenAI-compatible）'),
-            element('p', { className: 'yl-phone-page-description', text: '名称、Base URL、Model、传输方式、额度和超时会保存到本浏览器；API Key 只用于本次会话，不会保存。Model 不再是拉取列表的前置条件。' }),
+            element('p', { className: 'yl-phone-page-description', text: '名称、Base URL、Model、传输方式、额度和超时会保存到本浏览器；填写 API Key 后点击“保存连接预设”即可解锁本次会话，但 Key 不会保存。Model 不再是拉取列表的前置条件。' }),
         ]);
         let activeId = null;
         let draftId = nextId('conn');
@@ -338,6 +339,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             field('Temperature', temperature), field('Max tokens', maxTokens), field('Timeout (ms)', timeoutMs), field('API Key（不保存）', apiKey),
         ]);
         section.appendChild(fields);
+        const keyStatus = element('p', { className: 'yl-settings-summary', ariaLabel: 'API Key 会话状态' });
+        section.appendChild(keyStatus);
         section.appendChild(element('p', { className: 'yl-settings-summary yl-transport-hint', text: '真流式可边接收边聚合；假流式兼容不支持 SSE 的接口，在完整响应到达后分段呈现。首页推荐刷新会至少申请 2048 Token，确保完整候选 JSON；最终仍受服务端最大输出与本地超时限制。' }));
 
         const modelChoices = element('select', { className: 'yl-settings-control yl-model-choices', name: 'connection-model-choices', ariaLabel: '已拉取模型', hidden: true });
@@ -362,6 +365,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             apiKey.value = '';
             modelChoices.hidden = true;
             modelChoices.replaceChildren();
+            refreshKeyStatus();
         }
         function loadConnectionPreset(preset) {
             activeId = preset.id;
@@ -375,6 +379,13 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             timeoutMs.value = String(preset.timeoutMs);
             apiKey.value = '';
             modelChoices.hidden = true;
+            refreshKeyStatus();
+        }
+        function refreshKeyStatus() {
+            const presetId = activeId ?? draftId;
+            keyStatus.textContent = hasSessionKey(presetId)
+                ? '本次会话：此连接的 API Key 已解锁。'
+                : '本次会话：尚未解锁 API Key。填写后点击“保存连接预设”即可解锁。';
         }
         // A saved default is already safe browser-local configuration, so load
         // it into the editor on reopen. This avoids presenting a blank form as
@@ -382,6 +393,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         // intentionally empty and session-only.
         const initialPreset = snapshot.connectionPresets.find((preset) => preset.id === snapshot.defaults.connectionPresetId);
         if (initialPreset) loadConnectionPreset(initialPreset);
+        else refreshKeyStatus();
         listen(picker, picker, 'change', () => {
             const preset = snapshot.connectionPresets.find((item) => item.id === picker.value);
             if (preset) {
@@ -401,10 +413,27 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         }, signal, { secondary: true }));
         controls.appendChild(actionButton('保存连接预设', async () => {
             const candidate = formPreset();
-            updateSettings(() => {
+            try {
                 if (activeId) settingsStore.editConnectionPreset(candidate);
                 else settingsStore.addConnectionPreset(candidate);
-            }, '连接预设已保存；API Key 未写入本地。');
+            } catch (error) {
+                onFeedback(safeErrorMessage(error, '设置未保存；请检查必填字段与数值范围。'));
+                return;
+            }
+            if (String(apiKey.value ?? '').trim()) {
+                try {
+                    unlockSessionKey(candidate.id, apiKey.value);
+                    apiKey.value = '';
+                    refreshKeyStatus();
+                    onFeedback('连接预设已保存；API Key 已解锁本次会话，未写入本地。');
+                } catch (error) {
+                    onFeedback(safeErrorMessage(error, '连接预设已保存，但 API Key 未能解锁本次会话。'));
+                }
+            } else {
+                refreshKeyStatus();
+                onFeedback('连接预设已保存；未填写 API Key，当前会话尚未解锁。');
+            }
+            onRerender();
         }, signal));
         controls.appendChild(actionButton('删除当前连接预设', async () => {
             if (!activeId) {
@@ -423,6 +452,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                 if (!String(candidate.name ?? '').trim()) candidate.name = '未保存连接';
                 unlockSessionKey(candidate.id, apiKey.value);
                 apiKey.value = '';
+                refreshKeyStatus();
                 onFeedback('已解锁本次会话，正在从 /models 拉取模型列表…');
                 const models = await llmClient.fetchModels({ preset: candidate });
                 modelChoices.replaceChildren();
@@ -450,7 +480,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const section = element('section', { className: 'yl-settings-section yl-prompt-workbench' });
         append(section, [
             sectionHeading('⌘', '提示词预设条目树'),
-            element('p', { className: 'yl-phone-page-description', text: '预设作为根节点，插入位置作为分支，每个提示词条目作为叶节点。已预置推荐人物、私聊和角色创作的 SFW/NSFW 默认预设；点击叶节点即可编辑，保存后保留在当前浏览器。' }),
+            element('p', { className: 'yl-phone-page-description', text: '预设作为根节点，插入位置作为分支，每个提示词条目作为叶节点。已预置推荐、私聊、角色创作、灵魂匹配和语音匹配的 SFW/NSFW 默认预设；“是否为 NSFW”决定它只会出现在对应模式的绑定列表中。' }),
         ]);
         let activeId = null;
         let entries = [];
@@ -461,7 +491,10 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         ], '', '已保存提示词预设', 'prompt-preset-picker');
         section.appendChild(field('已保存提示词预设', picker));
         const name = element('input', { className: 'yl-settings-control', type: 'text', name: 'prompt-preset-name', placeholder: '例如：推荐刷新', maxLength: 80, ariaLabel: '提示词预设名称' });
-        section.appendChild(field('预设名称', name));
+        const isNsfw = element('input', { className: 'yl-settings-checkbox', type: 'checkbox', name: 'prompt-preset-nsfw', ariaLabel: '是否为 NSFW' });
+        const presetFields = element('div', { className: 'yl-settings-fields' });
+        append(presetFields, [field('预设名称', name), field('是否为 NSFW', switchShell(isNsfw))]);
+        section.appendChild(presetFields);
 
         const tree = element('div', { className: 'yl-prompt-tree', ariaLabel: '提示词条目树' });
         tree.setAttribute('role', 'tree');
@@ -595,7 +628,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             append(rootHeading, [
                 element('span', { className: 'yl-prompt-tree-root-icon', text: '⌘' }),
                 element('div', { className: 'yl-prompt-tree-root-copy', text: name.value.trim() || '未命名提示词预设' }),
-                element('span', { className: 'yl-prompt-tree-count', text: `${entries.length} 个条目 · ${entries.filter((entry) => entry.enabled).length} 个启用` }),
+                element('span', { className: 'yl-prompt-tree-count', text: `${isNsfw.checked ? 'NSFW' : 'SFW'} · ${entries.length} 个条目 · ${entries.filter((entry) => entry.enabled).length} 个启用` }),
             ]);
             rootNode.appendChild(rootHeading);
             const branches = element('div', { className: 'yl-prompt-tree-branches' });
@@ -608,6 +641,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             activeId = null;
             picker.value = '';
             name.value = '';
+            isNsfw.checked = false;
             entries = [];
             clearEntryDraft();
         }
@@ -615,10 +649,12 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             activeId = preset.id;
             picker.value = preset.id;
             name.value = preset.name;
+            isNsfw.checked = preset.contentMode === 'NSFW';
             entries = decodePromptEntries(preset);
             clearEntryDraft();
         }
         listen(name, name, 'input', renderTree, signal);
+        listen(isNsfw, isNsfw, 'change', renderTree, signal);
         listen(picker, picker, 'change', () => {
             const preset = snapshot.promptPresets.find((item) => item.id === picker.value);
             if (!preset) return;
@@ -685,7 +721,10 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             onFeedback('已新建空白提示词预设；先在编辑器中添加至少一个条目。');
         }, signal, { secondary: true }));
         controls.appendChild(actionButton('保存提示词预设', async () => updateSettings(() => {
-            const candidate = buildPromptPreset({ id: activeId ?? nextId('prompt'), name: name.value, entries });
+            const candidate = buildPromptPreset({
+                id: activeId ?? nextId('prompt'), name: name.value,
+                contentMode: isNsfw.checked ? 'NSFW' : 'SFW', entries,
+            });
             if (activeId) settingsStore.editPromptPreset(candidate);
             else settingsStore.addPromptPreset(candidate);
         }, '提示词预设及条目树已保存。'), signal));
@@ -873,36 +912,30 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             sectionHeading('⇄', `${CONTENT_MODE_LABELS[selectedContentMode]} 模式预设与功能绑定`),
             element('p', {
                 className: 'yl-phone-page-description',
-                text: '当前只编辑 ' + CONTENT_MODE_LABELS[selectedContentMode] + ' 模式的功能绑定。切换内容模式后会自动显示另一套绑定；连接与提示词可独立选择。未单独绑定的功能回退到默认预设。',
+                text: '当前只编辑 ' + CONTENT_MODE_LABELS[selectedContentMode] + ' 模式的功能绑定。切换内容模式后会自动显示另一套绑定；提示词选择器只显示标记为当前模式的预设，不会混入另一套。连接未单独绑定时仍可回退到默认连接。',
             }),
         ]);
         const connectionOptions = [
             { label: '不设置（无默认）', value: '' },
             ...snapshot.connectionPresets.map((preset) => ({ label: preset.name, value: preset.id })),
         ];
-        const promptOptions = [
-            { label: '不设置（无默认）', value: '' },
-            ...snapshot.promptPresets.map((preset) => ({ label: preset.name, value: preset.id })),
-        ];
+        const modePromptPresets = snapshot.promptPresets.filter((preset) => preset.contentMode === selectedContentMode);
+        const promptOptions = modePromptPresets.map((preset) => ({ label: preset.name, value: preset.id }));
         const defaultConnection = selectWithOptions(
             connectionOptions,
             snapshot.defaults.connectionPresetId ?? '',
             '默认连接预设',
             'default-connection-preset',
         );
-        const defaultPrompt = selectWithOptions(
-            promptOptions,
-            snapshot.defaults.promptPresetId ?? '',
-            '默认提示词预设',
-            'default-prompt-preset',
-        );
         const defaultsFields = element('div', { className: 'yl-settings-fields' });
-        append(defaultsFields, [field('默认连接', defaultConnection), field('默认提示词', defaultPrompt)]);
+        append(defaultsFields, [field('默认连接（所有模式）', defaultConnection)]);
         section.appendChild(defaultsFields);
-        section.appendChild(actionButton('保存默认预设', async () => updateSettings(() => settingsStore.setDefaults({
+        section.appendChild(actionButton('保存默认连接', async () => updateSettings(() => settingsStore.setDefaults({
             connectionPresetId: defaultConnection.value || null,
-            promptPresetId: defaultPrompt.value || null,
-        }), '默认预设已保存。'), signal));
+            // 当前所有 AI 调用都带有 SFW/NSFW 模式，提示词只由下面的
+            // 模式绑定选择。保留旧通用值，避免破坏导入的历史设置。
+            promptPresetId: snapshot.defaults.promptPresetId ?? null,
+        }), '默认连接预设已保存。'), signal));
 
         for (const functionKey of FUNCTION_KEYS.filter((key) => !LEGACY_FUNCTION_KEYS.has(key))) {
             const binding = snapshot.functionModeBindings?.[functionKey]?.[selectedContentMode]
@@ -916,7 +949,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                 `${functionKey}-connection-preset`,
             );
             const prompt = selectWithOptions(
-                [{ label: '使用默认提示词', value: '' }, ...snapshot.promptPresets.map((preset) => ({ label: preset.name, value: preset.id }))],
+                [{ label: '不附加提示词预设', value: '' }, ...promptOptions],
                 binding.promptPresetId ?? '',
                 `${FUNCTION_LABELS[functionKey]}提示词预设`,
                 `${functionKey}-prompt-preset`,

@@ -5,7 +5,7 @@ import { buildSettingsPanel } from './settings-panel.js';
 import { buildCharacterCreatorPanel } from './characters/character-creator-panel.js';
 import { createLauncherDragController } from './launcher-drag.js';
 
-const UI_VERSION = '0.1.8';
+const UI_VERSION = '0.1.9';
 const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', dislike: '✕' });
@@ -405,11 +405,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         let snapshot;
         try { snapshot = settingsStore.snapshot(); } catch { setFeedback('无法读取已保存的预设。'); return; }
         const contentMode = currentView.mode === 'NSFW' ? 'NSFW' : 'SFW';
+        const modePromptPresets = snapshot.promptPresets.filter((preset) => preset.contentMode === contentMode);
         featureBindingDialogState = { features, dialogTitle };
         bindingDialogTitle.textContent = `${dialogTitle} · ${contentMode}`;
         bindingDialogContent.replaceChildren();
-        if (!snapshot.connectionPresets.length && !snapshot.promptPresets.length) {
-            bindingDialogContent.appendChild(element('p', { className: 'yl-phone-page-description', text: '还没有保存连接或提示词预设。请先在“我的 → 设置 → 连接设置 / 提示词预设”中创建。' }));
+        if (!snapshot.connectionPresets.length && !modePromptPresets.length) {
+            bindingDialogContent.appendChild(element('p', { className: 'yl-phone-page-description', text: '当前模式还没有可绑定的连接或提示词预设。请先在“我的 → 设置 → 连接设置 / 提示词预设”中创建，并为提示词标记对应模式。' }));
         }
         for (const feature of features) {
             const binding = snapshot.functionModeBindings?.[feature.key]?.[contentMode]
@@ -417,13 +418,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 ?? { connectionPresetId: null, promptPresetId: null };
             const row = element('section', { className: 'yl-settings-binding yl-feature-binding-row' });
             row.appendChild(element('strong', { text: feature.title + ' · ' + contentMode }));
-            row.appendChild(element('p', { className: 'yl-settings-summary', text: '单独保存后只影响当前 ' + contentMode + ' 模式；留空时回退到默认预设。' }));
+            row.appendChild(element('p', { className: 'yl-settings-summary', text: '单独保存后只影响当前 ' + contentMode + ' 模式；提示词列表只显示该模式的预设。' }));
             const connection = element('select', { className: 'yl-settings-control', name: feature.key + '-quick-connection', ariaLabel: feature.title + '连接预设' });
             const prompt = element('select', { className: 'yl-settings-control', name: feature.key + '-quick-prompt', ariaLabel: feature.title + '提示词预设' });
             for (const [value, label] of [['', '使用默认连接'], ...snapshot.connectionPresets.map((preset) => [preset.id, preset.name])]) {
                 const option = element('option', { value, text: label }); option.selected = value === (binding.connectionPresetId ?? ''); connection.appendChild(option);
             }
-            for (const [value, label] of [['', '使用默认提示词'], ...snapshot.promptPresets.map((preset) => [preset.id, preset.name])]) {
+            for (const [value, label] of [['', '不附加提示词预设'], ...modePromptPresets.map((preset) => [preset.id, preset.name])]) {
                 const option = element('option', { value, text: label }); option.selected = value === (binding.promptPresetId ?? ''); prompt.appendChild(option);
             }
             const fields = element('div', { className: 'yl-settings-fields' });

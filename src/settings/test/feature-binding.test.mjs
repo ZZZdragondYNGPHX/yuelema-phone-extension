@@ -24,7 +24,7 @@ function connection(id, name = id) {
     };
 }
 
-function prompt(id, name = id) {
+function prompt(id, name = id, contentMode = 'SFW') {
     return {
         id,
         name,
@@ -32,6 +32,7 @@ function prompt(id, name = id) {
         order: 100,
         position: 'after_character_definition',
         enabled: true,
+        contentMode,
         content: '只返回安全的中文草稿。',
     };
 }
@@ -40,8 +41,8 @@ function makeStore() {
     const store = createSettingsStore({ storage: createMemoryStorage() });
     store.addConnectionPreset(connection('fast', '快速连接'));
     store.addConnectionPreset(connection('smart', '精细连接'));
-    store.addPromptPreset(prompt('base', '默认提示词'));
-    store.addPromptPreset(prompt('creative', '创作提示词'));
+    store.addPromptPreset(prompt('base', '默认提示词', 'SFW'));
+    store.addPromptPreset(prompt('creative', '创作提示词', 'NSFW'));
     return store;
 }
 
@@ -105,7 +106,7 @@ test('selector view model projects only saved preset IDs and names, never connec
         { id: 'fast', name: '快速连接' },
         { id: 'smart', name: '精细连接' },
     ]);
-    assert.equal(model.promptOptions.length, 10);
+    assert.equal(model.promptOptions.length, 14);
     assert.deepEqual(model.promptOptions.slice(-2), [
         { id: 'base', name: '默认提示词' },
         { id: 'creative', name: '创作提示词' },
@@ -130,6 +131,23 @@ test('模式化辅助绑定只写入指定模式，不覆盖另一套选择', ()
     });
     assert.equal(sfw.selected.promptPresetId, 'builtin_private_chat_sfw');
     assert.throws(() => helper.getViewModel('messages_chat', { contentMode: 'other' }), errorCode('INVALID_CONTENT_MODE'));
+});
+
+test('模式化视图只投影对应提示词，并拒绝跨模式保存', () => {
+    const store = makeStore();
+    const helper = createFeatureBindingHelper({ settingsStore: store });
+    const sfw = helper.getViewModel('messages_chat', { contentMode: 'SFW' });
+    const nsfw = helper.getViewModel('messages_chat', { contentMode: 'NSFW' });
+
+    assert.equal(sfw.promptOptions.some((preset) => preset.id === 'creative'), false);
+    assert.equal(sfw.promptOptions.some((preset) => preset.id === 'builtin_private_chat_sfw'), true);
+    assert.equal(sfw.promptOptions.some((preset) => preset.id === 'builtin_private_chat_nsfw'), false);
+    assert.equal(nsfw.promptOptions.some((preset) => preset.id === 'creative'), true);
+    assert.equal(nsfw.promptOptions.some((preset) => preset.id === 'builtin_private_chat_nsfw'), true);
+    assert.equal(nsfw.promptOptions.some((preset) => preset.id === 'builtin_private_chat_sfw'), false);
+    assert.throws(() => helper.save('messages_chat', {
+        connectionPresetId: 'fast', promptPresetId: 'base',
+    }, { contentMode: 'NSFW' }), errorCode('PROMPT_MODE_MISMATCH'));
 });
 
 test('选择严格校验已保存 ID、字段和数据结构，不允许未知或未注册入口', () => {
