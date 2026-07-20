@@ -19,7 +19,7 @@ const requiredFiles = [
     'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs',
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
-    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-ux.test.mjs',
+    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs',
 ];
 
 function fail(message) {
@@ -40,7 +40,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '0.1.5') fail('manifest.version 必须与扩展版本 0.1.5 统一');
+if (manifest.version !== '0.1.6') fail('manifest.version 必须与扩展版本 0.1.6 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
 if (manifest?.hooks?.activate !== 'onActivate') fail('manifest.hooks.activate 必须指向 onActivate');
 if (manifest?.hooks?.disable !== 'onDisable') fail('manifest.hooks.disable 必须指向 onDisable，确保禁用即清理会话密钥');
@@ -62,7 +62,7 @@ const sourceFiles = [
     'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs',
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
-    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-ux.test.mjs',
+    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs',
 ].map(relativePath => resolve(root, relativePath));
 const sourceText = await Promise.all(sourceFiles.map(path => readFile(path, 'utf8')));
 const allSource = sourceText.join('\n');
@@ -195,12 +195,13 @@ const matchScoring = await readFile(resolve(root, 'src/recommendation/match-scor
 if (!privateChatResponse.includes('normalizePrivateChatResponse') || !privateChatResponse.includes('projectPrivateChatResponseError')) fail('缺少私聊模型回复的严格校验与安全错误投影');
 if (!privateChatService.includes('validatePrivateChatRequest') || !privateChatService.includes('buildPrivateChatContext') || !privateChatService.includes('generatePrivateChatReply')) fail('缺少私聊上下文隐私投影、请求校验或模型调用接线');
 if (!controlledPatch.includes('buildPrivateChatPatch') || !actionBridge.includes('runPrivateChat')) fail('缺少私聊受控 Patch 或唯一 MVU 写入桥接');
+if (!appShell.includes('buildMessagesPage') || !appShell.includes('buildPrivateChatPage') || !appShell.includes('openPrivateChat') || !uiModel.includes('private_chat:')) fail('缺少私聊列表、会话子页或消息路由接线');
 if (!matchScoring.includes('scorePublicCompatibility') || !matchScoring.includes('scoreTwoLayerMatch') || !controlledPatch.includes('buildLikeMatchPatch')) fail('缺少公开资料双层评分或喜欢后的受控匹配会话创建');
 if (!controlledPatch.includes('appendPreferenceWeightOperations') || !controlledPatch.includes('标签权重')) fail('缺少喜欢、收藏、不喜欢的公开标签权重受控更新');
 if (!controlledPatch.includes('buildSoulMatchPreferencePatch') || !actionBridge.includes('generateMatchDraft') || !actionBridge.includes('applySoulMatchPreferenceDraft')) fail('缺少灵魂匹配草稿的确认式受控写入链');
 const soulTextMatchService = await readFile(resolve(root, 'src/recommendation/soul-text-match-service.js'), 'utf8');
 if (!soulTextMatchService.includes('generateSoulMatchDraft') || !soulTextMatchService.includes('generateTextMatchDraft') || !soulTextMatchService.includes('buildSoulTextMatchContext')) fail('缺少灵魂/文字匹配服务或隐私上下文投影');
-console.log('✓ 私聊模型回复、隐私上下文、双层评分、标签偏好、灵魂/文字匹配与匹配会话已纳入静态检查');
+console.log('✓ 私聊模型回复、隐私上下文、列表/会话 UI、双层评分、标签偏好、灵魂/文字匹配与匹配会话已纳入静态检查');
 
 if (process.exitCode) process.exit(process.exitCode);
 console.log('静态检查通过。');

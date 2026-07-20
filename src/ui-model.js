@@ -11,7 +11,8 @@ export const NAV_ITEMS = Object.freeze([
 export const PAGE_COPY = Object.freeze({
     home: { title: '发现', description: '浏览公开资料。', help: '头像可打开对方的公开资料；线上互动仅保存受控 MVU 状态。' },
     matches: { title: '匹配', description: '互相喜欢的对象会出现在这里。', help: '本页只展示已建立的匹配关系与公开资料。' },
-    messages: { title: '消息', description: '线上短文本私聊。', help: '关键线下事件仍交给酒馆正文；面基草稿不会自动发送。' },
+    messages: { title: '消息', description: '在已建立的会话中继续文字聊天。', help: '这里只展示会话可见的短消息；关键线下事件仍交给酒馆正文。' },
+    private_chat: { title: '私聊', description: '', help: '消息会经已绑定的私聊功能处理；面基草稿不会自动发送。' },
     groups: { title: '小程序', description: '选择一个小程序。', help: '聊天群和论坛各自进入独立界面。' },
     group_chat: { title: '聊天群', description: '', help: '只显示明确成年角色的公开资料。' },
     group_forum: { title: '论坛', description: '', help: '论坛页只展示公开主题与公开讨论入口。' },
@@ -221,16 +222,28 @@ export function describeActionFailure(result) {
         npc_adult_verification_failed: '该资料未通过成年人校验，已拒绝操作。',
         content_mode_gate_state_invalid: '内容模式状态异常，未执行切换。',
         mvu_parse_returned_no_data: '本次没有可提交的变量变化。',
+        mvu_parse_returned_no_stat_data: 'MVU 未返回可保存的软件状态，本次未写入。',
         mvu_parse_made_no_change: 'MVU 未接受本次修改（状态未发生变化），未写入任何数据。',
         mvu_parse_failed: 'MVU 解析本次修改时出错，未写入任何数据。',
         mvu_replace_failed: 'MVU 保存本次修改时出错。',
         mvu_read_failed: '读取当前状态失败，未写入任何数据。',
+        private_chat_invalid_target: '当前私聊会话已变化，请返回消息列表后重试。',
+        private_chat_session_not_found: '当前私聊会话已不可用，请返回消息列表后重试。',
+        private_chat_not_matched: '当前对象尚未建立可发送的私聊。',
+        private_chat_adult_verification_failed: '该资料未通过成年人校验，无法发送私聊。',
+        private_chat_message_invalid: '消息不能为空或格式不正确。',
+        private_chat_settings_unavailable: '私聊设置暂不可用。',
+        private_chat_settings_invalid: '私聊预设无效，请检查设置。',
+        private_chat_connection_missing: '请先为“私聊”绑定连接预设或设置默认连接。',
+        private_chat_llm_unavailable: '当前浏览器未提供私聊模型连接。',
+        private_chat_invalid_json: '快速模型没有返回可用的私聊回复，本条消息未写入。',
+        private_chat_response_invalid: '私聊回复未通过校验，本条消息未写入。',
+        private_chat_relationship_state_invalid: '当前关系状态异常，本条消息未写入。',
+        private_chat_session_messages_invalid: '当前会话记录异常，本条消息未写入。',
     };
     if (messages[code]) return messages[code];
     return code ? `操作未完成，未写入任何未校验的数据。（${code}）` : '操作未完成，未写入任何未校验的数据。';
 }
-
-
 
 
 

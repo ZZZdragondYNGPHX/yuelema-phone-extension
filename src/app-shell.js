@@ -5,16 +5,16 @@ import { buildSettingsPanel } from './settings-panel.js';
 import { buildCharacterCreatorPanel } from './characters/character-creator-panel.js';
 import { createLauncherDragController } from './launcher-drag.js';
 
-const UI_VERSION = '0.1.5';
+const UI_VERSION = '0.1.6';
 const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', dislike: '✕' });
 const PRIMARY_PAGE_FOR = Object.freeze({
-    group_chat: 'groups', group_forum: 'groups', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
+    group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
     settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
 });
 const PAGE_PARENT_FOR = Object.freeze({
-    group_chat: 'groups', group_forum: 'groups', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
+    group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
     settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', candidate_detail: 'home', match_profile: 'matches',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
@@ -55,6 +55,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let operationGeneration = 0;
     let activeOperation = null;
     let operationAutoCloseTimer = null;
+    let privateChatRequestGeneration = 0;
 
     const launcher = element('button', { className: 'yl-phone-launcher', type: 'button', ariaLabel: '打开约了吗小手机', pressed: false, text: '约' });
     launcher.appendChild(element('span', { className: 'yl-phone-launcher-label', text: '约了吗' }));
@@ -213,11 +214,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         launcher.setAttribute('aria-pressed', String(open));
         launcher.setAttribute('aria-label', open ? '关闭约了吗小手机' : '打开约了吗小手机');
         if (open) refreshState();
-        else hideOperationDialog();
+        else {
+            privateChatRequestGeneration += 1;
+            hideOperationDialog();
+        }
     }
     function setActivePage(pageId) {
         if (pageId === 'about') { showAboutSoftware(); return; }
         if (!PAGE_COPY[pageId]) return;
+        if (activePage === 'private_chat' && pageId !== 'private_chat') privateChatRequestGeneration += 1;
         hideOperationDialog();
         activePage = pageId;
         actionBridge.emit('navigate', { page: pageId });
@@ -461,6 +466,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'matches') page.appendChild(buildMatchesPage());
         else if (activePage === 'match_profile') page.appendChild(buildMatchProfilePage());
         else if (activePage === 'messages') page.appendChild(buildMessagesPage());
+        else if (activePage === 'private_chat') page.appendChild(buildPrivateChatPage());
         else if (activePage === 'groups') page.appendChild(buildGroupsPage());
         else if (activePage === 'group_chat') page.appendChild(buildGroupChatPage());
         else if (activePage === 'group_forum') page.appendChild(buildForumPage());
@@ -634,7 +640,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const ring = element('span', { className: 'yl-match-avatar-ring' }); ring.appendChild(candidateAvatar(match.profile)); card.appendChild(ring);
             const info = element('div', { className: 'yl-candidate-copy' }); info.appendChild(element('strong', { text: match.profile.昵称 || '未命名对象' }));
             const detail = [match.profile.年龄段, match.profile.城市, match.profile.寻找意图].filter(Boolean).join(' · '); if (detail) info.appendChild(element('span', { text: detail })); card.appendChild(info);
-            const openMessages = element('button', { className: 'yl-settings-button', type: 'button', text: '聊天' }); listen(openMessages, openMessages, 'click', () => setActivePage('messages'), abortController.signal); card.appendChild(openMessages); section.appendChild(card);
+            const session = (currentView.messageSessions ?? []).find((item) => item.npcUid === match.uid);
+            const openMessages = element('button', { className: 'yl-settings-button', type: 'button', text: '聊天' });
+            listen(openMessages, openMessages, 'click', () => {
+                if (session) openPrivateChat(session.sessionUid);
+                else setActivePage('messages');
+            }, abortController.signal);
+            card.appendChild(openMessages); section.appendChild(card);
         }
         return section;
     }
@@ -791,7 +803,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                     const session = (currentView.messageSessions ?? []).find((item) => item.npcUid === person.UID);
                     if (session) {
                         const openChat = element('button', { className: 'yl-settings-button', type: 'button', text: '进入已有私聊' });
-                        listen(openChat, openChat, 'click', () => { activeMessageSessionUid = session.sessionUid; setActivePage('messages'); }, abortController.signal);
+                        listen(openChat, openChat, 'click', () => openPrivateChat(session.sessionUid), abortController.signal);
                         row.appendChild(openChat);
                     } else row.appendChild(element('span', { text: '尚无私聊' }));
                     card.appendChild(row);
@@ -804,78 +816,195 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function buildGroupChatPage() { return groupCards(); }
     function buildForumPage() { return groupCards({ forum: true }); }
+    function messageSessions() {
+        return Array.isArray(currentView.messageSessions) ? currentView.messageSessions : [];
+    }
+    function messageSessionByUid(sessionUid) {
+        return messageSessions().find((session) => session.sessionUid === sessionUid) ?? null;
+    }
+    function chatNickname(session) {
+        return session?.profile?.昵称 || '未命名对象';
+    }
+    function chatAvatar(session, className = 'yl-session-avatar') {
+        const nickname = chatNickname(session);
+        const avatar = element('span', { className, text: nickname.slice(0, 1) || '人' });
+        avatar.setAttribute('aria-hidden', 'true');
+        return avatar;
+    }
+    function openPrivateChat(sessionUid) {
+        const session = messageSessionByUid(sessionUid);
+        if (!session) {
+            activeMessageSessionUid = '';
+            setActivePage('messages');
+            return;
+        }
+        if (activePage === 'private_chat' && activeMessageSessionUid !== session.sessionUid) privateChatRequestGeneration += 1;
+        activeMessageSessionUid = session.sessionUid;
+        setActivePage('private_chat');
+    }
     function buildMessagesPage() {
-        const sessions = Array.isArray(currentView.messageSessions) ? currentView.messageSessions : [];
-        if (!sessions.length) return buildEmptyPlaceholder('暂无已建立的私聊会话。', { icon: '✉' });
-        if (!sessions.some((session) => session.sessionUid === activeMessageSessionUid)) activeMessageSessionUid = sessions[0].sessionUid;
-        const section = element('section', { className: 'yl-chat-page' });
+        const sessions = messageSessions();
+        if (!sessions.length) return buildEmptyPlaceholder('暂无已建立的私聊会话。去匹配页遇见一位公开可见的成年人吧。', { icon: '✉' });
+        const section = element('section', { className: 'yl-chat-page yl-message-list-page' });
+        const intro = element('section', { className: 'yl-message-list-intro' });
+        const introCopy = element('div', { className: 'yl-message-list-copy' });
+        append(introCopy, [
+            element('span', { className: 'yl-message-list-eyebrow', text: '心动消息' }),
+            element('h2', { text: '和已匹配的人继续聊聊' }),
+            element('p', { text: '每个会话只显示已保存的短消息。' }),
+        ]);
+        intro.appendChild(introCopy);
+        intro.appendChild(element('span', { className: 'yl-message-list-count', text: String(sessions.length) }));
+        section.appendChild(intro);
+
         const sessionList = element('div', { className: 'yl-chat-session-list' });
         for (const session of sessions) {
-            const selected = session.sessionUid === activeMessageSessionUid;
-            const nickname = session.profile.昵称 || '未命名对象';
-            const button = element('button', { className: selected ? 'yl-chat-session is-selected' : 'yl-chat-session', type: 'button', ariaLabel: `打开与${session.profile.昵称 || '该对象'}的会话` });
-            const avatar = element('span', { className: 'yl-session-avatar', text: nickname.slice(0, 1) || '人' });
-            avatar.setAttribute('aria-hidden', 'true');
-            const copy = element('span', { className: 'yl-session-copy' });
+            const nickname = chatNickname(session);
             const lastMessage = session.messages.at(-1);
+            const button = element('button', { className: 'yl-chat-session yl-message-session', type: 'button', ariaLabel: `打开与${nickname}的私聊` });
+            const avatarWrap = element('span', { className: 'yl-session-avatar-wrap' });
+            avatarWrap.appendChild(chatAvatar(session));
+            const presence = element('span', { className: 'yl-session-presence' });
+            presence.dataset.status = session.status;
+            presence.setAttribute('aria-hidden', 'true');
+            avatarWrap.appendChild(presence);
+            const copy = element('span', { className: 'yl-session-copy' });
+            const titleLine = element('span', { className: 'yl-session-title-line' });
+            titleLine.appendChild(element('span', { className: 'yl-session-name', text: nickname }));
+            titleLine.appendChild(element('span', { className: 'yl-session-status', text: session.status }));
             append(copy, [
-                element('span', { className: 'yl-session-name', text: nickname }),
-                element('span', { className: 'yl-session-preview', text: lastMessage ? lastMessage.content : '还没有消息。' }),
+                titleLine,
+                element('span', { className: 'yl-session-preview', text: lastMessage ? lastMessage.content : '还没有消息，打个招呼吧。' }),
             ]);
-            const status = element('span', { className: 'yl-session-status', text: session.status });
-            status.dataset.status = session.status;
-            append(button, [avatar, copy, status]);
-            listen(button, button, 'click', () => { activeMessageSessionUid = session.sessionUid; renderPage(); }, abortController.signal);
+            const meta = element('span', { className: 'yl-session-meta' });
+            if (lastMessage?.time) meta.appendChild(element('span', { className: 'yl-session-time', text: lastMessage.time }));
+            meta.appendChild(element('span', { className: 'yl-session-open-mark', text: '›' }));
+            append(button, [avatarWrap, copy, meta]);
+            listen(button, button, 'click', () => openPrivateChat(session.sessionUid), abortController.signal);
             sessionList.appendChild(button);
         }
         section.appendChild(sessionList);
-        const selected = sessions.find((session) => session.sessionUid === activeMessageSessionUid);
-        if (selected) section.appendChild(buildConversationPanel(selected));
         return section;
     }
+    function buildPrivateChatPage() {
+        const session = messageSessionByUid(activeMessageSessionUid);
+        if (!session) return buildEmptyPlaceholder('这个私聊会话暂时不可见。请返回消息列表后重试。', { icon: '✉' });
+        return buildConversationPanel(session);
+    }
+    function buildConversationHeader(session) {
+        const header = element('section', { className: 'yl-private-chat-contact' });
+        header.appendChild(chatAvatar(session, 'yl-chat-contact-avatar'));
+        const copy = element('div', { className: 'yl-private-chat-contact-copy' });
+        copy.appendChild(element('h2', { text: chatNickname(session) }));
+        const subline = element('span', { className: 'yl-private-chat-subline' });
+        const dot = element('span', { className: 'yl-private-chat-status-dot' });
+        dot.dataset.status = session.status;
+        dot.setAttribute('aria-hidden', 'true');
+        append(subline, [dot, element('span', { text: session.status === '已匹配' ? '已匹配 · 文字私聊' : session.status })]);
+        copy.appendChild(subline);
+        header.appendChild(copy);
+        header.appendChild(element('span', { className: 'yl-private-chat-spark', text: '♥' }));
+        return header;
+    }
+    function buildMessageBubble(session, message) {
+        if (message.sender === '系统') {
+            const note = element('p', { className: 'yl-chat-system-note', text: message.content });
+            if (message.time) note.appendChild(element('span', { text: message.time }));
+            return note;
+        }
+        const isPlayer = message.sender === '玩家';
+        const row = element('article', { className: isPlayer ? 'yl-chat-bubble is-player' : 'yl-chat-bubble is-contact' });
+        if (!isPlayer) row.appendChild(chatAvatar(session, 'yl-chat-message-avatar'));
+        const bubbleContent = element('div', { className: 'yl-bubble-content' });
+        const label = isPlayer ? '我' : chatNickname(session);
+        bubbleContent.appendChild(element('strong', { text: label }));
+        bubbleContent.appendChild(element('p', { text: message.content }));
+        if (message.time) bubbleContent.appendChild(element('span', { className: 'yl-bubble-time', text: message.time }));
+        row.appendChild(bubbleContent);
+        if (isPlayer) {
+            const selfAvatar = element('span', { className: 'yl-chat-message-avatar yl-chat-self-avatar', text: '我' });
+            selfAvatar.setAttribute('aria-hidden', 'true');
+            row.appendChild(selfAvatar);
+        }
+        return row;
+    }
     function buildConversationPanel(session) {
-        const panel = element('section', { className: 'yl-chat-conversation' });
-        panel.appendChild(element('h2', { text: session.profile.昵称 || '未命名对象' }));
-        const transcript = element('div', { className: 'yl-chat-transcript' });
-        if (!session.messages.length) transcript.appendChild(element('p', { className: 'yl-phone-page-description', text: '还没有消息。' }));
-        for (const message of session.messages) {
-            const row = element('article', { className: message.sender === '玩家' ? 'yl-chat-bubble is-player' : 'yl-chat-bubble' });
-            const bubbleContent = element('div', { className: 'yl-bubble-content' });
-            bubbleContent.appendChild(element('strong', { text: message.sender }));
-            bubbleContent.appendChild(element('p', { text: message.content }));
-            if (message.time) bubbleContent.appendChild(element('span', { className: 'yl-bubble-time', text: message.time }));
-            row.appendChild(bubbleContent); transcript.appendChild(row);
+        const panel = element('section', { className: 'yl-private-chat-screen' });
+        panel.appendChild(buildConversationHeader(session));
+        const privacyNote = element('p', { className: 'yl-chat-privacy-note', text: '线上短消息会通过当前“私聊”功能绑定处理；重要面基安排请单独确认。' });
+        panel.appendChild(privacyNote);
+        const transcript = element('div', { className: 'yl-chat-transcript', ariaLabel: `${chatNickname(session)}的私聊记录` });
+        transcript.setAttribute('aria-live', 'polite');
+        if (!session.messages.length) transcript.appendChild(buildEmptyPlaceholder('还没有消息。用一句简单的问候开始吧。', { tag: 'p', icon: '✦' }));
+        else {
+            transcript.appendChild(element('p', { className: 'yl-chat-transcript-label', text: '最近消息' }));
+            for (const message of session.messages) transcript.appendChild(buildMessageBubble(session, message));
+        }
+        const pending = Boolean(actionBridge.isPending?.('private_chat', session.sessionUid));
+        if (pending) {
+            const replying = element('div', { className: 'yl-chat-replying', text: `${chatNickname(session)}正在生成回复` });
+            replying.setAttribute('role', 'status');
+            const dots = element('span', { className: 'yl-chat-replying-dots', text: '···' });
+            dots.setAttribute('aria-hidden', 'true');
+            replying.appendChild(dots);
+            transcript.appendChild(replying);
         }
         panel.appendChild(transcript);
         if (!session.canSend || typeof actionBridge.runPrivateChat !== 'function') {
             panel.appendChild(element('div', { className: 'yl-phone-placeholder', text: session.canSend ? '私聊发送尚未就绪。' : '该会话当前为只读状态。' }));
             return panel;
         }
-        const pending = actionBridge.isPending('private_chat', session.sessionUid);
-        const composer = element('div', { className: 'yl-chat-composer' });
-        const input = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, maxLength: 600, placeholder: '发送一条消息…', value: chatDrafts.get(session.sessionUid) ?? '', disabled: pending });
-        listen(input, input, 'input', () => { chatDrafts.set(session.sessionUid, input.value); }, abortController.signal);
-        const send = element('button', { className: 'yl-settings-button', type: 'button', text: pending ? '处理中…' : '发送', disabled: pending });
+        const composer = element('div', { className: pending ? 'yl-chat-composer is-pending' : 'yl-chat-composer' });
+        const input = element('textarea', {
+            className: 'yl-settings-control yl-settings-textarea', rows: 2, maxLength: 600,
+            placeholder: '输入消息…', value: chatDrafts.get(session.sessionUid) ?? '', disabled: pending,
+            ariaLabel: '输入私聊消息',
+        });
+        const send = element('button', {
+            className: 'yl-chat-send-button', type: 'button', text: pending ? '···' : '↑', disabled: pending,
+            ariaLabel: pending ? '正在生成私聊回复' : '发送消息',
+        });
+        const updateSendState = () => { send.disabled = pending || !String(input.value ?? '').trim(); };
+        updateSendState();
+        listen(input, input, 'input', () => { chatDrafts.set(session.sessionUid, input.value); updateSendState(); }, abortController.signal);
+        listen(input, input, 'keydown', (event) => {
+            if (event.key !== 'Enter' || event.shiftKey || event.isComposing || pending) return;
+            event.preventDefault?.();
+            void runPrivateChat(session);
+        }, abortController.signal);
         listen(send, send, 'click', () => { void runPrivateChat(session); }, abortController.signal);
-        append(composer, [input, send]); panel.appendChild(composer);
+        const controls = element('div', { className: 'yl-chat-composer-controls' });
+        controls.appendChild(send);
+        append(composer, [input, controls, element('span', { className: 'yl-chat-composer-hint', text: 'Enter 发送 · Shift+Enter 换行' })]);
+        panel.appendChild(composer);
         if (typeof actionBridge.runMeetupHandoff === 'function') panel.appendChild(buildMeetupHandoffPanel(session));
         return panel;
     }
     async function runPrivateChat(session) {
-        const playerMessage = chatDrafts.get(session.sessionUid) ?? '';
-        const operationToken = showAiLoading('正在请求私聊回复，请稍候…');
-        setFeedback('正在请求私聊回复…', operationToken); renderPage();
+        const playerMessage = String(chatDrafts.get(session.sessionUid) ?? '');
+        if (!playerMessage.trim()) {
+            setFeedback('请先输入想说的话。');
+            return;
+        }
+        if (typeof actionBridge.runPrivateChat !== 'function' || actionBridge.isPending?.('private_chat', session.sessionUid)) return;
+        const requestGeneration = ++privateChatRequestGeneration;
+        const isStillVisible = () => open
+            && activePage === 'private_chat'
+            && activeMessageSessionUid === session.sessionUid
+            && privateChatRequestGeneration === requestGeneration;
+        let request;
+        try { request = actionBridge.runPrivateChat({ sessionUid: session.sessionUid, npcUid: session.npcUid, playerMessage }); }
+        catch { request = Promise.resolve({ ok: false }); }
+        // The bridge marks the exact session pending synchronously before its first await.
+        // Re-rendering now gives the composer an inline, non-blocking reply state.
+        renderPage();
         let result;
-        try { result = await actionBridge.runPrivateChat({ sessionUid: session.sessionUid, npcUid: session.npcUid, playerMessage }); }
+        try { result = await request; }
         catch { result = { ok: false }; }
-        if (result?.ok) {
-            chatDrafts.delete(session.sessionUid);
-            setFeedback('私聊已保存。', operationToken);
-            showAiResult(true, '私聊回复已生成并保存。', operationToken);
-        } else {
+        if (result?.ok) chatDrafts.delete(session.sessionUid);
+        else if (isStillVisible()) {
             const message = result?.message || describeActionFailure(result);
-            setFeedback(message, operationToken);
-            showAiResult(false, message || '私聊回复未生成，请稍后重试。', operationToken);
+            setFeedback(message || '私聊回复未生成，请稍后重试。');
         }
         refreshState();
     }

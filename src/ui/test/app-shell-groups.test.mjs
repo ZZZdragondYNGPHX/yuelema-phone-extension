@@ -100,7 +100,7 @@ test('groups page renders public projections only and existing-chat entry only n
     click(existingChat);
 
     assert.deepEqual(events.map((entry) => entry.kind), ['navigate', 'navigate', 'navigate']);
-    assert.deepEqual(events.map((entry) => entry.payload.page), ['groups', 'group_chat', 'messages']);
+    assert.deepEqual(events.map((entry) => entry.payload.page), ['groups', 'group_chat', 'private_chat']);
     assert.deepEqual(writes, { parse: 0, replace: 0, event: 0 });
     mounted.destroy();
 });
@@ -179,7 +179,7 @@ test('about entry shows a version dialog and reveals the SFW/NSFW slider after f
             click(about());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /约了吗 0\.1\.5/u);
+            assert.match(dialog.textContent, /约了吗 0\.1\.6/u);
         }
         await flushUi();
 
