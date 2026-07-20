@@ -37,15 +37,42 @@ test('recommendation context exposes only public player fields and bounded tag w
 });
 
 test('fast recommender validates one model candidate before any MVU write boundary', async () => {
+    let requestInput;
     let messages;
     const result = await generateRecommendationCandidate({
         state: state(), settingsStore,
-        llmClient: { async chat(request) { messages = request.messages; return { text: JSON.stringify(adultCandidate()) }; } },
+        llmClient: { async chat(request) { requestInput = request; messages = request.messages; return { text: JSON.stringify(adultCandidate()) }; } },
     });
     assert.equal(result.ok, true);
     assert.equal(result.candidate.成人验证, true);
+    assert.equal(requestInput.maxTokens, 2048);
     assert.equal(JSON.stringify(messages).includes('绝不能发送给模型'), false);
     assert.equal(JSON.stringify(messages).includes('同样不能发送'), false);
+});
+
+test('fast recommender accepts one fenced JSON object from an otherwise compatible provider', async () => {
+    const result = await generateRecommendationCandidate({
+        state: state(), settingsStore,
+        llmClient: { async chat() { return { text: `\`\`\`json\n${JSON.stringify(adultCandidate())}\n\`\`\`` }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.candidate.公开资料.昵称, '林澈');
+});
+
+test('fast recommender never lowers a larger saved output budget', async () => {
+    let requestInput;
+    const highBudgetSettings = {
+        resolveFunction: () => ({
+            connectionPreset: { ...connectionPreset, maxTokens: 4096 },
+            promptPreset: { enabled: true, content: '保持轻快、真实的都市语气。' },
+        }),
+    };
+    const result = await generateRecommendationCandidate({
+        state: state(), settingsStore: highBudgetSettings,
+        llmClient: { async chat(request) { requestInput = request; return { text: JSON.stringify(adultCandidate()) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(requestInput.maxTokens, 4096);
 });
 
 test('invalid model JSON leaves recommendation generation in a safe no-result state', async () => {

@@ -21,6 +21,7 @@ const PROMPT_ENTRY_ENVELOPE_VERSION = 1;
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
 const MAX_PROMPT_ENTRIES_PER_PRESET = 48;
 const MAX_PROMPT_BUNDLE_BYTES = 512 * 1024;
+const DEFAULT_CONNECTION_MAX_TOKENS = 2_048;
 const PERSONALIZATION_NOTICE = Object.freeze([
     '1.个性化内容推荐功能\n个性化内容推荐是指我们基于收集的信息，向您进行定制化内容的展现，如向您展现或推荐相关程度更高的视频内容、线下活动、信息流等。',
     '2.我不喜欢推荐的内容怎么办?\n您有权自行控制和决策是否使用个性化内容推荐功能：\n1)当您对我们基于个性化内容推荐策略推送的具体信息不感兴趣或希望减少某类信息推荐时，您可以长按该内容，选择「不感兴趣」，我们会基于您的反馈调整策略。\n2)如果您不希望被推荐个性化的内容，可通过本页设置关闭“个性化内容推荐”。',
@@ -302,7 +303,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
             sectionHeading('⚡', '连接预设（OpenAI-compatible）'),
-            element('p', { className: 'yl-phone-page-description', text: '先填写名称、Base URL 与本次会话 API Key，即可直接拉取模型；Model 不再是拉取列表的前置条件。API Key 只用于本次会话，不会保存。' }),
+            element('p', { className: 'yl-phone-page-description', text: '名称、Base URL、Model、传输方式、额度和超时会保存到本浏览器；API Key 只用于本次会话，不会保存。Model 不再是拉取列表的前置条件。' }),
         ]);
         let activeId = null;
         let draftId = nextId('conn');
@@ -322,7 +323,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         ], 'stream', '传输模式', 'connection-transport-mode');
         transportMode.value = 'stream';
         const temperature = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-temperature', value: '0.7', min: 0, max: 2, ariaLabel: '温度' });
-        const maxTokens = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-max-tokens', value: '800', min: 1, max: 16384, ariaLabel: '最大 Token' });
+        const maxTokens = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-max-tokens', value: String(DEFAULT_CONNECTION_MAX_TOKENS), min: 1, max: 16384, ariaLabel: '最大 Token' });
         const timeoutMs = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-timeout', value: '60000', min: 1000, max: 120000, ariaLabel: '超时毫秒' });
         const apiKey = element('input', { className: 'yl-settings-control', type: 'password', name: 'connection-api-key', placeholder: '仅本次会话解锁', autocomplete: 'off', maxLength: 2048, ariaLabel: 'API Key，仅本次会话' });
         const fields = element('div', { className: 'yl-settings-fields' });
@@ -331,7 +332,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             field('Temperature', temperature), field('Max tokens', maxTokens), field('Timeout (ms)', timeoutMs), field('API Key（不保存）', apiKey),
         ]);
         section.appendChild(fields);
-        section.appendChild(element('p', { className: 'yl-settings-summary yl-transport-hint', text: '真流式可边接收边聚合，降低长回复在单次 JSON 解析阶段中断的风险；假流式兼容不支持 SSE 的接口，在完整响应到达后分段呈现。最终仍受服务端最大输出与本地超时限制。' }));
+        section.appendChild(element('p', { className: 'yl-settings-summary yl-transport-hint', text: '真流式可边接收边聚合；假流式兼容不支持 SSE 的接口，在完整响应到达后分段呈现。首页推荐刷新会至少申请 2048 Token，确保完整候选 JSON；最终仍受服务端最大输出与本地超时限制。' }));
 
         const modelChoices = element('select', { className: 'yl-settings-control yl-model-choices', name: 'connection-model-choices', ariaLabel: '已拉取模型', hidden: true });
         listen(modelChoices, modelChoices, 'change', () => {
@@ -350,7 +351,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             model.value = '';
             transportMode.value = 'stream';
             temperature.value = '0.7';
-            maxTokens.value = '800';
+            maxTokens.value = String(DEFAULT_CONNECTION_MAX_TOKENS);
             timeoutMs.value = '60000';
             apiKey.value = '';
             modelChoices.hidden = true;
@@ -369,6 +370,12 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             apiKey.value = '';
             modelChoices.hidden = true;
         }
+        // A saved default is already safe browser-local configuration, so load
+        // it into the editor on reopen. This avoids presenting a blank form as
+        // though the user must recreate the preset, while the API Key remains
+        // intentionally empty and session-only.
+        const initialPreset = snapshot.connectionPresets.find((preset) => preset.id === snapshot.defaults.connectionPresetId);
+        if (initialPreset) loadConnectionPreset(initialPreset);
         listen(picker, picker, 'change', () => {
             const preset = snapshot.connectionPresets.find((item) => item.id === picker.value);
             if (preset) {
@@ -379,7 +386,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const formPreset = () => ({
             id: activeId ?? draftId, name: name.value, url: url.value, model: model.value,
             transportMode: transportMode.value,
-            temperature: numberValue(temperature, 0.7), maxTokens: numberValue(maxTokens, 800), timeoutMs: numberValue(timeoutMs, 60_000),
+            temperature: numberValue(temperature, 0.7), maxTokens: numberValue(maxTokens, DEFAULT_CONNECTION_MAX_TOKENS), timeoutMs: numberValue(timeoutMs, 60_000),
         });
         const controls = element('div', { className: 'yl-settings-actions' });
         controls.appendChild(actionButton('新建连接预设', async () => {
@@ -951,5 +958,3 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         return section;
     }
 }
-
-

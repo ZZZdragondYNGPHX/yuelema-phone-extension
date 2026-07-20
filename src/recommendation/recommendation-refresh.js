@@ -3,6 +3,11 @@ import { renderPromptPreset } from '../settings/prompt-compiler.js';
 import { normalizeGeneratedCandidate } from './candidate.js';
 
 const MAX_RESPONSE_CHARS = 20_000;
+// A complete candidate contains several required nested records.  The old
+// connection-panel default (800) can cut off otherwise valid JSON before its
+// closing brace, so recommendation refreshes always request this minimum while
+// still honoring a user preset that asks for more.
+const RECOMMENDATION_MIN_MAX_TOKENS = 2_048;
 
 const PUBLIC_TAG_CONTRACTS = Object.freeze({
     SFW: Object.freeze({
@@ -76,6 +81,7 @@ function makeMessages(context, promptPreset) {
             ? 'NSFW 输出合同：四个公开标签字段可包含成年人明确自愿的成人取向或身体偏好关键词（例如“翘臀”“情趣探索”），但这类词只能作为公开标签；不得写入简介、寻找意图、好友资料或隐藏资料。'
             : 'SFW 输出合同：四个公开标签字段只允许常规公开兴趣、生活方式、性格或沟通风格关键词；不得包含成人取向、身体性化或露骨关键词。',
         '只输出一个合法 JSON 对象：不得用 Markdown、代码块或解释文字。对象不得带 uid，且必须严格包含：成人验证、公开资料、仅好友资料、隐藏资料、偏好与边界、拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值、与玩家关系。',
+        '所有文本字段请写成一句简短文字，每个标签数组最多放两个短标签；必须先完整闭合 JSON 对象，再停止输出。',
         '与玩家关系.状态必须为“陌生”；隐藏资料.实际年龄必须是 18–120 的整数；公开资料不得包含私密层字段。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
     ].filter(Boolean).join('\n\n');
@@ -87,8 +93,16 @@ function makeMessages(context, promptPreset) {
 
 function parseCandidateJson(raw) {
     if (typeof raw !== 'string' || raw.length < 2 || raw.length > MAX_RESPONSE_CHARS) return null;
+    const trimmed = raw.trim();
+    // Some otherwise compatible providers wrap a correct object in one
+    // Markdown JSON fence despite the output contract.  Accept that one
+    // harmless transport wrapper only; the strict schema validator below
+    // still owns all candidate safety and structure checks.
+    const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu.exec(trimmed);
+    const jsonText = (fenced ? fenced[1] : trimmed).trim();
+    if (jsonText.length < 2 || jsonText.length > MAX_RESPONSE_CHARS) return null;
     try {
-        const parsed = JSON.parse(raw);
+        const parsed = JSON.parse(jsonText);
         return ownRecord(parsed) ? parsed : null;
     } catch {
         return null;
@@ -115,6 +129,7 @@ export async function generateRecommendationCandidate({ state, settingsStore, ll
         const completion = await llmClient.chat({
             preset: resolved.connectionPreset,
             messages: makeMessages(context, resolved.promptPreset),
+            maxTokens: Math.max(RECOMMENDATION_MIN_MAX_TOKENS, resolved.connectionPreset.maxTokens),
             signal,
         });
         const parsed = parseCandidateJson(completion?.text);
