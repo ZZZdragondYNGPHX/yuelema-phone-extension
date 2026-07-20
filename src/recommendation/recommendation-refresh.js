@@ -256,7 +256,53 @@ function parseCandidateJson(raw) {
         const parsed = JSON.parse(jsonText);
         return ownRecord(parsed) ? parsed : null;
     } catch {
-        return null;
+        // A few compatible providers still prepend/append a short natural-
+        // language sentence despite the strict output contract.  Recover only
+        // one balanced root object; the normalizer below remains the authority
+        // for the candidate schema, adult checks, privacy boundaries, and keys.
+        const candidates = [];
+        for (let start = 0; start < jsonText.length; start += 1) {
+            if (jsonText[start] !== '{') continue;
+            let depth = 0;
+            let inString = false;
+            let escaped = false;
+            let end = -1;
+            for (let index = start; index < jsonText.length; index += 1) {
+                const char = jsonText[index];
+                if (inString) {
+                    if (escaped) escaped = false;
+                    else if (char === '\\') escaped = true;
+                    else if (char === '"') inString = false;
+                    continue;
+                }
+                if (char === '"') {
+                    inString = true;
+                    continue;
+                }
+                if (char === '{') depth += 1;
+                else if (char === '}') {
+                    depth -= 1;
+                    if (depth === 0) {
+                        end = index;
+                        break;
+                    }
+                    if (depth < 0) break;
+                }
+            }
+            if (end < 0) continue;
+            const fragment = jsonText.slice(start, end + 1);
+            try {
+                const parsed = JSON.parse(fragment);
+                if (ownRecord(parsed)) candidates.push({ start, end, parsed });
+            } catch {
+                // Ignore prose braces and malformed fragments; a unique valid
+                // root object can still be considered below.
+            }
+        }
+        const roots = candidates.filter((candidate) => !candidates.some((other) => (
+            other.start < candidate.start && other.end > candidate.end
+        )));
+        return roots.length === 1 ? roots[0].parsed : null;
     }
 }
 

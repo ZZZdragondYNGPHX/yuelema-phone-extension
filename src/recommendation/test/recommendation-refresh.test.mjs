@@ -184,6 +184,54 @@ test('invalid model JSON leaves recommendation generation in a safe no-result st
     assert.deepEqual(result, { ok: false, code: 'recommendation_invalid_json', message: '快速模型没有返回可用的候选资料；当前推荐未改变。' });
 });
 
+test('recommendation parser recovers one balanced candidate object with provider prose around it', async () => {
+    const candidate = adultCandidate();
+    candidate.公开资料.简介 = '喜欢 {城市漫步}，也会说 "今晚见"。';
+    const result = await generateRecommendationCandidate({
+        state: state(), settingsStore,
+        llmClient: {
+            async chat() {
+                return { text: `以下是候选资料：\n${JSON.stringify(candidate)}\n生成完成。` };
+            },
+        },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.candidate.公开资料.昵称, '林澈');
+    assert.equal(result.candidate.公开资料.简介, candidate.公开资料.简介);
+});
+
+test('recommendation parser rejects truncated, array-root, ambiguous, and wrapped JSON without bypassing validation', async () => {
+    const serialized = JSON.stringify(adultCandidate());
+    const parserRejections = [
+        `候选资料：\n${serialized.slice(0, -8)}`,
+        JSON.stringify([adultCandidate()]),
+        `${serialized}\n${serialized}`,
+    ];
+
+    for (const text of parserRejections) {
+        const result = await generateRecommendationCandidate({
+            state: state(), settingsStore,
+            llmClient: { async chat() { return { text }; } },
+        });
+        assert.deepEqual(result, {
+            ok: false,
+            code: 'recommendation_invalid_json',
+            message: '快速模型没有返回可用的候选资料；当前推荐未改变。',
+        });
+    }
+
+    const wrapped = await generateRecommendationCandidate({
+        state: state(), settingsStore,
+        llmClient: { async chat() { return { text: JSON.stringify({ candidate: adultCandidate() }) }; } },
+    });
+    assert.deepEqual(wrapped, {
+        ok: false,
+        code: '候选人:unknown_field',
+        message: '快速模型返回的候选资料未通过成年人或结构校验；当前推荐未改变。',
+    });
+});
+
 test('adult candidate validation failure returns a safe validation result without raw model details', async () => {
     const underage = adultCandidate();
     underage.隐藏资料.实际年龄 = 17;

@@ -179,7 +179,7 @@ test('about entry shows a version dialog and reveals the SFW/NSFW slider after f
             click(about());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-        assert.match(dialog.textContent, /约了吗 0\.1\.16/u);
+        assert.match(dialog.textContent, /约了吗 0\.1\.17/u);
         }
         await flushUi();
 
