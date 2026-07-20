@@ -636,6 +636,35 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         return persist(next);
     }
 
+    /**
+     * Applies one locally derived public-tag preference delta after a successful
+     * controlled recommendation action. It deliberately touches only this
+     * browser's personalization cache, never connection settings or MVU data.
+     */
+    function applyPersonalizationKeywordWeightDelta(keywords, delta) {
+        if (!Number.isInteger(delta) || delta < -5 || delta > 5 || delta === 0) {
+            fail('INVALID_PERSONALIZATION', '关键词权重增量必须是 -5–5 范围内的非零整数。');
+        }
+        if (!Array.isArray(keywords)) fail('INVALID_PERSONALIZATION', '关键词列表必须是数组。');
+        const normalizedKeywords = normalizeKeywordWeights(keywords.map((keyword) => ({ keyword, weight: 0 })))
+            .map((item) => item.keyword);
+        const next = cloneDocument(current());
+        if (!next.personalization.enabled || normalizedKeywords.length === 0) return cloneDocument(next);
+
+        const indexByKeyword = new Map(next.personalization.keywordWeights.map((item, index) => [item.keyword.toLowerCase(), index]));
+        for (const keyword of normalizedKeywords) {
+            const index = indexByKeyword.get(keyword.toLowerCase());
+            if (index === undefined) {
+                next.personalization.keywordWeights.push({ keyword, weight: Math.max(-5, Math.min(5, delta)) });
+                indexByKeyword.set(keyword.toLowerCase(), next.personalization.keywordWeights.length - 1);
+            } else {
+                const currentWeight = next.personalization.keywordWeights[index].weight;
+                next.personalization.keywordWeights[index].weight = Math.max(-5, Math.min(5, currentWeight + delta));
+            }
+        }
+        return persist(next);
+    }
+
     function exportJson() {
         const serialized = JSON.stringify(normalizeSettingsDocument(current()));
         if (new TextEncoder().encode(serialized).byteLength > MAX_SERIALIZED_BYTES) {
@@ -678,6 +707,7 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         resolveFunction,
         setPersonalizationEnabled,
         setPersonalizationKeywordWeights,
+        applyPersonalizationKeywordWeightDelta,
         exportJson,
         importJson,
         clear,

@@ -117,6 +117,43 @@ test('favorite action is built and committed only through the official MVU pipel
     assert.match(update, /收藏角色UID/u);
 });
 
+test('喜欢和不喜欢只在 MVU 写入成功后同步公开标签到本地个性化权重', async () => {
+    const initialState = state();
+    initialState.系统 = { UID计数器: { 会话: 0 } };
+    initialState.会话 = {};
+    initialState.推荐.临时候选池.npc_ava = adultCandidate();
+    initialState.推荐.临时候选池.npc_ava.公开资料 = {
+        昵称: '艾娃',
+        兴趣标签: ['电影', '摄影'],
+        生活方式标签: ['夜猫子'],
+        性格标签: ['直接'],
+        沟通风格标签: ['慢热'],
+    };
+    const { mvu } = createMvu({ initialState });
+    const deltas = [];
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null },
+        mvu,
+        eventEmit: async () => {},
+        settingsStore: {
+            applyPersonalizationKeywordWeightDelta(tags, delta) {
+                deltas.push([tags, delta]);
+            },
+        },
+    });
+
+    const liked = await bridge.runMvuAction('like', 'npc_ava');
+    assert.equal(liked.ok, true);
+    assert.deepEqual(deltas, [[['电影', '摄影', '夜猫子', '直接', '慢热'], 3]]);
+
+    const disliked = await bridge.runMvuAction('dislike', 'npc_ava');
+    assert.equal(disliked.ok, true);
+    assert.deepEqual(deltas, [
+        [['电影', '摄影', '夜猫子', '直接', '慢热'], 3],
+        [['电影', '摄影', '夜猫子', '直接', '慢热'], -3],
+    ]);
+});
+
 test('SFW/NSFW 滑块通过受控 MVU 管线实际切换内容模式', async () => {
     const initialState = state();
     delete initialState.软件.关于软件点击数;

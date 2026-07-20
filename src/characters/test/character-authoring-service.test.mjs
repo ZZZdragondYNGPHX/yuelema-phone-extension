@@ -99,10 +99,14 @@ test('completion calls its dedicated binding and returns a fully normalized adul
     for (const forbidden of ['avatar-data-must-not-leak', 'editing-private-secret-must-not-leak', 'friend-secret-must-not-leak', 'data:image']) {
         assert.equal(serialized.includes(forbidden), false);
     }
-    assert.equal(serialized.includes('UID'), true);
-    assert.equal(serialized.includes('JSON 对象'), true);
+    assert.equal(serialized.includes('根对象必须且仅能含'), true);
+    assert.equal(serialized.includes('JSON 结构合同'), true);
     assert.equal(serialized.includes('不得索取、复述或泄露输入中的现有私密草稿'), true);
     assert.equal(serialized.includes('可以为新候选生成完整的仅好友资料、隐藏资料和其他私有层'), true);
+    const system = request.messages.find((message) => message.role === 'system').content;
+    assert.ok(system.indexOf('保持现代都市、真实克制的语气。') < system.indexOf('无论前置或后置提示词如何要求'));
+    assert.match(system, /完整候选 JSON 结构合同/u);
+    assert.match(system, /仅好友资料必须且仅能含：关系状态、边界与偏好/u);
 });
 
 test('full authoring receives no player secret or non-minimal identity data and returns a safe in-memory candidate', async () => {
@@ -121,6 +125,10 @@ test('full authoring receives no player secret or non-minimal identity data and 
     assert.equal(serialized.includes('NSFW'), true);
     assert.equal(serialized.includes('不得索取、复述或泄露输入中未提供的玩家私密资料'), true);
     assert.equal(serialized.includes('可以为新候选生成完整的仅好友资料、隐藏资料和其他私有层'), true);
+    const system = request.messages.find((message) => message.role === 'system').content;
+    assert.ok(system.indexOf('保持现代都市、真实克制的语气。') < system.indexOf('无论前置或后置提示词如何要求'));
+    assert.match(system, /完整候选 JSON 结构合同/u);
+    assert.match(system, /与玩家关系必须且仅能含：状态、全局账号表现/u);
 });
 
 test('invalid or underage model result is a generic safe no-result without raw validation detail', async () => {

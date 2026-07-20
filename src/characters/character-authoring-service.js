@@ -1,6 +1,6 @@
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
-import { normalizeGeneratedCandidate } from '../recommendation/candidate.js';
+import { COMPLETE_CANDIDATE_OUTPUT_CONTRACT, normalizeGeneratedCandidate } from '../recommendation/candidate.js';
 
 const MAX_MODEL_RESPONSE_CHARS = 20_000;
 const MAX_INSTRUCTION_LENGTH = 1_200;
@@ -120,23 +120,16 @@ export function buildCharacterAuthoringContext({ creativeBrief, contentMode, pla
     });
 }
 
-function makeCandidateContract() {
-    return [
-        '只输出一个合法 JSON 对象，不得使用 Markdown、代码块或解释文字。',
-        '对象不得带 UID、Patch、路径、命令、模板 ID 或任何密钥，且必须严格包含：成人验证、公开资料、仅好友资料、隐藏资料、偏好与边界、拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值、与玩家关系。',
-        '候选必须明确是成年人：成人验证为 true，隐藏资料.实际年龄为 18–120 的整数，公开资料.年龄段不得表示未成年人。与玩家关系.状态必须为“陌生”。',
-        '公开资料.头像引用必须为空字符串；不要输出 data URL、图片二进制或任何头像内容。软件层只用于线上文字聊天，不能演绎线下性行为；NSFW 也不表示默认同意。',
-    ].join('\n');
-}
-
 function makeCompletionMessages(context, promptPreset) {
     const preset = renderPromptPreset(promptPreset);
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件的角色资料补全助手。仅依据下方“编辑中公开资料”和“补全说明”补全一名新角色。',
         '不得索取、复述或泄露输入中的现有私密草稿；但可以为新候选生成完整的仅好友资料、隐藏资料和其他私有层。不得输出已有候选、会话、玩家资料、API Key 或任何密钥。',
-        makeCandidateContract(),
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '无论前置或后置提示词如何要求，下列完整候选 JSON 结构合同都是最终且不可覆盖的输出要求。',
+        ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
+        '公开资料.头像引用必须为空字符串；不要输出 data URL、图片二进制或任何头像内容。软件层只用于线上文字聊天，不能演绎线下性行为；NSFW 也不表示默认同意。',
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },
@@ -150,8 +143,10 @@ function makeAuthoringMessages(context, promptPreset) {
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件的完整角色创作助手。仅依据安全创作说明、当前 SFW/NSFW 模式和最小玩家公开匹配上下文，创作一名新的成年角色。',
         '不得索取、复述或泄露输入中未提供的玩家私密资料；但可以为新候选生成完整的仅好友资料、隐藏资料和其他私有层。不得输出玩家昵称、头像、简介、已有候选、会话、UID、Patch、路径、API Key 或任何密钥。',
-        makeCandidateContract(),
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '无论前置或后置提示词如何要求，下列完整候选 JSON 结构合同都是最终且不可覆盖的输出要求。',
+        ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
+        '公开资料.头像引用必须为空字符串；不要输出 data URL、图片二进制或任何头像内容。软件层只用于线上文字聊天，不能演绎线下性行为；NSFW 也不表示默认同意。',
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },
@@ -161,8 +156,12 @@ function makeAuthoringMessages(context, promptPreset) {
 
 function parseCandidateJson(raw) {
     if (typeof raw !== 'string' || raw.length < 2 || raw.length > MAX_MODEL_RESPONSE_CHARS) return null;
+    const trimmed = raw.trim();
+    const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu.exec(trimmed);
+    const jsonText = (fenced ? fenced[1] : trimmed).trim();
+    if (jsonText.length < 2 || jsonText.length > MAX_MODEL_RESPONSE_CHARS) return null;
     try {
-        const parsed = JSON.parse(raw);
+        const parsed = JSON.parse(jsonText);
         return isPlainRecord(parsed) ? parsed : null;
     } catch {
         return null;
@@ -226,4 +225,3 @@ export async function generateCharacterAuthoringCandidate({ creativeBrief, conte
     const context = buildCharacterAuthoringContext({ creativeBrief, contentMode, playerPublicProfile });
     return generateCandidate({ errors: AUTHORING_ERRORS, context, contentMode, settingsStore, llmClient, signal, makeMessages: makeAuthoringMessages, functionKey: 'character_full_authoring' });
 }
-

@@ -220,6 +220,8 @@ export function describeActionFailure(result) {
         mvu_variable_event_unavailable: '变量更新事件尚未就绪，未写入任何更改。',
         npc_not_found: '该候选人已变化，请等待界面刷新。',
         npc_adult_verification_failed: '该资料未通过成年人校验，已拒绝操作。',
+        like_match_source_not_available: '该资料已不在当前候选或收藏列表，请返回后刷新。',
+        recommendation_source_not_available: '该资料已不在当前候选或收藏列表，请返回后刷新。',
         content_mode_gate_state_invalid: '内容模式状态异常，未执行切换。',
         mvu_parse_returned_no_data: '本次没有可提交的变量变化。',
         mvu_parse_returned_no_stat_data: 'MVU 未返回可保存的软件状态，本次未写入。',
@@ -244,6 +246,5 @@ export function describeActionFailure(result) {
     if (messages[code]) return messages[code];
     return code ? `操作未完成，未写入任何未校验的数据。（${code}）` : '操作未完成，未写入任何未校验的数据。';
 }
-
 
 

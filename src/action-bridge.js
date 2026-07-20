@@ -14,6 +14,8 @@ const PASSIVE_KINDS = new Set([
     'navigate',
 ]);
 const MVU_KINDS = new Set(['like', 'favorite', 'dislike', 'refresh', 'unfavorite', 'advance_content_mode_gate', 'toggle_content_mode']);
+const PERSONALIZATION_DELTAS = Object.freeze({ like: 3, favorite: 1, dislike: -3 });
+const PERSONALIZATION_PUBLIC_TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
 
 function makePassiveCommand(kind, payload) {
     const safePayload = {};
@@ -29,6 +31,43 @@ function resolveMvu(mvu) {
 
 function actionKey(kind, npcUid) {
     return `${kind}:${typeof npcUid === 'string' ? npcUid : ''}`;
+}
+
+/** Extracts only public, visible tag text for the device-local recommender. */
+function publicCandidateTags(state, npcUid) {
+    if (typeof npcUid !== 'string' || !npcUid) return [];
+    const recommendation = state && typeof state === 'object' ? state.推荐 : null;
+    if (!recommendation || typeof recommendation !== 'object') return [];
+    const candidate = recommendation.临时候选池?.[npcUid] ?? state?.角色池?.[npcUid];
+    const profile = candidate && typeof candidate === 'object' ? candidate.公开资料 : null;
+    if (!profile || typeof profile !== 'object') return [];
+
+    const seen = new Set();
+    const tags = [];
+    for (const field of PERSONALIZATION_PUBLIC_TAG_FIELDS) {
+        if (!Array.isArray(profile[field])) continue;
+        for (const rawTag of profile[field]) {
+            if (typeof rawTag !== 'string') continue;
+            const tag = rawTag.trim().slice(0, 40);
+            const normalized = tag.toLocaleLowerCase('zh-CN');
+            if (!tag || seen.has(normalized)) continue;
+            seen.add(normalized);
+            tags.push(tag);
+        }
+    }
+    return tags;
+}
+
+function syncDevicePersonalization(settingsStore, state, kind, npcUid) {
+    const delta = PERSONALIZATION_DELTAS[kind];
+    if (!delta || typeof settingsStore?.applyPersonalizationKeywordWeightDelta !== 'function') return false;
+    try {
+        settingsStore.applyPersonalizationKeywordWeightDelta(publicCandidateTags(state, npcUid), delta);
+        return true;
+    } catch {
+        // A local cache failure must never invalidate an already committed MVU action.
+        return false;
+    }
 }
 
 /**
@@ -76,7 +115,9 @@ export function createActionBridge({
             const built = buildControlledPatch(read.state, command);
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code, detail: built.detail };
 
-            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            if (applied.ok) syncDevicePersonalization(settingsStore, read.state, kind, npcUid);
+            return applied;
         } finally {
             pending.delete(key);
         }

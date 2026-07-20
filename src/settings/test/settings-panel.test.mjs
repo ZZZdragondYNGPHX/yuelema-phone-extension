@@ -394,5 +394,5 @@ test('preference 子视图通过稳定 name 查看并保存关键词权重', asy
     const reopened = buildHarness(store, { section: 'preferences' }).panel;
     assert.match(reopened.textContent, /电影 · 权重 4/u);
     assert.equal(reopened.textContent.includes('真实推荐算法未改变'), false);
-    assert.match(reopened.textContent, /不会改变真实推荐/u);
+    assert.match(reopened.textContent, /首页刷新会间隔性参考高权重标签/u);
 });

@@ -25,6 +25,19 @@ const SENSITIVE_KEY_PATTERN = /(?:api[\s_-]*key|authorization|token|secret|passw
 const HTML_PATTERN = /<!--|<\s*\/?\s*[a-z][^>]*>/iu;
 const UNDERAGE_PATTERN = /(?:未成年|未滿|未满\s*18|minor|underage|小于\s*18|小於\s*18|<\s*18)/iu;
 const CONTENT_MODES = new Set(['SFW', 'NSFW']);
+
+// This mirrors the exact closed candidate codec below. It belongs to the
+// non-editable system layer so a local prompt preset can guide style without
+// being responsible for (or able to weaken) model-output structure.
+export const COMPLETE_CANDIDATE_OUTPUT_CONTRACT = Object.freeze([
+    '完整候选 JSON 结构合同（以下是字段说明，不是可照抄的候选内容；所有键名必须逐字保留，不得新增、删除、改名或包一层 candidate）：',
+    '根对象必须且仅能含：成人验证、公开资料、仅好友资料、隐藏资料、偏好与边界、拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值、与玩家关系。成人验证必须是布尔值 true。',
+    '公开资料必须且仅能含：昵称、头像引用、年龄段、性别、性取向、城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签、沟通风格标签。前九项是字符串（头像引用可为空字符串，其余不得为空）；后四项都是字符串数组，每个数组放 0–2 个短标签。年龄段必须明确为成年人，不能出现任何小于 18 的年龄。',
+    '仅好友资料必须且仅能含：关系状态、边界与偏好；两项都是非空字符串。隐藏资料必须且仅能含：实际年龄、私人备注；实际年龄是 18–120 的整数，私人备注是可为空的字符串。',
+    '偏好与边界是可为空的字符串。拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值都必须是 0–100 的整数。',
+    '与玩家关系必须且仅能含：状态、全局账号表现、NPC专属匹配度、好感、信任、戒备、面基意愿。状态固定为“陌生”；其余六项都必须是 0–100 的整数。',
+    '只在对应层级填写这些内部资料：公开资料不得夹带仅好友资料、隐藏资料或关系数值；内部资料不会直接展示给玩家。',
+]);
 // NSFW only changes which public *tags* may describe an adult's stated orientation
 // or body/style preference. It never authorizes offline sexual enactment, coercion,
 // minors, or disclosure of private identifiers.
@@ -229,4 +242,3 @@ export function normalizeGeneratedCandidate(input, options) {
         throw validationError('invalid_input');
     }
 }
-

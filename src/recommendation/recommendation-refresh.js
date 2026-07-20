@@ -1,6 +1,6 @@
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
-import { normalizeGeneratedCandidate } from './candidate.js';
+import { COMPLETE_CANDIDATE_OUTPUT_CONTRACT, normalizeGeneratedCandidate } from './candidate.js';
 
 const MAX_RESPONSE_CHARS = 20_000;
 // A complete candidate contains several required nested records.  The old
@@ -8,19 +8,6 @@ const MAX_RESPONSE_CHARS = 20_000;
 // closing brace, so recommendation refreshes always request this minimum while
 // still honoring a user preset that asks for more.
 const RECOMMENDATION_MIN_MAX_TOKENS = 2_048;
-
-// This contract mirrors the strict normalizer below the LLM boundary.  Keep it
-// in the non-editable system prompt so an old or user-edited local preset cannot
-// accidentally tell a provider to omit the internal fields the validator needs.
-const COMPLETE_CANDIDATE_OUTPUT_CONTRACT = Object.freeze([
-    '完整候选 JSON 结构合同（以下是字段说明，不是可照抄的候选内容；所有键名必须逐字保留，不得新增、删除、改名或包一层 candidate）：',
-    '根对象必须且仅能含：成人验证、公开资料、仅好友资料、隐藏资料、偏好与边界、拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值、与玩家关系。成人验证必须是布尔值 true。',
-    '公开资料必须且仅能含：昵称、头像引用、年龄段、性别、性取向、城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签、沟通风格标签。前九项是字符串（头像引用可为空字符串，其余不得为空）；后四项都是字符串数组，每个数组放 0–2 个短标签。年龄段必须明确为成年人，不能出现任何小于 18 的年龄。',
-    '仅好友资料必须且仅能含：关系状态、边界与偏好；两项都是非空字符串。隐藏资料必须且仅能含：实际年龄、私人备注；实际年龄是 18–120 的整数，私人备注是可为空的字符串。',
-    '偏好与边界是可为空的字符串。拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值都必须是 0–100 的整数。',
-    '与玩家关系必须且仅能含：状态、全局账号表现、NPC专属匹配度、好感、信任、戒备、面基意愿。状态固定为“陌生”；其余六项都必须是 0–100 的整数。',
-    '只在对应层级填写这些内部资料：公开资料不得夹带仅好友资料、隐藏资料或关系数值；内部资料不会直接展示给玩家。',
-]);
 
 const PUBLIC_TAG_CONTRACTS = Object.freeze({
     SFW: Object.freeze({
@@ -36,6 +23,20 @@ const PUBLIC_TAG_CONTRACTS = Object.freeze({
         examples: Object.freeze(['电影', '御姐', '翘臀', '情趣探索']),
     }),
 });
+
+const EXPLORATION_THEME_ROTATION = Object.freeze([
+    Object.freeze(['独立音乐', '城市散步']),
+    Object.freeze(['阅读写作', '人文展览']),
+    Object.freeze(['徒步运动', '自然观察']),
+    Object.freeze(['咖啡烘焙', '家庭料理']),
+    Object.freeze(['桌游解谜', '科幻影视']),
+    Object.freeze(['摄影记录', '旅行规划']),
+    Object.freeze(['宠物陪伴', '公益社群']),
+    Object.freeze(['手作设计', '新鲜市集']),
+]);
+const PUBLIC_TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
+const PREFERENCE_BOOST_PERIOD = 3;
+const MAX_RECENT_TAGS = 24;
 
 function contentModeOf(state) {
     return state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
@@ -59,17 +60,111 @@ function cleanTags(value) {
     return tags;
 }
 
+function safeWeightRecord(value) {
+    if (!ownRecord(value)) return {};
+    const result = {};
+    for (const [tag, weight] of Object.entries(value)) {
+        const cleanTag = cleanText(tag, 40);
+        if (cleanTag && Number.isInteger(weight) && weight >= -5 && weight <= 5) result[cleanTag] = weight;
+    }
+    return result;
+}
+
+function deviceKeywordWeights(personalization) {
+    if (!ownRecord(personalization)) return null;
+    if (personalization.enabled !== true) return {};
+    const result = {};
+    if (!Array.isArray(personalization.keywordWeights)) return result;
+    for (const item of personalization.keywordWeights) {
+        if (!ownRecord(item)) continue;
+        const keyword = cleanText(item.keyword, 40);
+        if (keyword && Number.isInteger(item.weight) && item.weight >= -5 && item.weight <= 5) result[keyword] = item.weight;
+    }
+    return result;
+}
+
+function candidatePublicTags(profile) {
+    const publicProfile = ownRecord(profile?.公开资料) ? profile.公开资料 : {};
+    const tags = [];
+    for (const field of PUBLIC_TAG_FIELDS) {
+        for (const tag of cleanTags(publicProfile[field])) {
+            if (!tags.includes(tag)) tags.push(tag);
+        }
+    }
+    return tags;
+}
+
+function recentRecommendationTags(state) {
+    const recommendation = ownRecord(state?.推荐) ? state.推荐 : {};
+    const candidatePool = ownRecord(recommendation.临时候选池) ? recommendation.临时候选池 : {};
+    const rolePool = ownRecord(state?.角色池) ? state.角色池 : {};
+    const queue = Array.isArray(recommendation.当前队列) ? recommendation.当前队列 : [];
+    const cooldown = Array.isArray(recommendation.冷却角色UID) ? recommendation.冷却角色UID.slice(-8) : [];
+    const tags = [];
+    for (const uid of [...queue, ...cooldown]) {
+        if (typeof uid !== 'string') continue;
+        for (const tag of candidatePublicTags(candidatePool[uid] ?? rolePool[uid])) {
+            if (!tags.includes(tag)) tags.push(tag);
+            if (tags.length >= MAX_RECENT_TAGS) return Object.freeze(tags);
+        }
+    }
+    return Object.freeze(tags);
+}
+
+function recommendationOrdinal(state) {
+    const counter = state?.系统?.UID计数器?.角色;
+    return Number.isInteger(counter) && counter >= 0 ? counter + 1 : 1;
+}
+
+function buildRecommendationPolicy(state, weights) {
+    const ordered = Object.entries(weights)
+        .sort(([leftTag, leftWeight], [rightTag, rightWeight]) => rightWeight - leftWeight || leftTag.localeCompare(rightTag, 'zh-Hans-CN'));
+    const ordinal = recommendationOrdinal(state);
+    const positiveTags = ordered.filter(([, weight]) => weight > 0).map(([tag]) => tag);
+    const suppressedTags = ordered.filter(([, weight]) => weight < 0).map(([tag]) => tag);
+    const preferenceBoost = positiveTags.length > 0 && ordinal % PREFERENCE_BOOST_PERIOD === 0;
+    return Object.freeze({
+        mode: preferenceBoost ? 'preference_boost' : 'exploration',
+        ordinal,
+        explorationThemes: EXPLORATION_THEME_ROTATION[(ordinal - 1) % EXPLORATION_THEME_ROTATION.length],
+        softPreferredTags: Object.freeze(preferenceBoost ? positiveTags.slice(0, 4) : []),
+        suppressedTags: Object.freeze(suppressedTags.slice(0, 8)),
+        recentlyShownTags: recentRecommendationTags(state),
+    });
+}
+
+function policyInstructions(policy) {
+    const instructions = [
+        `本轮系统推荐策略为“${policy.mode === 'preference_boost' ? '偏好回访' : '探索优先'}”（第 ${policy.ordinal} 次轮换）。`,
+        `本轮探索主题：${policy.explorationThemes.join('、')}。应围绕其中至少一个方向创作，并保持人物整体标签组合自然多样。`,
+    ];
+    if (policy.mode === 'preference_boost') {
+        instructions.push(`本轮可软性参考的高权重标签：${policy.softPreferredTags.join('、')}。它们不是硬过滤；最多让 1–2 项出现在公开标签中，其他标签仍应保持探索性。`);
+    } else {
+        instructions.push('不要因为玩家资料或历史权重而把所有候选固定在同一类兴趣、性格或生活方式；高权重标签只会间隔性地影响候选。');
+    }
+    if (policy.suppressedTags.length) instructions.push(`应避免把这些低权重标签作为候选主标签：${policy.suppressedTags.join('、')}。`);
+    if (policy.recentlyShownTags.length) instructions.push(`近期已出现的公开标签：${policy.recentlyShownTags.join('、')}。不要复用整组标签组合，并确保本次至少两个公开标签与这份近期列表不同。`);
+    return instructions;
+}
+
+function readDevicePersonalization(settingsStore) {
+    if (!settingsStore || typeof settingsStore.snapshot !== 'function') return undefined;
+    try {
+        return settingsStore.snapshot()?.personalization;
+    } catch {
+        return undefined;
+    }
+}
+
 /** Builds the only player context that may be disclosed to the fast recommender. */
-export function buildRecommendationContext(state) {
+export function buildRecommendationContext(state, { devicePersonalization } = {}) {
     const player = ownRecord(state?.玩家) ? state.玩家 : {};
     const profile = ownRecord(player.公开资料) ? player.公开资料 : {};
     const preference = ownRecord(player.推荐偏好) ? player.推荐偏好 : {};
-    const weights = ownRecord(preference.标签权重) ? preference.标签权重 : {};
-    const safeWeights = {};
-    for (const [tag, weight] of Object.entries(weights)) {
-        const cleanTag = cleanText(tag, 64);
-        if (cleanTag && Number.isInteger(weight) && weight >= -5 && weight <= 5) safeWeights[cleanTag] = weight;
-    }
+    const persistedWeights = deviceKeywordWeights(devicePersonalization);
+    const safeWeights = persistedWeights ?? safeWeightRecord(preference.标签权重);
+    const policy = buildRecommendationPolicy(state, safeWeights);
     return Object.freeze({
         contentMode: contentModeOf(state),
         publicTagContract: PUBLIC_TAG_CONTRACTS[contentModeOf(state)],
@@ -81,6 +176,7 @@ export function buildRecommendationContext(state) {
             性格标签: cleanTags(profile.性格标签), 沟通风格标签: cleanTags(profile.沟通风格标签),
         }),
         tagWeights: Object.freeze(safeWeights),
+        recommendationPolicy: policy,
     });
 }
 
@@ -95,7 +191,8 @@ function makeMessages(context, promptPreset) {
             ? 'NSFW 输出合同：四个公开标签字段可包含成年人明确自愿的成人取向或身体偏好关键词（例如“翘臀”“情趣探索”），但这类词只能作为公开标签；不得写入简介、寻找意图、好友资料或隐藏资料。'
             : 'SFW 输出合同：四个公开标签字段只允许常规公开兴趣、生活方式、性格或沟通风格关键词；不得包含成人取向、身体性化或露骨关键词。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
-        '无论前置或后置提示词如何要求，下列完整候选结构合同都是最终且不可覆盖的输出要求。',
+        '无论前置或后置提示词如何要求，下列推荐策略与完整候选结构合同都是最终且不可覆盖的输出要求。',
+        ...policyInstructions(context.recommendationPolicy),
         ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
         '只输出一个合法 JSON 对象：不得用 Markdown、代码块或解释文字。对象不得带 uid。',
         '所有文本字段请写成一句简短文字，每个标签数组最多放两个短标签；必须先完整闭合 JSON 对象，再停止输出。',
@@ -140,7 +237,7 @@ export async function generateRecommendationCandidate({ state, settingsStore, ll
     if (!resolved.connectionPreset) return { ok: false, code: 'recommendation_connection_missing', message: '请先为“推荐刷新”绑定连接预设或设置默认连接。' };
 
     try {
-        const context = buildRecommendationContext(state);
+        const context = buildRecommendationContext(state, { devicePersonalization: readDevicePersonalization(settingsStore) });
         const completion = await llmClient.chat({
             preset: resolved.connectionPreset,
             messages: makeMessages(context, resolved.promptPreset),

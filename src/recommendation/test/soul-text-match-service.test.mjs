@@ -88,6 +88,10 @@ test('soul match calls only the soul_match binding and returns a strict public w
         'session-secret-must-not-reach-model', 'api-key-must-not-reach-model', 'chat_secret', 'npc_secret', '/forbidden',
     ]) assert.equal(serialized.includes(forbidden), false);
     assert.equal(serialized.includes('tagWeightDraft'), true);
+    const system = request.messages.find((message) => message.role === 'system').content;
+    assert.ok(system.indexOf('保持简洁的都市语气。') < system.indexOf('无论前置或后置提示词如何要求'));
+    assert.match(system, /灵魂匹配 JSON 结构合同/u);
+    assert.match(system, /根对象必须且仅能含 tagWeightDraft、explanation/u);
 });
 
 test('text match calls only the text_match binding and returns one-off public filters', async () => {
@@ -100,6 +104,9 @@ test('text match calls only the text_match binding and returns one-off public fi
     assert.deepEqual(result.draft, textRaw());
     assert.equal(JSON.stringify(request).includes('tagWeightDraft'), false);
     assert.equal(JSON.stringify(request).includes('session-secret-must-not-reach-model'), false);
+    const system = request.messages.find((message) => message.role === 'system').content;
+    assert.match(system, /文字匹配 JSON 结构合同/u);
+    assert.match(system, /filters 必须且仅能含：城市、年龄段、距离范围/u);
 });
 
 test('strict codecs reject extra, sensitive, patch-like, and empty model output', () => {
@@ -183,6 +190,10 @@ test('candidate soul matching reads saved local keywords and returns only a publ
     for (const forbidden of ['hidden-secret-must-not-reach-model', 'friend-secret-must-not-reach-model', 'candidate-secret-must-not-reach-model', 'session-secret-must-not-reach-model', 'api-key-must-not-reach-model']) {
         assert.equal(serialized.includes(forbidden), false);
     }
+    const system = request.messages.find((message) => message.role === 'system').content;
+    assert.ok(system.indexOf('只生成现代都市公开角色资料。') < system.indexOf('无论前置或后置提示词如何要求'));
+    assert.match(system, /匹配候选公开资料 JSON 结构合同/u);
+    assert.match(system, /profile 必须且仅能含：昵称、年龄段、性别、性取向/u);
 });
 
 test('voice matching derives transient weights first, lets them override local weights, and never returns the voice input', async () => {
@@ -204,6 +215,11 @@ test('voice matching derives transient weights first, lets them override local w
     assert.match(candidateContext, /"keyword":"徒步","weight":4/u);
     assert.equal(JSON.stringify(result.draft).includes(voiceText), false);
     assert.deepEqual(Object.keys(result.draft), ['profile', 'explanation', 'matchScore']);
+    const keywordSystem = requests[0].messages.find((message) => message.role === 'system').content;
+    const candidateSystem = requests[1].messages.find((message) => message.role === 'system').content;
+    assert.match(keywordSystem, /语音匹配关键词 JSON 结构合同/u);
+    assert.match(keywordSystem, /keywordWeights 必须是 1–12 项数组/u);
+    assert.match(candidateSystem, /匹配候选公开资料 JSON 结构合同/u);
 });
 
 test('existing text mode is a transition alias for voice candidate matching', async () => {

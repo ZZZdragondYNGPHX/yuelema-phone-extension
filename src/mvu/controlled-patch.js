@@ -478,11 +478,18 @@ export function buildLikeMatchPatch(state, { npcUid } = {}) {
     const npcPublic = ownRecord(profile.公开资料);
     const sessionCounter = ownRecord(state.系统)?.UID计数器?.会话;
     const queue = arrayAt(state, '当前队列');
-    if (!relation || !playerPublic || !npcPublic || !queue || !Number.isInteger(sessionCounter) || sessionCounter < 0 || sessionCounter >= 999999) {
+    const favorites = arrayAt(state, '收藏角色UID');
+    if (!relation || !playerPublic || !npcPublic || !queue || !favorites || !Number.isInteger(sessionCounter) || sessionCounter < 0 || sessionCounter >= 999999) {
         return fail('like_match_state_invalid');
     }
     if (profile.成人验证 !== true || player?.成人验证 !== true || relation.状态 !== '陌生') return fail('npc_not_available_for_like');
-    if (queue.indexOf(npcUid) < 0) return fail('like_match_source_not_queued');
+    const queued = queue.includes(npcUid);
+    const favorited = favorites.includes(npcUid);
+    // A public card can remain visible in the favourites list after its candidate
+    // record was promoted. Liking that saved card is still a valid user action;
+    // arbitrary role-pool records remain unavailable because they are neither
+    // actively queued nor explicitly saved as favourites.
+    if (!queued && !favorited) return fail('like_match_source_not_available');
     if (!Number.isInteger(relation.全局账号表现) || relation.全局账号表现 < 0 || relation.全局账号表现 > 100
         || !Number.isInteger(profile.拒绝阈值) || profile.拒绝阈值 < 0 || profile.拒绝阈值 > 100) return fail('like_match_score_invalid');
     if (hasSessionForNpc(state, npcUid)) return fail('like_match_session_exists');
@@ -505,8 +512,10 @@ export function buildLikeMatchPatch(state, { npcUid } = {}) {
     } else {
         operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', '状态']), value: '已取消' });
     }
-    const removed = removeUidFromQueue(state, npcUid, operations);
-    if (!removed.ok) return removed;
+    if (queued) {
+        const removed = removeUidFromQueue(state, npcUid, operations);
+        if (!removed.ok) return removed;
+    }
     const preference = appendPreferenceWeightOperations(state, profile, 3, operations);
     if (!preference.ok) return preference;
     return success(operations);
@@ -568,6 +577,12 @@ export function buildControlledPatch(state, command) {
     }
 
     if (command.kind === 'dislike' || command.kind === 'refresh') {
+        const queue = arrayAt(state, '当前队列');
+        const favorites = arrayAt(state, '收藏角色UID');
+        if (!queue || !favorites) return fail('recommendation_list_missing');
+        const queued = queue.includes(uid);
+        const favorited = favorites.includes(uid);
+        if (!queued && !(command.kind === 'dislike' && favorited)) return fail('recommendation_source_not_available');
         const listName = command.kind === 'dislike' ? '不喜欢角色UID' : '冷却角色UID';
         const listed = addUidOnce(state, listName, uid, operations);
         if (!listed.ok) return listed;
@@ -575,9 +590,14 @@ export function buildControlledPatch(state, command) {
             const cooled = addUidOnce(state, '冷却角色UID', uid, operations);
             if (!cooled.ok) return cooled;
         }
-        const queueRemoval = removeUidFromQueue(state, uid, operations);
-        if (!queueRemoval.ok) return queueRemoval;
+        if (queued) {
+            const queueRemoval = removeUidFromQueue(state, uid, operations);
+            if (!queueRemoval.ok) return queueRemoval;
+        }
         if (command.kind === 'dislike') {
+            if (favorited) {
+                operations.push({ op: 'remove', path: encodeJsonPointer(['推荐', '收藏角色UID', String(favorites.indexOf(uid))]) });
+            }
             const preference = appendPreferenceWeightOperations(state, adult.value.profile, -3, operations);
             if (!preference.ok) return preference;
         }

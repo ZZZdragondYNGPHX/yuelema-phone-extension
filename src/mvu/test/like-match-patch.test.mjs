@@ -58,6 +58,33 @@ test('like records a refusal without creating a session when the configured thre
     assert.equal(validateControlledPatchAgainstState(before, result.value).ok, true);
 });
 
+test('a saved favourite can still be liked or disliked without a stale queue rejection', () => {
+    const likedState = state();
+    likedState.角色池.npc_case = likedState.推荐.临时候选池.npc_case;
+    delete likedState.推荐.临时候选池.npc_case;
+    likedState.推荐.当前队列 = [];
+    likedState.推荐.收藏角色UID = ['npc_case'];
+
+    const liked = buildControlledPatch(likedState, { kind: 'like', npcUid: 'npc_case' });
+    assert.equal(liked.ok, true);
+    assert.equal(liked.value.some((operation) => operation.op === 'move'), false);
+    assert.equal(liked.value.some((operation) => operation.path.startsWith('/推荐/当前队列/')), false);
+    assert.equal(liked.value.some((operation) => operation.path === '/玩家/推荐偏好/标签权重/电影' && operation.value === 3), true);
+    assert.equal(validateControlledPatchAgainstState(likedState, liked.value).ok, true);
+
+    const dislikedState = state();
+    dislikedState.角色池.npc_case = dislikedState.推荐.临时候选池.npc_case;
+    delete dislikedState.推荐.临时候选池.npc_case;
+    dislikedState.推荐.当前队列 = [];
+    dislikedState.推荐.收藏角色UID = ['npc_case'];
+    const disliked = buildControlledPatch(dislikedState, { kind: 'dislike', npcUid: 'npc_case' });
+    assert.equal(disliked.ok, true);
+    assert.equal(disliked.value.some((operation) => operation.path === '/推荐/收藏角色UID/0' && operation.op === 'remove'), true);
+    assert.equal(disliked.value.some((operation) => operation.path.startsWith('/推荐/当前队列/')), false);
+    assert.equal(disliked.value.some((operation) => operation.path === '/玩家/推荐偏好/标签权重/电影' && operation.value === -3), true);
+    assert.equal(validateControlledPatchAgainstState(dislikedState, disliked.value).ok, true);
+});
+
 test('forged session or score operation is rejected before the MVU parser', () => {
     const before = state();
     const result = buildLikeMatchPatch(before, { npcUid: 'npc_case' });

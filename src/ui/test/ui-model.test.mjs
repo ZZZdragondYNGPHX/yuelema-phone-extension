@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPhoneView, projectMatchView, projectPlayerPublicProfile, projectPublicProfile } from '../../ui-model.js';
+import { createPhoneView, describeActionFailure, projectMatchView, projectPlayerPublicProfile, projectPublicProfile } from '../../ui-model.js';
 
 function profile() {
     return {
@@ -64,6 +64,11 @@ test('unavailable read result never returns a raw state object', () => {
     assert.equal(view.status, 'unavailable');
     assert.equal(Object.hasOwn(view, 'state'), false);
     assert.equal(JSON.stringify(view).includes('secret'), false);
+});
+
+test('saved-card source failures stay user-facing and do not expose internal queue codes', () => {
+    assert.equal(describeActionFailure({ code: 'like_match_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
+    assert.equal(describeActionFailure({ code: 'recommendation_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
 });
 
 test('private chat view exposes only public profile and session-visible transcript', () => {

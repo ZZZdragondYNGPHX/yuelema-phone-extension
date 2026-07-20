@@ -36,6 +36,38 @@ test('recommendation context exposes only public player fields and bounded tag w
     assert.equal(context.tagWeights.电影, 2);
 });
 
+test('首页推荐以探索优先轮换本地偏好，并仅每三轮软性回访高权重标签', async () => {
+    const explorationState = state();
+    explorationState.系统 = { UID计数器: { 角色: 0 } };
+    const devicePersonalization = {
+        enabled: true,
+        keywordWeights: [{ keyword: '徒步', weight: 5 }, { keyword: '电影', weight: -3 }],
+    };
+    const exploration = buildRecommendationContext(explorationState, { devicePersonalization });
+    assert.deepEqual(exploration.tagWeights, { 徒步: 5, 电影: -3 }, '首页优先使用当前设备保存的偏好，而不是旧 MVU 偏好。');
+    assert.equal(exploration.recommendationPolicy.mode, 'exploration');
+    assert.deepEqual(exploration.recommendationPolicy.softPreferredTags, []);
+    assert.deepEqual(exploration.recommendationPolicy.suppressedTags, ['电影']);
+
+    const preferenceState = state();
+    preferenceState.系统 = { UID计数器: { 角色: 2 } };
+    let messages;
+    const result = await generateRecommendationCandidate({
+        state: preferenceState,
+        settingsStore: {
+            snapshot: () => ({ personalization: devicePersonalization }),
+            resolveFunction: () => ({ connectionPreset, promptPreset: { enabled: true, content: '保持轻快、真实的都市语气。' } }),
+        },
+        llmClient: { async chat(request) { messages = request.messages; return { text: JSON.stringify(adultCandidate()) }; } },
+    });
+    assert.equal(result.ok, true);
+    const system = messages.find((message) => message.role === 'system').content;
+    assert.match(system, /本轮系统推荐策略为“偏好回访”/u);
+    assert.match(system, /本轮探索主题/u);
+    assert.match(system, /本轮可软性参考的高权重标签：徒步/u);
+    assert.match(system, /最多让 1–2 项出现在公开标签中/u);
+});
+
 test('fast recommender validates one model candidate before any MVU write boundary', async () => {
     let requestInput;
     let messages;

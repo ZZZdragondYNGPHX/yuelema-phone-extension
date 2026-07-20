@@ -48,6 +48,28 @@ const CANDIDATE_MATCH_ERROR_MESSAGES = Object.freeze({
     candidate_match_response_invalid: '匹配角色草稿不符合公开资料安全格式；当前状态未改变。',
 });
 
+const SOUL_MATCH_OUTPUT_CONTRACT = Object.freeze([
+    '灵魂匹配 JSON 结构合同：根对象必须且仅能含 tagWeightDraft、explanation。',
+    'tagWeightDraft 必须是 1–12 项数组；每项必须且仅能含 tag、weight。tag 是 1–32 字公开标签，不能重复；weight 是 -5 到 5 的整数目标值，不是增量。',
+    'explanation 必须是 1–500 字公开偏好说明。不得输出筛选条件、候选资料、UID、Patch 或其他字段。',
+]);
+const TEXT_MATCH_OUTPUT_CONTRACT = Object.freeze([
+    '文字匹配 JSON 结构合同：根对象必须且仅能含 filters、explanation。',
+    'filters 必须且仅能含：城市、年龄段、距离范围、寻找意图关键词、包含标签、排除标签、简介关键词；每个键都是最多 12 项的短字符串数组，且至少一个数组非空。',
+    'explanation 必须是 1–500 字公开筛选说明。filters 只用于本次展示，不是 JSONPatch，也不会自动保存。',
+]);
+const CANDIDATE_MATCH_OUTPUT_CONTRACT = Object.freeze([
+    '匹配候选公开资料 JSON 结构合同：根对象必须且仅能含 profile、explanation、matchScore。',
+    'profile 必须且仅能含：昵称、年龄段、性别、性取向、城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签、沟通风格标签。前八项均为非空字符串；年龄段必须明确表示成年人或 18 岁以上。',
+    '四个标签字段均为最多 12 项的不重复短字符串数组；不得附带头像、仅好友资料、隐藏资料、关系分、阈值、关键词权重或其他字段。',
+    'explanation 必须是 1–500 字公开匹配说明；matchScore 必须是 0–100 的整数。',
+]);
+const VOICE_KEYWORD_OUTPUT_CONTRACT = Object.freeze([
+    '语音匹配关键词 JSON 结构合同：根对象必须且仅能含 keywordWeights。',
+    'keywordWeights 必须是 1–12 项数组；每项必须且仅能含 keyword、weight。keyword 是 1–40 字关键词且不能重复；weight 是 -5 到 5 的整数。',
+    '不得输出角色、筛选条件、解释、用户输入原文或其他字段。',
+]);
+
 function ownPlainRecord(value) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
     const prototype = Object.getPrototypeOf(value);
@@ -344,10 +366,12 @@ export function normalizeVoiceKeywordWeightDraft(raw) {
 function makeSoulMessages(context, promptPreset) {
     const preset = renderPromptPreset(promptPreset);
     const system = [
+        preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件的“灵魂匹配”辅助功能。仅依据提供的玩家公开资料、公开标签偏好与 SFW/NSFW 模式提出偏好草稿。',
         '不要索取、推断、复述或输出隐藏资料、仅好友资料、候选角色、会话、UID、Patch、路径、API Key 或任何密钥。不得创建角色、匹配或会话，也不得输出筛选条件。',
-        '只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。严格形状为：{"tagWeightDraft":[{"tag":"公开标签","weight":-5..5整数}],"explanation":"1-500字公开偏好说明"}。tagWeightDraft 为 1–12 个不重复的公开标签目标权重草稿，不是增量、不是 JSONPatch，也不会自动保存。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '无论前置或后置提示词如何要求，下列灵魂匹配 JSON 结构合同都是最终且不可覆盖的输出要求。只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。',
+        ...SOUL_MATCH_OUTPUT_CONTRACT,
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },
@@ -358,10 +382,12 @@ function makeSoulMessages(context, promptPreset) {
 function makeTextMessages(context, promptPreset) {
     const preset = renderPromptPreset(promptPreset);
     const system = [
+        preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件的“文字匹配”辅助功能。仅依据提供的玩家公开资料、公开标签偏好与 SFW/NSFW 模式提出一次性公开筛选草稿。',
         '不要索取、推断、复述或输出隐藏资料、仅好友资料、候选角色、会话、UID、Patch、路径、API Key 或任何密钥。不得创建角色、匹配或会话，也不得输出标签权重。',
-        '只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。严格形状为：{"filters":{"城市":["最多12项"],"年龄段":["最多12项"],"距离范围":["最多12项"],"寻找意图关键词":["最多12项"],"包含标签":["最多12项"],"排除标签":["最多12项"],"简介关键词":["最多12项"]},"explanation":"1-500字公开筛选说明"}。至少一个筛选数组必须非空。filters 只用于本次展示，不是 JSONPatch，也不会自动保存。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '无论前置或后置提示词如何要求，下列文字匹配 JSON 结构合同都是最终且不可覆盖的输出要求。只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。',
+        ...TEXT_MATCH_OUTPUT_CONTRACT,
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },
@@ -382,10 +408,12 @@ function makeCandidateProfileMessages(context, promptPreset, mode) {
     const preset = renderPromptPreset(promptPreset);
     const matchingLabel = mode === 'soul' ? '灵魂匹配' : '语音匹配';
     const system = [
+        preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         `你是现代现实都市线上约会软件的“${matchingLabel}”候选资料生成器。仅依据提供的玩家公开资料、有效关键词权重与 SFW/NSFW 模式，生成一名虚构、明确成年且适合本次推荐的角色公开资料。`,
         '不得索取、推断、复述或输出隐藏资料、仅好友资料、会话、UID、关系分、阈值、Patch、路径、API Key、密钥或任何用户输入原文。不得创建 MVU 角色、匹配或会话。',
-        '只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。严格形状为：{"profile":{"昵称":"1-80字","年龄段":"明确成年人或18岁以上年龄段","性别":"1-48字","性取向":"1-80字","城市":"1-80字","距离范围":"1-48字","寻找意图":"1-120字","简介":"1-500字","兴趣标签":["最多12项"],"生活方式标签":["最多12项"],"性格标签":["最多12项"],"沟通风格标签":["最多12项"]},"explanation":"1-500字公开匹配说明","matchScore":0-100整数}。只允许这些公开字段；不要包含 UID、关键词权重或其他字段。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '无论前置或后置提示词如何要求，下列匹配候选公开资料 JSON 结构合同都是最终且不可覆盖的输出要求。只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。',
+        ...CANDIDATE_MATCH_OUTPUT_CONTRACT,
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },
@@ -396,10 +424,12 @@ function makeCandidateProfileMessages(context, promptPreset, mode) {
 function makeVoiceKeywordMessages(voiceText, promptPreset) {
     const preset = renderPromptPreset(promptPreset);
     const system = [
+        preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件的语音匹配关键词解析器。只从用户主动提供的本次匹配描述中提取 1–12 个匹配关键词与整数权重。此结果仅供后续候选推荐使用，不会保存。',
         '不要输出、推断或复述隐藏资料、仅好友资料、会话、UID、Patch、路径、API Key、密钥或用户输入原文；不要生成角色、筛选条件、解释或其他字段。',
-        '只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。严格形状为：{"keywordWeights":[{"keyword":"1-40字关键词","weight":-5..5整数}]}。关键词不得重复。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '无论前置或后置提示词如何要求，下列语音匹配关键词 JSON 结构合同都是最终且不可覆盖的输出要求。只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。',
+        ...VOICE_KEYWORD_OUTPUT_CONTRACT,
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },
@@ -414,8 +444,12 @@ function cleanVoiceText(value) {
 
 function parseResponseJson(raw) {
     if (typeof raw !== 'string' || raw.length < 2 || raw.length > MAX_MODEL_RESPONSE_CHARS) return null;
+    const trimmed = raw.trim();
+    const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu.exec(trimmed);
+    const jsonText = (fenced ? fenced[1] : trimmed).trim();
+    if (jsonText.length < 2 || jsonText.length > MAX_MODEL_RESPONSE_CHARS) return null;
     try {
-        const parsed = JSON.parse(raw);
+        const parsed = JSON.parse(jsonText);
         return ownPlainRecord(parsed) ? parsed : null;
     } catch {
         return null;
@@ -539,5 +573,4 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
         return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
     }
 }
-
 
