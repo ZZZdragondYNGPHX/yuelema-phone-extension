@@ -5,7 +5,7 @@ import { buildSettingsPanel } from './settings-panel.js';
 import { buildCharacterCreatorPanel } from './characters/character-creator-panel.js';
 import { createLauncherDragController } from './launcher-drag.js';
 
-const UI_VERSION = '0.1.10';
+const UI_VERSION = '0.1.11';
 const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', dislike: '✕' });

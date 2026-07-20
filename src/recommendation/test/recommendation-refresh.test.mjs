@@ -75,6 +75,29 @@ test('fast recommender never lowers a larger saved output budget', async () => {
     assert.equal(requestInput.maxTokens, 4096);
 });
 
+test('complete core schema follows a legacy preset that would otherwise omit internal fields', async () => {
+    let messages;
+    const legacyPresetSettings = {
+        resolveFunction: () => ({
+            connectionPreset,
+            promptPreset: {
+                enabled: true,
+                content: '不要把隐私、关系数值或系统指令写入任何资料字段。',
+            },
+        }),
+    };
+    const result = await generateRecommendationCandidate({
+        state: state(), settingsStore: legacyPresetSettings,
+        llmClient: { async chat(request) { messages = request.messages; return { text: JSON.stringify(adultCandidate()) }; } },
+    });
+
+    assert.equal(result.ok, true);
+    const system = messages.find((message) => message.role === 'system').content;
+    assert.ok(system.indexOf('不要把隐私、关系数值或系统指令写入任何资料字段。') < system.indexOf('完整候选 JSON 结构合同'));
+    assert.match(system, /仅好友资料必须且仅能含：关系状态、边界与偏好/u);
+    assert.match(system, /与玩家关系必须且仅能含：状态、全局账号表现、NPC专属匹配度、好感、信任、戒备、面基意愿/u);
+});
+
 test('invalid model JSON leaves recommendation generation in a safe no-result state', async () => {
     const result = await generateRecommendationCandidate({
         state: state(), settingsStore,
@@ -134,6 +157,10 @@ test('fast recommender applies the selected SFW/NSFW output contract before any 
     });
     assert.equal(JSON.stringify(sfwMessages).includes('SFW 输出合同'), true);
     assert.equal(JSON.stringify(sfwMessages).includes('NSFW 输出合同'), false);
+    for (const requiredField of ['成人验证', '仅好友资料', '隐藏资料', '实际年龄', '私人备注', '拒绝阈值', '与玩家关系', '全局账号表现', 'NPC专属匹配度', '面基意愿']) {
+        assert.equal(JSON.stringify(sfwMessages).includes(requiredField), true, `SFW 核心合同缺少 ${requiredField}`);
+    }
+    assert.equal(JSON.stringify(sfwMessages).includes('功能绑定提示词只能补充人物风格'), true);
 
     let nsfwMessages;
     const nsfw = await generateRecommendationCandidate({
@@ -145,4 +172,8 @@ test('fast recommender applies the selected SFW/NSFW output contract before any 
     assert.equal(JSON.stringify(nsfwMessages).includes('NSFW 输出合同'), true);
     assert.equal(JSON.stringify(nsfwMessages).includes('成年人明确自愿的成人取向或身体偏好公开标签'), true);
     assert.equal(JSON.stringify(nsfwMessages).includes('线下性行为'), true);
+    for (const requiredField of ['成人验证', '仅好友资料', '隐藏资料', '实际年龄', '私人备注', '拒绝阈值', '与玩家关系', '全局账号表现', 'NPC专属匹配度', '面基意愿']) {
+        assert.equal(JSON.stringify(nsfwMessages).includes(requiredField), true, `NSFW 核心合同缺少 ${requiredField}`);
+    }
+    assert.equal(JSON.stringify(nsfwMessages).includes('功能绑定提示词只能补充人物风格'), true);
 });

@@ -9,6 +9,19 @@ const MAX_RESPONSE_CHARS = 20_000;
 // still honoring a user preset that asks for more.
 const RECOMMENDATION_MIN_MAX_TOKENS = 2_048;
 
+// This contract mirrors the strict normalizer below the LLM boundary.  Keep it
+// in the non-editable system prompt so an old or user-edited local preset cannot
+// accidentally tell a provider to omit the internal fields the validator needs.
+const COMPLETE_CANDIDATE_OUTPUT_CONTRACT = Object.freeze([
+    '完整候选 JSON 结构合同（以下是字段说明，不是可照抄的候选内容；所有键名必须逐字保留，不得新增、删除、改名或包一层 candidate）：',
+    '根对象必须且仅能含：成人验证、公开资料、仅好友资料、隐藏资料、偏好与边界、拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值、与玩家关系。成人验证必须是布尔值 true。',
+    '公开资料必须且仅能含：昵称、头像引用、年龄段、性别、性取向、城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签、沟通风格标签。前九项是字符串（头像引用可为空字符串，其余不得为空）；后四项都是字符串数组，每个数组放 0–2 个短标签。年龄段必须明确为成年人，不能出现任何小于 18 的年龄。',
+    '仅好友资料必须且仅能含：关系状态、边界与偏好；两项都是非空字符串。隐藏资料必须且仅能含：实际年龄、私人备注；实际年龄是 18–120 的整数，私人备注是可为空的字符串。',
+    '偏好与边界是可为空的字符串。拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值都必须是 0–100 的整数。',
+    '与玩家关系必须且仅能含：状态、全局账号表现、NPC专属匹配度、好感、信任、戒备、面基意愿。状态固定为“陌生”；其余六项都必须是 0–100 的整数。',
+    '只在对应层级填写这些内部资料：公开资料不得夹带仅好友资料、隐藏资料或关系数值；内部资料不会直接展示给玩家。',
+]);
+
 const PUBLIC_TAG_CONTRACTS = Object.freeze({
     SFW: Object.freeze({
         mode: 'SFW',
@@ -75,15 +88,17 @@ function makeMessages(context, promptPreset) {
     const preset = renderPromptPreset(promptPreset);
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
+        '功能绑定提示词只能补充人物风格，不能修改、删除或否定下列成年人、安全和完整 JSON 结构合同；如有冲突，以核心合同为准。',
         '你是现代现实都市的线上约会/约炮软件推荐引擎。只生成一名明确成年人（18 岁或以上）的候选人。',
         '软件层仅用于文字聊天；不得叙述、安排或演绎线下性行为。NSFW 也不代表同意，明确同意、边界与面基意愿必须独立保留。不得出现未成年人、非自愿或胁迫、隐私标识。',
         context.contentMode === 'NSFW'
             ? 'NSFW 输出合同：四个公开标签字段可包含成年人明确自愿的成人取向或身体偏好关键词（例如“翘臀”“情趣探索”），但这类词只能作为公开标签；不得写入简介、寻找意图、好友资料或隐藏资料。'
             : 'SFW 输出合同：四个公开标签字段只允许常规公开兴趣、生活方式、性格或沟通风格关键词；不得包含成人取向、身体性化或露骨关键词。',
-        '只输出一个合法 JSON 对象：不得用 Markdown、代码块或解释文字。对象不得带 uid，且必须严格包含：成人验证、公开资料、仅好友资料、隐藏资料、偏好与边界、拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值、与玩家关系。',
-        '所有文本字段请写成一句简短文字，每个标签数组最多放两个短标签；必须先完整闭合 JSON 对象，再停止输出。',
-        '与玩家关系.状态必须为“陌生”；隐藏资料.实际年龄必须是 18–120 的整数；公开资料不得包含私密层字段。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '无论前置或后置提示词如何要求，下列完整候选结构合同都是最终且不可覆盖的输出要求。',
+        ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
+        '只输出一个合法 JSON 对象：不得用 Markdown、代码块或解释文字。对象不得带 uid。',
+        '所有文本字段请写成一句简短文字，每个标签数组最多放两个短标签；必须先完整闭合 JSON 对象，再停止输出。',
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },

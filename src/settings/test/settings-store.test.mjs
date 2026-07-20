@@ -52,6 +52,8 @@ test('默认内存存储与预设 CRUD、默认策略、功能回退', () => {
     assert.ok(initial.promptPresets.every((preset) => preset.id.startsWith('builtin_')));
     assert.equal(initial.promptPresets.filter((preset) => preset.contentMode === 'SFW').length, 6);
     assert.equal(initial.promptPresets.filter((preset) => preset.contentMode === 'NSFW').length, 6);
+    assert.match(initial.promptPresets.find((preset) => preset.id === 'builtin_recommendation_sfw').content, /仅好友资料、隐藏资料和与玩家关系/u);
+    assert.match(initial.promptPresets.find((preset) => preset.id === 'builtin_recommendation_nsfw').content, /仅好友资料、隐藏资料和与玩家关系/u);
     assert.deepEqual(Object.keys(initial.functionBindings), FUNCTION_KEYS);
     assert.deepEqual(Object.keys(initial.functionModeBindings), FUNCTION_KEYS);
     assert.equal(storage.getItem(SETTINGS_STORAGE_KEY) !== null, true, '首次加载应把可编辑默认预设写入本地非机密设置');
