@@ -12,7 +12,7 @@ export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
 export const MAX_PROMPT_PRESETS = 128;
-export const MAX_PERSONALIZATION_KEYWORDS = 64;
+export const MAX_PERSONALIZATION_KEYWORDS = 256;
 export const FUNCTION_KEYS = Object.freeze([
     'chat',
     'character_authoring',
@@ -637,6 +637,29 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
     }
 
     /**
+     * Adds newly observed public candidate tags to the device-local learning
+     * library at the neutral 0 weight. Existing manual or learned weights are
+     * never overwritten; a disabled personalization feature remains untouched.
+     */
+    function ensurePersonalizationKeywordWeights(keywords) {
+        if (!Array.isArray(keywords)) fail('INVALID_PERSONALIZATION', '关键词列表必须是数组。');
+        const normalizedKeywords = normalizeKeywordWeights(keywords.map((keyword) => ({ keyword, weight: 0 })))
+            .map((item) => item.keyword);
+        const next = cloneDocument(current());
+        if (!next.personalization.enabled || normalizedKeywords.length === 0) return cloneDocument(next);
+
+        const knownKeywords = new Set(next.personalization.keywordWeights.map((item) => item.keyword.toLowerCase()));
+        let changed = false;
+        for (const keyword of normalizedKeywords) {
+            if (knownKeywords.has(keyword.toLowerCase()) || next.personalization.keywordWeights.length >= MAX_PERSONALIZATION_KEYWORDS) continue;
+            next.personalization.keywordWeights.push({ keyword, weight: 0 });
+            knownKeywords.add(keyword.toLowerCase());
+            changed = true;
+        }
+        return changed ? persist(next) : cloneDocument(next);
+    }
+
+    /**
      * Applies one locally derived public-tag preference delta after a successful
      * controlled recommendation action. It deliberately touches only this
      * browser's personalization cache, never connection settings or MVU data.
@@ -707,6 +730,7 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         resolveFunction,
         setPersonalizationEnabled,
         setPersonalizationKeywordWeights,
+        ensurePersonalizationKeywordWeights,
         applyPersonalizationKeywordWeightDelta,
         exportJson,
         importJson,

@@ -34,12 +34,7 @@ function actionKey(kind, npcUid) {
 }
 
 /** Extracts only public, visible tag text for the device-local recommender. */
-function publicCandidateTags(state, npcUid) {
-    if (typeof npcUid !== 'string' || !npcUid) return [];
-    const recommendation = state && typeof state === 'object' ? state.推荐 : null;
-    if (!recommendation || typeof recommendation !== 'object') return [];
-    const candidate = recommendation.临时候选池?.[npcUid] ?? state?.角色池?.[npcUid];
-    const profile = candidate && typeof candidate === 'object' ? candidate.公开资料 : null;
+function publicProfileTags(profile) {
     if (!profile || typeof profile !== 'object') return [];
 
     const seen = new Set();
@@ -58,11 +53,30 @@ function publicCandidateTags(state, npcUid) {
     return tags;
 }
 
+function publicCandidateTags(state, npcUid) {
+    if (typeof npcUid !== 'string' || !npcUid) return [];
+    const recommendation = state && typeof state === 'object' ? state.推荐 : null;
+    if (!recommendation || typeof recommendation !== 'object') return [];
+    const candidate = recommendation.临时候选池?.[npcUid] ?? state?.角色池?.[npcUid];
+    return publicProfileTags(candidate?.公开资料);
+}
+
 function syncDevicePersonalization(settingsStore, state, kind, npcUid) {
     const delta = PERSONALIZATION_DELTAS[kind];
     if (!delta || typeof settingsStore?.applyPersonalizationKeywordWeightDelta !== 'function') return false;
     try {
         settingsStore.applyPersonalizationKeywordWeightDelta(publicCandidateTags(state, npcUid), delta);
+        return true;
+    } catch {
+        // A local cache failure must never invalidate an already committed MVU action.
+        return false;
+    }
+}
+
+function seedGeneratedCandidateKeywords(settingsStore, candidate) {
+    if (typeof settingsStore?.ensurePersonalizationKeywordWeights !== 'function') return false;
+    try {
+        settingsStore.ensurePersonalizationKeywordWeights(publicProfileTags(candidate?.公开资料));
         return true;
     } catch {
         // A local cache failure must never invalidate an already committed MVU action.
@@ -149,7 +163,9 @@ export function createActionBridge({
                 candidate: generated.candidate,
             });
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
-            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            if (applied.ok) seedGeneratedCandidateKeywords(settingsStore, generated.candidate);
+            return applied;
         } finally {
             pending.delete(key);
         }
@@ -176,7 +192,9 @@ export function createActionBridge({
             if (!secondRead.ok) return secondRead;
             const built = buildRecommendationInitialCandidatePatch(secondRead.state, { candidate: generated.candidate });
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
-            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            if (applied.ok) seedGeneratedCandidateKeywords(settingsStore, generated.candidate);
+            return applied;
         } finally {
             pending.delete(key);
         }

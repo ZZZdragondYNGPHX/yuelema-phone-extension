@@ -797,7 +797,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                 sectionHeading('✦', '个性化内容推荐管理'),
                 element('p', {
                     className: 'yl-phone-page-description',
-                    text: '此处保存当前设备的推荐偏好。开启后，首页刷新会以探索优先的方式间隔性参考这些权重；不会改变模型连接、提示词或其他聊天/MVU 数据。',
+                    text: '此处保存当前设备的开放关键词学习库。首页刷新会接收全部关键词及权重，并在成功生成后把新公开标签以权重 0 自动补入；不会改变模型连接、提示词或其他聊天/MVU 数据。',
                 }),
             ]);
             const enabled = element('input', {
@@ -862,7 +862,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             sectionHeading('✦', '个性化内容偏好'),
             element('p', {
                 className: 'yl-phone-page-description',
-                text: '在此编辑当前设备的关键词权重；首页刷新会间隔性参考高权重标签，同时保留探索性，不会改变连接、提示词或其他聊天数据。',
+                text: '在此编辑当前设备的关键词权重；正权重会提高相关标签自然出现的概率，负权重会降低概率，0 表示尚未学习。AI 可自由生成新标签，成功后会自动以 0 收录。',
             }),
         ]);
         if (!personalization.enabled) {

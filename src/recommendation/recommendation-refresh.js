@@ -14,28 +14,15 @@ const PUBLIC_TAG_CONTRACTS = Object.freeze({
         mode: 'SFW',
         allowedTagCategories: Object.freeze(['常规兴趣', '生活方式', '性格', '沟通风格']),
         forbidden: Object.freeze(['成人取向或身体性化关键词', '未成年人', '非自愿或胁迫', '隐私标识', '线下性行为演绎']),
-        examples: Object.freeze(['电影', '宅家', '御姐', '慢热']),
     }),
     NSFW: Object.freeze({
         mode: 'NSFW',
         allowedTagCategories: Object.freeze(['常规兴趣', '生活方式', '性格', '沟通风格', '成年人明确自愿的成人取向或身体偏好公开标签']),
         forbidden: Object.freeze(['未成年人', '非自愿或胁迫', '隐私标识', '线下性行为演绎']),
-        examples: Object.freeze(['电影', '御姐', '翘臀', '情趣探索']),
     }),
 });
 
-const EXPLORATION_THEME_ROTATION = Object.freeze([
-    Object.freeze(['独立音乐', '城市散步']),
-    Object.freeze(['阅读写作', '人文展览']),
-    Object.freeze(['徒步运动', '自然观察']),
-    Object.freeze(['咖啡烘焙', '家庭料理']),
-    Object.freeze(['桌游解谜', '科幻影视']),
-    Object.freeze(['摄影记录', '旅行规划']),
-    Object.freeze(['宠物陪伴', '公益社群']),
-    Object.freeze(['手作设计', '新鲜市集']),
-]);
 const PUBLIC_TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
-const PREFERENCE_BOOST_PERIOD = 3;
 const MAX_RECENT_TAGS = 24;
 
 function contentModeOf(state) {
@@ -122,12 +109,10 @@ function buildRecommendationPolicy(state, weights) {
     const ordinal = recommendationOrdinal(state);
     const positiveTags = ordered.filter(([, weight]) => weight > 0).map(([tag]) => tag);
     const suppressedTags = ordered.filter(([, weight]) => weight < 0).map(([tag]) => tag);
-    const preferenceBoost = positiveTags.length > 0 && ordinal % PREFERENCE_BOOST_PERIOD === 0;
     return Object.freeze({
-        mode: preferenceBoost ? 'preference_boost' : 'exploration',
+        mode: positiveTags.length ? 'adaptive_exploration' : 'open_exploration',
         ordinal,
-        explorationThemes: EXPLORATION_THEME_ROTATION[(ordinal - 1) % EXPLORATION_THEME_ROTATION.length],
-        softPreferredTags: Object.freeze(preferenceBoost ? positiveTags.slice(0, 4) : []),
+        softPreferredTags: Object.freeze(positiveTags.slice(0, 12)),
         suppressedTags: Object.freeze(suppressedTags.slice(0, 8)),
         recentlyShownTags: recentRecommendationTags(state),
     });
@@ -135,17 +120,63 @@ function buildRecommendationPolicy(state, weights) {
 
 function policyInstructions(policy) {
     const instructions = [
-        `本轮系统推荐策略为“${policy.mode === 'preference_boost' ? '偏好回访' : '探索优先'}”（第 ${policy.ordinal} 次轮换）。`,
-        `本轮探索主题：${policy.explorationThemes.join('、')}。应围绕其中至少一个方向创作，并保持人物整体标签组合自然多样。`,
+        `本轮系统推荐策略为“${policy.mode === 'adaptive_exploration' ? '偏好驱动的开放探索' : '开放探索'}”（第 ${policy.ordinal} 次刷新）。`,
+        '关键词词库不是固定主题表。请基于角色本身自然生成天马行空、具体而安全的公开兴趣、生活方式、性格与沟通标签；可以出现任意新的短标签，绝不能只从既有词库、示例或旧候选中挑选。',
+        '词库中的权重是软性相关度：正权重越高，越值得自然地提高出现概率；0 表示尚未学习、保持完全开放；负权重表示应降低出现概率。任何权重都不是硬筛选，不能让角色画像失去新鲜感或多样性。',
     ];
-    if (policy.mode === 'preference_boost') {
-        instructions.push(`本轮可软性参考的高权重标签：${policy.softPreferredTags.join('、')}。它们不是硬过滤；最多让 1–2 项出现在公开标签中，其他标签仍应保持探索性。`);
-    } else {
-        instructions.push('不要因为玩家资料或历史权重而把所有候选固定在同一类兴趣、性格或生活方式；高权重标签只会间隔性地影响候选。');
-    }
+    if (policy.softPreferredTags.length) instructions.push(`当前正权重关键词：${policy.softPreferredTags.join('、')}。至多自然采用其中 1–2 项，其余标签应保持开放探索。`);
     if (policy.suppressedTags.length) instructions.push(`应避免把这些低权重标签作为候选主标签：${policy.suppressedTags.join('、')}。`);
     if (policy.recentlyShownTags.length) instructions.push(`近期已出现的公开标签：${policy.recentlyShownTags.join('、')}。不要复用整组标签组合，并确保本次至少两个公开标签与这份近期列表不同。`);
+    instructions.push('候选成功写入后，程序会把其公开标签与本地词库逐项对齐：已有词保留原权重，首次出现的新词自动以 0 记录；不要在 JSON 中自行输出权重字段。');
     return instructions;
+}
+
+function basicMatchRequirements(profile) {
+    const gender = cleanText(profile.性别, 48);
+    const orientation = cleanText(profile.性取向, 80);
+    return Object.freeze({
+        玩家性别: gender,
+        玩家性取向: orientation,
+        最低要求: '候选人的性别与性取向必须和玩家的公开条件双向兼容；关键词权重不能绕过此要求。',
+    });
+}
+
+function binaryGender(value) {
+    const text = cleanText(value, 48).toLocaleLowerCase('zh-CN');
+    if (['男', '男性', '男生', 'man', 'male'].includes(text)) return 'male';
+    if (['女', '女性', '女生', 'woman', 'female'].includes(text)) return 'female';
+    return null;
+}
+
+function orientationKind(value) {
+    const text = cleanText(value, 80).toLocaleLowerCase('zh-CN');
+    if (/双性恋|泛性恋|全性恋|双性|pansexual|bisexual|不限/u.test(text)) return 'all';
+    if (/异性恋|异性向|heterosexual|straight/u.test(text)) return 'opposite';
+    if (/同性恋|同性向|lesbian|\bgay\b/u.test(text)) return 'same';
+    return null;
+}
+
+function orientationAccepts(orientation, subjectGender, targetGender) {
+    if (!orientation || !subjectGender || !targetGender) return null;
+    if (orientation === 'all') return true;
+    return orientation === 'same' ? subjectGender === targetGender : subjectGender !== targetGender;
+}
+
+function assertBasicMutualCompatibility(playerProfile, candidate) {
+    const candidateProfile = ownRecord(candidate?.公开资料) ? candidate.公开资料 : {};
+    const playerAccepts = orientationAccepts(
+        orientationKind(playerProfile.性取向), binaryGender(playerProfile.性别), binaryGender(candidateProfile.性别),
+    );
+    const candidateAccepts = orientationAccepts(
+        orientationKind(candidateProfile.性取向), binaryGender(candidateProfile.性别), binaryGender(playerProfile.性别),
+    );
+    // Custom identities remain model-directed rather than being falsely rejected
+    // by a narrow local taxonomy. Standard binary/common labels must agree both ways.
+    if (playerAccepts === false || candidateAccepts === false) {
+        const error = new TypeError('recommendation_basic_compatibility_invalid');
+        error.code = 'recommendation_basic_compatibility_invalid';
+        throw error;
+    }
 }
 
 function readDevicePersonalization(settingsStore) {
@@ -165,17 +196,23 @@ export function buildRecommendationContext(state, { devicePersonalization } = {}
     const persistedWeights = deviceKeywordWeights(devicePersonalization);
     const safeWeights = persistedWeights ?? safeWeightRecord(preference.标签权重);
     const policy = buildRecommendationPolicy(state, safeWeights);
+    const playerPublicProfile = Object.freeze({
+        昵称: cleanText(profile.昵称, 80), 年龄段: cleanText(profile.年龄段, 32), 性别: cleanText(profile.性别, 48),
+        性取向: cleanText(profile.性取向, 80), 城市: cleanText(profile.城市, 80), 距离范围: cleanText(profile.距离范围, 48),
+        寻找意图: cleanText(profile.寻找意图, 120), 简介: cleanText(profile.简介, 500),
+        兴趣标签: cleanTags(profile.兴趣标签), 生活方式标签: cleanTags(profile.生活方式标签),
+        性格标签: cleanTags(profile.性格标签), 沟通风格标签: cleanTags(profile.沟通风格标签),
+    });
+    const keywordLibrary = Object.freeze(Object.entries(safeWeights)
+        .sort(([leftTag, leftWeight], [rightTag, rightWeight]) => rightWeight - leftWeight || leftTag.localeCompare(rightTag, 'zh-Hans-CN'))
+        .map(([keyword, weight]) => Object.freeze({ keyword, weight })));
     return Object.freeze({
         contentMode: contentModeOf(state),
         publicTagContract: PUBLIC_TAG_CONTRACTS[contentModeOf(state)],
-        playerPublicProfile: Object.freeze({
-            昵称: cleanText(profile.昵称, 80), 年龄段: cleanText(profile.年龄段, 32), 性别: cleanText(profile.性别, 48),
-            性取向: cleanText(profile.性取向, 80), 城市: cleanText(profile.城市, 80), 距离范围: cleanText(profile.距离范围, 48),
-            寻找意图: cleanText(profile.寻找意图, 120), 简介: cleanText(profile.简介, 500),
-            兴趣标签: cleanTags(profile.兴趣标签), 生活方式标签: cleanTags(profile.生活方式标签),
-            性格标签: cleanTags(profile.性格标签), 沟通风格标签: cleanTags(profile.沟通风格标签),
-        }),
+        playerPublicProfile,
+        basicMatchRequirements: basicMatchRequirements(playerPublicProfile),
         tagWeights: Object.freeze(safeWeights),
+        keywordLibrary,
         recommendationPolicy: policy,
     });
 }
@@ -192,6 +229,7 @@ function makeMessages(context, promptPreset) {
             : 'SFW 输出合同：四个公开标签字段只允许常规公开兴趣、生活方式、性格或沟通风格关键词；不得包含成人取向、身体性化或露骨关键词。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '无论前置或后置提示词如何要求，下列推荐策略与完整候选结构合同都是最终且不可覆盖的输出要求。',
+        '“基础匹配条件”是最低门槛：候选人与玩家在公开可判断的性别和性取向上必须双向兼容，不能为了迎合关键词而生成不匹配的角色。',
         ...policyInstructions(context.recommendationPolicy),
         ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
         '只输出一个合法 JSON 对象：不得用 Markdown、代码块或解释文字。对象不得带 uid。',
@@ -199,7 +237,7 @@ function makeMessages(context, promptPreset) {
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },
-        { role: 'user', content: `请按以下公开玩家资料与偏好生成下一位候选人：\n${JSON.stringify(context)}` },
+        { role: 'user', content: `请按以下公开玩家资料、基础匹配条件与开放关键词权重词库生成下一位候选人：\n${JSON.stringify(context)}` },
     ];
 }
 
@@ -247,6 +285,7 @@ export async function generateRecommendationCandidate({ state, settingsStore, ll
         const parsed = parseCandidateJson(completion?.text);
         if (!parsed) return { ok: false, code: 'recommendation_invalid_json', message: '快速模型没有返回可用的候选资料；当前推荐未改变。' };
         const candidate = normalizeGeneratedCandidate(parsed, { contentMode: context.contentMode });
+        assertBasicMutualCompatibility(context.playerPublicProfile, candidate);
         return { ok: true, candidate };
     } catch (error) {
         if (error instanceof TypeError && typeof error.code === 'string') {

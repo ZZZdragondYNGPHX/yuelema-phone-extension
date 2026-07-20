@@ -211,13 +211,17 @@ test('invalid generated candidate performs no MVU write and leaves recommendatio
     const before = structuredClone(initialState);
     const { mvu, calls, data } = createMvu({ initialState });
     const emitted = [];
+    const seededKeywords = [];
     const underage = adultCandidate();
     underage.隐藏资料.实际年龄 = 17;
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null },
         mvu,
         eventEmit: async (...args) => { emitted.push(args); },
-        settingsStore,
+        settingsStore: {
+            ...settingsStore,
+            ensurePersonalizationKeywordWeights(tags) { seededKeywords.push(tags); },
+        },
         llmClient: { async chat() { return { text: JSON.stringify(underage) }; } },
     });
 
@@ -227,16 +231,21 @@ test('invalid generated candidate performs no MVU write and leaves recommendatio
     assert.deepEqual(calls.map(([name]) => name), ['get']);
     assert.equal(calls.some(([name]) => name === 'parse' || name === 'replace'), false);
     assert.deepEqual(emitted, []);
+    assert.deepEqual(seededKeywords, [], '模型或 MVU 事务未成功时不得提前污染本地关键词词库。');
     assert.deepEqual(data.stat_data, before);
 });
 
 test('successful generated recommendation runs get to parse to replace to event through the controlled boundary', async () => {
     const { mvu, calls } = createMvu({ initialState: recommendationState() });
+    const seededKeywords = [];
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null },
         mvu,
         eventEmit: async (...args) => { calls.push(['event', ...args]); },
-        settingsStore,
+        settingsStore: {
+            ...settingsStore,
+            ensurePersonalizationKeywordWeights(tags) { seededKeywords.push(tags); },
+        },
         llmClient: { async chat() { return { text: JSON.stringify(adultCandidate()) }; } },
     });
 
@@ -249,6 +258,7 @@ test('successful generated recommendation runs get to parse to replace to event 
     assert.match(wrappedPatch, /^<UpdateVariable><JSONPatch>/u);
     assert.match(wrappedPatch, /npc_llm_13/u);
     assert.match(wrappedPatch, /冷却角色UID/u);
+    assert.deepEqual(seededKeywords, [['电影', '夜猫子', '直接', '慢热']], '仅在官方写回成功后才以 0 权重收录新公开标签。');
 });
 test('user-authored adult character is registered only through the controlled MVU pipeline', async () => {
     const { mvu, calls } = createMvu({ initialState: recommendationState() });
@@ -353,9 +363,14 @@ function emptyRecommendationState() {
 
 test('initial fast-model candidate commits get to parse to replace to event only when the queue remains empty', async () => {
     const { mvu, calls } = createMvu({ initialState: emptyRecommendationState() });
+    const seededKeywords = [];
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
-        eventEmit: async (...args) => { calls.push(['event', ...args]); }, settingsStore,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: {
+            ...settingsStore,
+            ensurePersonalizationKeywordWeights(tags) { seededKeywords.push(tags); },
+        },
         llmClient: { async chat() { return { text: JSON.stringify(adultCandidate()) }; } },
     });
 
@@ -367,6 +382,7 @@ test('initial fast-model candidate commits get to parse to replace to event only
     const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
     assert.match(wrappedPatch, /npc_llm_13/u);
     assert.doesNotMatch(wrappedPatch, /冷却角色UID/u);
+    assert.deepEqual(seededKeywords, [['电影', '夜猫子', '直接', '慢热']]);
 });
 
 test('initial fast-model candidate performs zero writes on model rejection or a changed queue', async () => {

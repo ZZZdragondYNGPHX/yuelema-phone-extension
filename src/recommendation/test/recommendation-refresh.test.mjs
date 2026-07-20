@@ -36,36 +36,67 @@ test('recommendation context exposes only public player fields and bounded tag w
     assert.equal(context.tagWeights.电影, 2);
 });
 
-test('首页推荐以探索优先轮换本地偏好，并仅每三轮软性回访高权重标签', async () => {
+test('首页推荐接收开放关键词库，保留探索性且不会受固定主题限制', async () => {
     const explorationState = state();
     explorationState.系统 = { UID计数器: { 角色: 0 } };
-    const devicePersonalization = {
+    const neutralLibrary = {
         enabled: true,
-        keywordWeights: [{ keyword: '徒步', weight: 5 }, { keyword: '电影', weight: -3 }],
+        keywordWeights: [{ keyword: '徒步', weight: 0 }, { keyword: '电影', weight: -3 }],
     };
-    const exploration = buildRecommendationContext(explorationState, { devicePersonalization });
-    assert.deepEqual(exploration.tagWeights, { 徒步: 5, 电影: -3 }, '首页优先使用当前设备保存的偏好，而不是旧 MVU 偏好。');
-    assert.equal(exploration.recommendationPolicy.mode, 'exploration');
+    const exploration = buildRecommendationContext(explorationState, { devicePersonalization: neutralLibrary });
+    assert.deepEqual(exploration.tagWeights, { 徒步: 0, 电影: -3 }, '首页优先使用当前设备保存的偏好，而不是旧 MVU 偏好。');
+    assert.equal(exploration.recommendationPolicy.mode, 'open_exploration');
     assert.deepEqual(exploration.recommendationPolicy.softPreferredTags, []);
     assert.deepEqual(exploration.recommendationPolicy.suppressedTags, ['电影']);
+    assert.deepEqual(exploration.keywordLibrary, [{ keyword: '徒步', weight: 0 }, { keyword: '电影', weight: -3 }]);
+    assert.deepEqual(exploration.basicMatchRequirements, {
+        玩家性别: '男', 玩家性取向: '异性恋',
+        最低要求: '候选人的性别与性取向必须和玩家的公开条件双向兼容；关键词权重不能绕过此要求。',
+    });
 
     const preferenceState = state();
     preferenceState.系统 = { UID计数器: { 角色: 2 } };
+    const learnedLibrary = {
+        enabled: true,
+        keywordWeights: [{ keyword: '徒步', weight: 5 }, { keyword: '电影', weight: -3 }, { keyword: '手冲咖啡', weight: 0 }],
+    };
     let messages;
     const result = await generateRecommendationCandidate({
         state: preferenceState,
         settingsStore: {
-            snapshot: () => ({ personalization: devicePersonalization }),
+            snapshot: () => ({ personalization: learnedLibrary }),
             resolveFunction: () => ({ connectionPreset, promptPreset: { enabled: true, content: '保持轻快、真实的都市语气。' } }),
         },
         llmClient: { async chat(request) { messages = request.messages; return { text: JSON.stringify(adultCandidate()) }; } },
     });
     assert.equal(result.ok, true);
     const system = messages.find((message) => message.role === 'system').content;
-    assert.match(system, /本轮系统推荐策略为“偏好回访”/u);
-    assert.match(system, /本轮探索主题/u);
-    assert.match(system, /本轮可软性参考的高权重标签：徒步/u);
-    assert.match(system, /最多让 1–2 项出现在公开标签中/u);
+    const user = messages.find((message) => message.role === 'user').content;
+    assert.match(system, /本轮系统推荐策略为“偏好驱动的开放探索”/u);
+    assert.match(system, /关键词词库不是固定主题表/u);
+    assert.match(system, /天马行空/u);
+    assert.match(system, /当前正权重关键词：徒步/u);
+    assert.doesNotMatch(system, /本轮探索主题|独立音乐|城市散步/u);
+    assert.match(user, /"keyword":"徒步","weight":5/u);
+    assert.match(user, /"keyword":"手冲咖啡","weight":0/u);
+    assert.match(user, /"basicMatchRequirements"/u);
+});
+
+test('fast recommender enforces common gender-orientation mutual compatibility before any MVU patch', async () => {
+    const incompatible = adultCandidate();
+    incompatible.公开资料.性别 = '男';
+    incompatible.公开资料.性取向 = '异性恋';
+    let messages;
+    const result = await generateRecommendationCandidate({
+        state: state(), settingsStore,
+        llmClient: { async chat(request) { messages = request.messages; return { text: JSON.stringify(incompatible) }; } },
+    });
+    assert.deepEqual(result, {
+        ok: false,
+        code: 'recommendation_basic_compatibility_invalid',
+        message: '快速模型返回的候选资料未通过成年人或结构校验；当前推荐未改变。',
+    });
+    assert.match(messages.find((message) => message.role === 'system').content, /基础匹配条件.*最低门槛/u);
 });
 
 test('fast recommender validates one model candidate before any MVU write boundary', async () => {
@@ -168,7 +199,7 @@ test('SFW and NSFW recommendation contexts expose different public-tag contracts
     assert.deepEqual(sfw.publicTagContract.allowedTagCategories, ['常规兴趣', '生活方式', '性格', '沟通风格']);
     assert.equal(sfw.publicTagContract.forbidden.includes('成人取向或身体性化关键词'), true);
     assert.equal(nsfw.publicTagContract.allowedTagCategories.includes('成年人明确自愿的成人取向或身体偏好公开标签'), true);
-    assert.equal(nsfw.publicTagContract.examples.includes('翘臀'), true);
+    assert.equal(Object.hasOwn(nsfw.publicTagContract, 'examples'), false, '开放标签不应由固定示例词库限定。');
     assert.equal(JSON.stringify(nsfw).includes('绝不能发送给模型'), false);
     assert.equal(JSON.stringify(nsfw).includes('同样不能发送'), false);
 });
