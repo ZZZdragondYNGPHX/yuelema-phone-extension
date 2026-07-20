@@ -6,11 +6,28 @@
  */
 const UNSAFE_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
 const ARRAY_INDEX = /^(0|[1-9]\d*)$/;
+const NATIVE_OBJECT_SOURCE = Function.prototype.toString.call(Object);
 
 export function isPlainRecord(value) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-    const prototype = Object.getPrototypeOf(value);
-    return prototype === Object.prototype || prototype === null;
+    try {
+        const prototype = Object.getPrototypeOf(value);
+        if (prototype === null || prototype === Object.prototype) return true;
+
+        // MagVarUpdate can run in a different iframe/execution context. Its
+        // ordinary objects have that realm's Object.prototype, so strict
+        // identity with this module's Object.prototype would reject valid
+        // parseMessage results. Accept only another realm's genuine native
+        // Object prototype; custom prototypes and class instances stay denied.
+        if (Object.getPrototypeOf(prototype) !== null) return false;
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
+        const constructor = descriptor?.value;
+        return typeof constructor === 'function'
+            && constructor.prototype === prototype
+            && Function.prototype.toString.call(constructor) === NATIVE_OBJECT_SOURCE;
+    } catch {
+        return false;
+    }
 }
 
 /** @param {unknown} pointer @returns {string[]} */

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
 
 import { decodeJsonPointer, getAtPointer } from '../json-pointer.js';
 import {
@@ -155,6 +156,41 @@ test('readLatestState is read-only and returns a clone', () => {
     assert.equal(result.ok, true);
     result.state.软件.内容模式 = 'NSFW';
     assert.equal(data['stat_data']['软件']['内容模式'], 'SFW');
+});
+
+test('cross-realm native MVU records are accepted while custom prototypes stay rejected', () => {
+    const foreignData = runInNewContext('({ stat_data: { software: { mode: "SFW" } } })');
+    const read = readLatestState({ mvu: { getMvuData: () => foreignData } });
+    assert.equal(read.ok, true);
+    assert.equal(read.state.software.mode, 'SFW');
+
+    const customPrototype = { constructor: Object };
+    const unsafeData = Object.create(customPrototype);
+    unsafeData.stat_data = {};
+    const rejected = readLatestState({ mvu: { getMvuData: () => unsafeData } });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.code, 'mvu_stat_data_unavailable');
+});
+
+test('applyControlledPatch accepts parseMessage data created in the MVU realm', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    const foreignData = runInNewContext(`({ stat_data: ${JSON.stringify(oldData.stat_data)} })`);
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async () => {
+            calls.push('parse');
+            foreignData.stat_data.软件.内容模式 = 'NSFW';
+            return foreignData;
+        },
+        replaceMvuData: async () => { calls.push('replace'); },
+    };
+    const patch = buildControlledPatch(oldData.stat_data, { kind: 'toggle_content_mode' }).value;
+    const result = await applyControlledPatch({ patch, mvu, eventEmit: async () => calls.push('event') });
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 'applied');
+    assert.deepEqual(calls, ['parse', 'replace', 'event']);
 });
 
 test('applyControlledPatch follows get -> parse -> replace -> event sequence', async () => {
