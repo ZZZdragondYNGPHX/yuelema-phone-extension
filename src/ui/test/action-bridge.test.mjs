@@ -235,9 +235,11 @@ test('invalid generated candidate performs no MVU write and leaves recommendatio
     assert.deepEqual(data.stat_data, before);
 });
 
-test('successful generated recommendation runs get to parse to replace to event through the controlled boundary', async () => {
+test('successful generated recommendation starts public-only image matching without waiting before the controlled commit', async () => {
     const { mvu, calls } = createMvu({ initialState: recommendationState() });
     const seededKeywords = [];
+    const imageMatches = [];
+    const signal = new AbortController().signal;
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null },
         mvu,
@@ -247,9 +249,15 @@ test('successful generated recommendation runs get to parse to replace to event 
             ensurePersonalizationKeywordWeights(tags) { seededKeywords.push(tags); },
         },
         llmClient: { async chat() { return { text: JSON.stringify(adultCandidate()) }; } },
+        imageMatchCoordinator: {
+            match(publicProfile, options) {
+                imageMatches.push([structuredClone(publicProfile), options]);
+                return new Promise(() => {});
+            },
+        },
     });
 
-    const result = await bridge.runRecommendationRefresh('npc_ava');
+    const result = await bridge.runRecommendationRefresh('npc_ava', { signal });
 
     assert.equal(result.ok, true);
     assert.equal(result.status, 'applied');
@@ -259,6 +267,10 @@ test('successful generated recommendation runs get to parse to replace to event 
     assert.match(wrappedPatch, /npc_llm_13/u);
     assert.match(wrappedPatch, /冷却角色UID/u);
     assert.deepEqual(seededKeywords, [['电影', '夜猫子', '直接', '慢热']], '仅在官方写回成功后才以 0 权重收录新公开标签。');
+    assert.equal(imageMatches.length, 1, '图片匹配 Promise 未完成也不得阻塞推荐写回。');
+    assert.deepEqual(imageMatches[0][0], adultCandidate().公开资料);
+    assert.equal(Object.hasOwn(imageMatches[0][0], '隐藏资料'), false);
+    assert.deepEqual(imageMatches[0][1], { contentMode: 'SFW', signal });
 });
 test('user-authored adult character is registered only through the controlled MVU pipeline', async () => {
     const { mvu, calls } = createMvu({ initialState: recommendationState() });
@@ -361,9 +373,13 @@ function emptyRecommendationState() {
     return current;
 }
 
-test('initial fast-model candidate commits get to parse to replace to event only when the queue remains empty', async () => {
-    const { mvu, calls } = createMvu({ initialState: emptyRecommendationState() });
+test('initial fast-model candidate also starts image matching after public-profile validation', async () => {
+    const initialState = emptyRecommendationState();
+    initialState.软件.内容模式 = 'NSFW';
+    const { mvu, calls } = createMvu({ initialState });
     const seededKeywords = [];
+    const imageMatches = [];
+    const signal = new AbortController().signal;
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
         eventEmit: async (...args) => { calls.push(['event', ...args]); },
@@ -372,9 +388,15 @@ test('initial fast-model candidate commits get to parse to replace to event only
             ensurePersonalizationKeywordWeights(tags) { seededKeywords.push(tags); },
         },
         llmClient: { async chat() { return { text: JSON.stringify(adultCandidate()) }; } },
+        imageMatchCoordinator: {
+            async match(publicProfile, options) {
+                imageMatches.push([structuredClone(publicProfile), options]);
+                return { ok: true, match: null };
+            },
+        },
     });
 
-    const result = await bridge.runRecommendationInitialCandidate();
+    const result = await bridge.runRecommendationInitialCandidate({ signal });
 
     assert.equal(result.ok, true);
     assert.equal(result.status, 'applied');
@@ -383,6 +405,9 @@ test('initial fast-model candidate commits get to parse to replace to event only
     assert.match(wrappedPatch, /npc_llm_13/u);
     assert.doesNotMatch(wrappedPatch, /冷却角色UID/u);
     assert.deepEqual(seededKeywords, [['电影', '夜猫子', '直接', '慢热']]);
+    assert.equal(imageMatches.length, 1);
+    assert.deepEqual(imageMatches[0][0], adultCandidate().公开资料);
+    assert.deepEqual(imageMatches[0][1], { contentMode: 'NSFW', signal });
 });
 
 test('initial fast-model candidate performs zero writes on model rejection or a changed queue', async () => {
@@ -540,6 +565,8 @@ test('soul match creates an independent npc_match session and never promotes a f
     initialState.系统 = { UID计数器: { 角色: 12, 会话: 4 } };
     initialState.推荐.收藏角色UID = ['npc_ava'];
     const { mvu, calls } = createMvu({ initialState });
+    const imageMatches = [];
+    const signal = new AbortController().signal;
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); },
         settingsStore: {
@@ -554,9 +581,15 @@ test('soul match creates an independent npc_match session and never promotes a f
                 }, explanation: '公开兴趣接近。', matchScore: 88,
             }) };
         } },
+        imageMatchCoordinator: {
+            match(publicProfile, options) {
+                imageMatches.push([structuredClone(publicProfile), options]);
+                return new Promise(() => {});
+            },
+        },
     });
 
-    const result = await bridge.runCandidateMatch('soul');
+    const result = await bridge.runCandidateMatch('soul', { signal });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual([result.npcUid, result.sessionUid], ['npc_match_13', 'chat_5']);
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
@@ -564,6 +597,10 @@ test('soul match creates an independent npc_match session and never promotes a f
     assert.match(wrappedPatch, /角色池\/npc_match_13|角色池~1npc_match_13/u);
     assert.match(wrappedPatch, /会话\/chat_5|会话~1chat_5/u);
     assert.doesNotMatch(wrappedPatch, /收藏角色UID|当前队列|临时候选池\/npc_ava/u);
+    assert.equal(imageMatches.length, 1, '灵魂匹配不得等待图片选择完成。');
+    assert.equal(imageMatches[0][0].昵称, '林夏');
+    assert.equal(Object.hasOwn(imageMatches[0][0], '隐藏资料'), false);
+    assert.deepEqual(imageMatches[0][1], { contentMode: 'SFW', signal });
 });
 
 test('voice match first resolves transient voice keywords and then commits the same independent mutual-match session', async () => {
@@ -572,6 +609,8 @@ test('voice match first resolves transient voice keywords and then commits the s
     initialState.系统 = { UID计数器: { 角色: 5, 会话: 1 } };
     const { mvu, calls } = createMvu({ initialState });
     let modelCall = 0;
+    const imageMatches = [];
+    const signal = new AbortController().signal;
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); },
         settingsStore: {
@@ -588,11 +627,20 @@ test('voice match first resolves transient voice keywords and then commits the s
                 }, explanation: '本次语音关键词优先。', matchScore: 90,
             }) };
         } },
+        imageMatchCoordinator: {
+            match(publicProfile, options) {
+                imageMatches.push([structuredClone(publicProfile), options]);
+                return Promise.reject(new Error('image model unavailable'));
+            },
+        },
     });
 
-    const result = await bridge.runCandidateMatch('voice', { voiceText: '想找愿意一起逛展、认真聊天的人。' });
+    const result = await bridge.runCandidateMatch('voice', { voiceText: '想找愿意一起逛展、认真聊天的人。', signal });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual([result.npcUid, result.sessionUid], ['npc_match_6', 'chat_2']);
     assert.equal(modelCall, 2, '语音匹配应先解析关键词，再生成候选人');
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
+    assert.equal(imageMatches.length, 1, '图片匹配拒绝不得阻塞语音角色生成与 MVU 写回。');
+    assert.equal(imageMatches[0][0].昵称, '顾言');
+    assert.deepEqual(imageMatches[0][1], { contentMode: 'SFW', signal });
 });

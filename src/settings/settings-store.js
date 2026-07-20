@@ -7,7 +7,7 @@ import { createConnectionPreset } from '../llm/openai-compatible-client.js';
 import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-prompt-presets.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 4;
+export const SETTINGS_SCHEMA_VERSION = 5;
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -23,6 +23,7 @@ export const FUNCTION_KEYS = Object.freeze([
     'recommendation_refresh',
     'group_chat',
     'forum',
+    'image_match',
 ]);
 export const CONTENT_MODES = Object.freeze(['SFW', 'NSFW']);
 
@@ -31,7 +32,7 @@ const SECRET_FIELD_NAMES = new Set([
 ]);
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
-const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3]);
+const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4]);
 
 export class YueLeMaSettingsError extends Error {
     constructor(code, message) {

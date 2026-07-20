@@ -19,6 +19,7 @@ const FUNCTION_LABELS = Object.freeze({
     recommendation_refresh: '推荐刷新',
     group_chat: '聊天群',
     forum: '论坛',
+    image_match: '图片匹配',
 });
 const LEGACY_FUNCTION_KEYS = new Set(['character_authoring']);
 const CONTENT_MODE_LABELS = Object.freeze({ SFW: 'SFW', NSFW: 'NSFW' });

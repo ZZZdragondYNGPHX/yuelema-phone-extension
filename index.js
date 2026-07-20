@@ -8,6 +8,8 @@ import { createSettingsStore } from './src/settings/settings-store.js';
 import { createBrowserSettingsStorage } from './src/settings/browser-storage.js';
 import { createCharacterTemplateLibraryStore } from './src/characters/character-template-library-store.js';
 import { createPlayerAvatarStore } from './src/player-avatar-store.js';
+import { createImageLibraryStore } from './src/images/image-library-store.js';
+import { createImageMatchCoordinator } from './src/images/image-match-coordinator.js';
 
 const EXTENSION_ROOT_ID = 'yuelema-phone-extension-root';
 const browserStorage = createBrowserSettingsStorage();
@@ -118,6 +120,9 @@ export async function onActivate() {
     const getContext = globalThis.SillyTavern?.getContext?.bind(globalThis.SillyTavern);
     const fetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
     const llmClient = fetchImpl ? createOpenAICompatibleClient({ fetchImpl }) : null;
+    // Resolve the host's localforage adapter at activation time because SillyTavern may publish libs after module import.
+    const imageLibrary = createImageLibraryStore({ storage: globalThis.SillyTavern?.libs?.localforage });
+    const imageMatchCoordinator = createImageMatchCoordinator({ imageLibrary, settingsStore, llmClient });
     const actionBridge = createActionBridge({
         documentRef,
         mvu,
@@ -125,6 +130,7 @@ export async function onActivate() {
         getContext,
         settingsStore,
         llmClient,
+        imageMatchCoordinator,
     });
     appInstance = mountPhoneApp({
         documentRef,
@@ -134,6 +140,8 @@ export async function onActivate() {
         llmClient,
         characterLibrary,
         playerAvatarStore,
+        imageLibrary,
+        imageMatchCoordinator,
         readState: () => readLatestState({ mvu: mvu() }),
     });
 

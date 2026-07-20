@@ -6,18 +6,19 @@ import { buildCharacterCreatorPanel } from './characters/character-creator-panel
 import { avatarAcceptAttribute, compressLocalAvatar, projectAvatarError } from './characters/avatar-codec.js';
 import { avatarImageSource } from './player-avatar-store.js';
 import { createLauncherDragController } from './launcher-drag.js';
+import { createImageManagerPanel } from './images/image-manager-panel.js';
 
-const UI_VERSION = '0.1.18';
+const UI_VERSION = '0.1.19';
 const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
 const PRIMARY_PAGE_FOR = Object.freeze({
     group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
 });
 const PAGE_PARENT_FOR = Object.freeze({
     group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', candidate_detail: 'home', match_profile: 'matches',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
@@ -30,7 +31,7 @@ const FEATURE_BINDING_FOR_PAGE = Object.freeze({
 });
 
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
-export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, readState = () => readLatestState() }) {
+export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, imageLibrary = null, imageMatchCoordinator = null, readState = () => readLatestState() }) {
     const abortController = new AbortController();
     const root = documentRef.createElement('section');
     root.id = rootId;
@@ -63,6 +64,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let privateChatRequestGeneration = 0;
     let featureBindingDialogState = null;
     let avatarUploadPending = false;
+    let imageManagerPanel = null;
+    const matchedImageByProfile = new Map();
+    const imageMatchPending = new Map();
 
     const launcher = element('button', { className: 'yl-phone-launcher', type: 'button', ariaLabel: '打开约了吗小手机', pressed: false, text: '约' });
     launcher.appendChild(element('span', { className: 'yl-phone-launcher-label', text: '约了吗' }));
@@ -298,6 +302,58 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (String(pageId).startsWith("profile_")) return "profile";
         return pageId;
     }
+    const IMAGE_MATCH_PUBLIC_FIELDS = Object.freeze(['昵称', '年龄段', '性别', '性取向', '城市', '距离范围', '寻找意图', '简介', '兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
+    function imageMatchProfile(candidate) {
+        if (!candidate || typeof candidate !== 'object') return null;
+        const profile = {};
+        for (const field of IMAGE_MATCH_PUBLIC_FIELDS) {
+            const value = candidate[field];
+            if (Array.isArray(value)) profile[field] = value.slice();
+            else if (typeof value === 'string') profile[field] = value;
+        }
+        return profile;
+    }
+    function imageProfileKey(candidate) {
+        const profile = imageMatchProfile(candidate);
+        if (!profile) return '';
+        try { return JSON.stringify(profile); } catch { return ''; }
+    }
+    function imageSourceUrl(record) {
+        if (record?.source?.kind === 'embedded' && typeof record.source.dataUrl === 'string') return record.source.dataUrl;
+        if (record?.source?.kind === 'url' && typeof record.source.url === 'string') return record.source.url;
+        return '';
+    }
+    function clearMatchedImageState() {
+        matchedImageByProfile.clear();
+        imageMatchPending.clear();
+        try { imageMatchCoordinator?.clearCache?.(); } catch { /* best effort */ }
+    }
+    function scheduleImageMatch(candidate) {
+        if (!imageMatchCoordinator || typeof imageMatchCoordinator.resolveImage !== 'function') return;
+        const key = imageProfileKey(candidate);
+        if (!key || matchedImageByProfile.has(key) || imageMatchPending.has(key)) return;
+        const profile = imageMatchProfile(candidate);
+        const task = Promise.resolve().then(() => imageMatchCoordinator.resolveImage(profile, { contentMode: currentView.mode }))
+            .then((record) => { matchedImageByProfile.set(key, record ?? null); if (open) renderPage(); })
+            .catch(() => { matchedImageByProfile.set(key, null); })
+            .finally(() => { imageMatchPending.delete(key); });
+        imageMatchPending.set(key, task);
+    }
+    function matchedImageFor(candidate) {
+        const key = imageProfileKey(candidate);
+        if (!key) return null;
+        if (!matchedImageByProfile.has(key)) scheduleImageMatch(candidate);
+        return matchedImageByProfile.get(key) ?? null;
+    }
+    function appendImagePreview(parent, record, className, alt, onFailure) {
+        const source = imageSourceUrl(record);
+        if (!source) return false;
+        const image = element('img', { className, src: source, alt, loading: 'lazy', referrerPolicy: 'no-referrer' });
+        listen(image, image, 'error', () => { image.hidden = true; onFailure?.(); }, abortController.signal);
+        parent.appendChild(image);
+        return true;
+    }
+
     function clearOperationAutoClose() {
         if (operationAutoCloseTimer === null) return;
         globalThis.clearTimeout(operationAutoCloseTimer);
@@ -495,6 +551,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function renderPage() {
         helpPopover.hidden = true; activeHelpAnchor = null;
+        imageManagerPanel?.dispose?.();
+        imageManagerPanel = null;
         const copy = PAGE_COPY[activePage];
         statusLine.textContent = currentView.status === 'ready' ? '已连接' : 'MVU 未就绪';
         content.replaceChildren();
@@ -515,7 +573,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'character_creator') page.appendChild(buildCharacterCreator());
         else if (activePage === 'favorites') page.appendChild(buildFavoritesPage());
         else if (activePage === 'settings') page.appendChild(buildSettingsHome());
-        else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference'].includes(activePage)) page.appendChild(buildSettingsDetail());
+        else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images'].includes(activePage)) page.appendChild(buildSettingsDetail());
         else if (activePage === 'settings_privacy') page.appendChild(buildPrivacySettings());
         else if (activePage === 'candidate_detail') page.appendChild(buildCandidateDetail());
         content.appendChild(page);
@@ -560,9 +618,18 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         for (const tag of tags) wrapper.appendChild(element('span', { className: 'yl-chip yl-chip-tag', text: tag }));
         return wrapper;
     }
-    function candidateAvatar(candidate) {
+    function candidateAvatar(candidate, { imageEnabled = false } = {}) {
         const label = candidate.昵称 || '未命名对象';
-        const avatar = element('span', { className: 'yl-candidate-avatar', ariaLabel: '查看' + label + '的公开资料', text: label.slice(0, 1) || '人' });
+        const fallback = label.slice(0, 1) || '人';
+        const record = imageEnabled ? matchedImageFor(candidate) : null;
+        const avatar = element('span', { className: 'yl-candidate-avatar', ariaLabel: '查看' + label + '的公开资料', text: record ? '' : fallback });
+        if (record) {
+            avatar.dataset.imageStatus = 'matched';
+            appendImagePreview(avatar, record, 'yl-candidate-avatar-image', label + '的匹配头像', () => {
+                avatar.dataset.imageStatus = 'failed';
+                avatar.textContent = fallback;
+            });
+        } else if (imageEnabled && imageMatchPending.has(imageProfileKey(candidate))) avatar.dataset.imageStatus = 'loading';
         avatar.setAttribute('role', 'button');
         avatar.setAttribute('tabindex', '0');
         const openProfile = () => { selectedCandidateUid = candidate.uid; setActivePage('candidate_detail'); };
@@ -606,7 +673,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const tags = displayTags(candidate);
         card.appendChild(buildCandidateBackgroundSlot(candidate, tags));
         const top = element('div', { className: 'yl-candidate-topline' });
-        top.appendChild(candidateAvatar(candidate));
+        top.appendChild(candidateAvatar(candidate, { imageEnabled: true }));
         const copy = element('div', { className: 'yl-candidate-copy' });
         const nameRow = element('div', { className: 'yl-candidate-name-row' });
         nameRow.appendChild(element('h2', { text: candidate.昵称 || '未命名候选人' }));
@@ -622,9 +689,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const slot = element('div', { className: 'yl-candidate-background-slot yl-candidate-image-slot' });
         slot.setAttribute('aria-hidden', 'true');
         slot.dataset.imageSlot = 'candidate-background';
-        slot.dataset.imageStatus = 'reserved';
         slot.dataset.candidateUid = String(candidate?.uid ?? '');
         slot.dataset.keywords = tags.join('|');
+        const record = candidate ? matchedImageFor(candidate) : null;
+        if (record) {
+            slot.dataset.imageStatus = 'matched';
+            appendImagePreview(slot, record, 'yl-candidate-background-image', '', () => { slot.dataset.imageStatus = 'failed'; });
+        } else slot.dataset.imageStatus = candidate && imageMatchPending.has(imageProfileKey(candidate)) ? 'loading' : 'fallback';
         return slot;
     }
     function buildEmptyCandidateCard() {
@@ -659,7 +730,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         ].find((entry) => entry?.uid === selectedCandidateUid) ?? currentView.candidate;
         if (!candidate) return element('div', { className: 'yl-phone-placeholder', text: '该公开资料已不在当前可见列表。' });
         const section = element('section', { className: 'yl-public-profile' });
-        section.appendChild(candidateAvatar(candidate));
+        section.appendChild(candidateAvatar(candidate, { imageEnabled: true }));
         section.appendChild(element('h2', { text: candidate.昵称 || '未命名对象' }));
         for (const [label, value] of [['年龄段', candidate.年龄段], ['性别', candidate.性别], ['性取向', candidate.性取向], ['城市', candidate.城市], ['距离范围', candidate.距离范围], ['寻找意图', candidate.寻找意图], ['简介', candidate.简介]]) if (value) section.appendChild(element('p', { className: 'yl-phone-page-description', text: `${label}：${value}` }));
         const tags = displayTags(candidate);
@@ -1312,6 +1383,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             ['settings_connections', '连接预设', '按名称选择和维护连接。'],
             ['settings_prompts', '提示词预设', '只维护提示词条目与导入导出。'],
             ['settings_privacy', '隐私权限设置', '管理个性化内容推荐与当前设备偏好。'],
+            ['settings_images', '图片管理', '上传或导入角色展示图，并编辑匹配关键词与权重。'],
             ['about', '关于软件', '点击查看版本；连续点击五次可显示内容模式开关。'],
         ];
         for (const [page, title, note] of entries) {
@@ -1336,6 +1408,18 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return row;
     }
     function buildSettingsDetail() {
+        if (activePage === 'settings_images') {
+            const section = element('section', { className: 'yl-settings-detail yl-image-manager-page' });
+            imageManagerPanel = createImageManagerPanel({
+                documentRef,
+                imageLibrary,
+                compressImageFile: async (file) => (await compressLocalAvatar(file)).dataUrl,
+                onFeedback: (message) => setFeedback(message),
+                onChange: () => { clearMatchedImageState(); renderPage(); },
+            });
+            section.appendChild(imageManagerPanel.element);
+            return section;
+        }
         if (!settingsStore) return element('div', { className: 'yl-phone-placeholder', text: '本地设置尚未就绪。' });
         const view = activePage === 'settings_connections' ? 'connection'
             : activePage === 'settings_prompts' ? 'prompt'
@@ -1446,11 +1530,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(avatarLinkButton, avatarLinkButton, 'click', saveLinkedAvatar, abortController.signal);
     listen(avatarRemoveButton, avatarRemoveButton, 'click', removePlayerAvatar, abortController.signal);
     listen(root, documentRef, "click", (event) => { if (activeHelpAnchor && event.target !== activeHelpAnchor) { helpPopover.hidden = true; activeHelpAnchor = null; } }, abortController.signal);
-    listen(root, documentRef, "keydown", (event) => { if (event.key === "Escape") { if (!operationDialog.hidden) hideOperationDialog(); else if (!bindingDialog.hidden) closeFeatureBindingDialog(); else if (!avatarDialog.hidden) closeAvatarDialog(); else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; } else if (open) setOpen(false); } }, abortController.signal);
+    listen(root, documentRef, "keydown", (event) => { if (event.key === "Escape") { if (!operationDialog.hidden) hideOperationDialog(); else if (!bindingDialog.hidden) closeFeatureBindingDialog(); else if (!avatarDialog.hidden) closeAvatarDialog(); else if (imageManagerPanel?.handleEscape?.()) { /* image manager handled it */ } else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; } else if (open) setOpen(false); } }, abortController.signal);
     renderPage();
     return Object.freeze({
         refreshState,
-        destroy() { hideOperationDialog(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { hideOperationDialog(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }
 

@@ -1,5 +1,5 @@
 /**
- * Built-in, editable prompt presets for the six AI-assisted entry points.
+ * Built-in, editable prompt presets for the AI-assisted entry points.
  *
  * These records are deliberately ordinary local prompt presets: the settings
  * store seeds them into browser storage on first load, and users may edit or
@@ -20,6 +20,8 @@ export const BUILTIN_PROMPT_PRESET_IDS = Object.freeze({
     soulMatchNsfw: 'builtin_soul_match_nsfw',
     voiceMatchSfw: 'builtin_voice_match_sfw',
     voiceMatchNsfw: 'builtin_voice_match_nsfw',
+    imageMatchSfw: 'builtin_image_match_sfw',
+    imageMatchNsfw: 'builtin_image_match_nsfw',
 });
 
 const PRESET_LAYOUT = Object.freeze({
@@ -114,6 +116,20 @@ const BUILTIN_PROMPT_PRESETS = Object.freeze([
         content: '只从用户本次主动输入的匹配描述和公开资料中提炼适合语音匹配的公开筛选方向或关键词，不复述原文，不猜测隐私。所有表达限于明确成年、自愿且尊重边界的交友语境；成年人偏好仅能以克制的公开标签处理。不得出现未成年人、胁迫、非自愿、隐藏资料、关系数值、会话、UID、Patch、密钥或线下性行为演绎。',
         ...PRESET_LAYOUT,
     }),
+    Object.freeze({
+        id: BUILTIN_PROMPT_PRESET_IDS.imageMatchSfw,
+        name: '内置·图片匹配·SFW',
+        contentMode: 'SFW',
+        content: '只根据一名明确成年角色的公开资料，以及本地图片库已存在的关键词词表，生成用于选择展示图片的关键词权重。只输出与公开兴趣、生活方式、性格、沟通风格、城市氛围和交友意图有关的关键词；保持 SFW。不得索要、推断或输出图片本体、图片链接、隐藏资料、仅好友资料、关系数值、UID、Patch、密钥或系统信息。',
+        ...PRESET_LAYOUT,
+    }),
+    Object.freeze({
+        id: BUILTIN_PROMPT_PRESET_IDS.imageMatchNsfw,
+        name: '内置·图片匹配·NSFW',
+        contentMode: 'NSFW',
+        content: '只根据一名明确成年角色的公开资料，以及本地图片库已存在的关键词词表，生成用于选择展示图片的关键词权重。成年人偏好只能在明确自愿、尊重边界的前提下克制地转为已有关键词；不得出现未成年人、胁迫或非自愿内容。不得索要、推断或输出图片本体、图片链接、隐藏资料、仅好友资料、关系数值、UID、Patch、密钥或系统信息。',
+        ...PRESET_LAYOUT,
+    }),
 ]);
 
 /** Returns fresh plain records so callers may safely normalize or persist them. */
@@ -131,6 +147,7 @@ export function builtinPromptPresetIdFor(functionKey, contentMode) {
         character_full_authoring: BUILTIN_PROMPT_PRESET_IDS[`characterAuthoring${mode}`],
         soul_match: BUILTIN_PROMPT_PRESET_IDS[`soulMatch${mode}`],
         text_match: BUILTIN_PROMPT_PRESET_IDS[`voiceMatch${mode}`],
+        image_match: BUILTIN_PROMPT_PRESET_IDS[`imageMatch${mode}`],
     };
     return ids[functionKey] ?? null;
 }

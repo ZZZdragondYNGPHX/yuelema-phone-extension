@@ -89,7 +89,7 @@ function seedGeneratedCandidateKeywords(settingsStore, candidate) {
  * The sole UI-to-MVU write boundary. Browser UI can express only named actions;
  * it cannot provide a JSON Pointer, patch, state object, or arbitrary value.
  *
- * @param {{ documentRef: Document, mvu?: unknown, eventEmit?: unknown, getContext?: (() => unknown)|undefined, settingsStore?: unknown, llmClient?: unknown, onControlledAction?: (command: Readonly<{kind:string, payload:Readonly<Record<string,string>>}>) => void }} options
+ * @param {{ documentRef: Document, mvu?: unknown, eventEmit?: unknown, getContext?: (() => unknown)|undefined, settingsStore?: unknown, llmClient?: unknown, imageMatchCoordinator?: unknown, onControlledAction?: (command: Readonly<{kind:string, payload:Readonly<Record<string,string>>}>) => void }} options
  */
 export function createActionBridge({
     documentRef,
@@ -98,9 +98,19 @@ export function createActionBridge({
     getContext = globalThis.SillyTavern?.getContext?.bind(globalThis.SillyTavern),
     settingsStore = null,
     llmClient = null,
+    imageMatchCoordinator = null,
     onControlledAction = () => {},
 }) {
     const pending = new Set();
+
+    function startImageMatch(publicProfile, contentMode, signal) {
+        if (typeof imageMatchCoordinator?.match !== 'function') return;
+        try {
+            void Promise.resolve(imageMatchCoordinator.match(publicProfile, { contentMode, signal })).catch(() => {});
+        } catch {
+            // Image selection is presentation-only and must never affect role generation or MVU writes.
+        }
+    }
 
     function emit(kind, payload = {}) {
         if (!PASSIVE_KINDS.has(kind)) throw new Error(`不允许的非写入操作：${kind}`);
@@ -166,6 +176,11 @@ export function createActionBridge({
                 state: firstRead.state, settingsStore, llmClient, signal,
             });
             if (!generated.ok) return { ok: false, status: 'rejected', code: generated.code, message: generated.message };
+            startImageMatch(
+                generated.candidate?.公开资料,
+                firstRead.state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW',
+                signal,
+            );
 
             // The model call is asynchronous: never reuse a stale click target/state.
             const secondRead = readLatestState({ mvu: currentMvu });
@@ -199,6 +214,11 @@ export function createActionBridge({
                 state: firstRead.state, settingsStore, llmClient, signal,
             });
             if (!generated.ok) return { ok: false, status: 'rejected', code: generated.code, message: generated.message };
+            startImageMatch(
+                generated.candidate?.公开资料,
+                firstRead.state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW',
+                signal,
+            );
 
             const secondRead = readLatestState({ mvu: currentMvu });
             if (!secondRead.ok) return secondRead;
@@ -292,14 +312,14 @@ export function createActionBridge({
             if (!firstRead.ok) return firstRead;
             const generated = await generateCandidateMatchDraftService({ mode, state: firstRead.state, settingsStore, llmClient, voiceText, signal });
             if (!generated.ok) return { ok: false, status: 'rejected', code: generated.code, message: generated.message };
+            const contentMode = firstRead.state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
             let materialized;
             try {
-                materialized = materializeCandidateMatchDraft(generated.draft, {
-                    contentMode: firstRead.state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW',
-                });
+                materialized = materializeCandidateMatchDraft(generated.draft, { contentMode });
             } catch {
                 return { ok: false, status: 'rejected', code: 'candidate_match_response_invalid', message: '匹配角色草稿不符合公开资料安全格式；当前状态未改变。' };
             }
+            startImageMatch(materialized.candidate?.公开资料, contentMode, signal);
 
             const secondRead = readLatestState({ mvu: currentMvu });
             if (!secondRead.ok) return secondRead;
