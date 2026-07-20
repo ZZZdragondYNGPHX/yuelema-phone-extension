@@ -159,6 +159,11 @@ test('all routed child pages keep a top-left back button and settings views stay
         assert.ok(backButton(), '个性化内容推荐管理子页应有返回按钮');
         assert.ok(miniDom.document.querySelector('[name="personalization-enabled"]'));
         assert.ok(miniDom.document.querySelector('[name="personalization-preference-entry"]'));
+        assert.equal(miniDom.document.querySelector('[name="personalization-keyword"]'), null, '管理页不得预渲染关键词编辑器');
+        click(buttonByText('个性化内容偏好'));
+        assert.ok(backButton(), '个性化内容偏好次级页应有返回按钮');
+        assert.ok(miniDom.document.querySelector('[name="personalization-keyword"]'));
+        assert.equal(miniDom.document.querySelector('[name="personalization-enabled"]'), null, '次级页不得重复管理开关');
     } finally {
         mounted.destroy();
     }

@@ -1,4 +1,4 @@
-# 约了吗小手机 v0.1.3（阶段 25 静态 / Node 验证）
+# 约了吗小手机 v0.1.4（阶段 26 静态 / Node 验证）
 
 这是现代现实都市「约了吗」MVU 角色卡的配套 SillyTavern UI 扩展。软件层承担推荐、线上短文本私聊、匹配、群组浏览、角色创作与面基约定；现实见面、约会及复杂长文本剧情仍由酒馆正文推进。
 
@@ -64,16 +64,14 @@ readLatestState → build…Patch → validateControlledPatchAgainstState
 └─ scripts/static-check.mjs
 ```
 
-## 安装与启动（SillyTavern v1.18.0+）
+## Git URL 安装与启动（SillyTavern v1.18.0+）
 
 > 下面是文件安装说明，不代表已完成目标酒馆版本的真机验收；安装后仍须按本文末尾的真机清单逐项测试。
 
-1. 关闭或重载 SillyTavern，复制整个 `D:\Dev\AI制卡\约了吗\约了吗小手机` 目录到以下其中一个扩展目录，并将目标文件夹命名为 `yuelema-phone-extension`：
-   - 用户作用域（推荐）：`<SillyTavern>\data\<用户句柄>\extensions\yuelema-phone-extension\`
-   - 全局作用域：`<SillyTavern>\public\scripts\extensions\third-party\yuelema-phone-extension\`
-2. 确认目标目录根部直接包含 `manifest.json`、`index.js`、`style.css` 与 `src/`，不要多套一层同名文件夹。
-3. 重启 SillyTavern 或在扩展管理页面重新加载，确认“约了吗小手机”已启用。此扩展声明最低版本为 **SillyTavern v1.18.0**，以使用已核对的 `activate / disable / delete` lifecycle hooks。
-4. 在角色管理页面导入 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v0.1.1.json`，并为这张卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。
+1. 在 SillyTavern 的扩展管理页选择“安装扩展”，输入 Git URL：`https://github.com/ZZZdragondYNGPHX/yuelema-phone-extension.git`。
+2. 安装完成后重载 SillyTavern，确认“约了吗小手机”已启用。此扩展声明最低版本为 **SillyTavern v1.18.0**，以使用已核对的 `activate / disable / delete` lifecycle hooks。
+3. 后续版本从同一 Git 仓库更新，不再把本地工作树手工同步到 SillyTavern 安装副本。
+4. 在角色管理页面导入 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v0.1.4.json`，并为这张卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。
 5. 首次使用时在“我的 → 设置”配置 OpenAI-compatible 连接预设、提示词预设和功能绑定；API Key 每次仅本会话解锁。禁用或删除扩展时，`disable / delete` hook 会立即清除内存中的已解锁 Key；非机密预设与模板仍按本地浏览器存储策略保留。
 
 ## 本地验证（2026-07-20）
@@ -85,7 +83,7 @@ node --test
 node --input-type=module -e "await import('./index.js'); console.log('production import graph resolves')"
 ```
 
-实际结果（阶段 24）：`npm run check`、全量 `node --test`、生产 ESM import 图与 `git diff --check` 均通过；全量 Node 回归 **189/189** 通过。
+实际结果（阶段 26）：`npm run check`、全量 `node --test`、生产 ESM import 图与 `git diff --check` 均通过；全量 Node 回归 **205/205** 通过。
 
 定向 DOM 回归还覆盖：子页面左上角返回、问号浮窗视口夹紧、AI 加载/成功/失败弹窗及其关闭生命周期、手机窗口拖动、首页毛玻璃候选卡四按钮、图片背景预留槽、创建角色迁移到“我的”、提示词条目树、连接 Model 为空时的模型列表探测、三种传输模式设置，以及个性化内容推荐设置。该结果不等同于 SillyTavern 真机通过。
 
@@ -97,8 +95,7 @@ node --input-type=module -e "await import('./index.js'); console.log('production
 4. Prompt Viewer、控制台、错误面板、导出、最终 DOM 和请求上下文中的 API Key、隐藏层、仅好友层、关系分、阈值、会话内部数据零泄露。
 5. 连接预设分别验证 Model 留空拉取 / 单模型自动选择 / 多模型选择、JSON、SSE 分块与 `[DONE]`、假流式渐显、长输出、超时与取消；确认服务商 CORS 和响应格式兼容。
 6. 提示词树在窄屏与触控设备上的分支线、叶节点操作区、编辑器滚动和按钮可达性；所有操作弹窗手动关闭、自动关闭和页面切换后的迟到结果防重弹。
-7. 本次仅同步 GitHub 仓库，尚未同步安装副本 `D:\SillyTavern\data\default-user\extensions\yuelema-phone-extension\`；待宿主重载前同步并核对哈希后，再确认“关于软件”显示 0.1.3。
-
+7. 本次只推送 GitHub 仓库，不同步本地安装副本；请在通过 Git URL 安装/更新后，再确认“关于软件”显示 0.1.4 并执行本节真机清单。
 
 
 

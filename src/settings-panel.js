@@ -686,24 +686,23 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         section.appendChild(controls);
         return section;
     }
-    function buildPersonalizationSection(snapshot, { openPreferences, includePreferenceEntry }) {
+    function buildPersonalizationSection(snapshot, { openPreferences }) {
         const section = element('section', { className: 'yl-settings-section' });
-        append(section, [
-            sectionHeading('✦', openPreferences ? '个性化内容偏好' : '个性化内容推荐管理'),
-            element('p', {
-                className: 'yl-phone-page-description',
-                text: '此处仅保存当前设备上的讽刺展示设置与关键词权重，不会改变真实推荐、排序、模型调用或 MVU 数据。',
-            }),
-        ]);
-
         const personalization = snapshot.personalization ?? { enabled: true, keywordWeights: [] };
-        const enabled = element('input', {
-            className: 'yl-settings-checkbox', type: 'checkbox', checked: personalization.enabled,
-            name: 'personalization-enabled', ariaLabel: '个性化内容推荐',
-        });
-        section.appendChild(field('个性化内容推荐', switchShell(enabled)));
 
-        if (includePreferenceEntry) {
+        if (!openPreferences) {
+            append(section, [
+                sectionHeading('✦', '个性化内容推荐管理'),
+                element('p', {
+                    className: 'yl-phone-page-description',
+                    text: '此处仅保存当前设备上的讽刺展示设置，不会改变真实推荐、排序、模型调用或 MVU 数据。',
+                }),
+            ]);
+            const enabled = element('input', {
+                className: 'yl-settings-checkbox', type: 'checkbox', checked: personalization.enabled,
+                name: 'personalization-enabled', ariaLabel: '个性化内容推荐',
+            });
+            section.appendChild(field('个性化内容推荐', switchShell(enabled)));
             const preferenceEntry = actionButton('个性化内容偏好', async () => {
                 if (!enabled.checked) return;
                 navigate('settings_personalization_preference');
@@ -713,12 +712,66 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                 name: 'personalization-preference-entry',
             });
             section.appendChild(preferenceEntry);
+
+            const notice = element('section', { className: 'yl-settings-section yl-settings-modal', hidden: true });
+            notice.setAttribute('aria-label', '个性化内容推荐说明');
+            notice.setAttribute('role', 'dialog');
+            notice.setAttribute('aria-modal', 'true');
+            const closeNotice = () => {
+                notice.hidden = true;
+                enabled.checked = true;
+            };
+            const noticeTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+            const noticeClose = element('button', {
+                className: 'yl-dialog-close', type: 'button', text: '×', name: 'personalization-modal-close',
+                ariaLabel: '关闭个性化内容推荐说明',
+            });
+            append(noticeTitlebar, [element('h2', { text: '个性化内容推荐说明' }), noticeClose]);
+            notice.appendChild(noticeTitlebar);
+            listen(noticeClose, noticeClose, 'click', () => {
+                closeNotice();
+                onFeedback('已关闭说明，个性化内容推荐保持开启。');
+            }, signal);
+            for (const paragraph of PERSONALIZATION_NOTICE) notice.appendChild(element('p', { text: paragraph }));
+            const noticeActions = element('div', { className: 'yl-settings-actions' });
+            noticeActions.appendChild(actionButton('确定', async () => updateSettings(
+                () => settingsStore.setPersonalizationEnabled(false),
+                '个性化内容推荐已在当前设备关闭；真实推荐算法未改变。',
+            ), signal, { name: 'personalization-disable-confirm' }));
+            noticeActions.appendChild(actionButton('保持开启并关闭', async () => {
+                closeNotice();
+                onFeedback('已取消关闭，个性化内容推荐保持开启。');
+            }, signal, { secondary: true, name: 'personalization-disable-cancel' }));
+            notice.appendChild(noticeActions);
+            section.appendChild(notice);
+
+            listen(enabled, enabled, 'change', () => {
+                if (enabled.checked) {
+                    updateSettings(() => settingsStore.setPersonalizationEnabled(true), '个性化内容推荐已在当前设备开启。');
+                    return;
+                }
+                enabled.checked = true;
+                notice.hidden = false;
+            }, signal);
+            return section;
         }
 
-        const preferenceEditor = element('section', {
-            className: 'yl-settings-binding',
-            hidden: !personalization.enabled || !openPreferences,
-        });
+        append(section, [
+            sectionHeading('✦', '个性化内容偏好'),
+            element('p', {
+                className: 'yl-phone-page-description',
+                text: '在此编辑当前设备的关键词权重；不会改变真实推荐、排序、模型调用或 MVU 数据。',
+            }),
+        ]);
+        if (!personalization.enabled) {
+            section.appendChild(element('p', {
+                className: 'yl-settings-summary',
+                text: '个性化内容推荐当前已关闭。请返回管理页重新开启后再编辑关键词权重。',
+            }));
+            return section;
+        }
+
+        const preferenceEditor = element('section', { className: 'yl-settings-binding' });
         preferenceEditor.setAttribute('aria-label', '个性化内容偏好编辑器');
         let keywordWeights = personalization.keywordWeights.map((item) => ({ ...item }));
         let editingIndex = -1;
@@ -798,47 +851,6 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         ), signal, { name: 'personalization-preference-save' }));
         preferenceEditor.appendChild(preferenceActions);
         section.appendChild(preferenceEditor);
-
-        const notice = element('section', { className: 'yl-settings-section yl-settings-modal', hidden: true });
-        notice.setAttribute('aria-label', '个性化内容推荐说明');
-        notice.setAttribute('role', 'dialog');
-        notice.setAttribute('aria-modal', 'true');
-        const closeNotice = () => {
-            notice.hidden = true;
-            enabled.checked = true;
-        };
-        const noticeTitlebar = element('div', { className: 'yl-dialog-titlebar' });
-        const noticeClose = element('button', {
-            className: 'yl-dialog-close', type: 'button', text: '×', name: 'personalization-modal-close',
-            ariaLabel: '关闭个性化内容推荐说明',
-        });
-        append(noticeTitlebar, [element('h2', { text: '个性化内容推荐说明' }), noticeClose]);
-        notice.appendChild(noticeTitlebar);
-        listen(noticeClose, noticeClose, 'click', () => {
-            closeNotice();
-            onFeedback('已关闭说明，个性化内容推荐保持开启。');
-        }, signal);
-        for (const paragraph of PERSONALIZATION_NOTICE) notice.appendChild(element('p', { text: paragraph }));
-        const noticeActions = element('div', { className: 'yl-settings-actions' });
-        noticeActions.appendChild(actionButton('确定', async () => updateSettings(
-            () => settingsStore.setPersonalizationEnabled(false),
-            '个性化内容推荐已在当前设备关闭；真实推荐算法未改变。',
-        ), signal, { name: 'personalization-disable-confirm' }));
-        noticeActions.appendChild(actionButton('保持开启并关闭', async () => {
-            closeNotice();
-            onFeedback('已取消关闭，个性化内容推荐保持开启。');
-        }, signal, { secondary: true, name: 'personalization-disable-cancel' }));
-        notice.appendChild(noticeActions);
-        section.appendChild(notice);
-
-        listen(enabled, enabled, 'change', () => {
-            if (enabled.checked) {
-                updateSettings(() => settingsStore.setPersonalizationEnabled(true), '个性化内容推荐已在当前设备开启。');
-                return;
-            }
-            enabled.checked = true;
-            notice.hidden = false;
-        }, signal);
         return section;
     }
 
