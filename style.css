@@ -56,7 +56,7 @@
 .yl-phone-action-card:focus-visible, .yl-settings-button:focus-visible, .yl-settings-control:focus-visible,
 .yl-center-entry:focus-visible, .yl-miniapp-card:focus-visible, .yl-chat-session:focus-visible,
 .yl-page-back:focus-visible, .yl-help-trigger:focus-visible, .yl-candidate-avatar:focus-visible,
-.yl-chat-send-button:focus-visible, .yl-switch input:focus-visible, .yl-mode-switch input:focus-visible {
+.yl-chat-send-button:focus-visible, .yl-chat-tool-button:focus-visible, .yl-switch input:focus-visible, .yl-mode-switch input:focus-visible {
     outline: 2px solid #fff;
     outline-offset: 3px;
     border-radius: var(--yl-r-sm, 10px);
@@ -645,7 +645,9 @@
 
 .yl-page-private_chat { gap: 10px; }
 .yl-private-chat-screen {
+    grid-template-rows: auto auto minmax(260px, 1fr) auto;
     gap: 12px;
+    min-height: min(540px, calc(100dvh - 180px));
     padding: 12px;
     border: 1px solid var(--yl-border, rgb(255 255 255 / 13%));
     border-radius: var(--yl-r-lg, 24px);
@@ -682,8 +684,8 @@
     line-height: 1.45;
 }
 .yl-chat-transcript {
-    min-height: 174px;
-    max-height: 348px;
+    min-height: 260px;
+    max-height: 440px;
     padding: 3px 3px 5px;
     overflow: auto;
     scrollbar-width: thin;
@@ -719,10 +721,31 @@
 .yl-chat-composer { grid-template-columns: minmax(0, 1fr) auto; align-items: center; row-gap: 5px; padding: 7px; border: 1px solid rgb(255 255 255 / 13%); border-radius: 18px; background: rgb(13 10 20 / 68%); }
 .yl-chat-composer.is-pending { opacity: .72; }
 .yl-chat-composer .yl-settings-textarea { min-height: 48px; padding: 9px 11px; border: 0; background: rgb(255 255 255 / 6%); resize: vertical; }
-.yl-chat-composer-controls { display: grid; align-self: stretch; }
-.yl-chat-send-button { display: inline-grid; width: 44px; min-height: 44px; place-items: center; padding: 0; border: 0; border-radius: 50%; color: #fff; background: var(--yl-grad, linear-gradient(135deg, #ff4e8e, #8e6bff)); box-shadow: 0 6px 18px rgb(255 78 142 / 30%); cursor: pointer; font: inherit; font-size: 1.25rem; font-weight: 800; line-height: 1; transition: transform var(--yl-t-fast) var(--yl-ease), filter var(--yl-t-fast) var(--yl-ease); }
+.yl-chat-composer-controls { position: relative; display: grid; align-self: stretch; align-items: center; }
+.yl-chat-send-button { display: inline-grid; width: 44px; min-height: 44px; place-items: center; padding: 0; border: 0; border-radius: 50%; color: #fff; background: var(--yl-grad, linear-gradient(135deg, #ff4e8e, #8e6bff)); box-shadow: 0 6px 18px rgb(255 78 142 / 30%); cursor: pointer; font: inherit; line-height: 1; transition: transform var(--yl-t-fast) var(--yl-ease), filter var(--yl-t-fast) var(--yl-ease), opacity var(--yl-t-fast) var(--yl-ease); }
 .yl-chat-send-button:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+.yl-chat-send-button.is-empty { opacity: .62; }
 .yl-chat-send-button:disabled { cursor: not-allowed; filter: saturate(.55); opacity: .58; }
+.yl-chat-send-icon { position: relative; display: block; width: 21px; height: 21px; transform: rotate(-7deg); }
+.yl-chat-send-icon::before { position: absolute; inset: 1px; content: ''; background: currentColor; clip-path: polygon(2% 6%, 98% 48%, 2% 94%, 22% 56%, 66% 48%, 22% 40%); filter: drop-shadow(0 1px 1px rgb(0 0 0 / 18%)); }
+.yl-chat-send-pending { font-size: 1rem; font-weight: 800; letter-spacing: .08em; }
+.yl-chat-tool-menu {
+    position: absolute;
+    z-index: 18;
+    right: 0;
+    bottom: calc(100% + 9px);
+    display: grid;
+    min-width: 132px;
+    padding: 6px;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 14px;
+    background: rgb(28 22 38 / 96%);
+    box-shadow: 0 14px 34px rgb(0 0 0 / 42%);
+    animation: yl-chat-tool-in 140ms var(--yl-ease);
+}
+@keyframes yl-chat-tool-in { from { opacity: 0; transform: translateY(5px) scale(.97); } }
+.yl-chat-tool-button { min-height: 38px; padding: 8px 11px; border: 0; border-radius: 10px; color: var(--yl-text, #f8f4fb); background: rgb(255 255 255 / 7%); cursor: pointer; font: inherit; font-size: .75rem; font-weight: 750; text-align: left; transition: background var(--yl-t-fast) var(--yl-ease), color var(--yl-t-fast) var(--yl-ease); }
+.yl-chat-tool-button:hover { color: #fff; background: rgb(255 78 142 / 18%); }
 .yl-chat-composer-hint { grid-column: 1 / -1; padding: 0 4px; color: var(--yl-faint, #8d7f9b); font-size: .61rem; }
 
 /* --- 面基约定 --- */
@@ -1421,6 +1444,8 @@ body.reduced-motion .yl-phone-extension *, body.reduced-motion .yl-phone-extensi
     .yl-action-like .yl-action-icon { width: 62px; height: 62px; }
     .yl-chat-composer { grid-template-columns: minmax(0, 1fr) auto; }
     .yl-chat-send-button { width: 46px; min-height: 46px; }
+    .yl-private-chat-screen { min-height: min(500px, calc(100dvh - 154px)); }
+    .yl-chat-transcript { min-height: 230px; max-height: 420px; }
     .yl-candidate-card { min-height: 380px; }
 }
 @media (max-width: 430px) {

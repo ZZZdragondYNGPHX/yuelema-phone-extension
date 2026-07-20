@@ -56,6 +56,13 @@ function click(node) {
     node.dispatchEvent(new Event('click'));
 }
 
+function rightClick(node) {
+    assert.ok(node, '要右键的控件必须存在');
+    const event = new Event('contextmenu', { cancelable: true });
+    node.dispatchEvent(event);
+    return event;
+}
+
 function pressEnter(node, { shiftKey = false, isComposing = false } = {}) {
     const event = new Event('keydown', { cancelable: true });
     Object.defineProperties(event, {
@@ -114,6 +121,10 @@ test('private chat uses a distinct mobile conversation surface and only calls th
             '实际年龄', '全局账号表现', 'NPC专属匹配度', 'https://example.invalid/public-avatar.webp', 'chat_lin', 'npc_lin',
         ]) assert.equal(miniDom.document.body.textContent.includes(forbidden), false, `私聊 DOM 不得暴露 ${forbidden}`);
 
+        assert.equal(miniDom.document.querySelector('.yl-meetup-panel'), null, '私聊页底部不应常驻约定面基卡片');
+        const sendButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息');
+        assert.ok(sendButton.querySelector('.yl-chat-send-icon'), '发送按钮应显示纸飞机图标');
+        assert.doesNotMatch(sendButton.textContent, /↑/u);
         const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
         assert.ok(input, '私聊详情应有输入栏');
         input.value = '周末想去看场展览。';
@@ -121,8 +132,8 @@ test('private chat uses a distinct mobile conversation surface and only calls th
         pressEnter(input, { shiftKey: true });
         assert.equal(calls.length, 0, 'Shift+Enter 只换行，不发送消息');
 
-        pressEnter(input);
-        assert.deepEqual(calls, [{ sessionUid: 'chat_lin', npcUid: 'npc_lin', playerMessage: '周末想去看场展览。' }]);
+        click(sendButton);
+        assert.deepEqual(calls, [{ sessionUid: 'chat_lin', npcUid: 'npc_lin', playerMessage: '周末想去看场展览。' }], '左键纸飞机应沿用现有私聊发送桥');
         assert.ok(miniDom.document.querySelector('.yl-chat-replying'), '请求期间应在聊天流内显示回复中状态');
         assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息').disabled, true);
 
@@ -131,6 +142,70 @@ test('private chat uses a distinct mobile conversation surface and only calls th
         const refreshedInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
         assert.equal(refreshedInput.value, '', '受控写入成功后只清除当前会话的本地草稿');
         assert.deepEqual(events.map((entry) => entry.payload.page), ['messages', 'private_chat']);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('right-clicking the paper plane opens the meetup tool and reuses the existing handoff bridge', async () => {
+    const meetupCalls = [];
+    let privateChatCalls = 0;
+    const bridge = {
+        emit() {},
+        isPending() { return false; },
+        runPrivateChat() { privateChatCalls += 1; return { ok: true }; },
+        runMeetupHandoff(request) { meetupCalls.push(request); return { ok: true, draftApplied: true }; },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-private-chat-tools', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+
+        assert.equal(miniDom.document.querySelector('.yl-meetup-panel'), null, '未打开工具栏前不渲染底部面基卡片');
+        let sendButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息');
+        const contextMenuEvent = rightClick(sendButton);
+        assert.equal(contextMenuEvent.defaultPrevented, true, '右键纸飞机应阻止浏览器默认菜单');
+        const toolMenu = miniDom.document.querySelector('.yl-chat-tool-menu');
+        assert.ok(toolMenu, '右键纸飞机应打开小型工具栏');
+        assert.equal(toolMenu.getAttribute('role'), 'menu');
+        assert.match(toolMenu.textContent, /^约定面基$/u);
+        sendButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息');
+        assert.equal(sendButton.getAttribute('aria-expanded'), 'true');
+        assert.equal(privateChatCalls, 0, '打开工具栏不得发送私聊');
+        assert.equal(meetupCalls.length, 0, '打开工具栏不得提前提交面基');
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约定面基'));
+        assert.equal(miniDom.document.querySelector('.yl-chat-tool-menu'), null, '选择工具后应收起右键菜单');
+        assert.ok(miniDom.document.querySelector('.yl-meetup-panel'), '约定面基工具应打开原有面基表单');
+
+        const fieldValues = new Map([
+            ['本周六 19:30', '本周六 19:30'],
+            ['静安寺地铁站 2 号口', '静安寺地铁站 2 号口'],
+            ['一起吃饭，确认是否继续约会', '一起吃饭，确认是否继续约会'],
+            ['公共场所见面；任何亲密行为需当场确认', '公共场所见面；任何亲密行为需当场确认'],
+            ['散场时间', '21:30 前散场'],
+            ['各自独立到场，可随时离开', '各自独立到场，可随时离开'],
+        ]);
+        for (const textarea of miniDom.document.querySelectorAll('textarea')) {
+            const value = fieldValues.get(textarea.getAttribute('placeholder'));
+            if (!value) continue;
+            textarea.value = value;
+            textarea.dispatchEvent(new Event('input'));
+        }
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '填入正文草稿'));
+        await flushUi();
+
+        assert.deepEqual(meetupCalls, [{
+            sessionUid: 'chat_lin', npcUid: 'npc_lin',
+            time: '本周六 19:30', place: '静安寺地铁站 2 号口', mutualIntent: '一起吃饭，确认是否继续约会',
+            confirmedBoundaries: '公共场所见面；任何亲密行为需当场确认', pendingItems: '21:30 前散场', riskNotice: '各自独立到场，可随时离开',
+        }], '工具栏入口必须复用 runMeetupHandoff，不得另造写入路径');
+        assert.equal(privateChatCalls, 0, '约定面基不得触发私聊发送');
+        assert.equal(miniDom.document.querySelector('.yl-meetup-panel'), null, '成功填入后应收起面基表单');
     } finally {
         mounted.destroy();
     }

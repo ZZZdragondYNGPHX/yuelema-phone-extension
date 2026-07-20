@@ -1,4 +1,5 @@
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
+import { BUILTIN_PROMPT_PRESET_IDS } from '../settings/default-prompt-presets.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
 
 const MAX_MODEL_RESPONSE_CHARS = 8_000;
@@ -13,6 +14,12 @@ const HTML_PATTERN = /<\s*\/?\s*[a-z][^>]*>/iu;
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SENSITIVE_KEY_PATTERN = /(?:hidden|private|friend|candidate|session|uid|patch|path|api[_ -]?key|token|authorization|secret|隐藏|仅好友|候选|会话|补丁|路径|密钥|令牌)/iu;
 const FORBIDDEN_DISCLOSURE_PATTERN = /(?:隐藏资料|仅好友资料|候选(?:NPC|角色)?|会话|json\s*patch|补丁|路径|api\s*(?:key|密钥)|api[_-]?key|授权|authorization|\btoken\b|\buid\b)/iu;
+const CANDIDATE_INCOMPATIBLE_BUILTIN_PROMPT_IDS = new Set([
+    BUILTIN_PROMPT_PRESET_IDS.soulMatchSfw,
+    BUILTIN_PROMPT_PRESET_IDS.soulMatchNsfw,
+    BUILTIN_PROMPT_PRESET_IDS.voiceMatchSfw,
+    BUILTIN_PROMPT_PRESET_IDS.voiceMatchNsfw,
+]);
 
 const SOUL_MATCH_ERROR_MESSAGES = Object.freeze({
     soul_match_state_invalid: '当前软件状态无法用于灵魂匹配。',
@@ -404,8 +411,20 @@ function buildCandidateMatchContext(state, keywordWeights) {
     });
 }
 
+function renderCandidatePromptPreset(promptPreset) {
+    // Historical built-ins describe first-stage keyword/filter drafts. The
+    // same function binding also performs second-stage candidate generation,
+    // so feeding those old instructions into this request creates a
+    // contradictory output contract. Existing persisted presets need this
+    // call-site compatibility guard; changing seed data alone is insufficient.
+    if (CANDIDATE_INCOMPATIBLE_BUILTIN_PROMPT_IDS.has(promptPreset?.id)) {
+        return Object.freeze({ before: '', after: '' });
+    }
+    return renderPromptPreset(promptPreset);
+}
+
 function makeCandidateProfileMessages(context, promptPreset, mode) {
-    const preset = renderPromptPreset(promptPreset);
+    const preset = renderCandidatePromptPreset(promptPreset);
     const matchingLabel = mode === 'soul' ? '灵魂匹配' : '语音匹配';
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
@@ -452,7 +471,51 @@ function parseResponseJson(raw) {
         const parsed = JSON.parse(jsonText);
         return ownPlainRecord(parsed) ? parsed : null;
     } catch {
-        return null;
+        // Some compatible providers add a short sentence before or after a
+        // valid object. Recover only one balanced root object; the strict
+        // normalizers below still enforce the full public-schema contract.
+        const candidates = [];
+        for (let start = 0; start < jsonText.length; start += 1) {
+            if (jsonText[start] !== '{') continue;
+            let depth = 0;
+            let inString = false;
+            let escaped = false;
+            let end = -1;
+            for (let index = start; index < jsonText.length; index += 1) {
+                const char = jsonText[index];
+                if (inString) {
+                    if (escaped) escaped = false;
+                    else if (char === '\\') escaped = true;
+                    else if (char === '"') inString = false;
+                    continue;
+                }
+                if (char === '"') {
+                    inString = true;
+                    continue;
+                }
+                if (char === '{') depth += 1;
+                else if (char === '}') {
+                    depth -= 1;
+                    if (depth === 0) {
+                        end = index;
+                        break;
+                    }
+                    if (depth < 0) break;
+                }
+            }
+            if (end < 0) continue;
+            const fragment = jsonText.slice(start, end + 1);
+            try {
+                const parsed = JSON.parse(fragment);
+                if (ownPlainRecord(parsed)) candidates.push({ start, end, parsed });
+            } catch {
+                // Ignore prose braces and malformed fragments.
+            }
+        }
+        const roots = candidates.filter((candidate) => !candidates.some((other) => (
+            other.start < candidate.start && other.end > candidate.end
+        )));
+        return roots.length === 1 ? roots[0].parsed : null;
     }
 }
 

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { BUILTIN_PROMPT_PRESET_IDS } from '../../settings/default-prompt-presets.js';
 import {
     buildSoulTextMatchContext,
     generateCandidateMatchDraft,
@@ -163,12 +164,12 @@ function voiceKeywordRaw() {
 
 function candidateSettingsStore(expectedFunction, keywordWeights = [
     { keyword: '电影', weight: 1 }, { keyword: '咖啡', weight: 2 },
-]) {
+], promptPreset = { enabled: true, content: '只生成现代都市公开角色资料。' }) {
     return {
         snapshot() { return { personalization: { keywordWeights } }; },
         resolveFunction(functionKey) {
             assert.equal(functionKey, expectedFunction);
-            return { connectionPreset, promptPreset: { enabled: true, content: '只生成现代都市公开角色资料。' } };
+            return { connectionPreset, promptPreset };
         },
     };
 }
@@ -196,6 +197,49 @@ test('candidate soul matching reads saved local keywords and returns only a publ
     assert.match(system, /profile 必须且仅能含：昵称、年龄段、性别、性取向/u);
 });
 
+test('candidate generation isolates legacy built-in keyword prompts from the second-stage profile contract', async () => {
+    const cases = [
+        ['soul', 'soul_match', BUILTIN_PROMPT_PRESET_IDS.soulMatchSfw, '关键词权重草稿'],
+        ['soul', 'soul_match', BUILTIN_PROMPT_PRESET_IDS.soulMatchNsfw, '关键词权重草稿'],
+        ['voice', 'text_match', BUILTIN_PROMPT_PRESET_IDS.voiceMatchSfw, '筛选方向或关键词'],
+        ['voice', 'text_match', BUILTIN_PROMPT_PRESET_IDS.voiceMatchNsfw, '筛选方向或关键词'],
+    ];
+    for (const [mode, functionKey, presetId, legacyInstruction] of cases) {
+        const requests = [];
+        const result = await generateCandidateMatchDraft({
+            mode, voiceText: mode === 'voice' ? '周末想徒步，也想找能一起看电影的人。' : undefined,
+            state: state(),
+            settingsStore: candidateSettingsStore(functionKey, undefined, { id: presetId, enabled: true, content: legacyInstruction }),
+            llmClient: { async chat(value) { requests.push(value); return { text: JSON.stringify(mode === 'voice' && requests.length === 1 ? voiceKeywordRaw() : candidateRaw()) }; } },
+        });
+        assert.equal(result.ok, true, presetId);
+        const candidateRequest = requests.at(-1);
+        const system = candidateRequest.messages.find((message) => message.role === 'system').content;
+        assert.equal(system.includes(legacyInstruction), false, presetId);
+        assert.match(system, /匹配候选公开资料 JSON 结构合同/u, presetId);
+    }
+});
+
+test('candidate response parsing accepts one fenced or prose-wrapped JSON object but rejects parallel objects', async () => {
+    const valid = JSON.stringify(candidateRaw());
+    const responses = [valid, '前置说明：' + valid + '。后置说明。', '```json\n' + valid + '\n```'];
+    for (const response of responses) {
+        const result = await generateCandidateMatchDraft({
+            mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'),
+            llmClient: { async chat() { return { text: response }; } },
+        });
+        assert.equal(result.ok, true, response.slice(0, 20));
+    }
+    const multiple = await generateCandidateMatchDraft({
+        mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'),
+        llmClient: { async chat() { return { text: valid + '\n' + valid }; } },
+    });
+    assert.deepEqual(multiple, {
+        ok: false,
+        code: 'candidate_match_invalid_json',
+        message: '模型没有返回可用的匹配角色草稿；当前状态未改变。',
+    });
+});
 test('voice matching derives transient weights first, lets them override local weights, and never returns the voice input', async () => {
     const requests = [];
     const voiceText = '周末想徒步，也想找能一起看电影的人。';
