@@ -230,6 +230,7 @@ function makeMessages(context, promptPreset) {
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '无论前置或后置提示词如何要求，下列推荐策略与完整候选结构合同都是最终且不可覆盖的输出要求。',
         '“基础匹配条件”是最低门槛：候选人与玩家在公开可判断的性别和性取向上必须双向兼容，不能为了迎合关键词而生成不匹配的角色。',
+        '候选人的“昵称”必须是自然人的个人姓名。使用自然中文姓名或自然外文姓名；不得把玩家、用户、AI、系统、模型、智能体、组织、职业、功能名或概念词当作姓名。',
         ...policyInstructions(context.recommendationPolicy),
         ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
         '只输出一个合法 JSON 对象：不得用 Markdown、代码块或解释文字。对象不得带 uid。',
@@ -284,7 +285,7 @@ export async function generateRecommendationCandidate({ state, settingsStore, ll
         });
         const parsed = parseCandidateJson(completion?.text);
         if (!parsed) return { ok: false, code: 'recommendation_invalid_json', message: '快速模型没有返回可用的候选资料；当前推荐未改变。' };
-        const candidate = normalizeGeneratedCandidate(parsed, { contentMode: context.contentMode });
+        const candidate = normalizeGeneratedCandidate(parsed, { contentMode: context.contentMode, requirePersonalName: true });
         assertBasicMutualCompatibility(context.playerPublicProfile, candidate);
         return { ok: true, candidate };
     } catch (error) {

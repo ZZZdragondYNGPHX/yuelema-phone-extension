@@ -85,6 +85,35 @@ test('a saved favourite can still be liked or disliked without a stale queue rej
     assert.equal(validateControlledPatchAgainstState(dislikedState, disliked.value).ok, true);
 });
 
+test('clicking a saved favourite again removes its bookmark and disposable candidate record', () => {
+    const savedState = state();
+    savedState.角色池.npc_case = savedState.推荐.临时候选池.npc_case;
+    delete savedState.推荐.临时候选池.npc_case;
+    savedState.推荐.当前队列 = [];
+    savedState.推荐.收藏角色UID = ['npc_case'];
+    const before = structuredClone(savedState);
+
+    const removed = buildControlledPatch(savedState, { kind: 'unfavorite', npcUid: 'npc_case' });
+
+    assert.equal(removed.ok, true);
+    assert.deepEqual(removed.value.map((operation) => [operation.op, operation.path]), [
+        ['remove', '/推荐/收藏角色UID/0'],
+        ['remove', '/角色池/npc_case'],
+    ]);
+    assert.equal(validateControlledPatchAgainstState(savedState, removed.value).ok, true);
+    assert.deepEqual(savedState, before);
+
+    const matchedState = structuredClone(before);
+    matchedState.角色池.npc_case.与玩家关系.状态 = '已匹配';
+    matchedState.会话.chat_6 = { 对象UID: 'npc_case', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
+    const retained = buildControlledPatch(matchedState, { kind: 'unfavorite', npcUid: 'npc_case' });
+    assert.equal(retained.ok, true);
+    assert.deepEqual(retained.value.map((operation) => [operation.op, operation.path]), [
+        ['remove', '/推荐/收藏角色UID/0'],
+    ], '已有私聊的角色只取消收藏标记，不能留下悬空会话。');
+    assert.equal(validateControlledPatchAgainstState(matchedState, retained.value).ok, true);
+});
+
 test('forged session or score operation is rejected before the MVU parser', () => {
     const before = state();
     const result = buildLikeMatchPatch(before, { npcUid: 'npc_case' });

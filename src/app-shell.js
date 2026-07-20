@@ -5,10 +5,10 @@ import { buildSettingsPanel } from './settings-panel.js';
 import { buildCharacterCreatorPanel } from './characters/character-creator-panel.js';
 import { createLauncherDragController } from './launcher-drag.js';
 
-const UI_VERSION = '0.1.14';
+const UI_VERSION = '0.1.15';
 const PANEL_DRAG_THRESHOLD = 8;
-const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', dislike: '不喜欢' });
-const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', dislike: '✕' });
+const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', dislike: '不喜欢' });
+const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', dislike: '✕' });
 const PRIMARY_PAGE_FOR = Object.freeze({
     group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
     settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
@@ -542,17 +542,28 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return avatar;
     }
     function buildActionButton(kind, { pending = false, disabled = false } = {}) {
-        const button = element('button', { className: `yl-phone-action-card yl-action-${kind} yl-action-circle`, type: 'button', ariaLabel: ACTION_LABELS[kind], disabled });
+        const actionStyle = kind === 'unfavorite' ? 'favorite' : kind;
+        const button = element('button', { className: `yl-phone-action-card yl-action-${actionStyle} yl-action-circle`, type: 'button', ariaLabel: ACTION_LABELS[kind], disabled });
         const icon = element('span', { className: 'yl-action-icon', text: ACTION_ICONS[kind] });
         icon.setAttribute('aria-hidden', 'true');
         const label = element('span', { className: 'yl-action-label', text: pending ? '处理中…' : ACTION_LABELS[kind] });
         append(button, [icon, label]);
         return button;
     }
+    function isFavoriteCandidate(candidate) {
+        return Boolean(candidate?.uid && (currentView.favorites ?? []).some((favorite) => favorite.uid === candidate.uid));
+    }
     function buildActionRow(candidate, { tooltips = true } = {}) {
         const actions = element('div', { className: 'yl-candidate-actions' });
-        const helpText = { like: '提高公开标签偏好并发起匹配邀请。', dislike: '降低相似公开标签的推荐权重。', favorite: '保存到收藏夹。', refresh: '请求快速模型生成下一位候选人。' };
-        for (const kind of ['like', 'dislike', 'favorite', 'refresh']) {
+        const favoriteAction = isFavoriteCandidate(candidate) ? 'unfavorite' : 'favorite';
+        const helpText = {
+            like: '提高公开标签偏好并发起匹配邀请。',
+            dislike: '降低相似公开标签的推荐权重。',
+            favorite: '保存到收藏夹。',
+            unfavorite: '取消收藏，并移除尚未建立私聊的候选资料。',
+            refresh: '请求快速模型生成下一位候选人。',
+        };
+        for (const kind of ['like', 'dislike', favoriteAction, 'refresh']) {
             const pending = actionBridge.isPending(kind, candidate.uid);
             const button = buildActionButton(kind, { pending, disabled: pending });
             if (tooltips) button.appendChild(buildHelp(helpText[kind]));
@@ -1233,7 +1244,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         let result;
         try { result = await request; } catch { result = { ok: false }; }
         refreshing = false;
-        const message = result?.ok ? (isRefresh ? '下一位候选人已生成。' : '操作已保存。') : (result?.message || describeActionFailure(result));
+        const message = result?.ok
+            ? (isRefresh ? '下一位候选人已生成。' : (kind === 'unfavorite' ? '已取消收藏。' : '操作已保存。'))
+            : (result?.message || describeActionFailure(result));
         setFeedback(message, operationToken);
         if (isRefresh) showAiResult(Boolean(result?.ok), message || '候选人未生成，请稍后重试。', operationToken);
         refreshState();

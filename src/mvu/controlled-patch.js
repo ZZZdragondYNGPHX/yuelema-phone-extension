@@ -177,7 +177,7 @@ export function buildRecommendationRefreshPatch(state, { replacedNpcUid, candida
     const oldIndex = queue.indexOf(replacedNpcUid);
     if (oldIndex < 0) return fail('recommendation_refresh_source_not_queued');
     let normalizedCandidate;
-    try { normalizedCandidate = normalizeGeneratedCandidate(candidate); } catch { return fail('recommendation_candidate_invalid'); }
+    try { normalizedCandidate = normalizeGeneratedCandidate(candidate, { requirePersonalName: true }); } catch { return fail('recommendation_candidate_invalid'); }
     const uid = `npc_llm_${roleCounter + 1}`;
     if (!isNpcUid(uid) || candidateAt(state, uid) || roleAt(state, uid) || queue.includes(uid)) return fail('recommendation_uid_conflict');
     const operations = [];
@@ -206,7 +206,7 @@ export function buildRecommendationInitialCandidatePatch(state, { candidate } = 
     if (queue.length !== 0) return fail('recommendation_initial_queue_not_empty');
 
     let normalizedCandidate;
-    try { normalizedCandidate = normalizeGeneratedCandidate(candidate); }
+    try { normalizedCandidate = normalizeGeneratedCandidate(candidate, { requirePersonalName: true }); }
     catch { return fail('recommendation_candidate_invalid'); }
 
     const uid = `npc_llm_${roleCounter + 1}`;
@@ -610,6 +610,19 @@ export function buildControlledPatch(state, command) {
         const index = favorites.indexOf(uid);
         if (index < 0) return fail('favorite_not_found');
         operations.push({ op: 'remove', path: encodeJsonPointer(['推荐', '收藏角色UID', String(index)]) });
+        const queueRemoval = removeUidFromQueue(state, uid, operations);
+        if (!queueRemoval.ok) return queueRemoval;
+        // Favouriting promotes an otherwise disposable recommendation into 角色池.
+        // Cancelling that bookmark discards the unlinked candidate record as well;
+        // an existing private-chat session keeps its role record intact so no
+        // matched conversation can be orphaned by a bookmark toggle.
+        if (!hasSessionForNpc(state, uid)) {
+            if (candidateAt(state, uid)) {
+                operations.push({ op: 'remove', path: encodeJsonPointer(['推荐', '临时候选池', uid]) });
+            } else if (roleAt(state, uid)) {
+                operations.push({ op: 'remove', path: encodeJsonPointer(['角色池', uid]) });
+            }
+        }
         return success(operations);
     }
 
@@ -653,7 +666,10 @@ export function validateControlledPatchWhitelist(patch) {
 
         const generatedCandidate = /^\/推荐\/临时候选池\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(path);
         if (operation.op === 'add' && generatedCandidate && isNpcUid(generatedCandidate[1])) {
-            try { normalizeGeneratedCandidate(operation.value); continue; } catch { return fail('generated_candidate_invalid'); }
+            try {
+                normalizeGeneratedCandidate(operation.value, { requirePersonalName: /^npc_llm_\d+$/u.test(generatedCandidate[1]) });
+                continue;
+            } catch { return fail('generated_candidate_invalid'); }
         }
         if (operation.op === 'add' && path === '/推荐/当前队列/-' && isNpcUid(operation.value)) continue;
         if (operation.op === 'replace' && path === '/系统/UID计数器/角色' && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 999999) continue;
@@ -664,6 +680,10 @@ export function validateControlledPatchWhitelist(patch) {
 
         const listRemove = /^\/推荐\/(当前队列|收藏角色UID)\/(0|[1-9]\d*)$/u.exec(path);
         if (operation.op === 'remove' && listRemove && LIST_NAMES.has(listRemove[1])) continue;
+        const candidateRemove = /^\/推荐\/临时候选池\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(path);
+        if (operation.op === 'remove' && candidateRemove && isNpcUid(candidateRemove[1])) continue;
+        const roleRemove = /^\/角色池\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(path);
+        if (operation.op === 'remove' && roleRemove && isNpcUid(roleRemove[1])) continue;
 
         const move = /^\/推荐\/临时候选池\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(operation.from ?? '');
         const moveTarget = /^\/角色池\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(path);

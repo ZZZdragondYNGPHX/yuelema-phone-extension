@@ -25,6 +25,8 @@ const SENSITIVE_KEY_PATTERN = /(?:api[\s_-]*key|authorization|token|secret|passw
 const HTML_PATTERN = /<!--|<\s*\/?\s*[a-z][^>]*>/iu;
 const UNDERAGE_PATTERN = /(?:未成年|未滿|未满\s*18|minor|underage|小于\s*18|小於\s*18|<\s*18)/iu;
 const CONTENT_MODES = new Set(['SFW', 'NSFW']);
+const PERSONAL_NAME_PATTERN = /^(?:[\p{Script=Han}]{2,12}|[\p{Script=Latin}][\p{Script=Latin}' -]{1,31}|[\p{Script=Han}]{1,12}(?:·[\p{Script=Han}\p{Script=Latin}]{1,16})+)$/u;
+const NON_PERSONAL_NAME_PATTERN = /(?:玩家|用户|使用者|系统|模型|人工智能|智能体|智核|助手|机器人|候选人|角色|档案|资料|测试|官方|管理员|客服|团队|工作室|公司|平台|账号|帐号|游客|匿名|摄影师|设计师|工程师|咖啡师|医生|律师|教师|老师|作家|主播|店长|经理|教授|学生|总监|总裁|\b(?:ai|gpt|bot|npc|test|unknown|user|player|system|model|assistant)\b)/iu;
 
 // This mirrors the exact closed candidate codec below. It belongs to the
 // non-editable system layer so a local prompt preset can guide style without
@@ -115,6 +117,12 @@ function normalizeText(value, path, maxLength, { allowEmpty = false } = {}) {
     return value;
 }
 
+function assertGeneratedPersonalName(value) {
+    if (!PERSONAL_NAME_PATTERN.test(value) || NON_PERSONAL_NAME_PATTERN.test(value)) {
+        fail('公开资料.昵称:not_personal_name');
+    }
+}
+
 function normalizeTags(value, path) {
     assertArray(value, path, 24);
     const seen = new Set();
@@ -153,13 +161,14 @@ function assertPublicTextPolicy(value, path, contentMode, { tag = false } = {}) 
     if (!tag) fail(`${path}:adult_keyword_must_be_tag`);
 }
 
-function normalizePublicProfile(value, contentMode) {
+function normalizePublicProfile(value, contentMode, { requirePersonalName = false } = {}) {
     const keys = [...Object.keys(PUBLIC_PROFILE_FIELDS), ...TAG_FIELDS];
     assertRecord(value, keys, '公开资料');
     const profile = {};
     for (const [key, maxLength] of Object.entries(PUBLIC_PROFILE_FIELDS)) {
         const path = `公开资料.${key}`;
         profile[key] = normalizeText(ownData(value, key, '公开资料'), path, maxLength, { allowEmpty: key === '头像引用' });
+        if (key === '昵称' && requirePersonalName) assertGeneratedPersonalName(profile[key]);
         assertPublicTextPolicy(profile[key], path, contentMode);
     }
     for (const key of TAG_FIELDS) {
@@ -216,6 +225,7 @@ function normalizeRelationship(value) {
 export function normalizeGeneratedCandidate(input, options) {
     try {
         const contentMode = resolveContentMode(input, options);
+        const requirePersonalName = options !== null && typeof options === 'object' && options.requirePersonalName === true;
         const rootKeys = [
             '成人验证', '公开资料', '仅好友资料', '隐藏资料', '偏好与边界',
             '拒绝阈值', '已读不回阈值', '取消匹配阈值', '拉黑阈值', '与玩家关系',
@@ -225,7 +235,7 @@ export function normalizeGeneratedCandidate(input, options) {
 
         const candidate = {
             成人验证: true,
-            公开资料: normalizePublicProfile(ownData(input, '公开资料', '候选人'), contentMode),
+            公开资料: normalizePublicProfile(ownData(input, '公开资料', '候选人'), contentMode, { requirePersonalName }),
             仅好友资料: normalizeFriendProfile(ownData(input, '仅好友资料', '候选人')),
             隐藏资料: normalizeHiddenProfile(ownData(input, '隐藏资料', '候选人')),
             偏好与边界: normalizeText(ownData(input, '偏好与边界', '候选人'), '偏好与边界', 1200, { allowEmpty: true }),

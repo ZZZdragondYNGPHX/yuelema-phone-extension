@@ -68,6 +68,22 @@ test('normalizes one complete adult candidate into a clean deep copy', () => {
     assert.equal(result.隐藏资料.私人备注, '对临时失约很敏感。');
 });
 
+test('rejects system labels and role concepts where a generated personal name is required', () => {
+    const conceptName = completeAdultCandidate();
+    conceptName.公开资料.昵称 = '智核玩家';
+    assert.throws(
+        () => normalizeGeneratedCandidate(conceptName, { requirePersonalName: true }),
+        error => error instanceof TypeError && error.code === '公开资料.昵称:not_personal_name',
+    );
+
+    const roleName = completeAdultCandidate();
+    roleName.公开资料.昵称 = '摄影师';
+    assert.throws(
+        () => normalizeGeneratedCandidate(roleName, { requirePersonalName: true }),
+        error => error instanceof TypeError && error.code === '公开资料.昵称:not_personal_name',
+    );
+});
+
 test('rejects an underage or not-explicitly-adult candidate', () => {
     const underage = completeAdultCandidate();
     underage.隐藏资料.实际年龄 = 17;

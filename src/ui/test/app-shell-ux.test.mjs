@@ -760,3 +760,31 @@ test('home candidate card is a request-free visual shell with public info, keywo
         if (previousImage === undefined) delete globalThis.Image; else globalThis.Image = previousImage;
     }
 });
+
+test('a saved favourite renders a cancel-favourite action and dispatches the controlled unfavorite command', async () => {
+    const readResult = readyReadResult();
+    delete readResult.state.推荐.临时候选池.npc_1;
+    readResult.state.推荐.当前队列 = [];
+    readResult.state.推荐.收藏角色UID = ['npc_1'];
+    const calls = [];
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-unfavorite-action',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async runMvuAction(kind, npcUid) { calls.push([kind, npcUid]); return { ok: true }; },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        click(buttonByText('收藏夹'));
+        const actions = miniDom.document.querySelector('.yl-favorite-card').querySelectorAll('button');
+        assert.deepEqual(actions.map((node) => node.getAttribute('aria-label')), ['喜欢', '不喜欢', '取消收藏', '刷新']);
+        click(actions.find((node) => node.getAttribute('aria-label') === '取消收藏'));
+        await flushUi();
+        assert.deepEqual(calls, [['unfavorite', 'npc_1']]);
+    } finally {
+        mounted.destroy();
+    }
+});
