@@ -1,25 +1,44 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { clearSessionKeys, hasSessionKey, unlockSessionKey } from '../src/llm/session-key-store.js';
+import {
+    clearPersistentKeys,
+    clearSessionKeys,
+    configurePersistentKeyStorage,
+    hasMemorySessionKey,
+    hasPersistentKey,
+    requireSessionKey,
+    resetPersistentKeyStorage,
+    unlockSessionKey,
+} from '../src/llm/session-key-store.js';
+import { createMemoryStorage } from '../src/settings/settings-store.js';
 import { onDelete, onDisable } from '../index.js';
 
-test.afterEach(() => clearSessionKeys());
+test.afterEach(() => {
+    clearPersistentKeys();
+    resetPersistentKeyStorage();
+});
 
-test('disable lifecycle hook clears all session-only API keys', () => {
-    unlockSessionKey('primary', 'session-key-only');
-    assert.equal(hasSessionKey('primary'), true);
+test('disable lifecycle hook clears only the memory mirror while retaining browser-cached API Key', () => {
+    configurePersistentKeyStorage(createMemoryStorage());
+    unlockSessionKey('primary', 'browser-cached-key');
+    assert.equal(hasMemorySessionKey('primary'), true);
 
     onDisable();
 
-    assert.equal(hasSessionKey('primary'), false);
+    assert.equal(hasMemorySessionKey('primary'), false);
+    assert.equal(hasPersistentKey('primary'), true);
+    assert.equal(requireSessionKey('primary'), 'browser-cached-key');
 });
 
-test('delete lifecycle hook also clears all session-only API keys', () => {
-    unlockSessionKey('primary', 'session-key-only');
-    assert.equal(hasSessionKey('primary'), true);
+test('delete lifecycle hook does not remove a user-saved browser API Key', () => {
+    configurePersistentKeyStorage(createMemoryStorage());
+    unlockSessionKey('primary', 'browser-cached-key');
+    assert.equal(hasMemorySessionKey('primary'), true);
 
     onDelete();
 
-    assert.equal(hasSessionKey('primary'), false);
+    assert.equal(hasMemorySessionKey('primary'), false);
+    assert.equal(hasPersistentKey('primary'), true);
+    assert.equal(requireSessionKey('primary'), 'browser-cached-key');
 });

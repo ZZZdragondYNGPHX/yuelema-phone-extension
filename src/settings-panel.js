@@ -1,6 +1,13 @@
 import { append, element, listen } from './dom.js';
 import { CONTENT_MODES, FUNCTION_KEYS, YueLeMaSettingsError } from './settings/settings-store.js';
-import { hasSessionKey, unlockSessionKey } from './llm/session-key-store.js';
+import {
+    deletePersistentKey,
+    hasMemorySessionKey,
+    hasPersistentKey,
+    hasSessionKey,
+    isPersistentKeyStorageAvailable,
+    unlockSessionKey,
+} from './llm/session-key-store.js';
 import { toPublicLlmError } from './llm/openai-compatible-client.js';
 
 const FUNCTION_LABELS = Object.freeze({
@@ -247,8 +254,8 @@ function readPromptBundle(rawJson) {
 }
 
 /**
- * Builds the settings console. Only non-secret settings cross the persistence boundary.
- * The API Key input is consumed once by unlockSessionKey and immediately cleared.
+ * Builds the settings console. Connection configuration stays export-safe, while
+ * API Keys live only in the separate browser-local key cache and are never shown.
  */
 export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender, onNavigate, section, view, contentMode }) {
     const panel = element('section', { className: 'yl-settings-panel' });
@@ -261,11 +268,11 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
     } catch {
         panel.appendChild(element('p', {
             className: 'yl-phone-placeholder',
-            text: '本地设置无法读取。可清除本扩展的非机密设置后重新建立；API Key 不会被清除，因为它本未被保存。',
+            text: '本地设置无法读取。可清除本扩展的非机密设置后重新建立；已保存的 API Key 位于独立浏览器缓存，不会随设置导出或载入。',
         }));
         panel.appendChild(actionButton('清除损坏的非机密设置', async () => {
             settingsStore.clear();
-            onFeedback('已清除本扩展的非机密设置；本次会话 API Key 从未写入本地。');
+            onFeedback('已清除本扩展的非机密设置；独立浏览器缓存中的 API Key 未被导出或写入 MVU。');
             onRerender();
         }, signal, { danger: true }));
         return panel;
@@ -276,7 +283,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             element('h2', { text: '本地设置' }),
             element('p', {
                 className: 'yl-phone-page-description',
-                text: '连接、提示词和个性化内容推荐设置仅保存在当前浏览器；API Key 只在本次扩展会话解锁。',
+                text: '连接、提示词和个性化内容推荐设置保存在当前浏览器；API Key 也只保存到此浏览器的独立缓存，不会进入导出、MVU 或角色卡。',
             }),
             buildConnectionSection(settings),
             buildPromptSection(settings),
@@ -310,7 +317,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
             sectionHeading('⚡', '连接预设（OpenAI-compatible）'),
-            element('p', { className: 'yl-phone-page-description', text: '名称、Base URL、Model、传输方式、额度和超时会保存到本浏览器；填写 API Key 后点击“保存连接预设”即可解锁本次会话，但 Key 不会保存。Model 不再是拉取列表的前置条件。' }),
+            element('p', { className: 'yl-phone-page-description', text: '名称、Base URL、Model、传输方式、额度、超时和 API Key 都会保存在当前浏览器；Key 与可导出的连接设置分开，永不写入 MVU、角色卡、提示词或导出文件。Model 不再是拉取列表的前置条件。' }),
         ]);
         let activeId = null;
         let draftId = nextId('conn');
@@ -332,14 +339,14 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const temperature = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-temperature', value: '0.7', min: 0, max: 2, ariaLabel: '温度' });
         const maxTokens = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-max-tokens', value: String(DEFAULT_CONNECTION_MAX_TOKENS), min: 1, max: 16384, ariaLabel: '最大 Token' });
         const timeoutMs = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-timeout', value: '60000', min: 1000, max: 120000, ariaLabel: '超时毫秒' });
-        const apiKey = element('input', { className: 'yl-settings-control', type: 'password', name: 'connection-api-key', placeholder: '仅本次会话解锁', autocomplete: 'off', maxLength: 2048, ariaLabel: 'API Key，仅本次会话' });
+        const apiKey = element('input', { className: 'yl-settings-control', type: 'password', name: 'connection-api-key', placeholder: '保存到当前浏览器缓存', autocomplete: 'off', maxLength: 2048, ariaLabel: 'API Key，保存到此浏览器' });
         const fields = element('div', { className: 'yl-settings-fields' });
         append(fields, [
             field('名称', name), field('Base URL', url), field('Model（可稍后拉取）', model), field('传输模式', transportMode),
-            field('Temperature', temperature), field('Max tokens', maxTokens), field('Timeout (ms)', timeoutMs), field('API Key（不保存）', apiKey),
+            field('Temperature', temperature), field('Max tokens', maxTokens), field('Timeout (ms)', timeoutMs), field('API Key（保存到此浏览器）', apiKey),
         ]);
         section.appendChild(fields);
-        const keyStatus = element('p', { className: 'yl-settings-summary', ariaLabel: 'API Key 会话状态' });
+        const keyStatus = element('p', { className: 'yl-settings-summary', ariaLabel: 'API Key 缓存状态' });
         section.appendChild(keyStatus);
         section.appendChild(element('p', { className: 'yl-settings-summary yl-transport-hint', text: '真流式可边接收边聚合；假流式兼容不支持 SSE 的接口，在完整响应到达后分段呈现。首页推荐刷新会至少申请 2048 Token，确保完整候选 JSON；最终仍受服务端最大输出与本地超时限制。' }));
 
@@ -383,14 +390,20 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         }
         function refreshKeyStatus() {
             const presetId = activeId ?? draftId;
-            keyStatus.textContent = hasSessionKey(presetId)
-                ? '本次会话：此连接的 API Key 已解锁。'
-                : '本次会话：尚未解锁 API Key。填写后点击“保存连接预设”即可解锁。';
+            if (hasPersistentKey(presetId)) {
+                keyStatus.textContent = '此浏览器：已保存 API Key；页面重开、扩展重载后会自动可用。';
+            } else if (hasMemorySessionKey(presetId) || hasSessionKey(presetId)) {
+                keyStatus.textContent = '本次会话：API Key 可用，但浏览器缓存不可用；页面重开后需要重新填写。';
+            } else if (!isPersistentKeyStorageAvailable()) {
+                keyStatus.textContent = '此浏览器的缓存不可用；填写 Key 后只能在本次会话使用。';
+            } else {
+                keyStatus.textContent = '此连接尚未保存 API Key。填写后点击“保存连接预设”即可保存到此浏览器。';
+            }
         }
         // A saved default is already safe browser-local configuration, so load
         // it into the editor on reopen. This avoids presenting a blank form as
-        // though the user must recreate the preset, while the API Key remains
-        // intentionally empty and session-only.
+        // though the user must recreate the preset. The API Key input remains
+        // blank even when the separate browser cache has a saved Key.
         const initialPreset = snapshot.connectionPresets.find((preset) => preset.id === snapshot.defaults.connectionPresetId);
         if (initialPreset) loadConnectionPreset(initialPreset);
         else refreshKeyStatus();
@@ -398,7 +411,9 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             const preset = snapshot.connectionPresets.find((item) => item.id === picker.value);
             if (preset) {
                 loadConnectionPreset(preset);
-                onFeedback(`已载入“${preset.name}”；API Key 仍需本次会话单独解锁。`);
+                onFeedback(hasPersistentKey(preset.id)
+                    ? `已载入“${preset.name}”；此浏览器中已保存的 API Key 会自动可用。`
+                    : `已载入“${preset.name}”；尚未为此连接保存 API Key。`);
             }
         }, signal);
         const formPreset = () => ({
@@ -422,16 +437,20 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             }
             if (String(apiKey.value ?? '').trim()) {
                 try {
-                    unlockSessionKey(candidate.id, apiKey.value);
+                    const result = unlockSessionKey(candidate.id, apiKey.value);
                     apiKey.value = '';
                     refreshKeyStatus();
-                    onFeedback('连接预设已保存；API Key 已解锁本次会话，未写入本地。');
+                    onFeedback(result.persisted
+                        ? '连接预设已保存；API Key 已保存到当前浏览器，下次打开会自动可用。'
+                        : '连接预设已保存；API Key 只能在本次会话使用，因为浏览器缓存不可用。');
                 } catch (error) {
-                    onFeedback(safeErrorMessage(error, '连接预设已保存，但 API Key 未能解锁本次会话。'));
+                    onFeedback(safeErrorMessage(error, '连接预设已保存，但 API Key 未能保存到当前浏览器。'));
                 }
             } else {
                 refreshKeyStatus();
-                onFeedback('连接预设已保存；未填写 API Key，当前会话尚未解锁。');
+                onFeedback(hasPersistentKey(candidate.id)
+                    ? '连接预设已保存；继续使用此浏览器中已保存的 API Key。'
+                    : '连接预设已保存；尚未填写 API Key。');
             }
             onRerender();
         }, signal));
@@ -440,7 +459,28 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                 onFeedback('请先从已保存连接预设列表选择一个项目。');
                 return;
             }
-            updateSettings(() => settingsStore.deleteConnectionPreset(activeId), '连接预设已删除，同时已清理相关绑定。');
+            const deletingId = activeId;
+            try {
+                settingsStore.deleteConnectionPreset(deletingId);
+            } catch (error) {
+                onFeedback(safeErrorMessage(error, '连接预设未删除。'));
+                return;
+            }
+            deletePersistentKey(deletingId);
+            onFeedback('连接预设已删除，同时已清理相关绑定和此浏览器保存的 API Key。');
+            onRerender();
+        }, signal, { secondary: true, danger: true }));
+        controls.appendChild(actionButton('删除当前已保存 API Key', async () => {
+            if (!activeId) {
+                onFeedback('请先从已保存连接预设列表选择一个项目。');
+                return;
+            }
+            const removed = deletePersistentKey(activeId);
+            apiKey.value = '';
+            refreshKeyStatus();
+            onFeedback(removed
+                ? '已删除当前连接在此浏览器保存的 API Key。'
+                : '当前连接没有可删除的浏览器缓存 API Key。');
         }, signal, { secondary: true, danger: true }));
         const fetchModelsButton = actionButton('解锁并拉取模型列表', async () => {
             if (!llmClient) { onFeedback('当前浏览器未提供可用网络 transport，无法拉取模型。'); return; }
@@ -450,10 +490,20 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             try {
                 const candidate = formPreset();
                 if (!String(candidate.name ?? '').trim()) candidate.name = '未保存连接';
-                unlockSessionKey(candidate.id, apiKey.value);
-                apiKey.value = '';
-                refreshKeyStatus();
-                onFeedback('已解锁本次会话，正在从 /models 拉取模型列表…');
+                const typedKey = String(apiKey.value ?? '').trim();
+                if (typedKey) {
+                    const result = unlockSessionKey(candidate.id, typedKey);
+                    apiKey.value = '';
+                    refreshKeyStatus();
+                    onFeedback(result.persisted
+                        ? 'API Key 已保存到当前浏览器，正在从 /models 拉取模型列表…'
+                        : '浏览器缓存不可用，正在使用本次会话 API Key 拉取模型列表…');
+                } else if (!hasSessionKey(candidate.id)) {
+                    onFeedback('请先输入 API Key，或选择一个已保存 API Key 的连接预设。');
+                    return;
+                } else {
+                    onFeedback('正在使用此浏览器已保存的 API Key 拉取模型列表…');
+                }
                 const models = await llmClient.fetchModels({ preset: candidate });
                 modelChoices.replaceChildren();
                 modelChoices.appendChild(element('option', { text: '请选择模型…', value: '' }));

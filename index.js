@@ -86,7 +86,8 @@ function refreshWhenMvuReady({ instance, mvu, getContext, onUpdate }) {
     });
 }
 function destroyActiveInstance() {
-    // API Key is deliberately process-memory only; clear it whenever this extension unloads.
+    // Drop only the short-lived in-memory mirror. The separately user-approved
+    // browser cache remains available to the next extension activation.
     clearSessionKeys();
     unsubscribeEvents();
     unsubscribeEvents = () => {};
@@ -145,8 +146,8 @@ export async function onActivate() {
 
 /**
  * SillyTavern v1.18+ disable hook (declared in manifest.json).
- * It clears in-memory API keys and releases all event/DOM resources before the
- * extension becomes inactive; pagehide remains a defensive browser fallback.
+ * It clears the in-memory Key mirror and releases all event/DOM resources before
+ * the extension becomes inactive; the user-approved browser-local Key cache stays.
  */
 export function onDisable() {
     destroyActiveInstance();

@@ -97,7 +97,7 @@ function rejectSecretFields(input) {
         if (SECRET_FIELD_NAMES.has(key.toLowerCase())) {
             // The value is intentionally discarded and never included in the error.
             void fieldValue;
-            fail('PRESET_SECRET_FORBIDDEN', '连接预设不可包含 API Key 或其他密钥字段；请仅在本次会话解锁。');
+            fail('PRESET_SECRET_FORBIDDEN', '连接预设不可包含 API Key 或其他密钥字段；请通过独立的浏览器 Key 缓存保存。');
         }
     }
 }
@@ -245,7 +245,7 @@ async function parseJsonResponse(response, abortScope) {
 
 function throwForHttpStatus(response) {
     const status = Number(response?.status);
-    if (status === 401) fail('AUTH_FAILED', '接口认证失败，请检查本次会话解锁的 API Key。', { status });
+    if (status === 401) fail('AUTH_FAILED', '接口认证失败，请检查此浏览器保存的 API Key。', { status });
     if (status === 429) fail('RATE_LIMITED', '接口请求过于频繁，请稍后重试。', { status, retryable: true });
     if (status >= 500 && status <= 599) fail('SERVER_ERROR', '模型服务暂时不可用，请稍后重试。', { status, retryable: true });
     fail('HTTP_ERROR', `接口请求失败（HTTP ${Number.isInteger(status) ? status : '未知'}）。`, { status });

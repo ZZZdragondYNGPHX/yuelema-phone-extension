@@ -6,9 +6,9 @@
 
 | 文件 | 职责 |
 |---|---|
-| `session-key-store.js` | 仅模块闭包 `Map` 的本次会话 API Key 解锁、查询、清除；无序列化、导出或持久化接口。 |
+| `session-key-store.js` | 按连接预设 ID 管理独立浏览器 API Key 缓存与短期内存镜像；缓存不会进入设置文档、导出或 UI 回显。 |
 | `openai-compatible-client.js` | 非机密连接预设、`/models` 探针、JSON/SSE `chat/completions`、安全错误投影与假流式分块。 |
-| `test/openai-compatible-client.test.mjs` | 全部使用注入式 mock transport，不访问真实网络。 |
+| `test/session-key-store.test.mjs` / `test/openai-compatible-client.test.mjs` | 浏览器缓存恢复、单 Key 删除和注入式 mock transport；不访问真实网络。 |
 
 连接预设只保存白名单非机密字段：`id`、`name`、`url`、`model`、`temperature`、`maxTokens`、`timeoutMs`、`transportMode`。`transportMode` 允许：
 
@@ -20,7 +20,8 @@
 
 - 保存连接预设时 `model` 仍必须非空；`fetchModels()` 使用独立的 `normalizeConnectionProbe()`，允许 model 缺失、空字符串或临时占位值，从而可先鉴权拉取模型再保存。
 - URL 只允许 HTTPS；仅 `localhost`/回环地址允许 HTTP；拒绝 userinfo、query 与 fragment。
-- API Key 只能由 `unlockSessionKey(presetId, apiKey)` 放进 ES 模块闭包 Map；检测到 `apiKey`、`token`、`authorization`、`secret` 等字段会拒绝且不回显值。
+- API Key 只能由 `unlockSessionKey(presetId, apiKey)` 保存到当前浏览器的专用缓存，并同步放入短期内存镜像；`requireSessionKey()` 会在内存镜像为空时按同一预设 ID 恢复缓存。检测到 `apiKey`、`token`、`authorization`、`secret` 等字段进入连接预设时仍会拒绝且不回显值。
+- Key 缓存不使用 `extension_settings`、IndexedDB、MVU、角色卡、聊天、提示词或导出文件；删除连接或点击连接页的“删除当前已保存 API Key”会删除对应缓存。扩展禁用、删除和页面卸载仅清理内存镜像，以便用户下次打开仍可使用自己已保存的浏览器 Key。
 - `createOpenAICompatibleClient({ fetchImpl })` 必须显式注入 `fetchImpl`；模块不会默认使用 `globalThis.fetch`。
 - JSON 与 SSE 响应均有 2 MiB 安全上限。错误只含稳定代码、可选 HTTP 状态与通用文案，不带请求体、响应体、Authorization、原始异常或凭据。
 
@@ -31,6 +32,7 @@
 ```powershell
 node --check .\src\llm\session-key-store.js
 node --check .\src\llm\openai-compatible-client.js
+node --test .\src\llm\test\session-key-store.test.mjs
 node .\src\llm\test\openai-compatible-client.test.mjs
 ```
 
@@ -39,4 +41,4 @@ node .\src\llm\test\openai-compatible-client.test.mjs
 1. 目标服务的 CORS、预检、Authorization header、`/models` GET/POST 与 `/chat/completions` SSE 兼容性。
 2. SillyTavern WebView 中 `ReadableStream`、`TextDecoder`、AbortController、超时/取消及断线行为。
 3. UI 的真流式增量渲染、假流式计时显示和窗口关闭行为。
-4. 扩展停用、热重载与窗口卸载是否可靠调用 `clearSessionKeys()`。
+4. 扩展停用、热重载与窗口卸载后，内存镜像是否会清理、专用浏览器 Key 缓存是否仍能按预设 ID 自动恢复，以及删除 Key 是否即时生效。

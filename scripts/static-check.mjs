@@ -8,7 +8,7 @@ const requiredFiles = [
     'manifest.json', 'index.js', 'style.css', 'README.md', 'test/extension-lifecycle.test.mjs',
     'src/app-shell.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js',
     'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
-    'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/test/openai-compatible-client.test.mjs',
+    'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
     'src/recommendation/candidate.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/soul-text-match-service.js',
@@ -40,10 +40,10 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '0.1.9') fail('manifest.version 必须与扩展版本 0.1.9 统一');
+if (manifest.version !== '0.1.10') fail('manifest.version 必须与扩展版本 0.1.10 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
 if (manifest?.hooks?.activate !== 'onActivate') fail('manifest.hooks.activate 必须指向 onActivate');
-if (manifest?.hooks?.disable !== 'onDisable') fail('manifest.hooks.disable 必须指向 onDisable，确保禁用即清理会话密钥');
+if (manifest?.hooks?.disable !== 'onDisable') fail('manifest.hooks.disable 必须指向 onDisable，确保禁用即清理内存密钥镜像');
 if (manifest?.hooks?.delete !== 'onDelete') fail('manifest.hooks.delete 必须指向 onDelete，确保删除前清理运行时资源');
 console.log('✓ manifest 基础字段与 lifecycle hooks');
 
@@ -51,7 +51,7 @@ const sourceFiles = [
     'index.js', 'test/extension-lifecycle.test.mjs',
     'src/app-shell.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js',
     'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
-    'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/test/openai-compatible-client.test.mjs',
+    'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
     'src/recommendation/candidate.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/soul-text-match-service.js',
@@ -79,25 +79,27 @@ for (const [pattern, message] of prohibited) {
     else console.log(`✓ ${message}`);
 }
 
-const llmSources = await Promise.all([
-    'src/llm/session-key-store.js',
-    'src/llm/openai-compatible-client.js',
-].map(relativePath => readFile(resolve(root, relativePath), 'utf8')));
-const llmSource = llmSources.join('\n');
+const sessionKeyStore = await readFile(resolve(root, 'src/llm/session-key-store.js'), 'utf8');
+const llmClientSource = await readFile(resolve(root, 'src/llm/openai-compatible-client.js'), 'utf8');
+const llmSource = [sessionKeyStore, llmClientSource].join('\n');
 const llmExecutableSource = llmSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 for (const [pattern, message] of [
-    [/localStorage|sessionStorage|indexedDB|extension_settings/i, 'LLM API Key 禁止持久化到浏览器或扩展设置'],
+    [/sessionStorage|indexedDB|extension_settings/i, 'LLM API Key 仅允许专用 localStorage 缓存，不得写入其他浏览器或扩展设置存储'],
     [/console\./, 'LLM 模块不得把凭据或错误写入控制台'],
     [/globalThis\.fetch|\bfetch\s*\(/, 'LLM 模块必须使用显式注入的 transport'],
 ]) {
     if (pattern.test(llmExecutableSource)) fail(message);
     else console.log(`✓ ${message}`);
 }
+const llmClientExecutableSource = llmClientSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+if (/localStorage/i.test(llmClientExecutableSource)) fail('只有 session-key-store.js 可以访问 API Key 浏览器缓存');
+if (!sessionKeyStore.includes('API_KEY_CACHE_STORAGE_KEY') || !sessionKeyStore.includes('requireSessionKey') || !sessionKeyStore.includes('deletePersistentKey')) fail('缺少预设 ID 隔离的浏览器 API Key 缓存与调用回退');
+console.log('✓ API Key 仅通过专用浏览器缓存保存，并与设置导出 / MVU 隔离');
 const appShell = await readFile(resolve(root, 'src/app-shell.js'), 'utf8');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
 const index = await readFile(resolve(root, 'index.js'), 'utf8');
-if (!index.includes('export function onDisable') || !index.includes('export function onDelete') || !index.includes('clearSessionKeys()')) fail('缺少扩展禁用/删除时清理会话密钥的生命周期实现');
+if (!index.includes('export function onDisable') || !index.includes('export function onDelete') || !index.includes('clearSessionKeys()')) fail('缺少扩展禁用/删除时清理内存密钥镜像的生命周期实现');
 for (const label of ['首页', '匹配', '消息', '群组', '我的']) {
     if (!appShell.includes(label) && !allSource.includes(`label: '${label}'`)) fail(`缺少导航：${label}`);
 }
@@ -122,17 +124,17 @@ console.log('✓ 面基仅追加输入框适配点');
 
 if (!index.includes('VARIABLE_UPDATE_ENDED') || !index.includes('removeListener')) fail('缺少可清理的 MVU 变量更新事件订阅');
 if (!index.includes('waitForReadableMvu') || !index.includes('refreshWhenMvuReady')) fail('缺少 MVU 晚到初始化后的安全重绑');
-if (!index.includes('onDisable') || !index.includes('onDelete') || !index.includes('pagehide') || !index.includes('clearSessionKeys')) fail('缺少关闭/卸载/会话密钥清理接缝');
-console.log('✓ 变量更新订阅与卸载清理接缝');
+if (!index.includes('onDisable') || !index.includes('onDelete') || !index.includes('pagehide') || !index.includes('clearSessionKeys')) fail('缺少关闭/卸载/内存密钥镜像清理接缝');
+console.log('✓ 变量更新订阅与卸载内存清理接缝');
 
 const settingsStore = await readFile(resolve(root, 'src/settings/settings-store.js'), 'utf8');
 const settingsPanel = await readFile(resolve(root, 'src/settings-panel.js'), 'utf8');
 const defaultPromptPresets = await readFile(resolve(root, 'src/settings/default-prompt-presets.js'), 'utf8');
 if (!settingsStore.includes('FUNCTION_KEYS') || !settingsStore.includes('functionModeBindings') || !settingsStore.includes('exportJson') || !settingsStore.includes('importJson')) fail('缺少设置预设与安全导入导出层');
 if (!defaultPromptPresets.includes('builtin_recommendation_sfw') || !defaultPromptPresets.includes('builtin_private_chat_sfw') || !defaultPromptPresets.includes('builtin_character_authoring_sfw')) fail('缺少本地可编辑的默认 SFW/NSFW 提示词预设');
-if (!settingsPanel.includes('unlockSessionKey') || !settingsPanel.includes('fetchModels') || !settingsPanel.includes('functionBindings')) fail('缺少设置 UI 的解锁、模型拉取或功能绑定接线');
+if (!settingsPanel.includes('unlockSessionKey') || !settingsPanel.includes('hasPersistentKey') || !settingsPanel.includes('deletePersistentKey') || !settingsPanel.includes('fetchModels') || !settingsPanel.includes('functionBindings')) fail('缺少设置 UI 的浏览器 Key 缓存、模型拉取或功能绑定接线');
 if (!index.includes('createBrowserSettingsStorage') || !index.includes('createOpenAICompatibleClient')) fail('缺少浏览器非机密设置持久化或显式 LLM transport 接线');
-console.log('✓ 非机密设置持久化、会话解锁、模型拉取与功能绑定接线');
+console.log('✓ 非机密设置、浏览器 Key 缓存、模型拉取与功能绑定接线');
 const generatedCandidate = await readFile(resolve(root, 'src/recommendation/candidate.js'), 'utf8');
 const recommendationRefresh = await readFile(resolve(root, 'src/recommendation/recommendation-refresh.js'), 'utf8');
 const controlledPatch = await readFile(resolve(root, 'src/mvu/controlled-patch.js'), 'utf8');

@@ -9,10 +9,14 @@ import {
     toPublicLlmError,
 } from '../openai-compatible-client.js';
 import {
+    clearPersistentKeys,
     clearSessionKeys,
+    configurePersistentKeyStorage,
     hasSessionKey,
+    resetPersistentKeyStorage,
     unlockSessionKey,
 } from '../session-key-store.js';
+import { createMemoryStorage } from '../../settings/settings-store.js';
 
 function jsonResponse(payload, { status = 200 } = {}) {
     return {
@@ -87,10 +91,14 @@ assert.deepEqual(normalizeConnectionProbe({ ...preset, model: '' }), { ...preset
 assert.deepEqual(normalizeConnectionProbe({ ...preset, model: undefined }), { ...preset, model: '' });
 assert.deepEqual(normalizeConnectionProbe({ ...preset, model: '   ' }), { ...preset, model: '' });
 
+configurePersistentKeyStorage(createMemoryStorage());
+clearPersistentKeys();
 clearSessionKeys();
 assert.equal(hasSessionKey(preset.id), false);
 const sessionKey = ['mock', 'session', 'credential'].join('-');
 unlockSessionKey(preset.id, sessionKey);
+assert.equal(hasSessionKey(preset.id), true);
+clearSessionKeys();
 assert.equal(hasSessionKey(preset.id), true);
 
 let observedRequest;
@@ -248,6 +256,7 @@ streamController.abort();
 await rejectsCode(() => streamCancelled, 'CANCELLED');
 assert.equal(cancelledReader, true);
 
+clearPersistentKeys();
 clearSessionKeys();
 assert.equal(hasSessionKey(preset.id), false);
 await rejectsCode(() => client.chat({ preset, messages: [{ role: 'user', content: 'x' }] }), 'SESSION_KEY_LOCKED');
@@ -256,5 +265,6 @@ assert.equal(publicError.code, 'UNKNOWN_ERROR');
 assert.equal(publicError.message.includes('credential'), false);
 
 console.log('✓ llm transport modes, SSE and OpenAI-compatible client mock tests passed');
+resetPersistentKeyStorage();
 
 
