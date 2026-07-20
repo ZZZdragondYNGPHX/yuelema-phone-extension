@@ -46,6 +46,14 @@ function cloneJsonValue(value) {
     return value;
 }
 
+// Some MVU builds normalize the message-scope options in place (for example,
+// replacing the symbolic `latest` ID with a numeric message ID). The shared
+// default is intentionally frozen, so each host boundary must receive its own
+// mutable copy rather than the exported constant itself.
+function copyMutableScope(scope) {
+    return isPlainRecord(scope) ? { ...scope } : scope;
+}
+
 function validateProviderPostconditions(state, patch) {
     for (const [operationIndex, operation] of patch.entries()) {
         if (operation.op !== 'replace') continue;
@@ -85,7 +93,7 @@ function resolveEventEmitter({ eventEmit, getContext }) {
 export function readLatestState({ mvu = globalThis.Mvu, scope = LATEST_MESSAGE_SCOPE } = {}) {
     if (!mvu || typeof mvu.getMvuData !== 'function') return unavailable('mvu_get_unavailable');
     try {
-        const data = mvu.getMvuData(scope);
+        const data = mvu.getMvuData(copyMutableScope(scope));
         if (!isPlainRecord(data) || !isPlainRecord(data.stat_data)) return unavailable('mvu_stat_data_unavailable');
         const snapshot = cloneReadOnly(data);
         return { ok: true, status: 'ok', scope: { ...scope }, data: snapshot, state: snapshot.stat_data };
@@ -114,7 +122,7 @@ export async function applyControlledPatch({
 
     let oldData;
     try {
-        oldData = mvu.getMvuData(scope);
+        oldData = mvu.getMvuData(copyMutableScope(scope));
     } catch (error) {
         return failed('mvu_read_failed', error);
     }
@@ -159,7 +167,7 @@ export async function applyControlledPatch({
     }
 
     try {
-        await mvu.replaceMvuData(newData, scope);
+        await mvu.replaceMvuData(newData, copyMutableScope(scope));
     } catch (error) {
         return failed('mvu_replace_failed', error);
     }

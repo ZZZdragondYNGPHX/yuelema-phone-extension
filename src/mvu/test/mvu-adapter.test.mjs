@@ -4,6 +4,7 @@ import { runInNewContext } from 'node:vm';
 
 import { decodeJsonPointer, getAtPointer } from '../json-pointer.js';
 import {
+    LATEST_MESSAGE_SCOPE,
     buildControlledPatch,
     buildUpdateVariable,
     validateControlledPatchAgainstState,
@@ -152,10 +153,22 @@ test('state validator accepts only exact generated UI transitions', () => {
 
 test('readLatestState is read-only and returns a clone', () => {
     const data = { stat_data: stateFixture() };
-    const result = readLatestState({ mvu: { getMvuData: () => data } });
+    let receivedScope;
+    const result = readLatestState({
+        mvu: {
+            getMvuData(scope) {
+                receivedScope = scope;
+                scope.message_id = 0;
+                return data;
+            },
+        },
+    });
     assert.equal(result.ok, true);
     result.state.软件.内容模式 = 'NSFW';
     assert.equal(data['stat_data']['软件']['内容模式'], 'SFW');
+    assert.equal(receivedScope.message_id, 0);
+    assert.notEqual(receivedScope, LATEST_MESSAGE_SCOPE);
+    assert.equal(LATEST_MESSAGE_SCOPE.message_id, 'latest');
 });
 
 test('cross-realm native MVU records are accepted while custom prototypes stay rejected', () => {
@@ -222,6 +235,40 @@ test('applyControlledPatch follows get -> parse -> replace -> event sequence', a
     assert.equal(result.status, 'applied');
     assert.deepEqual(calls.map(([name]) => name), ['get', 'parse', 'replace', 'event']);
     assert.equal(calls[3][1], 'mag_variable_update_ended');
+});
+
+test('applyControlledPatch gives mutable fresh scopes to an in-place MVU host', async () => {
+    const oldData = { stat_data: stateFixture() };
+    let readScope;
+    let replaceScope;
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData(scope) {
+            readScope = scope;
+            return oldData;
+        },
+        parseMessage: async (_raw, data) => {
+            const next = structuredClone(data);
+            next.stat_data.软件.内容模式 = 'NSFW';
+            return next;
+        },
+        replaceMvuData: async (_data, scope) => {
+            replaceScope = scope;
+            scope.message_id = 0;
+        },
+    };
+    const patch = buildControlledPatch(oldData.stat_data, { kind: 'toggle_content_mode' }).value;
+    const result = await applyControlledPatch({ patch, mvu, eventEmit: async () => {} });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 'applied');
+    assert.equal(Object.isFrozen(readScope), false);
+    assert.equal(Object.isFrozen(replaceScope), false);
+    assert.notEqual(readScope, LATEST_MESSAGE_SCOPE);
+    assert.notEqual(replaceScope, LATEST_MESSAGE_SCOPE);
+    assert.notEqual(readScope, replaceScope);
+    assert.equal(replaceScope.message_id, 0);
+    assert.equal(LATEST_MESSAGE_SCOPE.message_id, 'latest');
 });
 
 test('unavailable MVU and parse no-change never call replace or event', async () => {
