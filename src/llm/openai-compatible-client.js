@@ -5,6 +5,11 @@ const SECRET_FIELD_NAMES = new Set([
 ]);
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 120_000;
+const DEFAULT_PSEUDO_STREAM_CHUNK_SIZE = 24;
+const MAX_PSEUDO_STREAM_CHUNK_SIZE = 256;
+export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+export const TRANSPORT_MODES = Object.freeze(['json', 'stream', 'pseudo_stream']);
+const TRANSPORT_MODE_SET = new Set(TRANSPORT_MODES);
 
 /** 可安全显示给 UI 的请求错误；永不携带 API Key、请求头、响应体或原始异常。 */
 export class YueLeMaLlmError extends Error {
@@ -46,6 +51,14 @@ function cleanNumber(value, label, min, max, fallback) {
     return value;
 }
 
+function normalizeTransportMode(value) {
+    const mode = value ?? 'json';
+    if (typeof mode !== 'string' || !TRANSPORT_MODE_SET.has(mode)) {
+        fail('INVALID_PRESET', 'transportMode 仅允许 json、stream 或 pseudo_stream。');
+    }
+    return mode;
+}
+
 /**
  * 接受 https URL，或仅接受 localhost/loopback 的 http URL。
  * 不允许 query/hash/credentials，防止将秘密意外置入保存的 URL。
@@ -76,12 +89,7 @@ function cleanPresetId(value) {
     return value;
 }
 
-/**
- * 创建可安全持久化的连接预设。
- * 此函数只复制白名单内的非机密字段；出现任何密钥字段时直接拒绝，
- * 避免 UI 调用者误把 API Key 一并写入持久化对象。
- */
-export function createConnectionPreset(input) {
+function rejectSecretFields(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
         fail('INVALID_PRESET', '模型连接预设必须是对象。');
     }
@@ -92,19 +100,46 @@ export function createConnectionPreset(input) {
             fail('PRESET_SECRET_FORBIDDEN', '连接预设不可包含 API Key 或其他密钥字段；请仅在本次会话解锁。');
         }
     }
+}
+
+function normalizeConnectionInput(input, { allowEmptyModel }) {
+    rejectSecretFields(input);
     const rawUrl = input.url ?? input.baseUrl;
     if (input.url !== undefined && input.baseUrl !== undefined && input.url !== input.baseUrl) {
         fail('INVALID_PRESET', 'url 与 baseUrl 不可同时使用不同的值。');
+    }
+    let model;
+    if (allowEmptyModel && (input.model === undefined || input.model === null || (typeof input.model === 'string' && input.model.trim() === ''))) {
+        model = '';
+    } else {
+        model = cleanText(input.model, '模型名', 1, 256);
     }
     return Object.freeze({
         id: cleanPresetId(input.id),
         name: cleanText(input.name, '预设名称', 1, 80),
         url: normalizeApiUrl(rawUrl),
-        model: cleanText(input.model, '模型名', 1, 256),
+        model,
         temperature: cleanNumber(input.temperature, 'temperature', 0, 2, 0.8),
         maxTokens: cleanNumber(input.maxTokens, 'maxTokens', 1, 16_384, 512),
         timeoutMs: cleanNumber(input.timeoutMs, 'timeoutMs', 10, MAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
+        transportMode: normalizeTransportMode(input.transportMode),
     });
+}
+
+/**
+ * 创建可安全持久化的连接预设。
+ * 保存预设仍强制要求非空 model；仅 /models 探针可使用 normalizeConnectionProbe。
+ */
+export function createConnectionPreset(input) {
+    return normalizeConnectionInput(input, { allowEmptyModel: false });
+}
+
+/**
+ * /models 专用连接探针归一化。保持 URL、ID、名称、超时和密钥边界不变，
+ * 但允许 model 缺失或为空，避免“先知道模型名才能拉取模型列表”的循环依赖。
+ */
+export function normalizeConnectionProbe(input) {
+    return normalizeConnectionInput(input, { allowEmptyModel: true });
 }
 
 function endpointFor(baseUrl, suffix) {
@@ -119,14 +154,91 @@ function getContentType(response) {
     }
 }
 
-async function parseJsonResponse(response) {
+function responseByteLength(value) {
+    return new TextEncoder().encode(value).byteLength;
+}
+
+function assertResponseSize(byteLength) {
+    if (byteLength > MAX_RESPONSE_BYTES) {
+        fail('RESPONSE_TOO_LARGE', '模型响应超过安全大小限制，请缩短输出后重试。');
+    }
+}
+
+function createAbortException() {
+    return Object.assign(new Error('aborted'), { name: 'AbortError' });
+}
+
+function waitForAbortable(promise, signal) {
+    if (signal.aborted) return Promise.reject(createAbortException());
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (callback, value) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener?.('abort', onAbort);
+            callback(value);
+        };
+        const onAbort = () => finish(reject, createAbortException());
+        signal.addEventListener?.('abort', onAbort, { once: true });
+        Promise.resolve(promise).then(
+            (value) => finish(resolve, value),
+            (error) => finish(reject, error),
+        );
+    });
+}
+
+async function readResponseBodyText(response, abortScope) {
+    const reader = response?.body?.getReader?.();
+    if (!reader) return null;
+    const decoder = new TextDecoder();
+    let byteLength = 0;
+    let text = '';
+    let readerEnded = false;
+    try {
+        while (true) {
+            const { value, done } = await waitForAbortable(reader.read(), abortScope.signal);
+            if (done) {
+                readerEnded = true;
+                break;
+            }
+            if (!(value instanceof Uint8Array)) fail('INVALID_RESPONSE', '模型响应数据格式无效。');
+            byteLength += value.byteLength;
+            assertResponseSize(byteLength);
+            text += decoder.decode(value, { stream: true });
+        }
+        text += decoder.decode();
+        assertResponseSize(responseByteLength(text));
+        return text;
+    } finally {
+        if (!readerEnded) {
+            try { await reader.cancel?.(); } catch { /* no-op */ }
+        }
+        try { reader.releaseLock?.(); } catch { /* no-op */ }
+    }
+}
+
+async function parseJsonResponse(response, abortScope) {
     const contentType = getContentType(response).toLowerCase();
     if (contentType && !contentType.includes('application/json') && !contentType.includes('+json')) {
         fail('NON_JSON_RESPONSE', '接口返回的不是 JSON，无法继续处理。');
     }
+    const bodyText = await readResponseBodyText(response, abortScope);
+    if (bodyText !== null) {
+        try {
+            return JSON.parse(bodyText);
+        } catch {
+            fail('NON_JSON_RESPONSE', '接口返回的不是有效 JSON，无法继续处理。');
+        }
+    }
     try {
-        return await response.json();
-    } catch {
+        const payload = await waitForAbortable(response.json(), abortScope.signal);
+        let serialized;
+        try { serialized = JSON.stringify(payload); } catch { serialized = null; }
+        if (typeof serialized !== 'string') fail('NON_JSON_RESPONSE', '接口返回的不是有效 JSON，无法继续处理。');
+        assertResponseSize(responseByteLength(serialized));
+        return payload;
+    } catch (error) {
+        if (error instanceof YueLeMaLlmError || error?.name === 'AbortError') throw error;
         fail('NON_JSON_RESPONSE', '接口返回的不是有效 JSON，无法继续处理。');
     }
 }
@@ -205,6 +317,122 @@ function normalizeModelList(payload) {
     return [...new Set(ids)];
 }
 
+function extractDeltaText(payload) {
+    const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
+    if (!choice || typeof choice !== 'object') return '';
+    const content = choice?.delta?.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+        return content.map((part) => {
+            if (typeof part?.text === 'string') return part.text;
+            if (typeof part?.text?.value === 'string') return part.text.value;
+            return '';
+        }).join('');
+    }
+    return typeof choice.text === 'string' ? choice.text : '';
+}
+
+async function parseSseCompletion(response, abortScope, onDelta) {
+    const contentType = getContentType(response).toLowerCase();
+    if (contentType && !contentType.includes('text/event-stream')) {
+        fail('NON_STREAM_RESPONSE', '接口未返回兼容的流式响应。');
+    }
+    const reader = response?.body?.getReader?.();
+    if (!reader) fail('NON_STREAM_RESPONSE', '当前接口或运行环境未提供可读取的流式响应。');
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let byteLength = 0;
+    let text = '';
+    let textByteLength = 0;
+    let completed = false;
+    let readerEnded = false;
+
+    const consumeLine = async (line) => {
+        const normalizedLine = line.endsWith('\r') ? line.slice(0, -1) : line;
+        if (!normalizedLine.startsWith('data:')) return;
+        const data = normalizedLine.slice(5).replace(/^ /, '');
+        if (!data.trim()) return;
+        if (data.trim() === '[DONE]') {
+            completed = true;
+            return;
+        }
+        let payload;
+        try {
+            payload = JSON.parse(data);
+        } catch {
+            fail('INVALID_STREAM_RESPONSE', '流式响应格式无效，无法继续处理。');
+        }
+        const delta = extractDeltaText(payload);
+        if (!delta) return;
+        text += delta;
+        textByteLength += responseByteLength(delta);
+        assertResponseSize(textByteLength);
+        if (onDelta) {
+            try {
+                await waitForAbortable(
+                    Promise.resolve(onDelta(delta, Object.freeze({ transportMode: 'stream', receivedCharacters: text.length }))),
+                    abortScope.signal,
+                );
+            } catch {
+                fail('STREAM_CONSUMER_FAILED', '流式回复显示未完成，请稍后重试。');
+            }
+        }
+    };
+
+    try {
+        while (!completed) {
+            const { value, done } = await waitForAbortable(reader.read(), abortScope.signal);
+            if (done) {
+                readerEnded = true;
+                break;
+            }
+            if (!(value instanceof Uint8Array)) fail('INVALID_STREAM_RESPONSE', '流式响应数据格式无效。');
+            byteLength += value.byteLength;
+            assertResponseSize(byteLength);
+            buffer += decoder.decode(value, { stream: true });
+            let newlineIndex;
+            while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+                const line = buffer.slice(0, newlineIndex);
+                buffer = buffer.slice(newlineIndex + 1);
+                await consumeLine(line);
+                if (completed) break;
+            }
+        }
+        if (!completed) {
+            buffer += decoder.decode();
+            if (buffer) {
+                for (const line of buffer.split('\n')) await consumeLine(line);
+            }
+        }
+    } finally {
+        if (!readerEnded) {
+            try { await reader.cancel?.(); } catch { /* no-op */ }
+        }
+        try { reader.releaseLock?.(); } catch { /* no-op */ }
+    }
+
+    if (!text.trim()) fail('INVALID_COMPLETION', '模型流式响应未包含可用文本。');
+    return Object.freeze({
+        text,
+        source: 'delta.content',
+        presentation: Object.freeze({ transportMode: 'stream' }),
+    });
+}
+
+/** 将完整文本切成 UI 可逐段显示的安全假流式分块；不包含计时器、DOM 或网络副作用。 */
+export function splitPseudoStreamText(text, { chunkSize = DEFAULT_PSEUDO_STREAM_CHUNK_SIZE } = {}) {
+    if (typeof text !== 'string') fail('INVALID_REQUEST', '假流式分块内容必须是文本。');
+    if (!Number.isInteger(chunkSize) || chunkSize < 1 || chunkSize > MAX_PSEUDO_STREAM_CHUNK_SIZE) {
+        fail('INVALID_REQUEST', `假流式 chunkSize 必须是 1–${MAX_PSEUDO_STREAM_CHUNK_SIZE} 的整数。`);
+    }
+    const characters = Array.from(text);
+    const chunks = [];
+    for (let index = 0; index < characters.length; index += chunkSize) {
+        chunks.push(characters.slice(index, index + chunkSize).join(''));
+    }
+    return Object.freeze(chunks);
+}
+
 /**
  * 纯 OpenAI-compatible 请求客户端。
  * 必须显式注入 fetchImpl，故本模块本身不会主动发起真实网络请求。
@@ -214,24 +442,24 @@ export function createOpenAICompatibleClient({ fetchImpl } = {}) {
         throw new TypeError('必须显式提供 fetchImpl；运行时适配器应传入经审计的 fetch。');
     }
 
-    async function requestJson({ preset, path, body, method = 'POST', signal, timeoutMs }) {
-        const normalizedPreset = createConnectionPreset(preset);
+    async function request({ preset, path, body, method = 'POST', signal, timeoutMs, responseParser, accept, normalizePreset }) {
+        const normalizedPreset = normalizePreset(preset);
         const apiKey = requireSessionKey(normalizedPreset.id);
         const requestTimeoutMs = cleanNumber(timeoutMs, 'timeoutMs', 10, MAX_TIMEOUT_MS, normalizedPreset.timeoutMs);
         const abortScope = createAbortScope({ signal, timeoutMs: requestTimeoutMs });
         try {
             let response;
             try {
-                response = await fetchImpl(endpointFor(normalizedPreset.url, path), {
+                response = await waitForAbortable(fetchImpl(endpointFor(normalizedPreset.url, path), {
                     method,
                     headers: {
-                        accept: 'application/json',
+                        accept,
                         'content-type': 'application/json',
                         authorization: `Bearer ${apiKey}`,
                     },
                     body: body === undefined ? undefined : JSON.stringify(body),
                     signal: abortScope.signal,
-                });
+                }), abortScope.signal);
             } catch (error) {
                 if (abortScope.reason || abortScope.signal.aborted || error?.name === 'AbortError') {
                     throwAbortError(abortScope.reason);
@@ -239,45 +467,85 @@ export function createOpenAICompatibleClient({ fetchImpl } = {}) {
                 fail('NETWORK_ERROR', '无法连接模型服务，请检查 URL、网络或跨域配置。', { retryable: true });
             }
             if (!response?.ok) throwForHttpStatus(response);
-            return await parseJsonResponse(response);
+            try {
+                return await responseParser(response, abortScope);
+            } catch (error) {
+                if (abortScope.reason || abortScope.signal.aborted || error?.name === 'AbortError') {
+                    throwAbortError(abortScope.reason);
+                }
+                if (error instanceof YueLeMaLlmError) throw error;
+                fail('NETWORK_ERROR', '读取模型响应时连接中断，请稍后重试。', { retryable: true });
+            }
         } finally {
             abortScope.dispose();
         }
     }
 
     return Object.freeze({
-        async chat(request) {
-            if (!request || typeof request !== 'object' || !Array.isArray(request.messages) || request.messages.length < 1) {
+        async chat(requestInput) {
+            if (!requestInput || typeof requestInput !== 'object' || !Array.isArray(requestInput.messages) || requestInput.messages.length < 1) {
                 fail('INVALID_REQUEST', 'chat 请求至少需要一条消息。');
             }
-            const normalizedPreset = createConnectionPreset(request.preset);
-            const temperature = cleanNumber(request.temperature, 'temperature', 0, 2, normalizedPreset.temperature);
-            const maxTokens = cleanNumber(request.maxTokens, 'maxTokens', 1, 16_384, normalizedPreset.maxTokens);
-            const payload = await requestJson({
+            if (requestInput.onDelta !== undefined && typeof requestInput.onDelta !== 'function') {
+                fail('INVALID_REQUEST', 'onDelta 必须是函数。');
+            }
+            const normalizedPreset = createConnectionPreset(requestInput.preset);
+            const temperature = cleanNumber(requestInput.temperature, 'temperature', 0, 2, normalizedPreset.temperature);
+            const maxTokens = cleanNumber(requestInput.maxTokens, 'maxTokens', 1, 16_384, normalizedPreset.maxTokens);
+            const body = {
+                model: normalizedPreset.model,
+                messages: requestInput.messages.map(normalizeMessage),
+                temperature,
+                max_tokens: maxTokens,
+            };
+            if (normalizedPreset.transportMode === 'stream') {
+                body.stream = true;
+                return request({
+                    preset: normalizedPreset,
+                    path: 'chat/completions',
+                    signal: requestInput.signal,
+                    timeoutMs: requestInput.timeoutMs,
+                    body,
+                    accept: 'text/event-stream',
+                    normalizePreset: createConnectionPreset,
+                    responseParser: (response, abortScope) => parseSseCompletion(response, abortScope, requestInput.onDelta),
+                });
+            }
+            const completion = await request({
                 preset: normalizedPreset,
                 path: 'chat/completions',
-                signal: request.signal,
-                timeoutMs: request.timeoutMs,
-                body: {
-                    model: normalizedPreset.model,
-                    messages: request.messages.map(normalizeMessage),
-                    temperature,
-                    max_tokens: maxTokens,
-                },
-            });
-            return extractCompletionText(payload);
+                signal: requestInput.signal,
+                timeoutMs: requestInput.timeoutMs,
+                body,
+                accept: 'application/json',
+                normalizePreset: createConnectionPreset,
+                responseParser: parseJsonResponse,
+            }).then(extractCompletionText);
+            if (normalizedPreset.transportMode === 'pseudo_stream') {
+                return Object.freeze({
+                    ...completion,
+                    presentation: Object.freeze({
+                        transportMode: 'pseudo_stream',
+                        chunkSize: DEFAULT_PSEUDO_STREAM_CHUNK_SIZE,
+                    }),
+                });
+            }
+            return completion;
         },
 
-        async fetchModels(request) {
-            if (!request || typeof request !== 'object') fail('INVALID_REQUEST', 'fetchModels 需要连接预设。');
-            const method = request.method ?? 'GET';
+        async fetchModels(requestInput) {
+            if (!requestInput || typeof requestInput !== 'object') fail('INVALID_REQUEST', 'fetchModels 需要连接预设。');
+            const method = requestInput.method ?? 'GET';
             if (!['GET', 'POST'].includes(method)) fail('INVALID_REQUEST', '模型列表请求方法仅允许 GET 或 POST。');
-            const payload = await requestJson({
-                preset: request.preset,
+            const payload = await request({
+                preset: requestInput.preset,
                 path: 'models',
                 method,
-                signal: request.signal,
-                timeoutMs: request.timeoutMs,
+                signal: requestInput.signal,
+                timeoutMs: requestInput.timeoutMs,
+                accept: 'application/json',
+                normalizePreset: normalizeConnectionProbe,
+                responseParser: parseJsonResponse,
             });
             const models = normalizeModelList(payload);
             if (models.length === 0) fail('INVALID_MODEL_LIST', '接口未返回可用的模型列表。');

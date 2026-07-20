@@ -173,14 +173,14 @@ function invalidResult(errors, key) {
     return { ok: false, code: `character_authoring_${key}`, message: errors[key] };
 }
 
-async function generateCandidate({ errors, context, settingsStore, llmClient, signal, makeMessages }) {
+async function generateCandidate({ errors, context, settingsStore, llmClient, signal, makeMessages, functionKey }) {
     if (!context) return invalidResult(errors, 'input_invalid');
     if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return invalidResult(errors, 'settings_unavailable');
     if (!llmClient || typeof llmClient.chat !== 'function') return invalidResult(errors, 'llm_unavailable');
 
     let resolved;
     try {
-        resolved = settingsStore.resolveFunction('character_authoring');
+        resolved = settingsStore.resolveFunction(functionKey);
     } catch {
         return invalidResult(errors, 'settings_invalid');
     }
@@ -206,21 +206,21 @@ async function generateCandidate({ errors, context, settingsStore, llmClient, si
 }
 
 /**
- * Calls the shared character_authoring binding to fill a new candidate from an editable
+ * Calls the character_ai_completion binding to fill a new candidate from an editable
  * public-profile projection only. It performs no MVU, UID, patch, storage, or template work.
  */
 export async function generateCharacterCompletionCandidate({ publicProfile, instruction, settingsStore, llmClient, signal } = {}) {
     const context = buildCharacterCompletionContext({ publicProfile, instruction });
-    return generateCandidate({ errors: COMPLETION_ERRORS, context, settingsStore, llmClient, signal, makeMessages: makeCompletionMessages });
+    return generateCandidate({ errors: COMPLETION_ERRORS, context, settingsStore, llmClient, signal, makeMessages: makeCompletionMessages, functionKey: 'character_ai_completion' });
 }
 
 /**
- * Calls the shared character_authoring binding to create a new candidate from a safe brief,
+ * Calls the character_full_authoring binding to create a new candidate from a safe brief,
  * current content mode, and minimal public player match context. The result stays in memory.
  */
 export async function generateCharacterAuthoringCandidate({ creativeBrief, contentMode, playerPublicProfile, settingsStore, llmClient, signal } = {}) {
     const context = buildCharacterAuthoringContext({ creativeBrief, contentMode, playerPublicProfile });
-    return generateCandidate({ errors: AUTHORING_ERRORS, context, settingsStore, llmClient, signal, makeMessages: makeAuthoringMessages });
+    return generateCandidate({ errors: AUTHORING_ERRORS, context, settingsStore, llmClient, signal, makeMessages: makeAuthoringMessages, functionKey: 'character_full_authoring' });
 }
 
 

@@ -2,7 +2,7 @@ import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
 import { buildCharacterRegistrationPatch, buildControlledPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply } from './chat/private-chat-service.js';
-import { generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
+import { generateCandidateMatchDraft as generateCandidateMatchDraftService, generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
 import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate } from './characters/character-authoring-service.js';
 import { generateGroupChatReply } from './groups/group-chat-service.js';
 import { generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
@@ -13,7 +13,7 @@ const PASSIVE_KINDS = new Set([
     'open_random_candidates',
     'navigate',
 ]);
-const MVU_KINDS = new Set(['like', 'favorite', 'dislike', 'refresh', 'unfavorite', 'advance_content_mode_gate']);
+const MVU_KINDS = new Set(['like', 'favorite', 'dislike', 'refresh', 'unfavorite', 'advance_content_mode_gate', 'toggle_content_mode']);
 
 function makePassiveCommand(kind, payload) {
     const safePayload = {};
@@ -70,7 +70,7 @@ export function createActionBridge({
             const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
 
-            const command = kind === 'advance_content_mode_gate'
+            const command = ['advance_content_mode_gate', 'toggle_content_mode'].includes(kind)
                 ? { kind }
                 : { kind, npcUid };
             const built = buildControlledPatch(read.state, command);
@@ -184,6 +184,22 @@ export function createActionBridge({
             return await (kind === 'soul'
                 ? generateSoulMatchDraft({ state: read.state, settingsStore, llmClient, signal })
                 : generateTextMatchDraft({ state: read.state, settingsStore, llmClient, signal }));
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Generates one ephemeral public profile for the restored matching page; it never writes MVU state. */
+    async function generateCandidateMatchDraft(mode, { voiceText, signal } = {}) {
+        if (!['soul', 'voice'].includes(mode)) return { ok: false, status: 'rejected', code: 'candidate_match_mode_invalid' };
+        const key = actionKey('candidate_match_' + mode, '');
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            return await generateCandidateMatchDraftService({ mode, state: read.state, settingsStore, llmClient, voiceText, signal });
         } finally {
             pending.delete(key);
         }
@@ -346,7 +362,7 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, generateMatchDraft, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, generateMatchDraft, generateCandidateMatchDraft, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
 }
 
 

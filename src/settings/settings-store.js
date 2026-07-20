@@ -6,14 +6,17 @@
 import { createConnectionPreset } from '../llm/openai-compatible-client.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 1;
+export const SETTINGS_SCHEMA_VERSION = 2;
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
 export const MAX_PROMPT_PRESETS = 128;
+export const MAX_PERSONALIZATION_KEYWORDS = 64;
 export const FUNCTION_KEYS = Object.freeze([
     'chat',
     'character_authoring',
+    'character_ai_completion',
+    'character_full_authoring',
     'soul_match',
     'text_match',
     'recommendation_refresh',
@@ -26,6 +29,7 @@ const SECRET_FIELD_NAMES = new Set([
 ]);
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
+const LEGACY_SETTINGS_SCHEMA_VERSION = 1;
 
 export class YueLeMaSettingsError extends Error {
     constructor(code, message) {
@@ -102,6 +106,10 @@ function makeDefaultDocument() {
             connectionPresetId: null,
             promptPresetId: null,
         }])),
+        personalization: {
+            enabled: true,
+            keywordWeights: [],
+        },
     };
 }
 
@@ -153,6 +161,44 @@ function normalizeBinding(input) {
     };
 }
 
+function normalizeKeywordWeights(input) {
+    if (!Array.isArray(input) || input.length > MAX_PERSONALIZATION_KEYWORDS) {
+        fail('INVALID_PERSONALIZATION', '个性化内容偏好数量无效。');
+    }
+    const seen = new Set();
+    return input.map((item) => {
+        const candidate = safeClone(item);
+        if (!isPlainObject(candidate) || Object.keys(candidate).some((key) => !['keyword', 'weight'].includes(key))) {
+            fail('INVALID_PERSONALIZATION', '关键词权重包含不支持的字段。');
+        }
+        const keyword = cleanText(candidate.keyword, '关键词', 1, 40);
+        const folded = keyword.toLowerCase();
+        if (seen.has(folded)) fail('INVALID_PERSONALIZATION', '个性化内容偏好中存在重复关键词。');
+        seen.add(folded);
+        return {
+            keyword,
+            weight: cleanInteger(candidate.weight, '关键词权重', -5, 5),
+        };
+    });
+}
+
+function normalizePersonalization(input) {
+    if (input === undefined || input === null) {
+        return { enabled: true, keywordWeights: [] };
+    }
+    const candidate = safeClone(input);
+    if (!isPlainObject(candidate) || Object.keys(candidate).some((key) => !['enabled', 'keywordWeights'].includes(key))) {
+        fail('INVALID_PERSONALIZATION', '个性化内容推荐设置包含不支持的字段。');
+    }
+    if (typeof candidate.enabled !== 'boolean') {
+        fail('INVALID_PERSONALIZATION', '个性化内容推荐开关必须为布尔值。');
+    }
+    return {
+        enabled: candidate.enabled,
+        keywordWeights: normalizeKeywordWeights(candidate.keywordWeights ?? []),
+    };
+}
+
 function assertSize(document) {
     const encoded = JSON.stringify(document);
     if (new TextEncoder().encode(encoded).byteLength > MAX_SERIALIZED_BYTES) {
@@ -160,18 +206,18 @@ function assertSize(document) {
     }
 }
 
-/** 将未经信任的对象严格变成版本 1 的可持久化文档。 */
+/** 将未经信任的对象严格迁移并归一化为当前版本的可持久化文档。 */
 export function normalizeSettingsDocument(input) {
     const candidate = safeClone(input);
     if (!isPlainObject(candidate)) fail('INVALID_SETTINGS', '设置文档必须是对象。');
-    const allowed = new Set(['schema', 'schemaVersion', 'connectionPresets', 'promptPresets', 'defaults', 'functionBindings']);
+    const allowed = new Set(['schema', 'schemaVersion', 'connectionPresets', 'promptPresets', 'defaults', 'functionBindings', 'personalization']);
     if (Object.keys(candidate).some((key) => !allowed.has(key))) {
         fail('INVALID_SETTINGS', '设置文档包含不支持的字段。');
     }
     if (candidate.schema !== SETTINGS_SCHEMA_ID) {
         fail('UNSUPPORTED_SETTINGS_SCHEMA', '设置 schema 不受支持。');
     }
-    if (candidate.schemaVersion !== SETTINGS_SCHEMA_VERSION) {
+    if (![LEGACY_SETTINGS_SCHEMA_VERSION, SETTINGS_SCHEMA_VERSION].includes(candidate.schemaVersion)) {
         fail('UNSUPPORTED_SETTINGS_VERSION', '设置版本不受支持。');
     }
     if (!Array.isArray(candidate.connectionPresets) || candidate.connectionPresets.length > MAX_CONNECTION_PRESETS) {
@@ -220,15 +266,17 @@ export function normalizeSettingsDocument(input) {
         functionBindings[functionKey] = binding;
     }
 
-    // 灵魂匹配与文字匹配是同一套匹配工具，数据层强制共用绑定。
-    // 迁移旧文档时优先保留灵魂匹配已有值，再用文字匹配补齐空项。
-    const sharedMatchBinding = {
-        connectionPresetId: functionBindings.soul_match.connectionPresetId ?? functionBindings.text_match.connectionPresetId,
-        promptPresetId: functionBindings.soul_match.promptPresetId ?? functionBindings.text_match.promptPresetId,
-    };
-    functionBindings.soul_match = { ...sharedMatchBinding };
-    functionBindings.text_match = { ...sharedMatchBinding };
+    // 旧版本只有一个角色创作绑定。只在新入口未显式保存时复制，
+    // 让 AI 补全和完整创作从迁移完成后始终可以独立选择预设。
+    const legacyCharacterBinding = functionBindings.character_authoring;
+    if (!Object.hasOwn(bindingsInput, 'character_ai_completion')) {
+        functionBindings.character_ai_completion = { ...legacyCharacterBinding };
+    }
+    if (!Object.hasOwn(bindingsInput, 'character_full_authoring')) {
+        functionBindings.character_full_authoring = { ...legacyCharacterBinding };
+    }
 
+    const personalization = normalizePersonalization(candidate.personalization);
     const normalized = {
         schema: SETTINGS_SCHEMA_ID,
         schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -236,6 +284,7 @@ export function normalizeSettingsDocument(input) {
         promptPresets,
         defaults,
         functionBindings,
+        personalization,
     };
     assertSize(normalized);
     return normalized;
@@ -412,12 +461,7 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         if (binding.promptPresetId !== null && !idExists(next.promptPresets, binding.promptPresetId)) {
             fail('UNKNOWN_PRESET_ID', '绑定的提示词预设不存在。');
         }
-        if (functionKey === 'soul_match' || functionKey === 'text_match') {
-            next.functionBindings.soul_match = { ...binding };
-            next.functionBindings.text_match = { ...binding };
-        } else {
-            next.functionBindings[functionKey] = binding;
-        }
+        next.functionBindings[functionKey] = binding;
         return persist(next);
     }
 
@@ -434,6 +478,19 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
             usedDefaultConnectionPreset: binding.connectionPresetId === null,
             usedDefaultPromptPreset: binding.promptPresetId === null,
         });
+    }
+
+    function setPersonalizationEnabled(enabled) {
+        if (typeof enabled !== 'boolean') fail('INVALID_PERSONALIZATION', '个性化内容推荐开关必须为布尔值。');
+        const next = cloneDocument(current());
+        next.personalization.enabled = enabled;
+        return persist(next);
+    }
+
+    function setPersonalizationKeywordWeights(keywordWeights) {
+        const next = cloneDocument(current());
+        next.personalization.keywordWeights = normalizeKeywordWeights(keywordWeights);
+        return persist(next);
     }
 
     function exportJson() {
@@ -475,11 +532,10 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         setDefaults,
         bindFunction,
         resolveFunction,
+        setPersonalizationEnabled,
+        setPersonalizationKeywordWeights,
         exportJson,
         importJson,
         clear,
     });
 }
-
-
-

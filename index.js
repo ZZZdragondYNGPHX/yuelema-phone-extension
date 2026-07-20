@@ -6,12 +6,12 @@ import { clearSessionKeys } from './src/llm/session-key-store.js';
 import { createOpenAICompatibleClient } from './src/llm/openai-compatible-client.js';
 import { createSettingsStore } from './src/settings/settings-store.js';
 import { createBrowserSettingsStorage } from './src/settings/browser-storage.js';
-import { createCharacterLibraryStore } from './src/characters/character-library-store.js';
+import { createCharacterTemplateLibraryStore } from './src/characters/character-template-library-store.js';
 
 const EXTENSION_ROOT_ID = 'yuelema-phone-extension-root';
 const browserStorage = createBrowserSettingsStorage();
 const settingsStore = createSettingsStore({ storage: browserStorage });
-const characterLibrary = createCharacterLibraryStore({ storage: browserStorage });
+const characterLibrary = createCharacterTemplateLibraryStore({ storage: browserStorage });
 
 /** @type {{ destroy: () => void } | null} */
 let appInstance = null;
@@ -75,6 +75,7 @@ function bindStateUpdateSubscriptions({ mvu, getContext, onUpdate }) {
 function refreshWhenMvuReady({ instance, mvu, getContext, onUpdate }) {
     void waitForReadableMvu({
         getMvu: () => (typeof mvu === 'function' ? mvu() : mvu),
+        retryReadiness: true,
     }).then((result) => {
         if (!result.ok || appInstance !== instance) return;
         bindStateUpdateSubscriptions({ mvu, getContext, onUpdate });
@@ -155,10 +156,3 @@ export function onDisable() {
 export function onDelete() {
     destroyActiveInstance();
 }
-
-
-
-
-
-
-

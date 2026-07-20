@@ -2,10 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     buildSoulTextMatchContext,
+    generateCandidateMatchDraft,
     generateSoulMatchDraft,
     generateTextMatchDraft,
+    mergeMatchKeywordWeights,
+    normalizeCandidateMatchDraft,
     normalizeSoulMatchDraft,
     normalizeTextMatchDraft,
+    normalizeVoiceKeywordWeightDraft,
 } from '../soul-text-match-service.js';
 
 const connectionPreset = Object.freeze({
@@ -132,4 +136,113 @@ test('missing connection is rejected before attempting a model request', async (
         code: 'soul_match_connection_missing',
         message: '请先为“灵魂匹配”绑定连接预设或设置默认连接。',
     });
+});
+
+function candidateRaw() {
+    return {
+        profile: {
+            昵称: '林夏', 年龄段: '25-29', 性别: '女', 性取向: '双性恋', 城市: '上海', 距离范围: '10 km',
+            寻找意图: '先聊天，再认真约会', 简介: '喜欢在咖啡馆聊电影，也会周末去徒步。',
+            兴趣标签: ['电影', '咖啡'], 生活方式标签: ['周末徒步'], 性格标签: ['慢热'], 沟通风格标签: ['及时回应'],
+        },
+        explanation: '同城且兴趣与交流节奏接近，适合从轻松聊天开始认识。',
+        matchScore: 91,
+    };
+}
+
+function voiceKeywordRaw() {
+    return { keywordWeights: [{ keyword: '电影', weight: 5 }, { keyword: '徒步', weight: 4 }] };
+}
+
+function candidateSettingsStore(expectedFunction, keywordWeights = [
+    { keyword: '电影', weight: 1 }, { keyword: '咖啡', weight: 2 },
+]) {
+    return {
+        snapshot() { return { personalization: { keywordWeights } }; },
+        resolveFunction(functionKey) {
+            assert.equal(functionKey, expectedFunction);
+            return { connectionPreset, promptPreset: { enabled: true, content: '只生成现代都市公开角色资料。' } };
+        },
+    };
+}
+
+test('candidate soul matching reads saved local keywords and returns only a public profile draft', async () => {
+    let request;
+    const result = await generateCandidateMatchDraft({
+        mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'),
+        llmClient: { async chat(value) { request = value; return { text: JSON.stringify(candidateRaw()) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.draft, candidateRaw());
+    assert.deepEqual(Object.keys(result.draft), ['profile', 'explanation', 'matchScore']);
+    assert.equal(Object.isFrozen(result.draft.profile), true);
+    const serialized = JSON.stringify(request);
+    const candidateContext = request.messages.at(-1).content;
+    assert.match(candidateContext, /"keyword":"电影","weight":1/u);
+    assert.match(candidateContext, /"keyword":"咖啡","weight":2/u);
+    for (const forbidden of ['hidden-secret-must-not-reach-model', 'friend-secret-must-not-reach-model', 'candidate-secret-must-not-reach-model', 'session-secret-must-not-reach-model', 'api-key-must-not-reach-model']) {
+        assert.equal(serialized.includes(forbidden), false);
+    }
+});
+
+test('voice matching derives transient weights first, lets them override local weights, and never returns the voice input', async () => {
+    const requests = [];
+    const voiceText = '周末想徒步，也想找能一起看电影的人。';
+    const result = await generateCandidateMatchDraft({
+        mode: 'voice', voiceText, state: state(), settingsStore: candidateSettingsStore('text_match'),
+        llmClient: { async chat(value) { requests.push(value); return { text: JSON.stringify(requests.length === 1 ? voiceKeywordRaw() : candidateRaw()) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(requests.length, 2);
+    const keywordRequest = JSON.stringify(requests[0]);
+    const candidateRequest = JSON.stringify(requests[1]);
+    assert.equal(keywordRequest.includes(voiceText), true);
+    assert.equal(candidateRequest.includes(voiceText), false);
+    const candidateContext = requests[1].messages.at(-1).content;
+    assert.match(candidateContext, /"keyword":"电影","weight":5/u);
+    assert.match(candidateContext, /"keyword":"咖啡","weight":2/u);
+    assert.match(candidateContext, /"keyword":"徒步","weight":4/u);
+    assert.equal(JSON.stringify(result.draft).includes(voiceText), false);
+    assert.deepEqual(Object.keys(result.draft), ['profile', 'explanation', 'matchScore']);
+});
+
+test('existing text mode is a transition alias for voice candidate matching', async () => {
+    let resolvedFunction = '';
+    let calls = 0;
+    const result = await generateCandidateMatchDraft({
+        mode: 'text', voiceText: '想找周末一起徒步的人。', state: state(),
+        settingsStore: {
+            snapshot: () => ({ personalization: { keywordWeights: [] } }),
+            resolveFunction(key) { resolvedFunction = key; return { connectionPreset, promptPreset: null }; },
+        },
+        llmClient: { async chat() { calls += 1; return { text: JSON.stringify(calls === 1 ? voiceKeywordRaw() : candidateRaw()) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(resolvedFunction, 'text_match');
+    assert.equal(calls, 2);
+});
+
+test('voice keyword priority is deterministic and strict candidate codecs reject non-public or underage drafts', () => {
+    assert.deepEqual(mergeMatchKeywordWeights(
+        [{ keyword: 'Movie', weight: 1 }, { keyword: '咖啡', weight: 2 }],
+        [{ keyword: 'movie', weight: 5 }, { keyword: '徒步', weight: 4 }],
+    ), [{ keyword: 'movie', weight: 5 }, { keyword: '咖啡', weight: 2 }, { keyword: '徒步', weight: 4 }]);
+    assert.throws(() => normalizeVoiceKeywordWeightDraft({ keywordWeights: [{ keyword: '电影', weight: 4, uid: 'nope' }] }), /sensitive_key/);
+    assert.throws(() => normalizeCandidateMatchDraft({ ...candidateRaw(), uid: 'npc_1' }), /sensitive_key/);
+    const underage = candidateRaw(); underage.profile.年龄段 = '17-19';
+    assert.throws(() => normalizeCandidateMatchDraft(underage), /candidate_not_adult/);
+    const privateDraft = candidateRaw(); privateDraft.explanation = '读取隐藏资料后推荐。';
+    assert.throws(() => normalizeCandidateMatchDraft(privateDraft), /text_invalid/);
+});
+
+test('candidate match rejects missing voice text or unavailable local preferences before model calls', async () => {
+    let calls = 0;
+    const llmClient = { async chat() { calls += 1; return { text: '{}' }; } };
+    const missingVoice = await generateCandidateMatchDraft({ mode: 'voice', state: state(), settingsStore: candidateSettingsStore('text_match'), llmClient });
+    assert.deepEqual(missingVoice, { ok: false, code: 'candidate_match_voice_text_invalid', message: '请输入 1–800 个字符的匹配描述。' });
+    const missingLocal = await generateCandidateMatchDraft({
+        mode: 'soul', state: state(), settingsStore: { resolveFunction: () => ({ connectionPreset, promptPreset: null }) }, llmClient,
+    });
+    assert.deepEqual(missingLocal, { ok: false, code: 'candidate_match_local_preferences_unavailable', message: '本地个性化关键词暂不可用。' });
+    assert.equal(calls, 0);
 });

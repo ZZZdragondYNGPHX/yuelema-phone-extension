@@ -51,6 +51,32 @@ function recommendationState() {
 const connectionPreset = { id: 'fast', name: 'Fast', url: 'https://example.invalid/v1', model: 'quick', temperature: 0.7, maxTokens: 800, timeoutMs: 30_000 };
 const settingsStore = { resolveFunction: () => ({ connectionPreset, promptPreset: { enabled: true, content: '保持轻快、真实的都市语气。' } }) };
 
+function resolvePatchParent(root, pointer) {
+    const segments = pointer.split('/').slice(1).map((segment) => segment.replaceAll('~1', '/').replaceAll('~0', '~'));
+    const key = segments.pop();
+    let node = root;
+    for (const segment of segments) node = node[segment];
+    return { node, key };
+}
+
+function applyJsonPatch(state, patch) {
+    for (const operation of patch) {
+        const { node, key } = resolvePatchParent(state, operation.path);
+        if (operation.op === 'remove') {
+            if (Array.isArray(node)) node.splice(Number(key), 1); else delete node[key];
+        } else if (operation.op === 'move') {
+            const source = resolvePatchParent(state, operation.from);
+            const value = source.node[source.key];
+            if (Array.isArray(source.node)) source.node.splice(Number(source.key), 1); else delete source.node[source.key];
+            if (Array.isArray(node) && key === '-') node.push(value); else node[key] = value;
+        } else if (Array.isArray(node) && key === '-') {
+            node.push(operation.value);
+        } else {
+            node[key] = operation.value;
+        }
+    }
+}
+
 function createMvu({ deferredParse = false, initialState = state() } = {}) {
     const calls = [];
     let releaseParse;
@@ -62,7 +88,10 @@ function createMvu({ deferredParse = false, initialState = state() } = {}) {
         async parseMessage(raw, oldData) {
             calls.push(['parse', raw, oldData]);
             if (parsePromise) await parsePromise;
-            return structuredClone(oldData);
+            const next = structuredClone(oldData);
+            const encoded = raw.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)?.[1];
+            if (encoded) applyJsonPatch(next.stat_data, JSON.parse(encoded));
+            return next;
         },
         async replaceMvuData(nextData, scope) { calls.push(['replace', nextData, scope]); },
     };
@@ -86,6 +115,42 @@ test('favorite action is built and committed only through the official MVU pipel
     assert.match(update, /^<UpdateVariable><JSONPatch>/u);
     assert.match(update, /"op":"move"/u);
     assert.match(update, /收藏角色UID/u);
+});
+
+test('SFW/NSFW 滑块通过受控 MVU 管线实际切换内容模式', async () => {
+    const initialState = state();
+    delete initialState.软件.关于软件点击数;
+    const calls = [];
+    const data = { stat_data: initialState };
+    let persisted;
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'variable_update_ended' },
+        getMvuData(scope) { calls.push(['get', scope]); return data; },
+        async parseMessage(raw, oldData) {
+            calls.push(['parse', raw, oldData]);
+            const encoded = raw.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)?.[1];
+            const patch = JSON.parse(encoded);
+            const next = structuredClone(oldData);
+            for (const operation of patch) {
+                if (operation.path === '/软件/内容模式') next['stat_data']['软件']['内容模式'] = operation.value;
+            }
+            return next;
+        },
+        async replaceMvuData(nextData, scope) { calls.push(['replace', nextData, scope]); persisted = nextData; },
+    };
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null },
+        mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+    });
+
+    const result = await bridge.runMvuAction('toggle_content_mode');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 'applied');
+    assert.equal(persisted['stat_data']['软件']['内容模式'], 'NSFW');
+    assert.equal(Object.hasOwn(persisted['stat_data']['软件'], '关于软件点击数'), false, '本地五击解锁不应要求或写入旧计数字段');
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'parse', 'replace', 'event']);
 });
 
 test('duplicate controlled action is rejected while the first action is in flight', async () => {
@@ -382,4 +447,36 @@ test('group and forum draft bridge pending keys are isolated by feature and grou
     assert.equal(bridge.isPending('forum_draft', 'group_city'), false);
     release();
     assert.equal((await first).ok, true);
+});
+test('candidate match draft reads through MVU but never commits a patch or event', async () => {
+    const initialState = recommendationState();
+    const { mvu, calls } = createMvu({ initialState });
+    const requests = [];
+    const candidateSettingsStore = {
+        snapshot() { return { personalization: { keywordWeights: [{ keyword: '电影', weight: 3 }] } }; },
+        resolveFunction(key) {
+            assert.equal(key, 'soul_match');
+            return { connectionPreset, promptPreset: { enabled: true, content: '仅生成成年人公开资料。' } };
+        },
+    };
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); }, settingsStore: candidateSettingsStore,
+        llmClient: { async chat(request) {
+            requests.push(request);
+            return { text: JSON.stringify({
+                profile: {
+                    昵称: '林夏', 年龄段: '25-29', 性别: '女', 性取向: '双性恋', 城市: '上海', 距离范围: '10 km',
+                    寻找意图: '先聊天再认真约会', 简介: '喜欢电影和夜跑。', 兴趣标签: ['电影'], 生活方式标签: ['夜猫子'], 性格标签: ['慢热'], 沟通风格标签: ['及时回应'],
+                }, explanation: '公开兴趣接近。', matchScore: 88,
+            }) };
+        } },
+    });
+
+    const result = await bridge.generateCandidateMatchDraft('soul');
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.draft.profile.昵称, '林夏');
+    assert.deepEqual(calls.map(([name]) => name), ['get']);
+    assert.equal(requests.length, 1);
+    assert.doesNotMatch(JSON.stringify(result), /UID|隐藏资料|关系分|阈值|private-key/u);
 });

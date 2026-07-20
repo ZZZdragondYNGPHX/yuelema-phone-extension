@@ -109,6 +109,8 @@ class MiniElement extends MiniNode {
     matches(selector) {
         const nameMatch = /^\[name="([^"]+)"\]$/u.exec(selector);
         if (nameMatch) return this.getAttribute('name') === nameMatch[1];
+        const dataMatch = /^\[data-([A-Za-z0-9_-]+)\]$/u.exec(selector);
+        if (dataMatch) return Object.hasOwn(this.dataset, dataMatch[1].replace(/-([a-z])/gu, (_, letter) => letter.toUpperCase()));
         if (/^\.[A-Za-z0-9_-]+$/u.test(selector)) return this.className.split(/\s+/u).includes(selector.slice(1));
         return this.tagName.toLowerCase() === String(selector).toLowerCase();
     }

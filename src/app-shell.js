@@ -3,17 +3,26 @@ import { readLatestState } from './mvu/adapter.js';
 import { NAV_ITEMS, PAGE_COPY, createPhoneView, describeActionFailure } from './ui-model.js';
 import { buildSettingsPanel } from './settings-panel.js';
 import { buildCharacterCreatorPanel } from './characters/character-creator-panel.js';
+import { createLauncherDragController } from './launcher-drag.js';
 
-const UI_VERSION = '0.1.1';
-const EMPTY_POOL_ACTIONS = Object.freeze([
-    ['创建角色', '手动建立一名成年人。', 'open_character_creator'],
-    ['导入角色模板', '导入自己的角色资料。', 'open_character_import'],
-    ['快速随机创建候选人', '用快速模型生成下一位成年人。', 'open_random_candidates'],
-]);
+const UI_VERSION = '0.1.3';
+const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', dislike: '不喜欢' });
+const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', dislike: '✕' });
 const PRIMARY_PAGE_FOR = Object.freeze({
-    group_chat: 'groups', group_forum: 'groups', profile_editor: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', about: 'profile', match_tools: 'matches', candidate_detail: 'home',
+    group_chat: 'groups', group_forum: 'groups', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
+});
+const PAGE_PARENT_FOR = Object.freeze({
+    group_chat: 'groups', group_forum: 'groups', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
+    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', candidate_detail: 'home', match_profile: 'matches',
+});
+const FEATURE_BINDING_FOR_PAGE = Object.freeze({
+    home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
+    matches: Object.freeze([{ key: 'soul_match', title: '灵魂匹配' }, { key: 'text_match', title: '语音匹配' }]),
+    messages: Object.freeze([{ key: 'chat', title: '私聊' }]),
+    group_chat: Object.freeze([{ key: 'group_chat', title: '聊天群' }]),
+    group_forum: Object.freeze([{ key: 'forum', title: '论坛' }]),
 });
 
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
@@ -26,14 +35,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
 
     let open = false;
     let activePage = 'home';
-    let feedback = '';
     let refreshing = false;
-    let characterCreatorOpen = false;
     let activeMessageSessionUid = '';
     let activeMeetupSessionUid = '';
     let selectedCandidateUid = '';
+    let matchedProfileDraft = null;
+    let voiceMatchText = '';
     let aboutClickStreak = 0;
     let aboutUnlocked = false;
+    let activeHelpAnchor = null;
     let playerProfileDraft = null;
     const chatDrafts = new Map();
     const meetupDrafts = new Map();
@@ -41,34 +51,160 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     const groupChatGeneratedDrafts = new Map();
     const forumTopicDrafts = new Map();
     const forumGeneratedDrafts = new Map();
-    let soulMatchDraft = null;
-    let textMatchDraft = null;
     let currentView = createPhoneView(readState());
+    let operationGeneration = 0;
+    let activeOperation = null;
+    let operationAutoCloseTimer = null;
 
     const launcher = element('button', { className: 'yl-phone-launcher', type: 'button', ariaLabel: '打开约了吗小手机', pressed: false, text: '约' });
     launcher.appendChild(element('span', { className: 'yl-phone-launcher-label', text: '约了吗' }));
     const panel = element('aside', { className: 'yl-phone-panel', ariaLabel: '约了吗小手机窗口', hidden: true });
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'false');
-    const header = element('header', { className: 'yl-phone-header' });
+    const header = element('header', { className: 'yl-phone-header', ariaLabel: '拖动约了吗小手机窗口' });
+    header.setAttribute('title', '按住此处拖动小手机');
     const brand = element('div', { className: 'yl-phone-brand' });
+    const statusDot = element('span', { className: 'yl-status-dot' });
+    statusDot.setAttribute('aria-hidden', 'true');
     const statusLine = element('span', { className: 'yl-phone-status' });
-    append(brand, [element('strong', { text: '约了吗' }), statusLine]);
+    append(brand, [element('strong', { text: '约了吗' }), statusDot, statusLine]);
     const closeButton = element('button', { className: 'yl-phone-close', type: 'button', ariaLabel: '关闭约了吗小手机', text: '×' });
     append(header, [brand, closeButton]);
     const content = element('main', { className: 'yl-phone-content' });
     const nav = element('nav', { className: 'yl-phone-nav', ariaLabel: '约了吗主导航' });
     const navButtons = new Map();
     for (const item of NAV_ITEMS) {
-        const button = element('button', { className: 'yl-phone-nav-item', type: 'button', ariaLabel: item.label, text: `${item.icon} ${item.label}` });
+        const button = element('button', { className: 'yl-phone-nav-item', type: 'button', ariaLabel: item.label });
+        append(button, [
+            element('span', { className: 'yl-nav-icon', text: item.icon }),
+            element('span', { className: 'yl-nav-label', text: item.label }),
+        ]);
         button.dataset.page = item.id;
         navButtons.set(item.id, button);
         listen(button, button, 'click', () => setActivePage(item.id), abortController.signal);
         nav.appendChild(button);
     }
     append(panel, [header, content, nav]);
-    append(root, [launcher, panel]);
+
+    const helpPopover = element('div', { className: 'yl-phone-feedback yl-help-popover', hidden: true });
+    helpPopover.setAttribute('role', 'tooltip');
+    helpPopover.setAttribute('aria-live', 'polite');
+
+    const operationDialog = element('section', { className: 'yl-phone-placeholder yl-operation-dialog', hidden: true });
+    operationDialog.setAttribute('role', 'dialog');
+    operationDialog.setAttribute('aria-modal', 'false');
+    operationDialog.setAttribute('aria-live', 'polite');
+    const operationDismiss = element('button', {
+        className: 'yl-dialog-close', type: 'button', name: 'operation-dialog-close',
+        ariaLabel: '关闭操作弹窗', text: '×',
+    });
+    const operationTitle = element('h2', { text: '' });
+    const operationMessage = element('p', { className: 'yl-phone-page-description', text: '' });
+    const operationActions = element('div', { className: 'yl-settings-actions' });
+    const operationClose = element('button', {
+        className: 'yl-settings-button', type: 'button', name: 'operation-dialog-action',
+        ariaLabel: '关闭操作提示', text: '关闭',
+    });
+    append(operationActions, [operationClose]);
+    append(operationDialog, [operationDismiss, operationTitle, operationMessage, operationActions]);
+
+    const bindingDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-feature-binding-modal', hidden: true });
+    bindingDialog.setAttribute('role', 'dialog');
+    bindingDialog.setAttribute('aria-modal', 'false');
+    bindingDialog.setAttribute('aria-label', '功能预设选项');
+    const bindingDialogTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const bindingDialogTitle = element('h2', { text: '功能预设选项' });
+    const bindingDialogClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭功能预设选项' });
+    const bindingDialogContent = element('div', { className: 'yl-settings-panel' });
+    append(bindingDialogTitlebar, [bindingDialogTitle, bindingDialogClose]);
+    append(bindingDialog, [bindingDialogTitlebar, bindingDialogContent]);
+    append(root, [launcher, panel, helpPopover, operationDialog, bindingDialog]);
     documentRef.body.appendChild(root);
+
+    const launcherDrag = createLauncherDragController({ launcher, documentRef, threshold: 8, edgeGap: 0 });
+    let panelDrag = null;
+    function viewportSize() {
+        const view = documentRef.defaultView;
+        return {
+            width: Math.max(1, Number(view?.innerWidth || documentRef.documentElement?.clientWidth || 360)),
+            height: Math.max(1, Number(view?.innerHeight || documentRef.documentElement?.clientHeight || 640)),
+        };
+    }
+    function clampPanelPosition(left, top, width, height) {
+        const viewport = viewportSize();
+        const margin = 0;
+        return {
+            left: Math.max(margin, Math.min(left, Math.max(margin, viewport.width - width - margin))),
+            top: Math.max(margin, Math.min(top, Math.max(margin, viewport.height - height - margin))),
+        };
+    }
+    function setPanelPosition(left, top) {
+        if (!panel.style?.setProperty) return;
+        panel.style.setProperty('left', Math.round(left) + 'px');
+        panel.style.setProperty('top', Math.round(top) + 'px');
+        panel.style.setProperty('right', 'auto');
+        panel.style.setProperty('bottom', 'auto');
+    }
+    function isHeaderControl(target) {
+        let node = target;
+        while (node && node !== header) {
+            if (String(node.tagName || '').toLowerCase() === 'button') return true;
+            node = node.parentNode;
+        }
+        return false;
+    }
+    function beginPanelDrag(event) {
+        if (!open || event?.isPrimary === false || (event?.pointerType === 'mouse' && Number(event.button) !== 0) || isHeaderControl(event?.target)) return;
+        const rect = typeof panel.getBoundingClientRect === 'function' ? panel.getBoundingClientRect() : null;
+        const width = Number(rect?.width);
+        const height = Number(rect?.height);
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+        panelDrag = {
+            pointerId: event?.pointerId,
+            startX: Number(event?.clientX) || 0,
+            startY: Number(event?.clientY) || 0,
+            left: Number(rect?.left) || 0,
+            top: Number(rect?.top) || 0,
+            width,
+            height,
+            engaged: false,
+            originX: 0,
+            originY: 0,
+        };
+        header.setPointerCapture?.(event?.pointerId);
+    }
+    function movePanelDrag(event) {
+        if (!panelDrag || (panelDrag.pointerId !== undefined && event?.pointerId !== undefined && event.pointerId !== panelDrag.pointerId)) return;
+        const deltaX = (Number(event?.clientX) || 0) - panelDrag.startX;
+        const deltaY = (Number(event?.clientY) || 0) - panelDrag.startY;
+        if (!panelDrag.engaged) {
+            // 8px threshold keeps plain header taps from hijacking clicks or scroll gestures.
+            if (Math.hypot(deltaX, deltaY) < PANEL_DRAG_THRESHOLD) return;
+            panelDrag.engaged = true;
+            panel.classList.toggle('is-dragging', true);
+            setPanelPosition(panelDrag.left, panelDrag.top);
+            // A transformed host ancestor shifts the fixed containing block away from
+            // the viewport; measure the offset once and compensate all writes.
+            const check = typeof panel.getBoundingClientRect === 'function' ? panel.getBoundingClientRect() : null;
+            panelDrag.originX = (Number(check?.left) || 0) - panelDrag.left;
+            panelDrag.originY = (Number(check?.top) || 0) - panelDrag.top;
+            if (panelDrag.originX || panelDrag.originY) setPanelPosition(panelDrag.left - panelDrag.originX, panelDrag.top - panelDrag.originY);
+        }
+        const next = clampPanelPosition(
+            panelDrag.left + deltaX,
+            panelDrag.top + deltaY,
+            panelDrag.width,
+            panelDrag.height,
+        );
+        setPanelPosition(next.left - panelDrag.originX, next.top - panelDrag.originY);
+        event?.preventDefault?.();
+    }
+    function endPanelDrag(event) {
+        if (!panelDrag || (panelDrag.pointerId !== undefined && event?.pointerId !== undefined && event.pointerId !== panelDrag.pointerId)) return;
+        try { header.releasePointerCapture?.(panelDrag.pointerId); } catch { /* pointer capture may already be released */ }
+        panelDrag = null;
+        panel.classList.toggle('is-dragging', false);
+    }
 
     function setOpen(nextOpen) {
         open = Boolean(nextOpen);
@@ -77,9 +213,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         launcher.setAttribute('aria-pressed', String(open));
         launcher.setAttribute('aria-label', open ? '关闭约了吗小手机' : '打开约了吗小手机');
         if (open) refreshState();
+        else hideOperationDialog();
     }
     function setActivePage(pageId) {
+        if (pageId === 'about') { showAboutSoftware(); return; }
         if (!PAGE_COPY[pageId]) return;
+        hideOperationDialog();
         activePage = pageId;
         actionBridge.emit('navigate', { page: pageId });
         renderPage();
@@ -89,57 +228,250 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (open) renderPage();
         return currentView;
     }
-    function setFeedback(message) { feedback = String(message ?? '').slice(0, 220); }
-    function renderFeedback(page) { if (feedback) page.appendChild(element('p', { className: 'yl-phone-feedback', text: feedback })); }
-    function primaryPage(pageId) { return PRIMARY_PAGE_FOR[pageId] ?? pageId; }
+    function feedbackPresentation(message) {
+        const text = String(message ?? '').slice(0, 320);
+        if (/正在|处理中|加载|请求/u.test(text)) return { state: 'loading', title: '操作处理中', message: text };
+        if (/失败|错误|出错|异常|不可用|无法|未完成|未生成|未登记|未保存|未就绪|未接受|拒绝|无效|超限/u.test(text)) return { state: 'failure', title: '操作未完成', message: text };
+        if (/已|成功|通过|完成|保存|载入|导入|导出|删除|切换/u.test(text)) return { state: 'success', title: '操作完成', message: text };
+        return { state: 'info', title: '操作提示', message: text };
+    }
+    function setFeedback(message, operationToken = null) {
+        const presentation = feedbackPresentation(message);
+        if (!presentation.message) return operationToken;
+        if (operationToken !== null) {
+            if (presentation.state === 'loading' && activeOperation?.token === operationToken && activeOperation.state === 'loading') {
+                operationMessage.textContent = presentation.message;
+            } else updateOperationDialog(operationToken, presentation);
+            return operationToken;
+        }
+        if (presentation.state === 'loading' && activeOperation?.state === 'loading') {
+            operationMessage.textContent = presentation.message;
+            return activeOperation.token;
+        }
+        if (presentation.state !== 'loading' && activeOperation?.state === 'loading') {
+            updateOperationDialog(activeOperation.token, presentation);
+            return activeOperation.token;
+        }
+        return beginOperationDialog(presentation);
+    }
+    function primaryPage(pageId) {
+        if (PRIMARY_PAGE_FOR[pageId]) return PRIMARY_PAGE_FOR[pageId];
+        if (String(pageId).startsWith("settings_")) return "profile";
+        if (String(pageId).startsWith("group_")) return "groups";
+        if (String(pageId).startsWith("profile_")) return "profile";
+        return pageId;
+    }
+    function clearOperationAutoClose() {
+        if (operationAutoCloseTimer === null) return;
+        globalThis.clearTimeout(operationAutoCloseTimer);
+        operationAutoCloseTimer = null;
+    }
+    function renderOperationDialog({ state = 'info', title, message }, token) {
+        if (!activeOperation || activeOperation.token !== token) return false;
+        clearOperationAutoClose();
+        activeOperation.state = state;
+        operationDialog.dataset.state = state;
+        operationDialog.hidden = false;
+        operationDialog.setAttribute('role', state === 'failure' ? 'alertdialog' : 'dialog');
+        operationDialog.setAttribute('aria-live', state === 'failure' ? 'assertive' : 'polite');
+        operationDialog.setAttribute('aria-busy', String(state === 'loading'));
+        operationTitle.textContent = String(title ?? '操作提示');
+        operationMessage.textContent = String(message ?? '').slice(0, 320);
+        operationDismiss.hidden = false;
+        operationClose.hidden = false;
+        operationClose.textContent = state === 'loading' ? '关闭提示' : '关闭';
+        if (state === 'success' || state === 'failure') {
+            const delay = state === 'success' ? 4000 : 6000;
+            operationAutoCloseTimer = globalThis.setTimeout(() => {
+                if (activeOperation?.token === token) hideOperationDialog();
+            }, delay);
+            operationAutoCloseTimer?.unref?.();
+        }
+        return true;
+    }
+    function beginOperationDialog(presentation) {
+        const token = ++operationGeneration;
+        activeOperation = { token, state: presentation.state ?? 'info' };
+        renderOperationDialog(presentation, token);
+        return token;
+    }
+    function updateOperationDialog(token, presentation) {
+        if (!activeOperation || activeOperation.token !== token) return false;
+        return renderOperationDialog(presentation, token);
+    }
+    function hideOperationDialog() {
+        clearOperationAutoClose();
+        activeOperation = null;
+        operationDialog.hidden = true;
+        operationDialog.setAttribute('aria-busy', 'false');
+    }
+    function showAiLoading(message) {
+        return beginOperationDialog({ state: 'loading', title: 'AI 调用中', message: message || '正在加载，请稍候…' });
+    }
+    function showAiResult(ok, message, operationToken = null) {
+        const presentation = { state: ok ? 'success' : 'failure', title: ok ? 'AI 调用成功' : 'AI 调用失败', message };
+        if (operationToken !== null) {
+            updateOperationDialog(operationToken, presentation);
+            return operationToken;
+        }
+        return beginOperationDialog(presentation);
+    }
+    function createOperationFeedbackHandler({ ai = false } = {}) {
+        let operationToken = null;
+        return (message) => {
+            const text = String(message ?? '');
+            const presentation = feedbackPresentation(text);
+            if (!presentation.message) return;
+            if (presentation.state === 'loading') {
+                if (operationToken === null) operationToken = ai ? showAiLoading(text) : setFeedback(text);
+                else setFeedback(text, operationToken);
+                return;
+            }
+            const token = operationToken;
+            operationToken = null;
+            if (token === null) {
+                setFeedback(text);
+                return;
+            }
+            if (ai && /AI.*(未|失败|无法|错误)|未完成/u.test(text)) showAiResult(false, text, token);
+            else if (ai && /AI.*(已|成功)|草稿已载入/u.test(text)) showAiResult(true, text, token);
+            else setFeedback(text, token);
+        };
+    }
+    function showAboutSoftware() {
+        beginOperationDialog({ state: 'info', title: '关于软件', message: `约了吗 ${UI_VERSION}。现代都市线上文字社交模拟器。` });
+        aboutClickStreak += 1;
+        if (aboutClickStreak >= 5) {
+            aboutUnlocked = true;
+            operationMessage.textContent = '约了吗 ' + UI_VERSION + '。现代都市线上文字社交模拟器。内容模式开关已解锁。';
+        }
+        renderPage();
+    }
+    function positionHelpPopover(anchor) {
+        if (!anchor || typeof anchor.getBoundingClientRect !== "function") return;
+        const anchorRect = anchor.getBoundingClientRect();
+        const view = documentRef.defaultView;
+        const viewportWidth = Number(view?.innerWidth || documentRef.documentElement?.clientWidth || 360);
+        const viewportHeight = Number(view?.innerHeight || documentRef.documentElement?.clientHeight || 640);
+        helpPopover.hidden = false;
+        const popoverRect = typeof helpPopover.getBoundingClientRect === 'function' ? helpPopover.getBoundingClientRect() : { width: 260, height: 100 };
+        const width = Number(popoverRect.width) || 260;
+        const height = Number(popoverRect.height) || 100;
+        const left = Math.max(8, Math.min(Number(anchorRect.left) || 8, viewportWidth - width - 8));
+        const preferredTop = (Number(anchorRect.bottom) || 0) + 8;
+        const top = Math.max(8, Math.min(preferredTop, viewportHeight - Math.min(height, viewportHeight - 16) - 8));
+        if (helpPopover.style?.setProperty) { helpPopover.style.setProperty('left', left + 'px'); helpPopover.style.setProperty('top', top + 'px'); helpPopover.style.setProperty('max-height', Math.max(64, viewportHeight - top - 8) + 'px'); }
+    }
+    function toggleHelp(anchor, text) {
+        if (activeHelpAnchor === anchor && !helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; return; }
+        activeHelpAnchor = anchor; helpPopover.textContent = String(text ?? "");
+        helpPopover.setAttribute("aria-label", "说明：" + text); positionHelpPopover(anchor);
+    }
     function backPage(pageId) {
-        if (['group_chat', 'group_forum'].includes(pageId)) return 'groups';
-        if (pageId === 'match_tools') return 'matches';
-        if (['profile_editor', 'favorites', 'settings'].includes(pageId)) return 'profile';
-        if (['settings_connections', 'settings_prompts', 'about'].includes(pageId)) return 'settings';
-        if (pageId === 'candidate_detail') return 'home';
-        return '';
+        if (PAGE_PARENT_FOR[pageId]) return PAGE_PARENT_FOR[pageId];
+        if (String(pageId).startsWith("settings_")) return "settings";
+        if (String(pageId).startsWith("group_")) return "groups";
+        if (String(pageId).startsWith("profile_")) return "profile";
+        return "";
+    }
+    function navigateBack(pageId, back) {
+        setActivePage(back);
     }
     function buildHelp(text) {
-        const button = element('button', { className: 'yl-help-tooltip', type: 'button', ariaLabel: `说明：${text}`, text: '?' });
-        button.setAttribute('data-tooltip', text);
+        const trigger = element("span", { className: "yl-help-tooltip yl-help-trigger", ariaLabel: "说明：" + text, text: "?" });
+        trigger.setAttribute("role", "button"); trigger.setAttribute("tabindex", "0");
+        listen(trigger, trigger, "click", () => toggleHelp(trigger, text), abortController.signal);
+        listen(trigger, trigger, "keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault?.(); toggleHelp(trigger, text); } }, abortController.signal);
+        return trigger;
+    }
+    function closeFeatureBindingDialog() {
+        bindingDialog.hidden = true;
+        bindingDialogContent.replaceChildren();
+    }
+    function openFeatureBinding(features, dialogTitle = '功能预设选项') {
+        if (!settingsStore || typeof settingsStore.snapshot !== 'function' || typeof settingsStore.bindFunction !== 'function') {
+            setFeedback('本地预设尚未就绪。');
+            return;
+        }
+        let snapshot;
+        try { snapshot = settingsStore.snapshot(); } catch { setFeedback('无法读取已保存的预设。'); return; }
+        bindingDialogTitle.textContent = dialogTitle;
+        bindingDialogContent.replaceChildren();
+        if (!snapshot.connectionPresets.length && !snapshot.promptPresets.length) {
+            bindingDialogContent.appendChild(element('p', { className: 'yl-phone-page-description', text: '还没有保存连接或提示词预设。请先在“我的 → 设置 → 连接设置 / 提示词预设”中创建。' }));
+        }
+        for (const feature of features) {
+            const binding = snapshot.functionBindings?.[feature.key] ?? { connectionPresetId: null, promptPresetId: null };
+            const row = element('section', { className: 'yl-settings-binding yl-feature-binding-row' });
+            row.appendChild(element('strong', { text: feature.title }));
+            row.appendChild(element('p', { className: 'yl-settings-summary', text: '单独保存后只影响此功能；留空时回退到默认预设。' }));
+            const connection = element('select', { className: 'yl-settings-control', name: feature.key + '-quick-connection', ariaLabel: feature.title + '连接预设' });
+            const prompt = element('select', { className: 'yl-settings-control', name: feature.key + '-quick-prompt', ariaLabel: feature.title + '提示词预设' });
+            for (const [value, label] of [['', '使用默认连接'], ...snapshot.connectionPresets.map((preset) => [preset.id, preset.name])]) {
+                const option = element('option', { value, text: label }); option.selected = value === (binding.connectionPresetId ?? ''); connection.appendChild(option);
+            }
+            for (const [value, label] of [['', '使用默认提示词'], ...snapshot.promptPresets.map((preset) => [preset.id, preset.name])]) {
+                const option = element('option', { value, text: label }); option.selected = value === (binding.promptPresetId ?? ''); prompt.appendChild(option);
+            }
+            const fields = element('div', { className: 'yl-settings-fields' });
+            const connectionField = element('label', { className: 'yl-settings-field' }); append(connectionField, [element('span', { text: '连接预设' }), connection]);
+            const promptField = element('label', { className: 'yl-settings-field' }); append(promptField, [element('span', { text: '提示词预设' }), prompt]);
+            append(fields, [connectionField, promptField]); row.appendChild(fields);
+            const save = element('button', { className: 'yl-settings-button', type: 'button', text: '保存此功能绑定' });
+            listen(save, save, 'click', () => {
+                try {
+                    settingsStore.bindFunction(feature.key, { connectionPresetId: connection.value || null, promptPresetId: prompt.value || null });
+                    setFeedback(feature.title + '预设绑定已保存。');
+                } catch { setFeedback('预设绑定未保存，请确认选择的预设仍存在。'); }
+            }, abortController.signal);
+            row.appendChild(save); bindingDialogContent.appendChild(row);
+        }
+        bindingDialog.hidden = false;
+    }
+    function buildFeatureOptionsButton(pageId) {
+        const features = FEATURE_BINDING_FOR_PAGE[pageId];
+        if (!features) return null;
+        const button = element('button', { className: 'yl-feature-options', type: 'button', text: '选项', ariaLabel: '配置' + (PAGE_COPY[pageId]?.title || '此功能') + '预设' });
+        listen(button, button, 'click', () => openFeatureBinding(features, (PAGE_COPY[pageId]?.title || '功能') + '选项'), abortController.signal);
         return button;
     }
     function buildPageHeading(copy, pageId) {
-        const row = element('div', { className: 'yl-page-heading' });
+        const row = element("div", { className: "yl-page-heading" });
         const back = backPage(pageId);
         if (back) {
-            const button = element('button', { className: 'yl-page-back', type: 'button', ariaLabel: '返回', text: '‹' });
-            listen(button, button, 'click', () => setActivePage(back), abortController.signal);
-            row.appendChild(button);
+            const button = element("button", { className: "yl-page-back", type: "button", ariaLabel: "返回", text: "‹" });
+            listen(button, button, "click", () => navigateBack(pageId, back), abortController.signal); row.appendChild(button);
         }
-        row.appendChild(element('h1', { text: copy.title }));
+        row.appendChild(element("h1", { text: copy.title }));
         if (copy.help) row.appendChild(buildHelp(copy.help));
+        const featureOptions = buildFeatureOptionsButton(pageId);
+        if (featureOptions) row.appendChild(featureOptions);
         return row;
     }
     function renderPage() {
+        helpPopover.hidden = true; activeHelpAnchor = null;
         const copy = PAGE_COPY[activePage];
         statusLine.textContent = currentView.status === 'ready' ? '已连接' : 'MVU 未就绪';
         content.replaceChildren();
         const page = element('article', { className: `yl-phone-page yl-page-${activePage}` });
         page.appendChild(buildPageHeading(copy, activePage));
         if (copy.description) page.appendChild(element('p', { className: 'yl-phone-page-description', text: copy.description }));
-        if (currentView.status !== 'ready') page.appendChild(element('div', { className: 'yl-phone-placeholder', text: '暂时无法读取当前聊天的软件状态。' }));
-        else if (activePage === 'home') page.appendChild(currentView.candidate ? buildCandidateCard(currentView.candidate) : (characterCreatorOpen ? buildCharacterCreator() : buildEmptyPoolActions()));
+        if (currentView.status !== 'ready') page.appendChild(buildEmptyPlaceholder('暂时无法读取当前聊天的软件状态。', { icon: '◌' }));
+        else if (activePage === 'home') page.appendChild(currentView.candidate ? buildCandidateCard(currentView.candidate) : buildEmptyCandidateCard());
         else if (activePage === 'matches') page.appendChild(buildMatchesPage());
-        else if (activePage === 'match_tools') page.appendChild(buildMatchToolsPanel());
+        else if (activePage === 'match_profile') page.appendChild(buildMatchProfilePage());
         else if (activePage === 'messages') page.appendChild(buildMessagesPage());
         else if (activePage === 'groups') page.appendChild(buildGroupsPage());
         else if (activePage === 'group_chat') page.appendChild(buildGroupChatPage());
         else if (activePage === 'group_forum') page.appendChild(buildForumPage());
         else if (activePage === 'profile') page.appendChild(buildProfileHub());
         else if (activePage === 'profile_editor') page.appendChild(buildProfileEditor());
+        else if (activePage === 'character_creator') page.appendChild(buildCharacterCreator());
         else if (activePage === 'favorites') page.appendChild(buildFavoritesPage());
         else if (activePage === 'settings') page.appendChild(buildSettingsHome());
-        else if (['settings_connections', 'settings_prompts'].includes(activePage)) page.appendChild(buildSettingsDetail());
-        else if (activePage === 'about') page.appendChild(buildAboutPage());
+        else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference'].includes(activePage)) page.appendChild(buildSettingsDetail());
+        else if (activePage === 'settings_privacy') page.appendChild(buildPrivacySettings());
         else if (activePage === 'candidate_detail') page.appendChild(buildCandidateDetail());
-        renderFeedback(page);
         content.appendChild(page);
         for (const [id, button] of navButtons) {
             const selected = id === primaryPage(activePage);
@@ -148,33 +480,55 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
     }
 
-    function buildEmptyPoolActions() {
-        const section = element('section', { className: 'yl-phone-empty-actions' });
-        section.appendChild(element('h2', { text: '开始建立角色池' }));
-        for (const [label, note, action] of EMPTY_POOL_ACTIONS) {
-            const button = element('button', { className: 'yl-phone-action-card', type: 'button', ariaLabel: label });
-            append(button, [element('strong', { text: label }), element('span', { text: note })]);
-            listen(button, button, 'click', () => {
-                actionBridge.emit(action);
-                if (action === 'open_character_creator' || action === 'open_character_import') {
-                    characterCreatorOpen = true;
-                    setFeedback(action === 'open_character_import' ? '粘贴模板 JSON 后再确认。' : '填写完整的成年人资料后登记。');
-                    renderPage();
-                } else void runInitialRecommendationCandidate();
-            }, abortController.signal);
-            section.appendChild(button);
-        }
-        return section;
-    }
     function buildCharacterCreator() {
         if (!characterLibrary || typeof actionBridge.registerCharacter !== 'function') return element('div', { className: 'yl-phone-placeholder', text: '角色创作尚未就绪。' });
-        return buildCharacterCreatorPanel({ documentRef, actionBridge, characterLibrary, signal: abortController.signal, onFeedback: setFeedback, onRegistered: () => { characterCreatorOpen = false; refreshState(); } });
+        return buildCharacterCreatorPanel({
+            documentRef, actionBridge, characterLibrary, signal: abortController.signal,
+            onFeedback: createOperationFeedbackHandler({ ai: true }),
+            onConfigureFeature: (feature) => openFeatureBinding([feature], feature.title + '选项'),
+            onRegistered: () => { refreshState(); setActivePage('profile'); },
+        });
     }
     function displayTags(candidate) { return [...(candidate.兴趣标签 ?? []), ...(candidate.生活方式标签 ?? []), ...(candidate.性格标签 ?? []), ...(candidate.沟通风格标签 ?? [])]; }
+    function buildEmptyPlaceholder(text, { tag = 'div', icon = '✧' } = {}) {
+        const placeholder = element(tag, { className: 'yl-phone-placeholder' });
+        const glyph = element('span', { className: 'yl-empty-icon', text: icon });
+        glyph.setAttribute('aria-hidden', 'true');
+        append(placeholder, [glyph, element('span', { className: 'yl-empty-text', text })]);
+        return placeholder;
+    }
+    function buildMetaBadges(candidate) {
+        const badges = element('span', { className: 'yl-candidate-meta-badges' });
+        for (const value of [candidate.年龄段, candidate.城市]) {
+            if (value) badges.appendChild(element('span', { className: 'yl-chip yl-chip-meta', text: value }));
+        }
+        return badges;
+    }
+    function buildTagChips(tags, emptyText) {
+        const wrapper = element('div', { className: 'yl-candidate-tags yl-candidate-tag-chips' });
+        if (!tags.length) {
+            wrapper.appendChild(element('span', { className: 'yl-chip yl-chip-tag yl-chip-empty', text: emptyText }));
+            return wrapper;
+        }
+        for (const tag of tags) wrapper.appendChild(element('span', { className: 'yl-chip yl-chip-tag', text: tag }));
+        return wrapper;
+    }
     function candidateAvatar(candidate) {
         const label = candidate.昵称 || '未命名对象';
-        const button = element('button', { className: 'yl-candidate-avatar', type: 'button', ariaLabel: `查看${label}的公开资料`, text: label.slice(0, 1) || '人' });
-        listen(button, button, 'click', () => { selectedCandidateUid = candidate.uid; setActivePage('candidate_detail'); }, abortController.signal);
+        const avatar = element('span', { className: 'yl-candidate-avatar', ariaLabel: '查看' + label + '的公开资料', text: label.slice(0, 1) || '人' });
+        avatar.setAttribute('role', 'button');
+        avatar.setAttribute('tabindex', '0');
+        const openProfile = () => { selectedCandidateUid = candidate.uid; setActivePage('candidate_detail'); };
+        listen(avatar, avatar, 'click', openProfile, abortController.signal);
+        listen(avatar, avatar, 'keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault?.(); openProfile(); } }, abortController.signal);
+        return avatar;
+    }
+    function buildActionButton(kind, { pending = false, disabled = false } = {}) {
+        const button = element('button', { className: `yl-phone-action-card yl-action-${kind} yl-action-circle`, type: 'button', ariaLabel: ACTION_LABELS[kind], disabled });
+        const icon = element('span', { className: 'yl-action-icon', text: ACTION_ICONS[kind] });
+        icon.setAttribute('aria-hidden', 'true');
+        const label = element('span', { className: 'yl-action-label', text: pending ? '处理中…' : ACTION_LABELS[kind] });
+        append(button, [icon, label]);
         return button;
     }
     function buildActionRow(candidate, { tooltips = true } = {}) {
@@ -182,7 +536,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const helpText = { like: '提高公开标签偏好并发起匹配邀请。', dislike: '降低相似公开标签的推荐权重。', favorite: '保存到收藏夹。', refresh: '请求快速模型生成下一位候选人。' };
         for (const kind of ['like', 'dislike', 'favorite', 'refresh']) {
             const pending = actionBridge.isPending(kind, candidate.uid);
-            const button = element('button', { className: `yl-phone-action-card yl-action-${kind}`, type: 'button', ariaLabel: ACTION_LABELS[kind], text: pending ? '处理中…' : ACTION_LABELS[kind], disabled: pending });
+            const button = buildActionButton(kind, { pending, disabled: pending });
             if (tooltips) button.appendChild(buildHelp(helpText[kind]));
             listen(button, button, 'click', () => { void runCandidateAction(kind, candidate.uid); }, abortController.signal);
             actions.appendChild(button);
@@ -191,15 +545,52 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function buildCandidateCard(candidate) {
         const card = element('section', { className: refreshing ? 'yl-candidate-card is-refreshing' : 'yl-candidate-card' });
+        const tags = displayTags(candidate);
+        card.appendChild(buildCandidateBackgroundSlot(candidate, tags));
         const top = element('div', { className: 'yl-candidate-topline' });
         top.appendChild(candidateAvatar(candidate));
         const copy = element('div', { className: 'yl-candidate-copy' });
-        copy.appendChild(element('h2', { text: candidate.昵称 || '未命名候选人' }));
-        copy.appendChild(element('p', { className: 'yl-phone-page-description', text: [candidate.年龄段, candidate.城市, candidate.寻找意图].filter(Boolean).join(' · ') || '仅公开资料' }));
+        const nameRow = element('div', { className: 'yl-candidate-name-row' });
+        nameRow.appendChild(element('h2', { text: candidate.昵称 || '未命名候选人' }));
+        nameRow.appendChild(buildMetaBadges(candidate));
+        copy.appendChild(nameRow);
+        copy.appendChild(element('p', { className: 'yl-phone-page-description yl-candidate-subline', text: [candidate.年龄段, candidate.城市, candidate.寻找意图].filter(Boolean).join(' · ') || '仅公开资料' }));
         top.appendChild(copy); card.appendChild(top);
-        const tags = displayTags(candidate);
-        if (tags.length) card.appendChild(element('p', { className: 'yl-candidate-tags', text: tags.join(' · ') }));
-        card.appendChild(buildActionRow(candidate));
+        card.appendChild(buildTagChips(tags, '暂无关键词'));
+        card.appendChild(buildActionRow(candidate, { tooltips: false }));
+        return card;
+    }
+    function buildCandidateBackgroundSlot(candidate, tags) {
+        const slot = element('div', { className: 'yl-candidate-background-slot yl-candidate-image-slot' });
+        slot.setAttribute('aria-hidden', 'true');
+        slot.dataset.imageSlot = 'candidate-background';
+        slot.dataset.imageStatus = 'reserved';
+        slot.dataset.candidateUid = String(candidate?.uid ?? '');
+        slot.dataset.keywords = tags.join('|');
+        return slot;
+    }
+    function buildEmptyCandidateCard() {
+        const card = element('section', { className: refreshing ? 'yl-candidate-card yl-candidate-card-empty is-refreshing' : 'yl-candidate-card yl-candidate-card-empty' });
+        card.appendChild(buildCandidateBackgroundSlot(null, []));
+        const top = element('div', { className: 'yl-candidate-topline' });
+        top.appendChild(element('span', { className: 'yl-candidate-avatar yl-candidate-avatar-placeholder', text: '？' }));
+        const copy = element('div', { className: 'yl-candidate-copy' });
+        const nameRow = element('div', { className: 'yl-candidate-name-row' });
+        nameRow.appendChild(element('h2', { text: '等待下一次相遇' }));
+        nameRow.appendChild(element('span', { className: 'yl-candidate-meta-badges' }));
+        copy.appendChild(nameRow);
+        copy.appendChild(element('p', { className: 'yl-phone-page-description yl-candidate-subline', text: '点击刷新，由快速模型生成一位明确成年的候选人。' }));
+        top.appendChild(copy);
+        card.appendChild(top);
+        card.appendChild(buildTagChips([], '等待生成关键词'));
+        const actions = element('div', { className: 'yl-candidate-actions' });
+        for (const kind of ['like', 'refresh', 'favorite', 'dislike']) {
+            const enabled = kind === 'refresh' && typeof actionBridge.runRecommendationInitialCandidate === 'function';
+            const button = buildActionButton(kind, { pending: refreshing && kind === 'refresh', disabled: !enabled || refreshing });
+            if (enabled) listen(button, button, 'click', () => { actionBridge.emit('open_random_candidates'); void runInitialRecommendationCandidate(); }, abortController.signal);
+            actions.appendChild(button);
+        }
+        card.appendChild(actions);
         return card;
     }
     function buildCandidateDetail() {
@@ -210,35 +601,82 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         section.appendChild(element('h2', { text: candidate.昵称 || '未命名对象' }));
         for (const [label, value] of [['年龄段', candidate.年龄段], ['性别', candidate.性别], ['性取向', candidate.性取向], ['城市', candidate.城市], ['距离范围', candidate.距离范围], ['寻找意图', candidate.寻找意图], ['简介', candidate.简介]]) if (value) section.appendChild(element('p', { className: 'yl-phone-page-description', text: `${label}：${value}` }));
         const tags = displayTags(candidate);
-        if (tags.length) section.appendChild(element('p', { className: 'yl-candidate-tags', text: tags.join(' · ') }));
+        if (tags.length) section.appendChild(buildTagChips(tags, '暂无关键词'));
         section.appendChild(buildActionRow(candidate, { tooltips: false }));
         return section;
     }
 
     function buildMatchesPage() {
         const section = element('section', { className: 'yl-phone-empty-actions yl-match-list' });
-        const tools = element('button', { className: 'yl-phone-action-card yl-match-tools-entry', type: 'button', ariaLabel: '打开灵魂匹配和文字匹配' });
-        append(tools, [element('strong', { text: '灵魂匹配 · 文字匹配' }), element('span', { text: '使用同一组公开资料与匹配配置。' })]);
-        listen(tools, tools, 'click', () => setActivePage('match_tools'), abortController.signal);
+        const tools = element('section', { className: 'yl-match-tools', ariaLabel: 'AI 匹配工具' });
+        const soul = element('article', { className: 'yl-soul-match-card' });
+        append(soul, [
+            element('span', { className: 'yl-soul-match-orbit', text: '✦' }),
+            element('strong', { text: '灵魂匹配' }),
+            element('span', { text: '从已保存的个性化关键词权重里，寻找更同频的公开档案。' }),
+        ]);
+        const soulButton = element('button', { className: 'yl-settings-button yl-soul-match-button', type: 'button', text: actionBridge.isPending('candidate_match_soul', '') ? '匹配中…' : '开始匹配', disabled: actionBridge.isPending('candidate_match_soul', '') || typeof actionBridge.generateCandidateMatchDraft !== 'function' });
+        listen(soulButton, soulButton, 'click', () => { void runCandidateMatch('soul'); }, abortController.signal); soul.appendChild(soulButton); tools.appendChild(soul);
+
+        const voice = element('article', { className: 'yl-voice-match-card' });
+        append(voice, [element('strong', { text: '语音匹配' }), element('span', { text: '用一段文字说说此刻想遇见怎样的人；这次提取的关键词会优先于本地偏好。' })]);
+        const voiceInput = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, maxLength: 800, placeholder: '例如：想找一个周末愿意逛展、也能认真听我说话的人。', value: voiceMatchText, ariaLabel: '语音匹配文字描述' });
+        listen(voiceInput, voiceInput, 'input', () => { voiceMatchText = voiceInput.value; }, abortController.signal);
+        const voiceButton = element('button', { className: 'yl-settings-button', type: 'button', text: actionBridge.isPending('candidate_match_voice', '') ? '匹配中…' : '开始匹配', disabled: actionBridge.isPending('candidate_match_voice', '') || typeof actionBridge.generateCandidateMatchDraft !== 'function' });
+        listen(voiceButton, voiceButton, 'click', () => { void runCandidateMatch('voice'); }, abortController.signal); append(voice, [voiceInput, voiceButton]); tools.appendChild(voice);
         section.appendChild(tools);
+
         const matches = currentView.matches ?? [];
-        if (!matches.length) {
-            section.appendChild(element('p', { className: 'yl-phone-placeholder', text: '暂无互相匹配。' }));
-            return section;
-        }
+        const historyTitle = element('h2', { className: 'yl-match-history-title', text: '已互相喜欢' }); section.appendChild(historyTitle);
+        if (!matches.length) section.appendChild(buildEmptyPlaceholder('还没有互相匹配的对象。先试试上面的 AI 匹配吧。', { tag: 'p', icon: '♥' }));
         for (const match of matches) {
             const card = element('article', { className: 'yl-chat-session yl-match-row' });
-            card.appendChild(candidateAvatar(match.profile));
-            const info = element('div', { className: 'yl-candidate-copy' });
-            info.appendChild(element('strong', { text: match.profile.昵称 || '未命名对象' }));
-            const detail = [match.profile.年龄段, match.profile.城市, match.profile.寻找意图].filter(Boolean).join(' · ');
-            if (detail) info.appendChild(element('span', { text: detail }));
-            card.appendChild(info);
-            const openMessages = element('button', { className: 'yl-settings-button', type: 'button', text: '聊天' });
-            listen(openMessages, openMessages, 'click', () => setActivePage('messages'), abortController.signal);
-            card.appendChild(openMessages); section.appendChild(card);
+            const ring = element('span', { className: 'yl-match-avatar-ring' }); ring.appendChild(candidateAvatar(match.profile)); card.appendChild(ring);
+            const info = element('div', { className: 'yl-candidate-copy' }); info.appendChild(element('strong', { text: match.profile.昵称 || '未命名对象' }));
+            const detail = [match.profile.年龄段, match.profile.城市, match.profile.寻找意图].filter(Boolean).join(' · '); if (detail) info.appendChild(element('span', { text: detail })); card.appendChild(info);
+            const openMessages = element('button', { className: 'yl-settings-button', type: 'button', text: '聊天' }); listen(openMessages, openMessages, 'click', () => setActivePage('messages'), abortController.signal); card.appendChild(openMessages); section.appendChild(card);
         }
         return section;
+    }
+    async function runCandidateMatch(mode) {
+        if (typeof actionBridge.generateCandidateMatchDraft !== 'function') { setFeedback('AI 匹配服务尚未就绪。'); return; }
+        const modeLabel = mode === 'soul' ? '灵魂匹配' : '语音匹配';
+        const operationToken = showAiLoading(modeLabel + '正在读取公开偏好并生成档案…');
+        setFeedback(modeLabel + '中…', operationToken); renderPage();
+        let result;
+        try { result = await actionBridge.generateCandidateMatchDraft(mode, { voiceText: voiceMatchText }); } catch { result = { ok: false }; }
+        if (result?.ok && result.draft?.profile) {
+            matchedProfileDraft = { mode, ...result.draft };
+            showAiResult(true, modeLabel + '已找到一份公开心动档案。', operationToken);
+            setActivePage('match_profile');
+            return;
+        }
+        const message = result?.message || describeActionFailure(result);
+        showAiResult(false, message || modeLabel + '未生成可用档案。', operationToken); setFeedback(message, operationToken); renderPage();
+    }
+    function buildMatchProfilePage() {
+        const profile = matchedProfileDraft?.profile;
+        if (!profile) return buildEmptyPlaceholder('本次匹配档案已失效，请返回匹配页重新开始。', { icon: '✦' });
+        const section = element('section', { className: 'yl-match-profile' });
+        const hero = element('article', { className: 'yl-match-profile-hero' });
+        const avatar = element('span', { className: 'yl-match-profile-avatar', text: (profile.昵称 || '心').slice(0, 1) });
+        const copy = element('div', { className: 'yl-match-profile-copy' });
+        copy.appendChild(element('span', { className: 'yl-match-profile-mode', text: matchedProfileDraft.mode === 'voice' ? 'VOICE MATCH' : 'SOUL MATCH' }));
+        copy.appendChild(element('h2', { text: profile.昵称 || '未命名对象' }));
+        copy.appendChild(element('p', { text: [profile.年龄段, profile.性别, profile.性取向].filter(Boolean).join(' · ') }));
+        const score = Number.isInteger(matchedProfileDraft?.matchScore) ? matchedProfileDraft.matchScore : null;
+        const scoreBadge = score === null ? null : element('span', { className: 'yl-match-profile-score', text: score + '% 同频' });
+        append(hero, scoreBadge ? [avatar, copy, scoreBadge] : [avatar, copy]); section.appendChild(hero);
+        const grid = element('div', { className: 'yl-match-profile-grid' });
+        for (const [title, value] of [['相遇坐标', [profile.城市, profile.距离范围].filter(Boolean).join(' · ')], ['这次想寻找什么', profile.寻找意图], ['关于 TA', profile.简介], ['缘分说明', matchedProfileDraft?.explanation]]) {
+            const card = element('article', { className: 'yl-match-profile-info' }); append(card, [element('strong', { text: title }), element('p', { text: value || '未提供' })]); grid.appendChild(card);
+        }
+        section.appendChild(grid); section.appendChild(element('h3', { text: '心动关键词' })); section.appendChild(buildTagChips(displayTags(profile), '暂无公开关键词'));
+        section.appendChild(element('p', { className: 'yl-match-profile-note', text: '这是一份仅本次展示的 AI 公开资料草稿，没有写入角色池、会话或匹配状态。' }));
+        const actions = element('div', { className: 'yl-match-profile-actions' });
+        const cancel = element('button', { className: 'yl-settings-button', type: 'button', text: '返回匹配' }); listen(cancel, cancel, 'click', () => setActivePage('matches'), abortController.signal);
+        const retry = element('button', { className: 'yl-settings-button', type: 'button', text: '再匹配一次' }); listen(retry, retry, 'click', () => { setActivePage('matches'); }, abortController.signal);
+        append(actions, [cancel, retry]); section.appendChild(actions); return section;
     }
     function buildGroupsPage() { return buildGroupHub(); }
     function buildGroupHub() {
@@ -273,12 +711,20 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     async function runGroupChatDraft(group) {
         const playerMessage = String(groupChatInputDrafts.get(group.UID) ?? '').trim();
-        setFeedback('正在生成群聊草稿…'); renderPage();
-        const result = await actionBridge.generateGroupChatDraft({ groupUid: group.UID, playerMessage });
+        const operationToken = showAiLoading('正在生成群聊草稿，请稍候…');
+        setFeedback('正在生成群聊草稿…', operationToken); renderPage();
+        let result;
+        try { result = await actionBridge.generateGroupChatDraft({ groupUid: group.UID, playerMessage }); }
+        catch { result = { ok: false }; }
         if (result?.ok && result.draft?.reply) {
             groupChatGeneratedDrafts.set(group.UID, { reply: result.draft.reply });
-            setFeedback('群聊草稿已生成，尚未发布。');
-        } else setFeedback(result?.message || describeActionFailure(result));
+            setFeedback('群聊草稿已生成，尚未发布。', operationToken);
+            showAiResult(true, '群聊草稿已生成，尚未发布。', operationToken);
+        } else {
+            const message = result?.message || describeActionFailure(result);
+            setFeedback(message, operationToken);
+            showAiResult(false, message || '群聊草稿未生成，请稍后重试。', operationToken);
+        }
         renderPage();
     }
     function buildForumComposer(group) {
@@ -304,19 +750,27 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     async function runForumDraft(group) {
         const topic = String(forumTopicDrafts.get(group.UID) ?? '').trim();
-        setFeedback('正在生成论坛帖子草稿…'); renderPage();
-        const result = await actionBridge.generateForumPostDraft({ groupUid: group.UID, topic });
+        const operationToken = showAiLoading('正在生成论坛帖子草稿，请稍候…');
+        setFeedback('正在生成论坛帖子草稿…', operationToken); renderPage();
+        let result;
+        try { result = await actionBridge.generateForumPostDraft({ groupUid: group.UID, topic }); }
+        catch { result = { ok: false }; }
         if (result?.ok && result.draft?.title && result.draft?.body) {
             forumGeneratedDrafts.set(group.UID, { title: result.draft.title, body: result.draft.body });
-            setFeedback('论坛帖子草稿已生成，尚未发布。');
-        } else setFeedback(result?.message || describeActionFailure(result));
+            setFeedback('论坛帖子草稿已生成，尚未发布。', operationToken);
+            showAiResult(true, '论坛帖子草稿已生成，尚未发布。', operationToken);
+        } else {
+            const message = result?.message || describeActionFailure(result);
+            setFeedback(message, operationToken);
+            showAiResult(false, message || '论坛帖子草稿未生成，请稍后重试。', operationToken);
+        }
         renderPage();
     }
     function groupCards({ forum = false } = {}) {
         const groups = Array.isArray(currentView.groups) ? currentView.groups : [];
         const section = element('section', { className: 'yl-phone-empty-actions yl-group-list' });
         if (!groups.length) {
-            section.appendChild(element('p', { className: 'yl-phone-placeholder', text: forum ? '暂无可浏览论坛主题。' : '暂无可浏览聊天群。' }));
+            section.appendChild(buildEmptyPlaceholder(forum ? '暂无可浏览论坛主题。' : '暂无可浏览聊天群。', { tag: 'p', icon: forum ? '▤' : '◌' }));
             return section;
         }
         for (const group of groups) {
@@ -352,13 +806,25 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function buildForumPage() { return groupCards({ forum: true }); }
     function buildMessagesPage() {
         const sessions = Array.isArray(currentView.messageSessions) ? currentView.messageSessions : [];
-        if (!sessions.length) return element('div', { className: 'yl-phone-placeholder', text: '暂无已建立的私聊会话。' });
+        if (!sessions.length) return buildEmptyPlaceholder('暂无已建立的私聊会话。', { icon: '✉' });
         if (!sessions.some((session) => session.sessionUid === activeMessageSessionUid)) activeMessageSessionUid = sessions[0].sessionUid;
         const section = element('section', { className: 'yl-chat-page' });
         const sessionList = element('div', { className: 'yl-chat-session-list' });
         for (const session of sessions) {
             const selected = session.sessionUid === activeMessageSessionUid;
-            const button = element('button', { className: selected ? 'yl-chat-session is-selected' : 'yl-chat-session', type: 'button', ariaLabel: `打开与${session.profile.昵称 || '该对象'}的会话`, text: `${session.profile.昵称 || '未命名对象'} · ${session.status}` });
+            const nickname = session.profile.昵称 || '未命名对象';
+            const button = element('button', { className: selected ? 'yl-chat-session is-selected' : 'yl-chat-session', type: 'button', ariaLabel: `打开与${session.profile.昵称 || '该对象'}的会话` });
+            const avatar = element('span', { className: 'yl-session-avatar', text: nickname.slice(0, 1) || '人' });
+            avatar.setAttribute('aria-hidden', 'true');
+            const copy = element('span', { className: 'yl-session-copy' });
+            const lastMessage = session.messages.at(-1);
+            append(copy, [
+                element('span', { className: 'yl-session-name', text: nickname }),
+                element('span', { className: 'yl-session-preview', text: lastMessage ? lastMessage.content : '还没有消息。' }),
+            ]);
+            const status = element('span', { className: 'yl-session-status', text: session.status });
+            status.dataset.status = session.status;
+            append(button, [avatar, copy, status]);
             listen(button, button, 'click', () => { activeMessageSessionUid = session.sessionUid; renderPage(); }, abortController.signal);
             sessionList.appendChild(button);
         }
@@ -374,8 +840,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!session.messages.length) transcript.appendChild(element('p', { className: 'yl-phone-page-description', text: '还没有消息。' }));
         for (const message of session.messages) {
             const row = element('article', { className: message.sender === '玩家' ? 'yl-chat-bubble is-player' : 'yl-chat-bubble' });
-            row.appendChild(element('strong', { text: message.sender })); row.appendChild(element('p', { text: message.content }));
-            if (message.time) row.appendChild(element('span', { text: message.time })); transcript.appendChild(row);
+            const bubbleContent = element('div', { className: 'yl-bubble-content' });
+            bubbleContent.appendChild(element('strong', { text: message.sender }));
+            bubbleContent.appendChild(element('p', { text: message.content }));
+            if (message.time) bubbleContent.appendChild(element('span', { className: 'yl-bubble-time', text: message.time }));
+            row.appendChild(bubbleContent); transcript.appendChild(row);
         }
         panel.appendChild(transcript);
         if (!session.canSend || typeof actionBridge.runPrivateChat !== 'function') {
@@ -394,9 +863,20 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     async function runPrivateChat(session) {
         const playerMessage = chatDrafts.get(session.sessionUid) ?? '';
-        setFeedback('正在请求私聊回复…'); renderPage();
-        const result = await actionBridge.runPrivateChat({ sessionUid: session.sessionUid, npcUid: session.npcUid, playerMessage });
-        if (result.ok) { chatDrafts.delete(session.sessionUid); setFeedback('私聊已保存。'); } else setFeedback(result?.message || describeActionFailure(result));
+        const operationToken = showAiLoading('正在请求私聊回复，请稍候…');
+        setFeedback('正在请求私聊回复…', operationToken); renderPage();
+        let result;
+        try { result = await actionBridge.runPrivateChat({ sessionUid: session.sessionUid, npcUid: session.npcUid, playerMessage }); }
+        catch { result = { ok: false }; }
+        if (result?.ok) {
+            chatDrafts.delete(session.sessionUid);
+            setFeedback('私聊已保存。', operationToken);
+            showAiResult(true, '私聊回复已生成并保存。', operationToken);
+        } else {
+            const message = result?.message || describeActionFailure(result);
+            setFeedback(message, operationToken);
+            showAiResult(false, message || '私聊回复未生成，请稍后重试。', operationToken);
+        }
         refreshState();
     }
     function meetupFieldsFor(sessionUid) {
@@ -426,11 +906,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return wrapper;
     }
     async function runMeetupHandoff(session) {
-        setFeedback('正在校验面基约定…'); renderPage();
+        const operationToken = setFeedback('正在校验面基约定…'); renderPage();
         const result = await actionBridge.runMeetupHandoff({ sessionUid: session.sessionUid, npcUid: session.npcUid, ...meetupFieldsFor(session.sessionUid) });
-        if (result.ok && result.draftApplied) { meetupDrafts.delete(session.sessionUid); activeMeetupSessionUid = ''; setFeedback('正文草稿已填入，未自动发送。'); }
-        else if (result.ok) setFeedback('已保存约定，但没有找到正文输入框。');
-        else setFeedback(describeActionFailure(result));
+        if (result.ok && result.draftApplied) { meetupDrafts.delete(session.sessionUid); activeMeetupSessionUid = ''; setFeedback('正文草稿已填入，未自动发送。', operationToken); }
+        else if (result.ok) setFeedback('已保存约定，但没有找到正文输入框。', operationToken);
+        else setFeedback(describeActionFailure(result), operationToken);
         refreshState();
     }
 
@@ -438,12 +918,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const section = element('section', { className: 'yl-person-center' });
         const nickname = currentView.playerProfile.昵称 || '未填写个人资料';
         const headerCard = element('article', { className: 'yl-person-summary' });
-        headerCard.appendChild(element('span', { className: 'yl-person-avatar', text: nickname.slice(0, 1) || '我' }));
+        const hero = element('div', { className: 'yl-person-hero' });
+        hero.appendChild(element('span', { className: 'yl-person-avatar', text: nickname.slice(0, 1) || '我' }));
+        headerCard.appendChild(hero);
         const copy = element('div');
         copy.appendChild(element('strong', { text: nickname }));
         copy.appendChild(element('span', { text: currentView.playerProfile.城市 || '建立公开资料后开启更准确的匹配。' }));
         headerCard.appendChild(copy); section.appendChild(headerCard);
-        const entries = [['profile_editor', '◉', '个人资料', '填写公开资料。'], ['favorites', '☆', `收藏夹${currentView.favorites.length ? ` · ${currentView.favorites.length}` : ''}`, '查看保存的候选人。'], ['settings', '⚙', '设置', '匹配、连接、提示词与关于软件。']];
+        const entries = [['profile_editor', '◉', '个人资料', '填写公开资料。'], ['character_creator', '＋', '创建角色', '创建、导入并管理成年人角色模板。'], ['favorites', '☆', `收藏夹${currentView.favorites.length ? ` · ${currentView.favorites.length}` : ''}`, '查看保存的候选人。'], ['settings', '⚙', '设置', '匹配、连接、提示词与关于软件。']];
         for (const [page, icon, title, note] of entries) {
             const button = element('button', { className: 'yl-center-entry', type: 'button', ariaLabel: title });
             append(button, [element('span', { text: icon }), element('strong', { text: title }), element('span', { text: note }), element('span', { text: '›' })]);
@@ -494,20 +976,20 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             renderPage();
             return;
         }
-        setFeedback('正在保存公开资料…');
+        const operationToken = setFeedback('正在保存公开资料…');
         renderPage();
         const result = await actionBridge.runSavePlayerPublicProfile(playerProfilePayload());
         if (result?.ok) {
             playerProfileDraft = null;
-            setFeedback('公开资料已保存，可参与后续评分与匹配。');
+            setFeedback('公开资料已保存，可参与后续评分与匹配。', operationToken);
             refreshState();
         } else {
-            setFeedback(result?.message || describeActionFailure(result));
+            setFeedback(result?.message || describeActionFailure(result), operationToken);
             renderPage();
         }
     }
     function buildFavoritesPage() {
-        if (!currentView.favorites.length) return element('div', { className: 'yl-phone-placeholder', text: '收藏夹还是空的。' });
+        if (!currentView.favorites.length) return buildEmptyPlaceholder('收藏夹还是空的。', { icon: '★' });
         const section = element('section', { className: 'yl-favorite-list' });
         for (const candidate of currentView.favorites) {
             const card = element('article', { className: 'yl-favorite-card' });
@@ -521,103 +1003,77 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function buildSettingsHome() {
         const section = element('section', { className: 'yl-settings-home' });
-        const entries = [['match_tools', 'AI 匹配工具', '灵魂匹配与文字匹配。'], ['settings_connections', '连接预设', '按名称选择和维护连接。'], ['settings_prompts', '提示词预设', '维护世界书式提示词条目。'], ['about', '关于软件', `版本 ${UI_VERSION}`]];
+        const entries = [
+            ['settings_connections', '连接预设', '按名称选择和维护连接。'],
+            ['settings_prompts', '提示词预设', '只维护提示词条目与导入导出。'],
+            ['settings_privacy', '隐私权限设置', '管理个性化内容推荐与当前设备偏好。'],
+            ['about', '关于软件', '点击查看版本；连续点击五次可显示内容模式开关。'],
+        ];
         for (const [page, title, note] of entries) {
+            const row = element('div', { className: 'yl-settings-home-row' });
             const button = element('button', { className: 'yl-center-entry', type: 'button', ariaLabel: title });
             append(button, [element('strong', { text: title }), element('span', { text: note }), element('span', { text: '›' })]);
-            listen(button, button, 'click', () => setActivePage(page), abortController.signal); section.appendChild(button);
+            listen(button, button, 'click', () => setActivePage(page), abortController.signal);
+            row.appendChild(button);
+            if (page === 'about' && aboutUnlocked) row.appendChild(buildContentModeSlider());
+            section.appendChild(row);
         }
         return section;
+    }
+    function buildContentModeSlider() {
+        const row = element('div', { className: 'yl-mode-easter-egg' });
+        row.appendChild(element('span', { text: 'SFW' }));
+        const wrap = element('label', { className: 'yl-switch yl-mode-switch' });
+        const toggle = element('input', { type: 'checkbox', checked: currentView.mode === 'NSFW', ariaLabel: '内容模式切换' });
+        listen(toggle, toggle, 'change', () => { if (Boolean(toggle.checked) !== (currentView.mode === 'NSFW')) void toggleContentModeFromSlider(); }, abortController.signal);
+        wrap.appendChild(toggle);
+        row.appendChild(wrap); row.appendChild(element('span', { text: 'NSFW' }));
+        return row;
     }
     function buildSettingsDetail() {
         if (!settingsStore) return element('div', { className: 'yl-phone-placeholder', text: '本地设置尚未就绪。' });
-        const label = activePage === 'settings_connections' ? '连接预设' : '提示词预设';
+        const view = activePage === 'settings_connections' ? 'connection'
+            : activePage === 'settings_prompts' ? 'prompt'
+                : activePage === 'settings_personalization_preference' ? 'preference' : 'personalization';
         const section = element('section', { className: 'yl-settings-detail' });
-        section.appendChild(element('p', { className: 'yl-phone-page-description', text: `${label}在下方统一管理。` }));
-        section.appendChild(buildSettingsPanel({ settingsStore, llmClient, signal: abortController.signal, onFeedback: setFeedback, onRerender: renderPage }));
+        section.appendChild(buildSettingsPanel({
+            settingsStore, llmClient, signal: abortController.signal, view,
+            onFeedback: createOperationFeedbackHandler(), onRerender: renderPage, onNavigate: setActivePage,
+        }));
         return section;
     }
-    function buildAboutPage() {
-        const section = element('section', { className: 'yl-about-card' });
-        const version = element('button', { className: 'yl-version-button', type: 'button', ariaLabel: `约了吗版本 ${UI_VERSION}`, text: `约了吗 ${UI_VERSION}` });
-        listen(version, version, 'click', () => { void advanceContentModeGate({ reveal: true }); }, abortController.signal);
-        section.appendChild(version);
-        section.appendChild(element('p', { className: 'yl-phone-page-description', text: '现代都市线上文字社交模拟器。' }));
-        if (aboutUnlocked) {
-            const row = element('div', { className: 'yl-mode-easter-egg' });
-            row.appendChild(element('span', { text: 'SFW' }));
-            const slider = element('input', { className: 'yl-mode-slider', type: 'range', min: 0, max: 1, value: currentView.mode === 'NSFW' ? 1 : 0, ariaLabel: '内容模式切换' });
-            listen(slider, slider, 'change', () => { if ((slider.value === '1') !== (currentView.mode === 'NSFW')) void toggleContentModeFromSlider(); }, abortController.signal);
-            row.appendChild(slider); row.appendChild(element('span', { text: 'NSFW' })); section.appendChild(row);
-        }
+    function buildPrivacySettings() {
+        const section = element('section', { className: 'yl-settings-home' });
+        const button = element('button', { className: 'yl-center-entry', type: 'button', ariaLabel: '个性化内容推荐管理' });
+        append(button, [element('strong', { text: '个性化内容推荐管理' }), element('span', { text: '开启或关闭个性化推荐，并编辑当前设备的关键词权重。' }), element('span', { text: '›' })]);
+        listen(button, button, 'click', () => setActivePage('settings_personalization'), abortController.signal);
+        section.appendChild(button);
         return section;
-    }
-    async function advanceContentModeGate({ reveal = false } = {}) {
-        const result = await actionBridge.runMvuAction('advance_content_mode_gate');
-        if (result?.ok) {
-            aboutClickStreak += 1;
-            if (reveal && aboutClickStreak >= 5) { aboutUnlocked = true; setFeedback('内容模式滑条已解锁。'); } else setFeedback('已记录。');
-        } else setFeedback(describeActionFailure(result));
-        refreshState();
-    }
-    async function toggleContentModeFromSlider() {
-        setFeedback('正在切换内容模式…'); renderPage();
-        for (let click = 0; click < 5; click += 1) {
-            const result = await actionBridge.runMvuAction('advance_content_mode_gate');
-            if (!result?.ok) { setFeedback(describeActionFailure(result)); refreshState(); return; }
-        }
-        aboutClickStreak = 0; aboutUnlocked = true;
-        setFeedback(`已切换为 ${currentView.mode === 'SFW' ? 'NSFW' : 'SFW'}。`); refreshState();
     }
 
-    function buildMatchToolsPanel() {
-        const section = element('section', { className: 'yl-meetup-panel' });
-        const heading = element('div', { className: 'yl-heading-with-help' });
-        heading.appendChild(element('h2', { text: 'AI 匹配工具' })); heading.appendChild(buildHelp('两种匹配都只使用公开资料；生成后由你确认是否采用。'));
-        section.appendChild(heading);
-        if (typeof actionBridge.generateMatchDraft !== 'function') { section.appendChild(element('p', { className: 'yl-phone-placeholder', text: 'AI 匹配工具尚未就绪。' })); return section; }
-        const controls = element('div', { className: 'yl-phone-empty-actions' });
-        for (const [kind, label] of [['soul', '灵魂匹配'], ['text', '文字匹配']]) {
-            const pending = actionBridge.isPending(`${kind}_match_draft`);
-            const button = element('button', { className: 'yl-settings-button', type: 'button', disabled: pending, text: pending ? '处理中…' : label });
-            listen(button, button, 'click', () => { void runMatchDraft(kind); }, abortController.signal); controls.appendChild(button);
-        }
-        section.appendChild(controls);
-        if (soulMatchDraft) {
-            const card = element('article', { className: 'yl-chat-conversation' });
-            card.appendChild(element('strong', { text: '灵魂匹配草稿' })); card.appendChild(element('p', { className: 'yl-phone-page-description', text: soulMatchDraft.explanation }));
-            for (const entry of soulMatchDraft.tagWeightDraft) card.appendChild(element('span', { text: `${entry.tag} → ${entry.weight}` }));
-            const pending = actionBridge.isPending('apply_soul_match_preference');
-            const apply = element('button', { className: 'yl-settings-button', type: 'button', disabled: pending, text: pending ? '正在采用…' : '采用公开标签偏好' });
-            listen(apply, apply, 'click', () => { void applySoulMatchDraft(); }, abortController.signal); card.appendChild(apply); section.appendChild(card);
-        }
-        if (textMatchDraft) {
-            const card = element('article', { className: 'yl-chat-conversation' });
-            card.appendChild(element('strong', { text: '文字匹配建议' })); card.appendChild(element('p', { className: 'yl-phone-page-description', text: textMatchDraft.explanation }));
-            for (const [field, values] of Object.entries(textMatchDraft.filters)) if (values.length) card.appendChild(element('span', { text: `${field}：${values.join(' · ')}` }));
-            section.appendChild(card);
-        }
-        return section;
-    }
-    async function runMatchDraft(kind) {
-        setFeedback(kind === 'soul' ? '正在生成灵魂匹配草稿…' : '正在生成文字匹配建议…'); renderPage();
-        const result = await actionBridge.generateMatchDraft(kind);
-        if (result.ok) { if (kind === 'soul') soulMatchDraft = result.draft; else textMatchDraft = result.draft; setFeedback('草稿已生成，尚未自动写入。'); }
-        else setFeedback(result?.message || describeActionFailure(result));
-        renderPage();
-    }
-    async function applySoulMatchDraft() {
-        if (!soulMatchDraft || typeof actionBridge.applySoulMatchPreferenceDraft !== 'function') return;
-        setFeedback('正在采用公开标签偏好…'); renderPage();
-        const result = await actionBridge.applySoulMatchPreferenceDraft(soulMatchDraft);
-        if (result.ok) { soulMatchDraft = null; setFeedback('公开标签偏好已保存。'); refreshState(); } else { setFeedback(describeActionFailure(result)); renderPage(); }
+    async function toggleContentModeFromSlider() {
+        const operationToken = setFeedback('正在切换内容模式…'); renderPage();
+        const result = await actionBridge.runMvuAction('toggle_content_mode');
+        if (!result?.ok) { setFeedback(describeActionFailure(result), operationToken); refreshState(); return; }
+        aboutClickStreak = 0;
+        aboutUnlocked = true;
+        setFeedback(`已切换为 ${currentView.mode === 'SFW' ? 'NSFW' : 'SFW'}。`, operationToken);
+        refreshState();
     }
 
     async function runInitialRecommendationCandidate() {
         if (typeof actionBridge.runRecommendationInitialCandidate !== 'function') { setFeedback('随机创建尚未就绪。'); renderPage(); return; }
-        refreshing = true; setFeedback('正在生成下一位候选人…'); renderPage();
-        const result = await actionBridge.runRecommendationInitialCandidate();
-        refreshing = false; setFeedback(result.ok ? '已通过成年人校验，首位候选人已加入队列。' : result?.message || describeActionFailure(result)); refreshState();
+        refreshing = true;
+        const operationToken = showAiLoading('正在生成首位候选人，请稍候…');
+        setFeedback('正在生成下一位候选人…', operationToken); renderPage();
+        let result;
+        try { result = await actionBridge.runRecommendationInitialCandidate(); }
+        catch { result = { ok: false }; }
+        refreshing = false;
+        const message = result?.ok ? '已通过成年人校验，首位候选人已加入队列。' : (result?.message || describeActionFailure(result));
+        setFeedback(message, operationToken);
+        showAiResult(Boolean(result?.ok), message || '候选人未生成，请稍后重试。', operationToken);
+        refreshState();
     }
     async function runCandidateAction(kind, npcUid) {
         const isRefresh = kind === 'refresh';
@@ -625,19 +1081,37 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const request = isRefresh && typeof actionBridge.runRecommendationRefresh === 'function'
             ? actionBridge.runRecommendationRefresh(npcUid)
             : actionBridge.runMvuAction(kind, npcUid);
-        setFeedback(isRefresh ? '正在生成下一位候选人…' : '正在保存操作…'); renderPage();
-        const result = await request;
+        const operationToken = isRefresh
+            ? showAiLoading('正在生成下一位候选人，请稍候…')
+            : setFeedback('正在保存操作…');
+        setFeedback(isRefresh ? '正在生成下一位候选人…' : '正在保存操作…', operationToken); renderPage();
+        let result;
+        try { result = await request; } catch { result = { ok: false }; }
         refreshing = false;
-        setFeedback(result.ok ? (isRefresh ? '已切换到下一位候选人。' : '操作已保存。') : result?.message || describeActionFailure(result));
+        const message = result?.ok ? (isRefresh ? '下一位候选人已生成。' : '操作已保存。') : (result?.message || describeActionFailure(result));
+        setFeedback(message, operationToken);
+        if (isRefresh) showAiResult(Boolean(result?.ok), message || '候选人未生成，请稍后重试。', operationToken);
         refreshState();
     }
 
     listen(launcher, launcher, 'click', () => setOpen(!open), abortController.signal);
-    listen(closeButton, closeButton, 'click', () => setOpen(false), abortController.signal);
-    listen(root, documentRef, 'keydown', (event) => { if (event.key === 'Escape' && open) setOpen(false); }, abortController.signal);
+    listen(closeButton, closeButton, "click", () => setOpen(false), abortController.signal);
+    listen(header, header, 'pointerdown', beginPanelDrag, abortController.signal);
+    listen(header, header, 'pointermove', movePanelDrag, abortController.signal);
+    listen(header, header, 'pointerup', endPanelDrag, abortController.signal);
+    listen(header, header, 'pointercancel', endPanelDrag, abortController.signal);
+    listen(root, documentRef, 'pointermove', movePanelDrag, abortController.signal);
+    listen(root, documentRef, 'pointerup', endPanelDrag, abortController.signal);
+    listen(root, documentRef, 'pointercancel', endPanelDrag, abortController.signal);
+    listen(operationDismiss, operationDismiss, 'click', hideOperationDialog, abortController.signal);
+    listen(operationClose, operationClose, 'click', hideOperationDialog, abortController.signal);
+    listen(bindingDialogClose, bindingDialogClose, 'click', closeFeatureBindingDialog, abortController.signal);
+    listen(root, documentRef, "click", (event) => { if (activeHelpAnchor && event.target !== activeHelpAnchor) { helpPopover.hidden = true; activeHelpAnchor = null; } }, abortController.signal);
+    listen(root, documentRef, "keydown", (event) => { if (event.key === "Escape") { if (!operationDialog.hidden) hideOperationDialog(); else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; } else if (open) setOpen(false); } }, abortController.signal);
     renderPage();
-    return Object.freeze({ refreshState, destroy() { abortController.abort(); root.remove(); } });
+    return Object.freeze({
+        refreshState,
+        destroy() { hideOperationDialog(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+    });
 }
-
-
 

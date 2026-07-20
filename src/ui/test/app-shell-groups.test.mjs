@@ -124,7 +124,7 @@ async function flushUi() {
     await new Promise((resolve) => setImmediate(resolve));
 }
 
-test('empty-pool quick-create entry invokes the fast recommendation bridge instead of a placeholder', async () => {
+test('empty candidate card refresh invokes the fast recommendation bridge without exposing creation controls', async () => {
     const events = [];
     let initialCalls = 0;
     const bridge = {
@@ -137,47 +137,64 @@ test('empty-pool quick-create entry invokes the fast recommendation bridge inste
         documentRef: miniDom.document, rootId: 'ylm-test-empty-pool', actionBridge: bridge,
         settingsStore: null, llmClient: null, characterLibrary: null, readState: emptyPoolReadResult,
     });
-    const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
-    click(launcher);
-    const quickCreate = miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('快速随机创建候选人'));
-    assert.ok(quickCreate, 'empty pool must expose a quick-create entry');
-    click(quickCreate);
-    await flushUi();
+    try {
+        const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
+        click(launcher);
+        const refresh = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '刷新');
+        assert.ok(refresh, 'empty candidate card must expose its refresh action');
+        assert.equal(miniDom.document.body.textContent.includes('快速随机创建候选人'), false);
+        click(refresh);
+        await flushUi();
 
-    assert.equal(initialCalls, 1);
-    assert.equal(events.some((entry) => entry.kind === 'open_random_candidates'), true);
-    assert.equal(miniDom.document.body.textContent.includes('后续阶段接入'), false);
-    assert.match(miniDom.document.body.textContent, /已通过成年人校验/u);
-    mounted.destroy();
+        assert.equal(initialCalls, 1);
+        assert.equal(events.some((entry) => entry.kind === 'open_random_candidates'), true);
+        assert.equal(miniDom.document.body.textContent.includes('后续阶段接入'), false);
+        assert.match(miniDom.document.body.textContent, /已通过成年人校验/u);
+    } finally {
+        mounted.destroy();
+    }
 });
 
 
-test('about version reveals the SFW/NSFW slider after five controlled gate clicks without calling an LLM', async () => {
-    let gateCalls = 0;
+test('about entry shows a version dialog and reveals the SFW/NSFW slider after five local clicks', async () => {
+    let toggleCalls = 0;
     const events = [];
     const bridge = {
         emit(kind, payload) { events.push({ kind, payload }); },
         isPending() { return false; },
-        async runMvuAction(kind) { assert.equal(kind, 'advance_content_mode_gate'); gateCalls += 1; return { ok: true }; },
+        async runMvuAction(kind) { assert.equal(kind, 'toggle_content_mode'); toggleCalls += 1; return { ok: true }; },
     };
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-about', actionBridge: bridge,
         settingsStore: null, llmClient: null, characterLibrary: null, readState: emptyPoolReadResult,
     });
-    const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
-    click(launcher);
-    click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-    click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
-    click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('关于软件')));
-    const version = miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('0.1.1'));
-    assert.ok(version, 'about page must initially expose only a version button');
-    for (let index = 0; index < 5; index += 1) click(version);
-    await flushUi();
+    try {
+        const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
+        click(launcher);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
 
-    assert.equal(gateCalls, 5);
-    assert.ok(miniDom.document.querySelectorAll('input').some((node) => node.getAttribute('aria-label') === '内容模式切换'));
-    assert.equal(events.some((entry) => entry.kind === 'navigate' && entry.payload.page === 'about'), true);
-    mounted.destroy();
+        const about = () => miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关于软件');
+        for (let index = 0; index < 5; index += 1) {
+            click(about());
+            const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+            assert.equal(dialog.hidden, false);
+            assert.match(dialog.textContent, /约了吗 0\.1\.3/u);
+        }
+        await flushUi();
+
+        assert.equal(toggleCalls, 0);
+        const toggle = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '内容模式切换');
+        assert.ok(toggle);
+        assert.equal(toggle.getAttribute('type'), 'checkbox');
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change'));
+        await flushUi();
+        assert.equal(toggleCalls, 1);
+        assert.equal(events.some((entry) => entry.kind === 'navigate' && entry.payload.page === 'about'), false);
+    } finally {
+        mounted.destroy();
+    }
 });
 
 test('personal profile safely calls the controlled public-profile bridge when the host provides it', async () => {
@@ -190,19 +207,22 @@ test('personal profile safely calls the controlled public-profile bridge when th
         documentRef: miniDom.document, rootId: 'ylm-test-player-profile', actionBridge: bridge,
         settingsStore: null, llmClient: null, characterLibrary: null, readState: emptyPoolReadResult,
     });
-    const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
-    click(launcher);
-    click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-    click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('个人资料')));
-    const save = miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('保存公开资料'));
-    assert.ok(save, 'a supported host must expose the controlled save action');
-    click(save);
-    await flushUi();
+    try {
+        const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
+        click(launcher);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('个人资料')));
+        const save = miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('保存公开资料'));
+        assert.ok(save, 'a supported host must expose the controlled save action');
+        click(save);
+        await flushUi();
 
-    assert.equal(submitted.length, 1);
-    assert.deepEqual(Object.keys(submitted[0]).sort(), ['昵称', '头像引用', '年龄段', '性别', '性取向', '城市', '距离范围', '寻找意图', '简介', '兴趣标签', '生活方式标签', '性格标签', '沟通风格标签'].sort());
-    assert.doesNotMatch(JSON.stringify(submitted[0]), /隐藏|仅好友|实际年龄/u);
-    mounted.destroy();
+        assert.equal(submitted.length, 1);
+        assert.deepEqual(Object.keys(submitted[0]).sort(), ['昵称', '头像引用', '年龄段', '性别', '性取向', '城市', '距离范围', '寻找意图', '简介', '兴趣标签', '生活方式标签', '性格标签', '沟通风格标签'].sort());
+        assert.doesNotMatch(JSON.stringify(submitted[0]), /隐藏|仅好友|实际年龄/u);
+    } finally {
+        mounted.destroy();
+    }
 });
 
 test('group and forum generators retain drafts in UI memory and never expose a publish or MVU-write path', async () => {
@@ -218,31 +238,34 @@ test('group and forum generators retain drafts in UI memory and never expose a p
         documentRef: miniDom.document, rootId: 'ylm-test-group-drafts', actionBridge: bridge,
         settingsStore: null, llmClient: null, characterLibrary: null, readState: readResult,
     });
-    const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
-    click(launcher);
-    click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-    click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
-    const groupInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('placeholder') === '输入一条公开群聊消息…');
-    assert.ok(groupInput, 'group draft input must exist');
-    groupInput.value = '今晚聊电影吗？'; groupInput.dispatchEvent(new Event('input'));
-    click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '生成群聊草稿'));
-    await flushUi();
-    assert.deepEqual(calls[0], { kind: 'group', request: { groupUid: 'group_city', playerMessage: '今晚聊电影吗？' } });
-    assert.match(miniDom.document.body.textContent, /这是一条公开群聊草稿/u);
-    assert.match(miniDom.document.body.textContent, /未发布，不会写入软件状态/u);
+    try {
+        const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
+        click(launcher);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
+        const groupInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('placeholder') === '输入一条公开群聊消息…');
+        assert.ok(groupInput, 'group draft input must exist');
+        groupInput.value = '今晚聊电影吗？'; groupInput.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '生成群聊草稿'));
+        await flushUi();
+        assert.deepEqual(calls[0], { kind: 'group', request: { groupUid: 'group_city', playerMessage: '今晚聊电影吗？' } });
+        assert.match(miniDom.document.body.textContent, /这是一条公开群聊草稿/u);
+        assert.match(miniDom.document.body.textContent, /未发布，不会写入软件状态/u);
 
-    click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-    click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('论坛')));
-    const forumInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('placeholder') === '输入一个公开发帖主题…');
-    assert.ok(forumInput, 'forum draft input must exist');
-    forumInput.value = '周末观影交流'; forumInput.dispatchEvent(new Event('input'));
-    click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '生成帖子草稿'));
-    await flushUi();
-    assert.deepEqual(calls[1], { kind: 'forum', request: { groupUid: 'group_city', topic: '周末观影交流' } });
-    const dom = miniDom.document.body.textContent;
-    assert.match(dom, /公开论坛草稿/u);
-    assert.match(dom, /待审核草稿，未发布且不会写入软件状态/u);
-    assert.equal(/发布帖子|发布群聊|确认发布/u.test(dom), false, 'UI must not pretend a draft is persisted');
-    assert.deepEqual(writes, { mvu: 0, private: 0, meetup: 0 });
-    mounted.destroy();
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('论坛')));
+        const forumInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('placeholder') === '输入一个公开发帖主题…');
+        assert.ok(forumInput, 'forum draft input must exist');
+        forumInput.value = '周末观影交流'; forumInput.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '生成帖子草稿'));
+        await flushUi();
+        assert.deepEqual(calls[1], { kind: 'forum', request: { groupUid: 'group_city', topic: '周末观影交流' } });
+        const dom = miniDom.document.body.textContent;
+        assert.match(dom, /公开论坛草稿/u);
+        assert.match(dom, /待审核草稿，未发布且不会写入软件状态/u);
+        assert.equal(/发布帖子|发布群聊|确认发布/u.test(dom), false, 'UI must not pretend a draft is persisted');
+        assert.deepEqual(writes, { mvu: 0, private: 0, meetup: 0 });
+    } finally {
+        mounted.destroy();
+    }
 });

@@ -99,13 +99,34 @@ test('dislike and refresh do not promote a candidate or accept arbitrary paths',
     ]).ok, false);
 });
 
-test('five-click gate resets counter and toggles SFW/NSFW only at fifth click', () => {
+test('five-click gate only unlocks the slider and explicit toggle changes SFW/NSFW', () => {
     const fifth = buildControlledPatch(stateFixture(), { kind: 'advance_content_mode_gate' });
     assert.equal(fifth.ok, true);
     assert.deepEqual(fifth.value, [
         { op: 'replace', path: '/软件/关于软件点击数', value: 0 },
+    ]);
+
+    const toggled = buildControlledPatch(stateFixture(), { kind: 'toggle_content_mode' });
+    assert.equal(toggled.ok, true);
+    assert.deepEqual(toggled.value, [
         { op: 'replace', path: '/软件/内容模式', value: 'NSFW' },
     ]);
+    assert.equal(validateControlledPatchAgainstState(stateFixture(), toggled.value).ok, true);
+
+    const stateWithoutLegacyCounter = stateFixture();
+    delete stateWithoutLegacyCounter.软件.关于软件点击数;
+    const toggledWithoutLegacyCounter = buildControlledPatch(stateWithoutLegacyCounter, { kind: 'toggle_content_mode' });
+    assert.equal(toggledWithoutLegacyCounter.ok, true);
+    assert.deepEqual(toggledWithoutLegacyCounter.value, [
+        { op: 'replace', path: '/软件/内容模式', value: 'NSFW' },
+    ]);
+    assert.equal(validateControlledPatchAgainstState(stateWithoutLegacyCounter, toggledWithoutLegacyCounter.value).ok, true);
+
+    const nsfw = stateFixture();
+    nsfw.软件.内容模式 = 'NSFW';
+    const toggledBack = buildControlledPatch(nsfw, { kind: 'toggle_content_mode' });
+    assert.deepEqual(toggledBack.value.at(-1), { op: 'replace', path: '/软件/内容模式', value: 'SFW' });
+    assert.equal(validateControlledPatchAgainstState(nsfw, toggledBack.value).ok, true);
 
     const state = stateFixture();
     state.软件.关于软件点击数 = 2;
@@ -133,7 +154,7 @@ test('readLatestState is read-only and returns a clone', () => {
     const result = readLatestState({ mvu: { getMvuData: () => data } });
     assert.equal(result.ok, true);
     result.state.软件.内容模式 = 'NSFW';
-    assert.equal(data.stat_data.软件.内容模式, 'SFW');
+    assert.equal(data['stat_data']['软件']['内容模式'], 'SFW');
 });
 
 test('applyControlledPatch follows get -> parse -> replace -> event sequence', async () => {
@@ -184,5 +205,117 @@ test('unavailable MVU and parse no-change never call replace or event', async ()
     assert.deepEqual(calls, ['parse']);
 });
 
+test('parse resolving with an unchanged stat_data is reported as rejected, not applied', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        // Mirrors real MVU builds whose schema silently drops every command.
+        parseMessage: async (raw, old) => { calls.push('parse'); return structuredClone(old); },
+        replaceMvuData: async () => { calls.push('replace'); },
+    };
+    const patch = buildControlledPatch(oldData.stat_data, { kind: 'refresh', npcUid: 'npc_alpha' }).value;
+    const result = await applyControlledPatch({ patch, mvu, eventEmit: async () => calls.push('event') });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.code, 'mvu_parse_made_no_change');
+    assert.deepEqual(calls, ['parse']);
+});
 
+test('content-mode toggle survives an in-place provider mutation and preserves the old event snapshot', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    let replacedData;
+    let eventOldData;
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async (_raw, data) => {
+            calls.push('parse');
+            data.stat_data.软件.内容模式 = 'NSFW';
+            return data;
+        },
+        replaceMvuData: async (data) => {
+            calls.push('replace');
+            replacedData = data;
+        },
+    };
+    const patch = buildControlledPatch(oldData.stat_data, { kind: 'toggle_content_mode' }).value;
+    const result = await applyControlledPatch({
+        patch,
+        mvu,
+        eventEmit: async (...args) => {
+            calls.push('event');
+            eventOldData = args[2];
+        },
+    });
 
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 'applied');
+    assert.deepEqual(calls, ['parse', 'replace', 'event']);
+    assert.equal(replacedData.stat_data.软件.内容模式, 'NSFW');
+    assert.equal(eventOldData.stat_data.软件.内容模式, 'SFW');
+    assert.equal(oldData.stat_data.软件.内容模式, 'NSFW');
+});
+
+test('content-mode toggle is persisted only when provider output satisfies the exact replace', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async () => {
+            calls.push('parse');
+            const next = structuredClone(oldData);
+            next.stat_data.软件.内容模式 = 'NSFW';
+            return next;
+        },
+        replaceMvuData: async () => { calls.push('replace'); },
+    };
+    const patch = buildControlledPatch(oldData.stat_data, { kind: 'toggle_content_mode' }).value;
+    const result = await applyControlledPatch({ patch, mvu, eventEmit: async () => calls.push('event') });
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 'applied');
+    assert.deepEqual(calls, ['parse', 'replace', 'event']);
+});
+
+test('unrelated provider changes cannot disguise a dropped content-mode replace', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async () => {
+            calls.push('parse');
+            const next = structuredClone(oldData);
+            next.stat_data.软件.无关字段 = true;
+            return next;
+        },
+        replaceMvuData: async () => { calls.push('replace'); },
+    };
+    const patch = buildControlledPatch(oldData.stat_data, { kind: 'toggle_content_mode' }).value;
+    const result = await applyControlledPatch({ patch, mvu, eventEmit: async () => calls.push('event') });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.code, 'mvu_parse_postcondition_failed');
+    assert.deepEqual(result.detail, { operationIndex: 0, path: '/软件/内容模式' });
+    assert.deepEqual(calls, ['parse']);
+});
+
+test('provider result without stat_data is rejected before replace or event', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async () => { calls.push('parse'); return {}; },
+        replaceMvuData: async () => { calls.push('replace'); },
+    };
+    const patch = buildControlledPatch(oldData.stat_data, { kind: 'toggle_content_mode' }).value;
+    const result = await applyControlledPatch({ patch, mvu, eventEmit: async () => calls.push('event') });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.code, 'mvu_parse_returned_no_stat_data');
+    assert.deepEqual(calls, ['parse']);
+});

@@ -13,6 +13,11 @@ function normalizeTimeout(value) {
     return Number.isFinite(timeout) && timeout > 0 ? Math.trunc(timeout) : 5000;
 }
 
+function normalizePollInterval(value) {
+    const interval = Number(value);
+    return Number.isFinite(interval) && interval > 0 ? Math.trunc(interval) : 100;
+}
+
 /**
  * Resolves the documented JS-Slash-Runner readiness helper when it is
  * available either directly or via TavernHelper's public facade.
@@ -38,31 +43,75 @@ export async function waitForReadableMvu({
     getMvu = () => globalRef?.Mvu,
     waitGlobalInitialized = resolveWaitGlobalInitialized(globalRef),
     timeoutMs = 5000,
+    pollIntervalMs = 100,
+    retryReadiness = false,
     setTimeoutImpl = globalThis.setTimeout?.bind(globalThis),
     clearTimeoutImpl = globalThis.clearTimeout?.bind(globalThis),
 } = {}) {
     const availableNow = getMvu();
     if (isReadableMvu(availableNow)) return { ok: true, mvu: availableNow, source: 'already_available' };
-    if (typeof waitGlobalInitialized !== 'function') return { ok: false, code: 'mvu_wait_unavailable' };
     if (typeof setTimeoutImpl !== 'function') return { ok: false, code: 'mvu_timeout_unavailable' };
+    if (typeof waitGlobalInitialized !== 'function' && !retryReadiness) {
+        return { ok: false, code: 'mvu_wait_unavailable' };
+    }
 
-    let timeoutHandle;
-    const timeout = new Promise((resolve) => {
-        timeoutHandle = setTimeoutImpl(() => resolve({ ok: false, code: 'mvu_wait_timeout' }), normalizeTimeout(timeoutMs));
+    const timeout = normalizeTimeout(timeoutMs);
+    const pollInterval = normalizePollInterval(pollIntervalMs);
+    const deadline = Date.now() + timeout;
+
+    return new Promise((resolve) => {
+        let timerHandle;
+        let settled = false;
+        let readinessCallStarted = false;
+        const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            if (timerHandle !== undefined && typeof clearTimeoutImpl === 'function') clearTimeoutImpl(timerHandle);
+            resolve(result);
+        };
+        const schedule = (callback) => {
+            timerHandle = setTimeoutImpl(callback, Math.min(pollInterval, Math.max(1, deadline - Date.now())));
+        };
+        const attempt = () => {
+            if (settled) return;
+            const currentMvu = getMvu();
+            if (isReadableMvu(currentMvu)) {
+                finish({ ok: true, mvu: currentMvu, source: 'already_available' });
+                return;
+            }
+            if (Date.now() >= deadline) {
+                finish({ ok: false, code: 'mvu_wait_timeout' });
+                return;
+            }
+
+            const wait = typeof waitGlobalInitialized === 'function'
+                ? waitGlobalInitialized
+                : resolveWaitGlobalInitialized(globalRef);
+            if (typeof wait !== 'function') {
+                if (!retryReadiness) {
+                    finish({ ok: false, code: 'mvu_wait_unavailable' });
+                    return;
+                }
+                schedule(attempt);
+                return;
+            }
+            if (readinessCallStarted) {
+                schedule(attempt);
+                return;
+            }
+            readinessCallStarted = true;
+            Promise.resolve()
+                .then(() => wait('Mvu'))
+                .then(
+                    () => {
+                        const mvu = getMvu();
+                        finish(isReadableMvu(mvu)
+                            ? { ok: true, mvu, source: 'wait_global_initialized' }
+                            : { ok: false, code: 'mvu_wait_completed_without_read_api' });
+                    },
+                    () => finish({ ok: false, code: 'mvu_wait_failed' }),
+                );
+        };
+        attempt();
     });
-    const ready = Promise.resolve()
-        .then(() => waitGlobalInitialized('Mvu'))
-        .then(
-            () => {
-                const mvu = getMvu();
-                return isReadableMvu(mvu)
-                    ? { ok: true, mvu, source: 'wait_global_initialized' }
-                    : { ok: false, code: 'mvu_wait_completed_without_read_api' };
-            },
-            () => ({ ok: false, code: 'mvu_wait_failed' }),
-        );
-
-    const result = await Promise.race([ready, timeout]);
-    if (timeoutHandle !== undefined && typeof clearTimeoutImpl === 'function') clearTimeoutImpl(timeoutHandle);
-    return result;
 }

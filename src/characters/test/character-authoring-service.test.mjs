@@ -50,7 +50,7 @@ function playerPublicProfile() {
 function settingsStore() {
     return {
         resolveFunction(functionKey) {
-            assert.equal(functionKey, 'character_authoring');
+            assert.ok(['character_ai_completion', 'character_full_authoring'].includes(functionKey));
             return { connectionPreset, promptPreset: { enabled: true, content: '保持现代都市、真实克制的语气。' } };
         },
     };
@@ -83,7 +83,7 @@ test('full-authoring context permits only mode, brief, and minimal player public
     ]) assert.equal(serialized.includes(forbidden), false);
 });
 
-test('completion calls character_authoring only and returns a fully normalized adult in-memory candidate with avatar cleared', async () => {
+test('completion calls its dedicated binding and returns a fully normalized adult in-memory candidate with avatar cleared', async () => {
     let request;
     const result = await generateCharacterCompletionCandidate({
         publicProfile: editingPublicProfile(), instruction: '补全为一位明确成年的都市摄影师。', settingsStore: settingsStore(),

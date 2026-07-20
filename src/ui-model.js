@@ -2,27 +2,30 @@ import { buildGroupBrowseModel } from './groups/group-discovery-service.js';
 
 export const NAV_ITEMS = Object.freeze([
     { id: 'home', label: '首页', icon: '⌂' },
-    { id: 'matches', label: '匹配', icon: '♡' },
-    { id: 'messages', label: '消息', icon: '◌' },
+    { id: 'matches', label: '匹配', icon: '♥' },
+    { id: 'messages', label: '消息', icon: '✉' },
     { id: 'groups', label: '群组', icon: '◎' },
     { id: 'profile', label: '我的', icon: '◉' },
 ]);
 
 export const PAGE_COPY = Object.freeze({
     home: { title: '发现', description: '浏览公开资料。', help: '头像可打开对方的公开资料；线上互动仅保存受控 MVU 状态。' },
-    matches: { title: '匹配', description: '互相喜欢的对象会出现在这里。', help: '灵魂匹配和文字匹配共用同一组公开资料与配置。' },
-    match_tools: { title: 'AI 匹配工具', description: '', help: '生成的是可检查的草稿，不会自动改变你的公开偏好。' },
+    matches: { title: '匹配', description: '互相喜欢的对象会出现在这里。', help: '本页只展示已建立的匹配关系与公开资料。' },
     messages: { title: '消息', description: '线上短文本私聊。', help: '关键线下事件仍交给酒馆正文；面基草稿不会自动发送。' },
     groups: { title: '小程序', description: '选择一个小程序。', help: '聊天群和论坛各自进入独立界面。' },
     group_chat: { title: '聊天群', description: '', help: '只显示明确成年角色的公开资料。' },
     group_forum: { title: '论坛', description: '', help: '论坛页只展示公开主题与公开讨论入口。' },
     profile: { title: '我的', description: '' },
     profile_editor: { title: '个人资料', description: '' },
+    character_creator: { title: '创建角色', description: '创建、导入并管理仅在当前设备保存的成年人角色模板。' },
     favorites: { title: '收藏夹', description: '' },
     settings: { title: '设置', description: '' },
     settings_connections: { title: '连接预设', description: '' },
     settings_prompts: { title: '提示词预设', description: '' },
-    about: { title: '关于软件', description: '' },
+    settings_privacy: { title: '隐私权限设置', description: '' },
+    settings_personalization: { title: '个性化内容推荐管理', description: '' },
+    settings_personalization_preference: { title: '个性化内容偏好', description: '' },
+    match_profile: { title: '心动档案', description: '本次 AI 匹配的公开资料草稿；不会自动写入软件状态。' },
     candidate_detail: { title: '公开资料', description: '' },
 });
 
@@ -218,8 +221,13 @@ export function describeActionFailure(result) {
         npc_adult_verification_failed: '该资料未通过成年人校验，已拒绝操作。',
         content_mode_gate_state_invalid: '内容模式状态异常，未执行切换。',
         mvu_parse_returned_no_data: '本次没有可提交的变量变化。',
+        mvu_parse_made_no_change: 'MVU 未接受本次修改（状态未发生变化），未写入任何数据。',
+        mvu_parse_failed: 'MVU 解析本次修改时出错，未写入任何数据。',
+        mvu_replace_failed: 'MVU 保存本次修改时出错。',
+        mvu_read_failed: '读取当前状态失败，未写入任何数据。',
     };
-    return messages[code] ?? '操作未完成，未写入任何未校验的数据。';
+    if (messages[code]) return messages[code];
+    return code ? `操作未完成，未写入任何未校验的数据。（${code}）` : '操作未完成，未写入任何未校验的数据。';
 }
 
 

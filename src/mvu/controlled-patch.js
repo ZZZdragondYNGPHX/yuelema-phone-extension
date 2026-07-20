@@ -531,14 +531,20 @@ export function buildControlledPatch(state, command) {
         if (!Number.isInteger(clicks) || clicks < 0 || clicks > 4 || !['SFW', 'NSFW'].includes(mode)) {
             return fail('content_mode_gate_state_invalid');
         }
-        const operations = [];
-        if (clicks < 4) {
-            operations.push({ op: 'replace', path: '/软件/关于软件点击数', value: clicks + 1 });
-        } else {
-            operations.push({ op: 'replace', path: '/软件/关于软件点击数', value: 0 });
-            operations.push({ op: 'replace', path: '/软件/内容模式', value: mode === 'SFW' ? 'NSFW' : 'SFW' });
+        return success([
+            { op: 'replace', path: '/软件/关于软件点击数', value: clicks < 4 ? clicks + 1 : 0 },
+        ]);
+    }
+
+    if (command.kind === 'toggle_content_mode') {
+        const software = ownRecord(state.软件);
+        const mode = software?.内容模式;
+        if (!['SFW', 'NSFW'].includes(mode)) {
+            return fail('content_mode_gate_state_invalid');
         }
-        return success(operations);
+        return success([
+            { op: 'replace', path: '/软件/内容模式', value: mode === 'SFW' ? 'NSFW' : 'SFW' },
+        ]);
     }
 
     const uid = command.npcUid;
@@ -808,6 +814,8 @@ export function validateControlledPatchAgainstState(state, patch) {
     const exactTransitions = [];
     const gate = buildControlledPatch(state, { kind: 'advance_content_mode_gate' });
     if (gate.ok) exactTransitions.push(gate.value);
+    const contentModeToggle = buildControlledPatch(state, { kind: 'toggle_content_mode' });
+    if (contentModeToggle.ok) exactTransitions.push(contentModeToggle.value);
 
     const candidatePool = ownRecord(state.推荐)?.临时候选池;
     const rolePool = ownRecord(state.角色池);

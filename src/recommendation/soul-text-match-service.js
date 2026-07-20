@@ -6,6 +6,8 @@ const MAX_TAGS = 12;
 const MAX_TAG_WEIGHTS = 64;
 const MAX_EXPLANATION_LENGTH = 500;
 const MAX_TEXT_FILTER_VALUES = 12;
+const MAX_VOICE_TEXT_LENGTH = 800;
+const MAX_LOCAL_KEYWORD_WEIGHTS = 64;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]/u;
 const HTML_PATTERN = /<\s*\/?\s*[a-z][^>]*>/iu;
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
@@ -30,6 +32,20 @@ const TEXT_MATCH_ERROR_MESSAGES = Object.freeze({
     text_match_llm_unavailable: '当前浏览器未提供文字匹配模型连接。',
     text_match_invalid_json: '模型没有返回可用的文字匹配筛选草稿；当前筛选未改变。',
     text_match_response_invalid: '文字匹配草稿不符合安全格式；当前筛选未改变。',
+});
+
+const CANDIDATE_MATCH_ERROR_MESSAGES = Object.freeze({
+    candidate_match_mode_invalid: '匹配方式无效。',
+    candidate_match_state_invalid: '当前软件状态无法用于生成匹配推荐。',
+    candidate_match_settings_unavailable: '匹配功能设置暂不可用。',
+    candidate_match_settings_invalid: '匹配功能预设无效，请检查设置。',
+    candidate_match_local_preferences_unavailable: '本地个性化关键词暂不可用。',
+    candidate_match_local_preferences_invalid: '本地个性化关键词格式无效。',
+    candidate_match_voice_text_invalid: '请输入 1–800 个字符的匹配描述。',
+    candidate_match_connection_missing: '请先为该匹配功能绑定连接预设或设置默认连接。',
+    candidate_match_llm_unavailable: '当前浏览器未提供匹配模型连接。',
+    candidate_match_invalid_json: '模型没有返回可用的匹配角色草稿；当前状态未改变。',
+    candidate_match_response_invalid: '匹配角色草稿不符合公开资料安全格式；当前状态未改变。',
 });
 
 function ownPlainRecord(value) {
@@ -92,6 +108,52 @@ function projectTagWeights(value) {
         if (Object.keys(weights).length >= MAX_TAG_WEIGHTS) break;
     }
     return Object.freeze(weights);
+}
+
+function freezeKeywordWeights(entries) {
+    return Object.freeze(entries.map((entry) => Object.freeze({ keyword: entry.keyword, weight: entry.weight })));
+}
+
+function normalizeKeywordWeightEntries(kind, value, { minItems = 0, maxItems = MAX_LOCAL_KEYWORD_WEIGHTS } = {}) {
+    if (!Array.isArray(value) || value.length < minItems || value.length > maxItems) failResponse(kind, 'keyword_weights_invalid');
+    const entries = [];
+    const seen = new Set();
+    for (const item of value) {
+        assertExactRecord(kind, item, ['keyword', 'weight']);
+        const keyword = normalizeDraftText(kind, ownEnumerableData(kind, item, 'keyword'), 40);
+        const normalizedKeyword = keyword.toLocaleLowerCase('zh-Hans-CN');
+        const weight = ownEnumerableData(kind, item, 'weight');
+        if (!Number.isInteger(weight) || weight < -5 || weight > 5 || seen.has(normalizedKeyword)) {
+            failResponse(kind, 'keyword_weights_invalid');
+        }
+        seen.add(normalizedKeyword);
+        entries.push({ keyword, weight });
+    }
+    return freezeKeywordWeights(entries);
+}
+
+function readSavedLocalKeywordWeights(settingsStore) {
+    if (!settingsStore || typeof settingsStore.snapshot !== 'function') {
+        return { ok: false, code: 'candidate_match_local_preferences_unavailable' };
+    }
+    try {
+        const snapshot = settingsStore.snapshot();
+        const personalization = ownData(snapshot, 'personalization');
+        const keywordWeights = ownData(personalization, 'keywordWeights');
+        return { ok: true, keywordWeights: normalizeKeywordWeightEntries('candidate', keywordWeights) };
+    } catch {
+        return { ok: false, code: 'candidate_match_local_preferences_invalid' };
+    }
+}
+
+/** Voice-derived weights take precedence over a same-key saved local preference. */
+export function mergeMatchKeywordWeights(localKeywordWeights, voiceKeywordWeights = []) {
+    const local = normalizeKeywordWeightEntries('candidate', localKeywordWeights);
+    const voice = normalizeKeywordWeightEntries('candidate', voiceKeywordWeights);
+    const merged = new Map();
+    for (const entry of local) merged.set(entry.keyword.toLocaleLowerCase('zh-Hans-CN'), entry);
+    for (const entry of voice) merged.set(entry.keyword.toLocaleLowerCase('zh-Hans-CN'), entry);
+    return freezeKeywordWeights([...merged.values()]);
 }
 
 /**
@@ -220,6 +282,65 @@ export function normalizeTextMatchDraft(raw) {
     });
 }
 
+function normalizeOptionalPublicTags(kind, value) {
+    if (!Array.isArray(value) || value.length > MAX_TAGS) failResponse(kind, 'candidate_profile_invalid');
+    const tags = [];
+    const seen = new Set();
+    for (const raw of value) {
+        const tag = normalizeDraftText(kind, raw, 32);
+        const folded = tag.toLocaleLowerCase('zh-Hans-CN');
+        if (seen.has(folded)) failResponse(kind, 'candidate_profile_invalid');
+        seen.add(folded);
+        tags.push(tag);
+    }
+    return Object.freeze(tags);
+}
+
+function assertExplicitAdult(kind, ageBand) {
+    if (/成年人|成人|18\s*(?:岁)?(?:以上|\+)/u.test(ageBand)) return;
+    const ages = [...ageBand.matchAll(/\d{1,3}/gu)].map((match) => Number(match[0]));
+    if (ages.length > 0 && ages.every((age) => age >= 18)) return;
+    failResponse(kind, 'candidate_not_adult');
+}
+
+/**
+ * Strictly validates one ephemeral, public-only adult candidate profile. This
+ * is deliberately not a complete MVU character: it has no UID, friend-only or
+ * hidden profile, relationship metrics, threshold, session, or Patch field.
+ */
+export function normalizeCandidateMatchDraft(raw) {
+    const kind = 'candidate';
+    assertExactRecord(kind, raw, ['profile', 'explanation', 'matchScore']);
+    const profile = ownEnumerableData(kind, raw, 'profile');
+    const textFields = {
+        昵称: 80, 年龄段: 32, 性别: 48, 性取向: 80, 城市: 80, 距离范围: 48, 寻找意图: 120, 简介: 500,
+    };
+    const tagFields = ['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签'];
+    assertExactRecord(kind, profile, [...Object.keys(textFields), ...tagFields]);
+    const publicProfile = {};
+    for (const [field, maxLength] of Object.entries(textFields)) {
+        publicProfile[field] = normalizeDraftText(kind, ownEnumerableData(kind, profile, field), maxLength);
+    }
+    assertExplicitAdult(kind, publicProfile.年龄段);
+    for (const field of tagFields) publicProfile[field] = normalizeOptionalPublicTags(kind, ownEnumerableData(kind, profile, field));
+    const matchScore = ownEnumerableData(kind, raw, 'matchScore');
+    if (!Number.isInteger(matchScore) || matchScore < 0 || matchScore > 100) failResponse(kind, 'match_score_invalid');
+    return Object.freeze({
+        profile: Object.freeze(publicProfile),
+        explanation: normalizeDraftText(kind, ownEnumerableData(kind, raw, 'explanation'), MAX_EXPLANATION_LENGTH),
+        matchScore,
+    });
+}
+
+/** Parses the transient voice-text -> keyword-weights stage; UI never receives it. */
+export function normalizeVoiceKeywordWeightDraft(raw) {
+    const kind = 'voice';
+    assertExactRecord(kind, raw, ['keywordWeights']);
+    return Object.freeze({
+        keywordWeights: normalizeKeywordWeightEntries(kind, ownEnumerableData(kind, raw, 'keywordWeights'), { minItems: 1, maxItems: MAX_TAGS }),
+    });
+}
+
 function makeSoulMessages(context, promptPreset) {
     const preset = renderPromptPreset(promptPreset);
     const system = [
@@ -246,6 +367,49 @@ function makeTextMessages(context, promptPreset) {
         { role: 'system', content: system },
         { role: 'user', content: `请只基于以下受限公开上下文生成文字匹配草稿：\n${JSON.stringify(context)}` },
     ];
+}
+
+function buildCandidateMatchContext(state, keywordWeights) {
+    const base = buildSoulTextMatchContext(state);
+    return Object.freeze({
+        contentMode: base.contentMode,
+        playerPublicProfile: base.playerPublicProfile,
+        keywordWeights: freezeKeywordWeights(keywordWeights),
+    });
+}
+
+function makeCandidateProfileMessages(context, promptPreset, mode) {
+    const preset = renderPromptPreset(promptPreset);
+    const matchingLabel = mode === 'soul' ? '灵魂匹配' : '语音匹配';
+    const system = [
+        `你是现代现实都市线上约会软件的“${matchingLabel}”候选资料生成器。仅依据提供的玩家公开资料、有效关键词权重与 SFW/NSFW 模式，生成一名虚构、明确成年且适合本次推荐的角色公开资料。`,
+        '不得索取、推断、复述或输出隐藏资料、仅好友资料、会话、UID、关系分、阈值、Patch、路径、API Key、密钥或任何用户输入原文。不得创建 MVU 角色、匹配或会话。',
+        '只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。严格形状为：{"profile":{"昵称":"1-80字","年龄段":"明确成年人或18岁以上年龄段","性别":"1-48字","性取向":"1-80字","城市":"1-80字","距离范围":"1-48字","寻找意图":"1-120字","简介":"1-500字","兴趣标签":["最多12项"],"生活方式标签":["最多12项"],"性格标签":["最多12项"],"沟通风格标签":["最多12项"]},"explanation":"1-500字公开匹配说明","matchScore":0-100整数}。只允许这些公开字段；不要包含 UID、关键词权重或其他字段。',
+        preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+    ].filter(Boolean).join('\n\n');
+    return [
+        { role: 'system', content: system },
+        { role: 'user', content: `请只基于以下受限公开上下文生成一名候选人的公开资料草稿：\n${JSON.stringify(context)}` },
+    ];
+}
+
+function makeVoiceKeywordMessages(voiceText, promptPreset) {
+    const preset = renderPromptPreset(promptPreset);
+    const system = [
+        '你是现代现实都市线上约会软件的语音匹配关键词解析器。只从用户主动提供的本次匹配描述中提取 1–12 个匹配关键词与整数权重。此结果仅供后续候选推荐使用，不会保存。',
+        '不要输出、推断或复述隐藏资料、仅好友资料、会话、UID、Patch、路径、API Key、密钥或用户输入原文；不要生成角色、筛选条件、解释或其他字段。',
+        '只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。严格形状为：{"keywordWeights":[{"keyword":"1-40字关键词","weight":-5..5整数}]}。关键词不得重复。',
+        preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+    ].filter(Boolean).join('\n\n');
+    return [
+        { role: 'system', content: system },
+        { role: 'user', content: `本次匹配描述（只用于提取关键词，勿复述）：${voiceText}` },
+    ];
+}
+
+function cleanVoiceText(value) {
+    const text = cleanText(value, MAX_VOICE_TEXT_LENGTH);
+    return text || null;
 }
 
 function parseResponseJson(raw) {
@@ -308,6 +472,70 @@ export async function generateSoulMatchDraft({ state, settingsStore, llmClient, 
 /** Calls the text-match binding and returns a validated one-off public filter draft only. */
 export async function generateTextMatchDraft({ state, settingsStore, llmClient, signal } = {}) {
     return generateMatchDraft({ kind: 'text', state, settingsStore, llmClient, signal });
+}
+
+function candidateFailure(code) {
+    return { ok: false, code, message: CANDIDATE_MATCH_ERROR_MESSAGES[code] || CANDIDATE_MATCH_ERROR_MESSAGES.candidate_match_response_invalid };
+}
+
+function candidateResponseFailure(error) {
+    return error instanceof TypeError && typeof error.code === 'string' && (error.code.startsWith('candidate_match_response_') || error.code.startsWith('voice_match_response_'));
+}
+
+/**
+ * Generates exactly one ephemeral public candidate-profile draft. `mode: 'soul'`
+ * uses saved local keyword weights. `mode: 'voice'` first derives transient
+ * keyword weights from `voiceText`; those override same-key local weights before
+ * the candidate request. Neither mode writes MVU state or persists any draft.
+ */
+export async function generateCandidateMatchDraft({ mode = 'soul', state, settingsStore, llmClient, voiceText, signal } = {}) {
+    // `text` is a transition alias for the existing action-bridge kind. New UI
+    // should use `voice`; both select the text_match function binding.
+    const normalizedMode = mode === 'text' ? 'voice' : mode;
+    if (!['soul', 'voice'].includes(normalizedMode)) return candidateFailure('candidate_match_mode_invalid');
+    if (!ownPlainRecord(state)) return candidateFailure('candidate_match_state_invalid');
+    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return candidateFailure('candidate_match_settings_unavailable');
+    if (!llmClient || typeof llmClient.chat !== 'function') return candidateFailure('candidate_match_llm_unavailable');
+    const local = readSavedLocalKeywordWeights(settingsStore);
+    if (!local.ok) return candidateFailure(local.code);
+    const normalizedVoiceText = normalizedMode === 'voice' ? cleanVoiceText(voiceText) : null;
+    if (normalizedMode === 'voice' && !normalizedVoiceText) return candidateFailure('candidate_match_voice_text_invalid');
+
+    const functionKey = normalizedMode === 'soul' ? 'soul_match' : 'text_match';
+    let resolved;
+    try {
+        resolved = settingsStore.resolveFunction(functionKey);
+    } catch {
+        return candidateFailure('candidate_match_settings_invalid');
+    }
+    if (!resolved?.connectionPreset) return candidateFailure('candidate_match_connection_missing');
+
+    try {
+        let effectiveKeywordWeights = local.keywordWeights;
+        if (normalizedMode === 'voice') {
+            const voiceCompletion = await llmClient.chat({
+                preset: resolved.connectionPreset,
+                messages: makeVoiceKeywordMessages(normalizedVoiceText, resolved.promptPreset),
+                signal,
+            });
+            const voiceRaw = parseResponseJson(voiceCompletion?.text);
+            if (!voiceRaw) return candidateFailure('candidate_match_invalid_json');
+            const voiceDraft = normalizeVoiceKeywordWeightDraft(voiceRaw);
+            effectiveKeywordWeights = mergeMatchKeywordWeights(local.keywordWeights, voiceDraft.keywordWeights);
+        }
+        const completion = await llmClient.chat({
+            preset: resolved.connectionPreset,
+            messages: makeCandidateProfileMessages(buildCandidateMatchContext(state, effectiveKeywordWeights), resolved.promptPreset, mode),
+            signal,
+        });
+        const raw = parseResponseJson(completion?.text);
+        if (!raw) return candidateFailure('candidate_match_invalid_json');
+        return Object.freeze({ ok: true, draft: normalizeCandidateMatchDraft(raw) });
+    } catch (error) {
+        if (candidateResponseFailure(error)) return candidateFailure('candidate_match_response_invalid');
+        const publicError = toPublicLlmError(error);
+        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
+    }
 }
 
 

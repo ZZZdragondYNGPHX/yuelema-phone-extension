@@ -5,13 +5,15 @@ import { toPublicLlmError } from './llm/openai-compatible-client.js';
 
 const FUNCTION_LABELS = Object.freeze({
     chat: '私聊',
-    character_authoring: '角色补全 / 完整创作',
+    character_ai_completion: '角色 AI 补全',
+    character_full_authoring: '角色完整创作',
     soul_match: '灵魂匹配',
     text_match: '文字匹配',
     recommendation_refresh: '推荐刷新',
     group_chat: '聊天群',
     forum: '论坛',
 });
+const LEGACY_FUNCTION_KEYS = new Set(['character_authoring']);
 const PROMPT_BUNDLE_SCHEMA = 'yuelema.prompt-preset-bundle';
 const PROMPT_BUNDLE_VERSION = 1;
 const PROMPT_ENTRY_ENVELOPE = 'yuelema.prompt-entries';
@@ -19,6 +21,22 @@ const PROMPT_ENTRY_ENVELOPE_VERSION = 1;
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
 const MAX_PROMPT_ENTRIES_PER_PRESET = 48;
 const MAX_PROMPT_BUNDLE_BYTES = 512 * 1024;
+const PERSONALIZATION_NOTICE = Object.freeze([
+    '1.个性化内容推荐功能\n个性化内容推荐是指我们基于收集的信息，向您进行定制化内容的展现，如向您展现或推荐相关程度更高的视频内容、线下活动、信息流等。',
+    '2.我不喜欢推荐的内容怎么办?\n您有权自行控制和决策是否使用个性化内容推荐功能：\n1)当您对我们基于个性化内容推荐策略推送的具体信息不感兴趣或希望减少某类信息推荐时，您可以长按该内容，选择「不感兴趣」，我们会基于您的反馈调整策略。\n2)如果您不希望被推荐个性化的内容，可通过本页设置关闭“个性化内容推荐”。',
+    '3.关闭个性化内容推荐的效果是什么?\n当您选择关闭个性化内容推荐后，您将无法享受个性化内容推荐服务，我们会基于内容热度等非个性化因素向您展示内容，您可能会看到您不感兴趣甚至不喜欢的内容，您的使用体验可能会受到影响。\n个性化推荐将生效当前设备。',
+]);
+
+function normalizeSettingsView(value) {
+    const aliases = new Map([
+        ['connection', 'connection'], ['connections', 'connection'], ['settings_connections', 'connection'],
+        ['prompt', 'prompt'], ['prompts', 'prompt'], ['settings_prompts', 'prompt'],
+        ['personalization', 'personalization'], ['privacy', 'personalization'], ['settings_personalization', 'personalization'],
+        ['preference', 'preference'], ['preferences', 'preference'], ['personalization_preference', 'preference'],
+        ['all', 'all'],
+    ]);
+    return aliases.get(value ?? 'all') ?? 'all';
+}
 
 function nextId(prefix) {
     const random = globalThis.crypto?.getRandomValues
@@ -37,6 +55,22 @@ function field(label, control) {
     wrapper.appendChild(element('span', { text: label }));
     wrapper.appendChild(control);
     return wrapper;
+}
+
+/** Wraps a checkbox in a styling shell so CSS can render an iOS-style toggle; the input keeps its name and behavior. */
+function switchShell(input) {
+    const shell = element('span', { className: 'yl-switch' });
+    shell.appendChild(input);
+    return shell;
+}
+
+/** Section title row with a decorative unicode glyph slot for the section icon. */
+function sectionHeading(icon, title) {
+    const heading = element('div', { className: 'yl-section-heading' });
+    const glyph = element('span', { className: 'yl-section-icon', text: icon });
+    glyph.setAttribute('aria-hidden', 'true');
+    append(heading, [glyph, element('h2', { text: title })]);
+    return heading;
 }
 
 function selectWithOptions(options, value, ariaLabel, name) {
@@ -61,10 +95,14 @@ function numberValue(control, fallback) {
     return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function actionButton(label, handler, signal, { disabled = false, secondary = false } = {}) {
+function actionButton(label, handler, signal, { disabled = false, secondary = false, danger = false, name } = {}) {
+    const classes = ['yl-settings-button'];
+    if (secondary) classes.push('yl-settings-button-secondary');
+    if (danger) classes.push('yl-button-danger');
+    else if (secondary) classes.push('yl-button-ghost');
     const button = element('button', {
-        className: secondary ? 'yl-settings-button yl-settings-button-secondary' : 'yl-settings-button',
-        type: 'button', text: label, ariaLabel: label, disabled,
+        className: classes.join(' '),
+        type: 'button', text: label, ariaLabel: label, disabled, name,
     });
     listen(button, button, 'click', () => { void handler(); }, signal);
     return button;
@@ -155,7 +193,7 @@ function buildPromptPreset({ id, name, entries }) {
         id,
         name: presetName,
         // The v1 store remains strict. These representative fields keep it valid while
-        // content losslessly carries the Worldbook-style entry collection.
+        // content losslessly carries the multi-entry prompt collection.
         depth: representative.depth,
         order: representative.order,
         position: representative.position,
@@ -205,8 +243,10 @@ function readPromptBundle(rawJson) {
  * Builds the settings console. Only non-secret settings cross the persistence boundary.
  * The API Key input is consumed once by unlockSessionKey and immediately cleared.
  */
-export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender }) {
+export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender, onNavigate, section, view }) {
     const panel = element('section', { className: 'yl-settings-panel' });
+    const activeView = normalizeSettingsView(view ?? section);
+    const navigate = typeof onNavigate === 'function' ? onNavigate : () => {};
     let settings;
     try {
         settings = settingsStore.snapshot();
@@ -219,21 +259,33 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             settingsStore.clear();
             onFeedback('已清除本扩展的非机密设置；本次会话 API Key 从未写入本地。');
             onRerender();
-        }, signal));
+        }, signal, { danger: true }));
         return panel;
     }
 
-    append(panel, [
-        element('h2', { text: '模型、提示词与功能绑定' }),
-        element('p', {
-            className: 'yl-phone-page-description',
-            text: '连接预设与提示词预设保存在本浏览器；API Key 只在本次扩展会话解锁，绝不保存、导出或回显。',
-        }),
-        buildConnectionSection(settings),
-        buildPromptSection(settings),
-        buildBindingSection(settings),
-        buildPromptTransferSection(settings),
-    ]);
+    if (activeView === 'all') {
+        append(panel, [
+            element('h2', { text: '本地设置' }),
+            element('p', {
+                className: 'yl-phone-page-description',
+                text: '连接、提示词和个性化内容推荐设置仅保存在当前浏览器；API Key 只在本次扩展会话解锁。',
+            }),
+            buildConnectionSection(settings),
+            buildPromptSection(settings),
+            buildBindingSection(settings),
+            buildPromptTransferSection(settings),
+            buildPersonalizationSection(settings, { openPreferences: false, includePreferenceEntry: true }),
+        ]);
+    } else if (activeView === 'connection') {
+        panel.appendChild(buildConnectionSection(settings));
+    } else if (activeView === 'prompt') {
+        append(panel, [buildPromptSection(settings), buildPromptTransferSection(settings)]);
+    } else {
+        panel.appendChild(buildPersonalizationSection(settings, {
+            openPreferences: activeView === 'preference',
+            includePreferenceEntry: activeView !== 'preference',
+        }));
+    }
     return panel;
 
     function updateSettings(operation, success) {
@@ -249,8 +301,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
     function buildConnectionSection(snapshot) {
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
-            element('h2', { text: '连接预设（OpenAI-compatible）' }),
-            element('p', { className: 'yl-phone-page-description', text: '从已保存列表按名称选择并载入编辑；新建时会自动生成内部 ID。URL 仅支持 HTTPS；localhost / 回环地址可使用 HTTP。' }),
+            sectionHeading('⚡', '连接预设（OpenAI-compatible）'),
+            element('p', { className: 'yl-phone-page-description', text: '先填写名称、Base URL 与本次会话 API Key，即可直接拉取模型；Model 不再是拉取列表的前置条件。API Key 只用于本次会话，不会保存。' }),
         ]);
         let activeId = null;
         let draftId = nextId('conn');
@@ -262,17 +314,32 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
 
         const name = element('input', { className: 'yl-settings-control', type: 'text', name: 'connection-name', placeholder: '例如：快速模型', maxLength: 80, ariaLabel: '连接预设名称' });
         const url = element('input', { className: 'yl-settings-control', type: 'url', name: 'connection-url', placeholder: 'https://example.com/v1', maxLength: 500, ariaLabel: 'API URL' });
-        const model = element('input', { className: 'yl-settings-control', type: 'text', name: 'connection-model', placeholder: '模型名称', maxLength: 200, ariaLabel: '模型名称' });
+        const model = element('input', { className: 'yl-settings-control', type: 'text', name: 'connection-model', placeholder: '可先留空，拉取后选择', maxLength: 200, ariaLabel: '模型名称' });
+        const transportMode = selectWithOptions([
+            { label: '普通响应（JSON）', value: 'json' },
+            { label: '流式传输（SSE）', value: 'stream' },
+            { label: '假流式显示（完整返回后渐显）', value: 'pseudo_stream' },
+        ], 'stream', '传输模式', 'connection-transport-mode');
+        transportMode.value = 'stream';
         const temperature = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-temperature', value: '0.7', min: 0, max: 2, ariaLabel: '温度' });
         const maxTokens = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-max-tokens', value: '800', min: 1, max: 16384, ariaLabel: '最大 Token' });
-        const timeoutMs = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-timeout', value: '30000', min: 1000, max: 120000, ariaLabel: '超时毫秒' });
+        const timeoutMs = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-timeout', value: '60000', min: 1000, max: 120000, ariaLabel: '超时毫秒' });
         const apiKey = element('input', { className: 'yl-settings-control', type: 'password', name: 'connection-api-key', placeholder: '仅本次会话解锁', autocomplete: 'off', maxLength: 2048, ariaLabel: 'API Key，仅本次会话' });
         const fields = element('div', { className: 'yl-settings-fields' });
         append(fields, [
-            field('名称', name), field('Base URL', url), field('Model', model), field('Temperature', temperature),
-            field('Max tokens', maxTokens), field('Timeout (ms)', timeoutMs), field('API Key（不保存）', apiKey),
+            field('名称', name), field('Base URL', url), field('Model（可稍后拉取）', model), field('传输模式', transportMode),
+            field('Temperature', temperature), field('Max tokens', maxTokens), field('Timeout (ms)', timeoutMs), field('API Key（不保存）', apiKey),
         ]);
         section.appendChild(fields);
+        section.appendChild(element('p', { className: 'yl-settings-summary yl-transport-hint', text: '真流式可边接收边聚合，降低长回复在单次 JSON 解析阶段中断的风险；假流式兼容不支持 SSE 的接口，在完整响应到达后分段呈现。最终仍受服务端最大输出与本地超时限制。' }));
+
+        const modelChoices = element('select', { className: 'yl-settings-control yl-model-choices', name: 'connection-model-choices', ariaLabel: '已拉取模型', hidden: true });
+        listen(modelChoices, modelChoices, 'change', () => {
+            if (!modelChoices.value) return;
+            model.value = modelChoices.value;
+            onFeedback(`已选择模型“${modelChoices.value}”；保存连接预设后生效。`);
+        }, signal);
+        section.appendChild(field('接口返回的模型', modelChoices));
 
         function resetConnectionDraft() {
             activeId = null;
@@ -281,10 +348,13 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             name.value = '';
             url.value = '';
             model.value = '';
+            transportMode.value = 'stream';
             temperature.value = '0.7';
             maxTokens.value = '800';
-            timeoutMs.value = '30000';
+            timeoutMs.value = '60000';
             apiKey.value = '';
+            modelChoices.hidden = true;
+            modelChoices.replaceChildren();
         }
         function loadConnectionPreset(preset) {
             activeId = preset.id;
@@ -292,10 +362,12 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             name.value = preset.name;
             url.value = preset.url;
             model.value = preset.model;
+            transportMode.value = preset.transportMode ?? 'json';
             temperature.value = String(preset.temperature);
             maxTokens.value = String(preset.maxTokens);
             timeoutMs.value = String(preset.timeoutMs);
             apiKey.value = '';
+            modelChoices.hidden = true;
         }
         listen(picker, picker, 'change', () => {
             const preset = snapshot.connectionPresets.find((item) => item.id === picker.value);
@@ -306,15 +378,13 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         }, signal);
         const formPreset = () => ({
             id: activeId ?? draftId, name: name.value, url: url.value, model: model.value,
-            temperature: numberValue(temperature, 0.7), maxTokens: numberValue(maxTokens, 800), timeoutMs: numberValue(timeoutMs, 30_000),
+            transportMode: transportMode.value,
+            temperature: numberValue(temperature, 0.7), maxTokens: numberValue(maxTokens, 800), timeoutMs: numberValue(timeoutMs, 60_000),
         });
-        const modelChoices = element('select', { className: 'yl-settings-control', name: 'connection-model-choices', ariaLabel: '已拉取模型', hidden: true });
-        listen(modelChoices, modelChoices, 'change', () => { if (modelChoices.value) model.value = modelChoices.value; }, signal);
-        section.appendChild(modelChoices);
         const controls = element('div', { className: 'yl-settings-actions' });
         controls.appendChild(actionButton('新建连接预设', async () => {
             resetConnectionDraft();
-            onFeedback('已新建空白连接预设；填写后点击保存。');
+            onFeedback('已新建空白连接预设；Model 可先留空并直接拉取列表。');
         }, signal, { secondary: true }));
         controls.appendChild(actionButton('保存连接预设', async () => {
             const candidate = formPreset();
@@ -329,33 +399,45 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                 return;
             }
             updateSettings(() => settingsStore.deleteConnectionPreset(activeId), '连接预设已删除，同时已清理相关绑定。');
-        }, signal, { secondary: true }));
-        controls.appendChild(actionButton('解锁并拉取 /models', async () => {
+        }, signal, { secondary: true, danger: true }));
+        const fetchModelsButton = actionButton('解锁并拉取模型列表', async () => {
             if (!llmClient) { onFeedback('当前浏览器未提供可用网络 transport，无法拉取模型。'); return; }
+            const originalText = fetchModelsButton.textContent;
+            fetchModelsButton.disabled = true;
+            fetchModelsButton.textContent = '正在拉取模型…';
             try {
                 const candidate = formPreset();
+                if (!String(candidate.name ?? '').trim()) candidate.name = '未保存连接';
                 unlockSessionKey(candidate.id, apiKey.value);
                 apiKey.value = '';
+                onFeedback('已解锁本次会话，正在从 /models 拉取模型列表…');
                 const models = await llmClient.fetchModels({ preset: candidate });
                 modelChoices.replaceChildren();
-                modelChoices.appendChild(element('option', { text: '选择已拉取模型', value: '' }));
+                modelChoices.appendChild(element('option', { text: '请选择模型…', value: '' }));
                 for (const item of models) modelChoices.appendChild(element('option', { text: item, value: item }));
                 modelChoices.hidden = false;
-                onFeedback(`已取得 ${models.length} 个模型名称；请选择后再保存连接预设。`);
+                if (!model.value && models.length === 1) {
+                    modelChoices.value = models[0];
+                    model.value = models[0];
+                }
+                onFeedback(`已取得 ${models.length} 个模型；请选择模型并保存连接预设。`);
             } catch (error) {
                 apiKey.value = '';
                 onFeedback(toPublicLlmError(error).message);
+            } finally {
+                fetchModelsButton.disabled = false;
+                fetchModelsButton.textContent = originalText;
             }
-        }, signal, { secondary: true }));
+        }, signal, { secondary: true, name: 'connection-fetch-models' });
+        controls.appendChild(fetchModelsButton);
         section.appendChild(controls);
         return section;
     }
-
     function buildPromptSection(snapshot) {
-        const section = element('section', { className: 'yl-settings-section' });
+        const section = element('section', { className: 'yl-settings-section yl-prompt-workbench' });
         append(section, [
-            element('h2', { text: '提示词预设（Worldbook 风格）' }),
-            element('p', { className: 'yl-phone-page-description', text: '一个提示词预设可保存多个条目；每个条目独立设置名称、depth、order、position、enabled 与正文。旧版单条目预设载入后可直接扩展。' }),
+            sectionHeading('⌘', '提示词预设条目树'),
+            element('p', { className: 'yl-phone-page-description', text: '预设作为根节点，插入位置作为分支，每个提示词条目作为叶节点。点击叶节点即可编辑；启用状态、depth 与 order 会在树上直接显示。' }),
         ]);
         let activeId = null;
         let entries = [];
@@ -367,9 +449,17 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         section.appendChild(field('已保存提示词预设', picker));
         const name = element('input', { className: 'yl-settings-control', type: 'text', name: 'prompt-preset-name', placeholder: '例如：推荐刷新', maxLength: 80, ariaLabel: '提示词预设名称' });
         section.appendChild(field('预设名称', name));
-        const entryList = element('div', { className: 'yl-settings-list' });
-        section.appendChild(entryList);
 
+        const tree = element('div', { className: 'yl-prompt-tree', ariaLabel: '提示词条目树' });
+        tree.setAttribute('role', 'tree');
+        section.appendChild(tree);
+
+        const editor = element('section', { className: 'yl-prompt-entry-editor' });
+        const editorHeading = element('div', { className: 'yl-prompt-editor-heading' });
+        const editorTitle = element('h3', { text: '新条目编辑器' });
+        const editorState = element('span', { className: 'yl-prompt-editor-state', text: '尚未选择树节点' });
+        append(editorHeading, [editorTitle, editorState]);
+        editor.appendChild(editorHeading);
         const entryName = element('input', { className: 'yl-settings-control', type: 'text', name: 'prompt-entry-name', placeholder: '例如：公开资料约束', maxLength: 80, ariaLabel: '提示词条目名称' });
         const depth = element('input', { className: 'yl-settings-control', type: 'number', name: 'prompt-entry-depth', value: '4', min: 0, max: 1000, ariaLabel: '提示词深度' });
         const order = element('input', { className: 'yl-settings-control', type: 'number', name: 'prompt-entry-order', value: '100', min: -1000, max: 1000, ariaLabel: '提示词顺序' });
@@ -377,25 +467,16 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             { label: '角色定义之前', value: 'before_character_definition' },
             { label: '角色定义之后', value: 'after_character_definition' },
         ], 'before_character_definition', '提示词位置', 'prompt-entry-position');
-        // Explicit assignment makes a fresh draft deterministic in browser and test DOM.
         position.value = 'before_character_definition';
         const enabled = element('input', { className: 'yl-settings-checkbox', type: 'checkbox', name: 'prompt-entry-enabled', checked: true, ariaLabel: '启用提示词条目' });
-        const content = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 8, name: 'prompt-entry-content', placeholder: '输入提示词正文', maxLength: 10_000, ariaLabel: '提示词条目正文' });
+        const content = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 10, name: 'prompt-entry-content', placeholder: '输入提示词正文', maxLength: 10_000, ariaLabel: '提示词条目正文' });
         const fields = element('div', { className: 'yl-settings-fields' });
         append(fields, [
-            field('条目名称', entryName), field('Depth', depth), field('Order', order), field('Position', position), field('Enabled', enabled), field('提示词正文', content),
+            field('条目名称', entryName), field('Depth', depth), field('Order', order), field('Position', position), field('Enabled', switchShell(enabled)), field('提示词正文', content),
         ]);
-        section.appendChild(fields);
+        editor.appendChild(fields);
+        section.appendChild(editor);
 
-        function clearEntryDraft() {
-            editingEntryId = null;
-            entryName.value = '';
-            depth.value = '4';
-            order.value = '100';
-            position.value = 'before_character_definition';
-            enabled.checked = true;
-            content.value = '';
-        }
         function currentEntry() {
             return normalizePromptEntry({
                 id: editingEntryId ?? nextId('prompt_entry'), name: entryName.value, depth: numberValue(depth, 4),
@@ -410,22 +491,105 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             position.value = entry.position;
             enabled.checked = entry.enabled;
             content.value = entry.content;
+            editorTitle.textContent = `编辑：${entry.name}`;
+            editorState.textContent = `${entry.enabled ? '已启用' : '已禁用'} · depth ${entry.depth} · order ${entry.order}`;
+            renderTree();
         }
-        function renderEntryList() {
-            entryList.replaceChildren();
-            if (entries.length === 0) {
-                entryList.appendChild(element('p', { className: 'yl-settings-summary', text: '尚未添加条目。先填写下方条目，再点击“添加条目”。' }));
-                return;
-            }
-            for (const entry of entries) {
-                const row = element('section', { className: 'yl-settings-binding' });
-                row.appendChild(element('p', { className: 'yl-settings-summary', text: `${entry.name} · depth ${entry.depth} · order ${entry.order} · ${entry.enabled ? '启用' : '禁用'}` }));
-                row.appendChild(actionButton('编辑此条目', async () => {
+        function clearEntryDraft() {
+            editingEntryId = null;
+            entryName.value = '';
+            depth.value = '4';
+            order.value = '100';
+            position.value = 'before_character_definition';
+            enabled.checked = true;
+            content.value = '';
+            editorTitle.textContent = '新条目编辑器';
+            editorState.textContent = '填写后加入当前预设草稿';
+            renderTree();
+        }
+        function treeIconButton(label, text, handler, disabled = false) {
+            const button = element('button', { className: 'yl-prompt-tree-action', type: 'button', ariaLabel: label, text, disabled });
+            listen(button, button, 'click', handler, signal);
+            return button;
+        }
+        function renderTreeBranch(positionValue, label) {
+            const branchEntries = entries
+                .map((entry, index) => ({ entry, index }))
+                .filter(({ entry }) => entry.position === positionValue)
+                .sort((left, right) => left.entry.order - right.entry.order || left.index - right.index);
+            const branch = element('section', { className: 'yl-prompt-tree-branch' });
+            branch.setAttribute('role', 'group');
+            const branchHeading = element('div', { className: 'yl-prompt-tree-branch-heading' });
+            append(branchHeading, [
+                element('span', { className: 'yl-prompt-tree-node-dot', text: '◆' }),
+                element('strong', { text: label }),
+                element('span', { className: 'yl-prompt-tree-count', text: `${branchEntries.length} 个条目` }),
+            ]);
+            branch.appendChild(branchHeading);
+            const children = element('div', { className: 'yl-prompt-tree-children' });
+            if (branchEntries.length === 0) children.appendChild(element('p', { className: 'yl-prompt-tree-empty', text: '此分支暂无条目' }));
+            for (const { entry, index } of branchEntries) {
+                const leaf = element('article', { className: `yl-prompt-tree-leaf${editingEntryId === entry.id ? ' is-active' : ''}${entry.enabled ? '' : ' is-disabled'}` });
+                leaf.setAttribute('role', 'treeitem');
+                leaf.setAttribute('aria-selected', String(editingEntryId === entry.id));
+                const main = element('button', { className: 'yl-prompt-tree-main', type: 'button', ariaLabel: `编辑提示词条目 ${entry.name}` });
+                const copy = element('span', { className: 'yl-prompt-tree-copy' });
+                append(copy, [
+                    element('strong', { text: entry.name }),
+                    element('span', { text: `depth ${entry.depth} · order ${entry.order}` }),
+                    element('span', { className: 'yl-prompt-tree-preview', text: entry.content.replace(/\s+/gu, ' ').slice(0, 72) || '（空正文）' }),
+                ]);
+                append(main, [element('span', { className: 'yl-prompt-tree-leaf-dot', text: entry.enabled ? '●' : '○' }), copy]);
+                listen(main, main, 'click', () => {
                     loadEntry(entry);
                     onFeedback(`正在编辑条目“${entry.name}”。`);
-                }, signal, { secondary: true }));
-                entryList.appendChild(row);
+                }, signal);
+                const actions = element('div', { className: 'yl-prompt-tree-leaf-actions' });
+                const toggle = element('input', { className: 'yl-settings-checkbox', type: 'checkbox', checked: entry.enabled, ariaLabel: `${entry.name}启用状态` });
+                listen(toggle, toggle, 'change', () => {
+                    entries = entries.map((item) => item.id === entry.id ? { ...item, enabled: toggle.checked } : item);
+                    if (editingEntryId === entry.id) enabled.checked = toggle.checked;
+                    renderTree();
+                    onFeedback(`条目“${entry.name}”已在当前草稿中${toggle.checked ? '启用' : '禁用'}；保存预设后生效。`);
+                }, signal);
+                actions.appendChild(switchShell(toggle));
+                actions.appendChild(treeIconButton(`上移条目 ${entry.name}`, '↑', () => {
+                    if (index <= 0) return;
+                    const next = [...entries];
+                    [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                    entries = next;
+                    renderTree();
+                }, index <= 0));
+                actions.appendChild(treeIconButton(`下移条目 ${entry.name}`, '↓', () => {
+                    if (index >= entries.length - 1) return;
+                    const next = [...entries];
+                    [next[index + 1], next[index]] = [next[index], next[index + 1]];
+                    entries = next;
+                    renderTree();
+                }, index >= entries.length - 1));
+                append(leaf, [main, actions]);
+                children.appendChild(leaf);
             }
+            branch.appendChild(children);
+            return branch;
+        }
+        function renderTree() {
+            tree.replaceChildren();
+            const rootNode = element('section', { className: 'yl-prompt-tree-root' });
+            rootNode.setAttribute('role', 'treeitem');
+            rootNode.setAttribute('aria-expanded', 'true');
+            const rootHeading = element('div', { className: 'yl-prompt-tree-root-heading' });
+            append(rootHeading, [
+                element('span', { className: 'yl-prompt-tree-root-icon', text: '⌘' }),
+                element('div', { className: 'yl-prompt-tree-root-copy', text: name.value.trim() || '未命名提示词预设' }),
+                element('span', { className: 'yl-prompt-tree-count', text: `${entries.length} 个条目 · ${entries.filter((entry) => entry.enabled).length} 个启用` }),
+            ]);
+            rootNode.appendChild(rootHeading);
+            const branches = element('div', { className: 'yl-prompt-tree-branches' });
+            branches.appendChild(renderTreeBranch('before_character_definition', '角色定义之前'));
+            branches.appendChild(renderTreeBranch('after_character_definition', '角色定义之后'));
+            rootNode.appendChild(branches);
+            tree.appendChild(rootNode);
         }
         function resetPromptDraft() {
             activeId = null;
@@ -433,7 +597,6 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             name.value = '';
             entries = [];
             clearEntryDraft();
-            renderEntryList();
         }
         function loadPromptPreset(preset) {
             activeId = preset.id;
@@ -441,26 +604,26 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             name.value = preset.name;
             entries = decodePromptEntries(preset);
             clearEntryDraft();
-            renderEntryList();
         }
+        listen(name, name, 'input', renderTree, signal);
         listen(picker, picker, 'change', () => {
             const preset = snapshot.promptPresets.find((item) => item.id === picker.value);
             if (!preset) return;
             try {
                 loadPromptPreset(preset);
-                onFeedback(`已载入“${preset.name}”，可选择条目编辑后保存。`);
+                onFeedback(`已载入“${preset.name}”，请从条目树选择叶节点编辑。`);
             } catch (error) {
                 onFeedback(safeErrorMessage(error, '此提示词预设无法安全载入。'));
             }
         }, signal);
-        renderEntryList();
+        renderTree();
 
-        const entryControls = element('div', { className: 'yl-settings-actions' });
+        const entryControls = element('div', { className: 'yl-settings-actions yl-prompt-entry-actions' });
         entryControls.appendChild(actionButton('添加条目', async () => {
             try {
                 const candidate = currentEntry();
                 if (entries.some((entry) => entry.id === candidate.id)) {
-                    onFeedback('当前条目已在列表中；请使用“保存条目修改”。');
+                    onFeedback('当前条目已在树中；请使用“保存条目修改”。');
                     return;
                 }
                 if (entries.length >= MAX_PROMPT_ENTRIES_PER_PRESET) {
@@ -469,8 +632,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                 }
                 entries = [...entries, candidate];
                 clearEntryDraft();
-                renderEntryList();
-                onFeedback('提示词条目已加入当前草稿；点击“保存提示词预设”后才会写入本地。');
+                onFeedback('提示词条目已加入条目树；点击“保存提示词预设”后才会写入本地。');
             } catch (error) {
                 onFeedback(safeErrorMessage(error, '提示词条目未加入；请检查字段。'));
             }
@@ -478,113 +640,276 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         entryControls.appendChild(actionButton('保存条目修改', async () => {
             try {
                 if (!editingEntryId) {
-                    onFeedback('请先从条目列表选择“编辑此条目”。');
+                    onFeedback('请先从条目树选择一个叶节点。');
                     return;
                 }
                 const candidate = currentEntry();
                 entries = entries.map((entry) => entry.id === editingEntryId ? candidate : entry);
                 loadEntry(candidate);
-                renderEntryList();
-                onFeedback('条目修改已保留在当前草稿；请保存提示词预设。');
+                onFeedback('条目修改已保留在当前树草稿；请保存提示词预设。');
             } catch (error) {
                 onFeedback(safeErrorMessage(error, '提示词条目未修改；请检查字段。'));
             }
         }, signal, { secondary: true }));
+        entryControls.appendChild(actionButton('新建空白条目', async () => {
+            clearEntryDraft();
+            onFeedback('已切换到新条目编辑器。');
+        }, signal, { secondary: true }));
         entryControls.appendChild(actionButton('删除当前条目', async () => {
             if (!editingEntryId) {
-                onFeedback('请先从条目列表选择“编辑此条目”。');
+                onFeedback('请先从条目树选择一个叶节点。');
                 return;
             }
             entries = entries.filter((entry) => entry.id !== editingEntryId);
             clearEntryDraft();
-            renderEntryList();
-            onFeedback('条目已从当前草稿删除；请保存提示词预设。');
-        }, signal, { secondary: true }));
+            onFeedback('条目已从当前树草稿删除；请保存提示词预设。');
+        }, signal, { secondary: true, danger: true }));
         section.appendChild(entryControls);
 
         const controls = element('div', { className: 'yl-settings-actions' });
         controls.appendChild(actionButton('新建提示词预设', async () => {
             resetPromptDraft();
-            onFeedback('已新建空白提示词预设；先添加至少一个条目再保存。');
+            onFeedback('已新建空白提示词预设；先在编辑器中添加至少一个条目。');
         }, signal, { secondary: true }));
         controls.appendChild(actionButton('保存提示词预设', async () => updateSettings(() => {
             const candidate = buildPromptPreset({ id: activeId ?? nextId('prompt'), name: name.value, entries });
             if (activeId) settingsStore.editPromptPreset(candidate);
             else settingsStore.addPromptPreset(candidate);
-        }, '提示词预设已保存。'), signal));
+        }, '提示词预设及条目树已保存。'), signal));
         controls.appendChild(actionButton('删除当前提示词预设', async () => {
             if (!activeId) {
                 onFeedback('请先从已保存提示词预设列表选择一个项目。');
                 return;
             }
             updateSettings(() => settingsStore.deletePromptPreset(activeId), '提示词预设已删除，同时已清理相关绑定。');
-        }, signal, { secondary: true }));
+        }, signal, { secondary: true, danger: true }));
         section.appendChild(controls);
+        return section;
+    }
+    function buildPersonalizationSection(snapshot, { openPreferences, includePreferenceEntry }) {
+        const section = element('section', { className: 'yl-settings-section' });
+        append(section, [
+            sectionHeading('✦', openPreferences ? '个性化内容偏好' : '个性化内容推荐管理'),
+            element('p', {
+                className: 'yl-phone-page-description',
+                text: '此处仅保存当前设备上的讽刺展示设置与关键词权重，不会改变真实推荐、排序、模型调用或 MVU 数据。',
+            }),
+        ]);
+
+        const personalization = snapshot.personalization ?? { enabled: true, keywordWeights: [] };
+        const enabled = element('input', {
+            className: 'yl-settings-checkbox', type: 'checkbox', checked: personalization.enabled,
+            name: 'personalization-enabled', ariaLabel: '个性化内容推荐',
+        });
+        section.appendChild(field('个性化内容推荐', switchShell(enabled)));
+
+        if (includePreferenceEntry) {
+            const preferenceEntry = actionButton('个性化内容偏好', async () => {
+                if (!enabled.checked) return;
+                navigate('settings_personalization_preference');
+            }, signal, {
+                disabled: !personalization.enabled,
+                secondary: true,
+                name: 'personalization-preference-entry',
+            });
+            section.appendChild(preferenceEntry);
+        }
+
+        const preferenceEditor = element('section', {
+            className: 'yl-settings-binding',
+            hidden: !personalization.enabled || !openPreferences,
+        });
+        preferenceEditor.setAttribute('aria-label', '个性化内容偏好编辑器');
+        let keywordWeights = personalization.keywordWeights.map((item) => ({ ...item }));
+        let editingIndex = -1;
+        const list = element('div', { className: 'yl-settings-list' });
+        const keyword = element('input', {
+            className: 'yl-settings-control', type: 'text', name: 'personalization-keyword',
+            placeholder: '例如：电影', maxLength: 40, ariaLabel: '个性化偏好关键词',
+        });
+        const weight = element('input', {
+            className: 'yl-settings-control', type: 'number', name: 'personalization-keyword-weight',
+            value: '1', min: -5, max: 5, ariaLabel: '个性化偏好关键词权重',
+        });
+
+        function clearKeywordDraft() {
+            editingIndex = -1;
+            keyword.value = '';
+            weight.value = '1';
+        }
+        function keywordCandidate() {
+            const cleaned = keyword.value.trim();
+            const numericWeight = Number(weight.value);
+            if (cleaned.length < 1 || cleaned.length > 40 || /[\u0000-\u001F\u007F]/u.test(cleaned)) {
+                throw new YueLeMaSettingsError('INVALID_PERSONALIZATION', '关键词长度或字符不符合要求。');
+            }
+            if (!Number.isInteger(numericWeight) || numericWeight < -5 || numericWeight > 5) {
+                throw new YueLeMaSettingsError('INVALID_PERSONALIZATION', '关键词权重必须是 -5–5 范围内的整数。');
+            }
+            const duplicateIndex = keywordWeights.findIndex((item) => item.keyword.toLowerCase() === cleaned.toLowerCase());
+            if (duplicateIndex >= 0 && duplicateIndex !== editingIndex) {
+                throw new YueLeMaSettingsError('INVALID_PERSONALIZATION', '该关键词已经存在。');
+            }
+            return { keyword: cleaned, weight: numericWeight };
+        }
+        function renderKeywordWeights() {
+            list.replaceChildren();
+            if (keywordWeights.length === 0) {
+                list.appendChild(element('p', { className: 'yl-settings-summary', text: '尚未设置关键词权重。' }));
+                return;
+            }
+            keywordWeights.forEach((item, index) => {
+                const row = element('section', { className: 'yl-settings-binding' });
+                row.appendChild(element('p', { className: 'yl-settings-summary', text: item.keyword + ' · 权重 ' + item.weight }));
+                row.appendChild(actionButton('编辑关键词', async () => {
+                    editingIndex = index;
+                    keyword.value = item.keyword;
+                    weight.value = String(item.weight);
+                }, signal, { secondary: true }));
+                row.appendChild(actionButton('删除关键词', async () => {
+                    keywordWeights = keywordWeights.filter((_, itemIndex) => itemIndex !== index);
+                    clearKeywordDraft();
+                    renderKeywordWeights();
+                }, signal, { secondary: true, danger: true }));
+                list.appendChild(row);
+            });
+        }
+        renderKeywordWeights();
+        preferenceEditor.appendChild(list);
+        const fields = element('div', { className: 'yl-settings-fields' });
+        append(fields, [field('关键词', keyword), field('权重（-5 到 5）', weight)]);
+        preferenceEditor.appendChild(fields);
+        const preferenceActions = element('div', { className: 'yl-settings-actions' });
+        preferenceActions.appendChild(actionButton('添加或更新关键词', async () => {
+            try {
+                const candidate = keywordCandidate();
+                if (editingIndex >= 0) keywordWeights = keywordWeights.map((item, index) => index === editingIndex ? candidate : item);
+                else keywordWeights = [...keywordWeights, candidate];
+                clearKeywordDraft();
+                renderKeywordWeights();
+                onFeedback('关键词权重已加入当前草稿；保存后写入本地设置。');
+            } catch (error) {
+                onFeedback(safeErrorMessage(error, '关键词权重无效。'));
+            }
+        }, signal, { name: 'personalization-keyword-upsert' }));
+        preferenceActions.appendChild(actionButton('保存个性化内容偏好', async () => updateSettings(
+            () => settingsStore.setPersonalizationKeywordWeights(keywordWeights),
+            '个性化内容偏好已保存到当前设备；真实推荐算法未改变。',
+        ), signal, { name: 'personalization-preference-save' }));
+        preferenceEditor.appendChild(preferenceActions);
+        section.appendChild(preferenceEditor);
+
+        const notice = element('section', { className: 'yl-settings-section yl-settings-modal', hidden: true });
+        notice.setAttribute('aria-label', '个性化内容推荐说明');
+        notice.setAttribute('role', 'dialog');
+        notice.setAttribute('aria-modal', 'true');
+        const closeNotice = () => {
+            notice.hidden = true;
+            enabled.checked = true;
+        };
+        const noticeTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+        const noticeClose = element('button', {
+            className: 'yl-dialog-close', type: 'button', text: '×', name: 'personalization-modal-close',
+            ariaLabel: '关闭个性化内容推荐说明',
+        });
+        append(noticeTitlebar, [element('h2', { text: '个性化内容推荐说明' }), noticeClose]);
+        notice.appendChild(noticeTitlebar);
+        listen(noticeClose, noticeClose, 'click', () => {
+            closeNotice();
+            onFeedback('已关闭说明，个性化内容推荐保持开启。');
+        }, signal);
+        for (const paragraph of PERSONALIZATION_NOTICE) notice.appendChild(element('p', { text: paragraph }));
+        const noticeActions = element('div', { className: 'yl-settings-actions' });
+        noticeActions.appendChild(actionButton('确定', async () => updateSettings(
+            () => settingsStore.setPersonalizationEnabled(false),
+            '个性化内容推荐已在当前设备关闭；真实推荐算法未改变。',
+        ), signal, { name: 'personalization-disable-confirm' }));
+        noticeActions.appendChild(actionButton('保持开启并关闭', async () => {
+            closeNotice();
+            onFeedback('已取消关闭，个性化内容推荐保持开启。');
+        }, signal, { secondary: true, name: 'personalization-disable-cancel' }));
+        notice.appendChild(noticeActions);
+        section.appendChild(notice);
+
+        listen(enabled, enabled, 'change', () => {
+            if (enabled.checked) {
+                updateSettings(() => settingsStore.setPersonalizationEnabled(true), '个性化内容推荐已在当前设备开启。');
+                return;
+            }
+            enabled.checked = true;
+            notice.hidden = false;
+        }, signal);
         return section;
     }
 
     function buildBindingSection(snapshot) {
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
-            element('h2', { text: '默认预设与功能绑定' }),
-            element('p', { className: 'yl-phone-page-description', text: '连接与提示词可独立选择。未单独绑定的功能回退到默认预设；灵魂匹配与文字匹配始终共用同一对绑定。' }),
+            sectionHeading('⇄', '默认预设与功能绑定'),
+            element('p', {
+                className: 'yl-phone-page-description',
+                text: '连接与提示词可独立选择。未单独绑定的功能回退到默认预设；此处不提供标签权重设置。',
+            }),
         ]);
-        const connectionOptions = [{ label: '不设置（无默认）', value: '' }, ...snapshot.connectionPresets.map((preset) => ({ label: preset.name, value: preset.id }))];
-        const promptOptions = [{ label: '不设置（无默认）', value: '' }, ...snapshot.promptPresets.map((preset) => ({ label: preset.name, value: preset.id }))];
-        const defaultConnection = selectWithOptions(connectionOptions, snapshot.defaults.connectionPresetId ?? '', '默认连接预设', 'default-connection-preset');
-        const defaultPrompt = selectWithOptions(promptOptions, snapshot.defaults.promptPresetId ?? '', '默认提示词预设', 'default-prompt-preset');
+        const connectionOptions = [
+            { label: '不设置（无默认）', value: '' },
+            ...snapshot.connectionPresets.map((preset) => ({ label: preset.name, value: preset.id })),
+        ];
+        const promptOptions = [
+            { label: '不设置（无默认）', value: '' },
+            ...snapshot.promptPresets.map((preset) => ({ label: preset.name, value: preset.id })),
+        ];
+        const defaultConnection = selectWithOptions(
+            connectionOptions,
+            snapshot.defaults.connectionPresetId ?? '',
+            '默认连接预设',
+            'default-connection-preset',
+        );
+        const defaultPrompt = selectWithOptions(
+            promptOptions,
+            snapshot.defaults.promptPresetId ?? '',
+            '默认提示词预设',
+            'default-prompt-preset',
+        );
         const defaultsFields = element('div', { className: 'yl-settings-fields' });
         append(defaultsFields, [field('默认连接', defaultConnection), field('默认提示词', defaultPrompt)]);
         section.appendChild(defaultsFields);
         section.appendChild(actionButton('保存默认预设', async () => updateSettings(() => settingsStore.setDefaults({
-            connectionPresetId: defaultConnection.value || null, promptPresetId: defaultPrompt.value || null,
+            connectionPresetId: defaultConnection.value || null,
+            promptPresetId: defaultPrompt.value || null,
         }), '默认预设已保存。'), signal));
 
-        const individualKeys = FUNCTION_KEYS.filter((key) => !['soul_match', 'text_match'].includes(key));
-        for (const functionKey of individualKeys) {
+        for (const functionKey of FUNCTION_KEYS.filter((key) => !LEGACY_FUNCTION_KEYS.has(key))) {
             const binding = snapshot.functionBindings[functionKey];
-            section.appendChild(buildFunctionBindingRow({ functionKey, binding }));
-        }
-
-        const soulBinding = snapshot.functionBindings.soul_match;
-        const textBinding = snapshot.functionBindings.text_match;
-        const bindingsAlreadySynced = soulBinding.connectionPresetId === textBinding.connectionPresetId
-            && soulBinding.promptPresetId === textBinding.promptPresetId;
-        const sharedRow = element('section', { className: 'yl-settings-binding' });
-        sharedRow.appendChild(element('strong', { text: '灵魂匹配 / 文字匹配（共用）' }));
-        sharedRow.appendChild(element('p', {
-            className: 'yl-settings-summary',
-            text: bindingsAlreadySynced ? '当前已同步；保存时会同时更新灵魂匹配与文字匹配。' : '检测到旧设置未同步；以下选择以灵魂匹配为准，保存后会自动统一。',
-        }));
-        const sharedConnection = selectWithOptions([{ label: '使用默认连接', value: '' }, ...snapshot.connectionPresets.map((preset) => ({ label: preset.name, value: preset.id }))], soulBinding.connectionPresetId ?? '', '灵魂匹配和文字匹配共用连接预设', 'shared-match-connection-preset');
-        const sharedPrompt = selectWithOptions([{ label: '使用默认提示词', value: '' }, ...snapshot.promptPresets.map((preset) => ({ label: preset.name, value: preset.id }))], soulBinding.promptPresetId ?? '', '灵魂匹配和文字匹配共用提示词预设', 'shared-match-prompt-preset');
-        append(sharedRow, [field('共用连接', sharedConnection), field('共用提示词', sharedPrompt)]);
-        sharedRow.appendChild(actionButton('同步并保存匹配绑定', async () => updateSettings(() => {
-            const binding = { connectionPresetId: sharedConnection.value || null, promptPresetId: sharedPrompt.value || null };
-            settingsStore.bindFunction('soul_match', binding);
-            settingsStore.bindFunction('text_match', binding);
-        }, '灵魂匹配与文字匹配已使用同一对连接和提示词预设。'), signal, { secondary: true }));
-        section.appendChild(sharedRow);
-        return section;
-
-        function buildFunctionBindingRow({ functionKey, binding }) {
             const row = element('section', { className: 'yl-settings-binding' });
             row.appendChild(element('strong', { text: FUNCTION_LABELS[functionKey] }));
-            const connection = selectWithOptions([{ label: '使用默认连接', value: '' }, ...snapshot.connectionPresets.map((preset) => ({ label: preset.name, value: preset.id }))], binding.connectionPresetId ?? '', `${FUNCTION_LABELS[functionKey]}连接预设`, `${functionKey}-connection-preset`);
-            const prompt = selectWithOptions([{ label: '使用默认提示词', value: '' }, ...snapshot.promptPresets.map((preset) => ({ label: preset.name, value: preset.id }))], binding.promptPresetId ?? '', `${FUNCTION_LABELS[functionKey]}提示词预设`, `${functionKey}-prompt-preset`);
+            const connection = selectWithOptions(
+                [{ label: '使用默认连接', value: '' }, ...snapshot.connectionPresets.map((preset) => ({ label: preset.name, value: preset.id }))],
+                binding.connectionPresetId ?? '',
+                `${FUNCTION_LABELS[functionKey]}连接预设`,
+                `${functionKey}-connection-preset`,
+            );
+            const prompt = selectWithOptions(
+                [{ label: '使用默认提示词', value: '' }, ...snapshot.promptPresets.map((preset) => ({ label: preset.name, value: preset.id }))],
+                binding.promptPresetId ?? '',
+                `${FUNCTION_LABELS[functionKey]}提示词预设`,
+                `${functionKey}-prompt-preset`,
+            );
             append(row, [field('连接', connection), field('提示词', prompt)]);
             row.appendChild(actionButton('保存此功能绑定', async () => updateSettings(() => settingsStore.bindFunction(functionKey, {
-                connectionPresetId: connection.value || null, promptPresetId: prompt.value || null,
+                connectionPresetId: connection.value || null,
+                promptPresetId: prompt.value || null,
             }), `${FUNCTION_LABELS[functionKey]}绑定已保存。`), signal, { secondary: true }));
-            return row;
+            section.appendChild(row);
         }
+        return section;
     }
 
     function buildPromptTransferSection(snapshot) {
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
-            element('h2', { text: '提示词预设导入 / 导出' }),
-            element('p', { className: 'yl-phone-page-description', text: '仅导入或导出全部提示词预设；不会包含连接预设、API Key、MVU 状态、聊天或角色隐私资料。导入会保留仍可用的连接绑定，并清理指向已不存在提示词预设的绑定。' }),
+            sectionHeading('⇅', '提示词预设导入 / 导出'),
+            element('p', { className: 'yl-phone-page-description', text: '仅导入或导出全部提示词预设；不会包含 API Key、MVU 状态、聊天或角色隐私资料。导入会清理指向已不存在提示词预设的功能绑定。' }),
         ]);
         const json = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 8, name: 'prompt-preset-transfer-json', placeholder: '点击导出生成 JSON，或粘贴提示词预设 JSON 后导入', maxLength: MAX_PROMPT_BUNDLE_BYTES, ariaLabel: '提示词预设导入导出 JSON' });
         section.appendChild(json);
@@ -592,7 +917,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         controls.appendChild(actionButton('导出全部提示词预设 JSON', async () => {
             try {
                 json.value = buildPromptBundle(snapshot);
-                onFeedback('已生成提示词预设 JSON；其中不包含连接预设或 API Key。');
+                onFeedback('已生成提示词预设 JSON；其中不包含 API Key 或角色隐私资料。');
             } catch (error) {
                 onFeedback(safeErrorMessage(error, '无法导出提示词预设。'));
             }
@@ -609,11 +934,10 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                 }
             }
             settingsStore.importJson(JSON.stringify(document));
-        }, '提示词预设已导入；连接预设和 API Key 均未被导入。'), signal, { secondary: true }));
+        }, '提示词预设已导入；API Key 未被导入。'), signal, { secondary: true, danger: true }));
         section.appendChild(controls);
         return section;
     }
 }
-
 
 

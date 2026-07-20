@@ -1,5 +1,5 @@
 import { LATEST_MESSAGE_SCOPE, buildUpdateVariable, validateControlledPatchAgainstState } from './controlled-patch.js';
-import { isPlainRecord } from './json-pointer.js';
+import { getAtPointer, isPlainRecord } from './json-pointer.js';
 
 function unavailable(code) {
     return { ok: false, status: 'unavailable', code };
@@ -18,6 +18,48 @@ function validMvuApi(mvu) {
 function cloneReadOnly(value) {
     if (typeof structuredClone !== 'function') return value;
     return structuredClone(value);
+}
+
+function sameJsonValue(left, right) {
+    if (Object.is(left, right)) return true;
+    if (Array.isArray(left) || Array.isArray(right)) {
+        if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+        return left.every((value, index) => sameJsonValue(value, right[index]));
+    }
+    if (isPlainRecord(left) || isPlainRecord(right)) {
+        if (!isPlainRecord(left) || !isPlainRecord(right)) return false;
+        const leftKeys = Object.keys(left);
+        const rightKeys = Object.keys(right);
+        if (leftKeys.length !== rightKeys.length) return false;
+        return leftKeys.every((key) => Object.hasOwn(right, key) && sameJsonValue(left[key], right[key]));
+    }
+    return false;
+}
+
+function cloneJsonValue(value) {
+    if (Array.isArray(value)) return value.map(cloneJsonValue);
+    if (isPlainRecord(value)) {
+        const clone = {};
+        for (const [key, item] of Object.entries(value)) clone[key] = cloneJsonValue(item);
+        return clone;
+    }
+    return value;
+}
+
+function validateProviderPostconditions(state, patch) {
+    for (const [operationIndex, operation] of patch.entries()) {
+        if (operation.op !== 'replace') continue;
+        let result;
+        try {
+            result = getAtPointer(state, operation.path);
+        } catch {
+            return { ok: false, operationIndex, path: operation.path };
+        }
+        if (!result.found || !sameJsonValue(result.value, operation.value)) {
+            return { ok: false, operationIndex, path: operation.path };
+        }
+    }
+    return { ok: true };
 }
 
 function resolveEventEmitter({ eventEmit, getContext }) {
@@ -78,7 +120,10 @@ export async function applyControlledPatch({
     }
     if (!isPlainRecord(oldData) || !isPlainRecord(oldData.stat_data)) return unavailable('mvu_stat_data_unavailable');
 
-    const stateValidation = validateControlledPatchAgainstState(oldData.stat_data, patch);
+    const oldStateSnapshot = cloneJsonValue(oldData.stat_data);
+    const eventOldData = { ...oldData, stat_data: oldStateSnapshot };
+
+    const stateValidation = validateControlledPatchAgainstState(oldStateSnapshot, patch);
     if (!stateValidation.ok) return { ok: false, status: 'rejected', code: stateValidation.code, detail: stateValidation.detail };
 
     const wrapped = buildUpdateVariable(patch);
@@ -91,6 +136,27 @@ export async function applyControlledPatch({
         return failed('mvu_parse_failed', error);
     }
     if (!isPlainRecord(newData)) return { ok: false, status: 'no_change', code: 'mvu_parse_returned_no_data' };
+    if (!isPlainRecord(newData.stat_data)) {
+        return { ok: false, status: 'no_change', code: 'mvu_parse_returned_no_stat_data' };
+    }
+    // Some MVU builds resolve with an unchanged MvuData when a schema silently
+    // rejects every command; treat that as a rejection instead of a fake success.
+    if (sameJsonValue(newData.stat_data, oldStateSnapshot)) {
+        return { ok: false, status: 'no_change', code: 'mvu_parse_made_no_change' };
+    }
+
+    // A provider may return a cloned MvuData even when a command was dropped.
+    // Verify every deterministic replace (including content-mode toggle) before
+    // allowing replaceMvuData; this is postcondition checking, not a second write.
+    const postconditions = validateProviderPostconditions(newData.stat_data, patch);
+    if (!postconditions.ok) {
+        return {
+            ok: false,
+            status: 'no_change',
+            code: 'mvu_parse_postcondition_failed',
+            detail: { operationIndex: postconditions.operationIndex, path: postconditions.path },
+        };
+    }
 
     try {
         await mvu.replaceMvuData(newData, scope);
@@ -99,7 +165,7 @@ export async function applyControlledPatch({
     }
 
     try {
-        await emit(mvu.events.VARIABLE_UPDATE_ENDED, newData, oldData);
+        await emit(mvu.events.VARIABLE_UPDATE_ENDED, newData, eventOldData);
     } catch (error) {
         // replaceMvuData already succeeded; report a degraded completion rather than
         // retrying a write or falsely claiming that no state changed.

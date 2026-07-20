@@ -67,7 +67,20 @@ test('meetup bridge persists before appending the host textarea draft and never 
     const mvu = {
         events: { VARIABLE_UPDATE_ENDED: 'variable_update_ended' },
         getMvuData(scope) { calls.push(['get', scope]); return data; },
-        async parseMessage(raw, oldData) { calls.push(['parse', raw]); return structuredClone(oldData); },
+        async parseMessage(raw, oldData) {
+            calls.push(['parse', raw]);
+            const next = structuredClone(oldData);
+            const patch = JSON.parse(raw.match(/<JSONPatch>([\s\S]*?)<\/JSONPatch>/u)[1]);
+            for (const operation of patch) {
+                if (operation.op === 'add' && operation.path.startsWith('/面基记录/')) {
+                    next['stat_data']['面基记录'][operation.path.split('/').at(-1)] = operation.value;
+                }
+                if (operation.op === 'replace' && operation.path === '/系统/UID计数器/面基') {
+                    next['stat_data']['系统']['UID计数器']['面基'] = operation.value;
+                }
+            }
+            return next;
+        },
         async replaceMvuData(nextData, scope) { calls.push(['replace', scope]); },
     };
     const textarea = {

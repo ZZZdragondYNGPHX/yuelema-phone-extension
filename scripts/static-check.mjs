@@ -9,17 +9,17 @@ const requiredFiles = [
     'src/app-shell.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js',
     'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/test/openai-compatible-client.test.mjs',
-    'src/settings/settings-store.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js',
-    'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs',
+    'src/settings/settings-store.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
+    'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
     'src/recommendation/candidate.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/soul-text-match-service.js',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js',
     'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs',
-    'src/test-support/minidom.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
-    'src/characters/test/character-template-codec.test.mjs', 'src/characters/test/character-library-store.test.mjs', 'src/characters/test/avatar-codec.test.mjs', 'src/characters/test/character-authoring-service.test.mjs', 'src/characters/test/character-creator-panel.test.mjs',
+    'src/test-support/minidom.mjs', 'src/launcher-drag.js', 'src/ui/test/launcher-drag.test.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/character-template-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
+    'src/characters/test/character-template-codec.test.mjs', 'src/characters/test/character-library-store.test.mjs', 'src/characters/test/character-template-library-store.test.mjs', 'src/characters/test/avatar-codec.test.mjs', 'src/characters/test/character-authoring-service.test.mjs', 'src/characters/test/character-creator-panel.test.mjs',
     'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs',
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
-    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs',
+    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-ux.test.mjs',
 ];
 
 function fail(message) {
@@ -40,7 +40,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '0.1.1') fail('manifest.version 必须与约了吗 MVU v0.1.1 角色卡统一');
+if (manifest.version !== '0.1.3') fail('manifest.version 必须与扩展版本 0.1.3 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
 if (manifest?.hooks?.activate !== 'onActivate') fail('manifest.hooks.activate 必须指向 onActivate');
 if (manifest?.hooks?.disable !== 'onDisable') fail('manifest.hooks.disable 必须指向 onDisable，确保禁用即清理会话密钥');
@@ -52,8 +52,8 @@ const sourceFiles = [
     'src/app-shell.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js',
     'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/test/openai-compatible-client.test.mjs',
-    'src/settings/settings-store.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js',
-    'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs',
+    'src/settings/settings-store.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
+    'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
     'src/recommendation/candidate.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/soul-text-match-service.js',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js',
     'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs',
@@ -62,7 +62,7 @@ const sourceFiles = [
     'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs',
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
-    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs',
+    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-ux.test.mjs',
 ].map(relativePath => resolve(root, relativePath));
 const sourceText = await Promise.all(sourceFiles.map(path => readFile(path, 'utf8')));
 const allSource = sourceText.join('\n');
@@ -106,10 +106,10 @@ console.log('✓ 五导航定义');
 for (const marker of ['readLatestState', 'buildControlledPatch', 'applyControlledPatch', 'runMvuAction']) {
     if (!actionBridge.includes(marker)) fail(`缺少 MVU 受控接线：${marker}`);
 }
-for (const marker of ['喜欢', '刷新', '收藏', '不喜欢', 'advance_content_mode_gate']) {
+for (const marker of ['喜欢', '刷新', '收藏', '不喜欢', 'toggle_content_mode']) {
     if (!appShell.includes(marker)) fail(`缺少受控 UI 操作：${marker}`);
 }
-console.log('✓ 推荐四按钮、五击暗门与官方 MVU 回收链接线');
+console.log('✓ 推荐四按钮、本地五击暗门、显式内容模式切换与官方 MVU 回收链接线');
 
 if (/隐藏资料|仅好友资料/u.test(appShell)) fail('app-shell 不得读取或渲染隐藏/仅好友资料');
 if (/\.\.\.\s*profile|Object\.entries\(profile\)/u.test(uiModel)) fail('公开资料投影不得枚举或展开完整角色资料');
@@ -142,18 +142,22 @@ console.log('✓ 阶段 3 推荐刷新候选校验、模型绑定与受控 Patch
 
 const characterTemplateCodec = await readFile(resolve(root, 'src/characters/character-template-codec.js'), 'utf8');
 const characterLibraryStore = await readFile(resolve(root, 'src/characters/character-library-store.js'), 'utf8');
+const characterTemplateLibraryStore = await readFile(resolve(root, 'src/characters/character-template-library-store.js'), 'utf8');
 const avatarCodec = await readFile(resolve(root, 'src/characters/avatar-codec.js'), 'utf8');
 const characterCreator = await readFile(resolve(root, 'src/characters/character-creator-panel.js'), 'utf8');
 if (!characterTemplateCodec.includes('normalizeGeneratedCandidate') || !characterTemplateCodec.includes('includeAvatar')) fail('缺少角色模板成年人校验或可选头像导出');
-if (!characterLibraryStore.includes('MAX_CHARACTER_LIBRARY_TEMPLATES') || !characterLibraryStore.includes('importCharacterTemplate') || !characterLibraryStore.includes('exportCharacterTemplate')) fail('缺少本地角色模板库及 codec 接线');
+if (!characterLibraryStore.includes('MAX_CHARACTER_LIBRARY_TEMPLATES') || !characterLibraryStore.includes('importCharacterTemplate') || !characterLibraryStore.includes('exportCharacterTemplate')) fail('缺少历史本地角色模板库及 codec 接线');
+if (!characterTemplateLibraryStore.includes('createCharacterTemplateLibraryStore') || !characterTemplateLibraryStore.includes('saveDraft') || !characterTemplateLibraryStore.includes('importLibraryJson') || !characterTemplateLibraryStore.includes('exportLibraryJson')) fail('缺少新版本地角色模板库的生成、存储、导入导出能力');
 if (!avatarCodec.includes('compressLocalAvatar') || !avatarCodec.includes('MAX_SOURCE_AVATAR_BYTES') || !avatarCodec.includes('projectAvatarError')) fail('缺少本地头像压缩与安全错误投影');
 if (!characterCreator.includes('registerCharacter') || !characterCreator.includes('importCharacterTemplate') || !characterCreator.includes('compressLocalAvatar')) fail('缺少角色创建/导入/头像/MVU 登记接线');
-if (!controlledPatch.includes('buildCharacterRegistrationPatch') || !actionBridge.includes('registerCharacter') || !index.includes('createCharacterLibraryStore')) fail('缺少角色受控登记或本地模板库实例化接线');
+if (!controlledPatch.includes('buildCharacterRegistrationPatch') || !actionBridge.includes('registerCharacter') || !index.includes('createCharacterTemplateLibraryStore')) fail('缺少角色受控登记或新版本地模板库实例化接线');
 const characterAuthoringService = await readFile(resolve(root, 'src/characters/character-authoring-service.js'), 'utf8');
-if (!characterAuthoringService.includes('generateCharacterCompletionCandidate') || !characterAuthoringService.includes('generateCharacterAuthoringCandidate') || !characterAuthoringService.includes("resolveFunction('character_authoring')")) fail('缺少角色补全/完整创作模型服务或功能绑定');
+if (!characterAuthoringService.includes('generateCharacterCompletionCandidate') || !characterAuthoringService.includes('generateCharacterAuthoringCandidate') || !characterAuthoringService.includes("functionKey: 'character_ai_completion'") || !characterAuthoringService.includes("functionKey: 'character_full_authoring'")) fail('缺少角色补全/完整创作模型服务或独立功能绑定');
 if (!characterCreator.includes('AI 补全 / 完整创作') || !characterCreator.includes('generateCharacterCompletionDraft') || !characterCreator.includes('generateCharacterAuthoringDraft')) fail('缺少只载入草稿的 AI 角色创作 UI 接线');
 if (!actionBridge.includes('generateCharacterCompletionDraft') || !actionBridge.includes('generateCharacterAuthoringDraft')) fail('缺少 AI 角色创作受控桥接');
-console.log('✓ 角色模板、本地头像、AI 补全/完整创作草稿与受控登记接线');
+if (!appShell.includes('createLauncherDragController') || !appShell.includes('launcherDrag.dispose')) fail('缺少小手机悬浮入口拖动控制器接线');
+if (!characterCreator.includes('只保存当前草稿到本地模板库') || !characterCreator.includes('导入单个模板到本地库') || !characterCreator.includes('合并导入整个模板库') || !characterCreator.includes('导出整个库')) fail('缺少创建角色界面的模板库生成、存储、导入导出 UI 接线');
+console.log('✓ 角色模板、本地头像、AI 补全/完整创作草稿、模板库与受控登记接线');
 
 const groupDiscoveryService = await readFile(resolve(root, 'src/groups/group-discovery-service.js'), 'utf8');
 if (!groupDiscoveryService.includes('buildGroupBrowseModel') || !groupDiscoveryService.includes('listGroupDiscoverableCharacters') || !groupDiscoveryService.includes('projectPublicGroupCharacter')) fail('缺少群组公开浏览或发现人物投影服务');
