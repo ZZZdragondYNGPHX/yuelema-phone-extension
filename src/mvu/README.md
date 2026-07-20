@@ -12,7 +12,7 @@
 - **绝不**给 `stat_data`、聊天元数据或 `replaceVariables()` 直接赋值。
 - 不接受调用方给出的任意 JSON Pointer、UID、对象值或模型原文。
 - 角色 UID 只认可 `npc_…`，且必须已经存在于角色池或临时候选池，并通过 `成人验证=true` + `隐藏资料.实际年龄≥18` 校验。
-- Patch 仅允许收藏/不喜欢/刷新冷却、候选升级、喜欢状态与五击 SFW/NSFW 暗门所需的最小路径；不允许修改玩家资料、隐藏资料、关系数值、会话或面基记录。
+- Patch 仅允许公开资料保存、推荐反馈/收藏/冷却、候选升级、收藏主动私聊判定、独立匹配会话、既有私聊与面基所需的最小路径；不允许 UI 或模型直接提供路径、UID、隐藏资料、关系数值或会话内容。
 - 候选升级用 JSONPatch `move`，不把隐藏资料复制进 UI 命令或外部输入。
 - MVU 或变量事件接口缺失时返回 `unavailable`，不尝试降级写入。
 
@@ -34,10 +34,13 @@ buildControlledPatch(state, { kind: 'favorite', npcUid })
 buildControlledPatch(state, { kind: 'dislike', npcUid })
 buildControlledPatch(state, { kind: 'refresh', npcUid })
 buildControlledPatch(state, { kind: 'unfavorite', npcUid })
+buildControlledPatch(state, { kind: 'start_private_chat', npcUid })
 buildControlledPatch(state, { kind: 'advance_content_mode_gate' })
 ```
 
 `refresh` 只回收当前对象进入冷却和移出当前队列；下一位候选人的快速 LLM 生成属于后续独立阶段，必须先经过角色草稿/成年人/Schema 校验后才能另行进入临时候选池。
+
+`start_private_chat` 只接受收藏中的成年人角色。它在受控边界内以玩家和角色的**公开心动名片字段**、公开关键词与本地 `-5…5` 标签权重计算邀请分数，再与角色创建页“互动节奏”中的 `拒绝阈值` 比较：通过时才创建会话；未通过则只留下 `已取消` 状态、移出收藏，不创建会话。灵魂/语音匹配的模型输出先被本地物化为完整成年人角色，再经独立的受控 Patch 创建“已匹配”会话；不读取或复用收藏角色。
 
 ## 测试
 

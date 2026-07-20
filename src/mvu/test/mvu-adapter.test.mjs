@@ -68,14 +68,15 @@ test('favorite promotes a trusted candidate by move without serializing its hidd
     assert.doesNotMatch(wrapped.value, /不得进入 UI/);
 });
 
-test('like uses the local two-layer score, then atomically creates a matched session', () => {
+test('like only records homepage feedback and never creates a role or matched session', () => {
     const result = buildControlledPatch(stateFixture(), { kind: 'like', npcUid: 'npc_alpha' });
     assert.equal(result.ok, true);
-    assert.deepEqual(result.value.map((operation) => operation.op), ['move', 'replace', 'replace', 'add', 'replace', 'remove']);
-    assert.equal(result.value[1].path, '/角色池/npc_alpha/与玩家关系/NPC专属匹配度');
-    assert.equal(result.value[2].path, '/角色池/npc_alpha/与玩家关系/状态');
-    assert.equal(result.value[2].value, '已匹配');
-    assert.equal(result.value[3].path, '/会话/chat_1');
+    assert.deepEqual(result.value, [
+        { op: 'add', path: '/推荐/冷却角色UID/-', value: 'npc_alpha' },
+        { op: 'remove', path: '/推荐/当前队列/0' },
+    ]);
+    assert.equal(result.value.some((operation) => operation.path.startsWith('/角色池/')), false);
+    assert.equal(result.value.some((operation) => operation.path.startsWith('/会话/')), false);
 });
 
 test('dislike and refresh do not promote a candidate or accept arbitrary paths', () => {

@@ -90,7 +90,7 @@ test('private chat view exposes only public profile and session-visible transcri
 test('matched view exposes only public profile and a fixed public status', () => {
     const matched = profile();
     matched.与玩家关系 = { 状态: '已匹配', 全局账号表现: 88, NPC专属匹配度: 99 };
-    const matches = projectMatchView({ 角色池: { npc_lc: matched } });
+    const matches = projectMatchView({ 角色池: { npc_match_1: matched } });
     assert.equal(matches.length, 1);
     assert.deepEqual(matches[0].status, '已匹配');
     const serialized = JSON.stringify(matches);

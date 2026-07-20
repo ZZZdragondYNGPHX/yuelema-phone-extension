@@ -533,3 +533,66 @@ test('candidate match draft reads through MVU but never commits a patch or event
     assert.equal(requests.length, 1);
     assert.doesNotMatch(JSON.stringify(result), /UID|隐藏资料|关系分|阈值|private-key/u);
 });
+
+test('soul match creates an independent npc_match session and never promotes a favourite or queue candidate', async () => {
+    const initialState = recommendationState();
+    initialState.会话 = {};
+    initialState.系统 = { UID计数器: { 角色: 12, 会话: 4 } };
+    initialState.推荐.收藏角色UID = ['npc_ava'];
+    const { mvu, calls } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: {
+            snapshot() { return { personalization: { keywordWeights: [{ keyword: '电影', weight: 3 }] } }; },
+            resolveFunction(key) { assert.equal(key, 'soul_match'); return { connectionPreset, promptPreset: { enabled: true, content: '' } }; },
+        },
+        llmClient: { async chat() {
+            return { text: JSON.stringify({
+                profile: {
+                    昵称: '林夏', 年龄段: '25-29', 性别: '女', 性取向: '双性恋', 城市: '上海', 距离范围: '10 km',
+                    寻找意图: '先聊天再认真约会', 简介: '喜欢电影和夜跑。', 兴趣标签: ['电影'], 生活方式标签: ['夜猫子'], 性格标签: ['慢热'], 沟通风格标签: ['及时回应'],
+                }, explanation: '公开兴趣接近。', matchScore: 88,
+            }) };
+        } },
+    });
+
+    const result = await bridge.runCandidateMatch('soul');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual([result.npcUid, result.sessionUid], ['npc_match_13', 'chat_5']);
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
+    const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
+    assert.match(wrappedPatch, /角色池\/npc_match_13|角色池~1npc_match_13/u);
+    assert.match(wrappedPatch, /会话\/chat_5|会话~1chat_5/u);
+    assert.doesNotMatch(wrappedPatch, /收藏角色UID|当前队列|临时候选池\/npc_ava/u);
+});
+
+test('voice match first resolves transient voice keywords and then commits the same independent mutual-match session', async () => {
+    const initialState = recommendationState();
+    initialState.会话 = {};
+    initialState.系统 = { UID计数器: { 角色: 5, 会话: 1 } };
+    const { mvu, calls } = createMvu({ initialState });
+    let modelCall = 0;
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: {
+            snapshot() { return { personalization: { keywordWeights: [{ keyword: '电影', weight: 1 }] } }; },
+            resolveFunction(key) { assert.equal(key, 'text_match'); return { connectionPreset, promptPreset: { enabled: true, content: '' } }; },
+        },
+        llmClient: { async chat() {
+            modelCall += 1;
+            if (modelCall === 1) return { text: '{"keywordWeights":[{"keyword":"逛展","weight":5}]}' };
+            return { text: JSON.stringify({
+                profile: {
+                    昵称: '顾言', 年龄段: '26-31', 性别: '男', 性取向: '双性恋', 城市: '上海', 距离范围: '15 km',
+                    寻找意图: '想认真认识一个人', 简介: '周末喜欢看展和散步。', 兴趣标签: ['逛展'], 生活方式标签: ['周末出行'], 性格标签: ['温和'], 沟通风格标签: ['认真倾听'],
+                }, explanation: '本次语音关键词优先。', matchScore: 90,
+            }) };
+        } },
+    });
+
+    const result = await bridge.runCandidateMatch('voice', { voiceText: '想找愿意一起逛展、认真聊天的人。' });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual([result.npcUid, result.sessionUid], ['npc_match_6', 'chat_2']);
+    assert.equal(modelCall, 2, '语音匹配应先解析关键词，再生成候选人');
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
+});

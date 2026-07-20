@@ -399,6 +399,9 @@
     font-size: 1.05rem;
     font-weight: 700;
 }
+.yl-person-avatar-button { padding: 0; overflow: hidden; cursor: pointer; }
+.yl-person-avatar-button:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.yl-person-avatar-button img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .yl-candidate-avatar { cursor: pointer; transition: transform var(--yl-t-fast) var(--yl-ease), box-shadow var(--yl-t-fast) var(--yl-ease); }
 .yl-candidate-avatar:hover { transform: scale(1.06); box-shadow: var(--yl-glow-accent); }
 .yl-candidate-avatar-placeholder { cursor: default; }
@@ -831,7 +834,8 @@
 .yl-center-entry span:nth-child(3) { color: var(--yl-faint, #8d7f9b); font-size: .72rem; }
 .yl-center-entry span:last-child { color: var(--yl-faint, #8d7f9b); font-size: 1.2rem; }
 .yl-favorite-card {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
     gap: 11px;
     padding: 12px 14px;
@@ -839,6 +843,10 @@
     border-radius: var(--yl-r-md, 16px);
     background: var(--yl-surface, rgb(255 255 255 / 6%));
 }
+.yl-favorite-actions { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding-top: 2px; }
+.yl-favorite-actions .yl-settings-button { min-height: 38px; padding: 8px 10px; font-size: .76rem; }
+.yl-favorite-cancel { border-color: rgb(255 130 178 / 38%); color: #ffddea; background: rgb(255 78 142 / 9%); }
+.yl-favorite-chat { border-color: transparent; color: #fff; background: var(--yl-grad, linear-gradient(135deg, #ff4e8e, #8e6bff)); }
 .yl-profile-editor .yl-settings-field { padding: 10px; border: 1px solid var(--yl-border, rgb(255 255 255 / 13%)); border-radius: var(--yl-r-sm, 10px); background: rgb(255 255 255 / 3%); }
 .yl-profile-editor .yl-settings-button { justify-self: start; }
 
@@ -1350,6 +1358,11 @@
 }
 .yl-settings-modal[hidden] { display: none; }
 .yl-settings-modal p { white-space: pre-line; }
+.yl-avatar-modal { width: min(320px, calc(100vw - 32px)); }
+.yl-avatar-modal .yl-settings-button { min-height: 40px; }
+.yl-avatar-remove { border-color: rgb(255 92 116 / 58%); color: #ffd5de; background: rgb(255 92 116 / 10%); }
+.yl-chat-contact-avatar[role="button"] { cursor: pointer; }
+.yl-chat-contact-avatar[role="button"]:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
 
 /* ============ 毛玻璃渐进增强 ============ */
 @supports (backdrop-filter: blur(4px)) or (-webkit-backdrop-filter: blur(4px)) {

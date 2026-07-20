@@ -167,6 +167,29 @@ test('private chat preserves its draft and projects a safe failure when the stat
     }
 });
 
+test('private-chat contact avatar opens only the contact public profile', () => {
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-private-chat-avatar-profile',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        const avatar = miniDom.document.querySelector('.yl-chat-contact-avatar');
+        assert.equal(avatar.getAttribute('role'), 'button');
+        assert.equal(avatar.getAttribute('tabindex'), '0');
+        click(avatar);
+        const profile = miniDom.document.querySelector('.yl-public-profile');
+        assert.ok(profile);
+        assert.match(profile.textContent, /林澈|公开简介/u);
+        assert.doesNotMatch(profile.textContent, /friend-secret-must-not-render|hidden-secret-must-not-render|实际年龄|chat_lin|npc_lin/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
 test('a late private-chat failure stays silent after the user left the conversation', async () => {
     const response = deferred();
     let pending = false;

@@ -145,6 +145,11 @@ function normalizeAvatar(input) {
     }
 }
 
+/** Reuses the exact local/avatar URL policy for non-template presentation stores. */
+export function normalizeAvatarReference(input) {
+    return Object.freeze(normalizeAvatar(input));
+}
+
 function normalizeCharacter(character) {
     try {
         return normalizeGeneratedCandidate(character);

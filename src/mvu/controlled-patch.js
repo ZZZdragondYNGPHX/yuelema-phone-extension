@@ -2,7 +2,7 @@ import { decodeJsonPointer, encodeJsonPointer, getAtPointer, isPlainRecord } fro
 import { normalizeGeneratedCandidate } from '../recommendation/candidate.js';
 import { normalizePrivateChatResponse } from '../chat/private-chat-response.js';
 import { validatePrivateChatRequest } from '../chat/private-chat-service.js';
-import { scorePublicCompatibility, scoreTwoLayerMatch } from '../recommendation/match-scoring.js';
+import { scoreFavoritePrivateChatInvitation } from '../recommendation/match-scoring.js';
 import { normalizeSoulMatchDraft } from '../recommendation/soul-text-match-service.js';
 
 export const LATEST_MESSAGE_SCOPE = Object.freeze({ type: 'message', message_id: 'latest' });
@@ -425,6 +425,59 @@ function matchedSession(npcUid) {
     };
 }
 
+function matchCandidateForRole(candidate, contentMode) {
+    const normalized = normalizeGeneratedCandidate(candidate, { requirePersonalName: true, contentMode });
+    return {
+        ...normalized,
+        与玩家关系: { ...normalized.与玩家关系, 状态: '已匹配' },
+    };
+}
+
+function matchCandidateSourceFromRole(candidate) {
+    if (!ownRecord(candidate) || !ownRecord(candidate.与玩家关系) || candidate.与玩家关系.状态 !== '已匹配') {
+        throw new TypeError('match_candidate_state_invalid');
+    }
+    return {
+        ...candidate,
+        与玩家关系: { ...candidate.与玩家关系, 状态: '陌生' },
+    };
+}
+
+/**
+ * Commits one independently AI-generated mutual match.  The source candidate
+ * has already passed the public-only match codec and was materialized locally;
+ * this boundary allocates every UID, moves no existing recommendation and
+ * creates the matching message session atomically.
+ */
+export function buildCandidateMatchSessionPatch(state, { candidate } = {}) {
+    if (!ownRecord(state)) return fail('candidate_match_state_invalid');
+    const rolePool = ownRecord(state.角色池);
+    const sessions = ownRecord(state.会话);
+    const counters = ownRecord(state.系统)?.UID计数器;
+    const roleCounter = counters?.角色;
+    const sessionCounter = counters?.会话;
+    const contentMode = ownRecord(state.软件)?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+    if (!rolePool || !sessions || !Number.isInteger(roleCounter) || roleCounter < 0 || roleCounter >= 999999
+        || !Number.isInteger(sessionCounter) || sessionCounter < 0 || sessionCounter >= 999999) {
+        return fail('candidate_match_state_invalid');
+    }
+    let matchedCandidate;
+    try { matchedCandidate = matchCandidateForRole(candidate, contentMode); }
+    catch { return fail('candidate_match_candidate_invalid'); }
+    const npcUid = `npc_match_${roleCounter + 1}`;
+    const sessionUid = `chat_${sessionCounter + 1}`;
+    if (!isNpcUid(npcUid) || roleAt(state, npcUid) || candidateAt(state, npcUid)
+        || !isChatSessionUid(sessionUid) || sessions[sessionUid]) {
+        return fail('candidate_match_uid_conflict');
+    }
+    return success([
+        { op: 'add', path: encodeJsonPointer(['角色池', npcUid]), value: matchedCandidate },
+        { op: 'add', path: encodeJsonPointer(['会话', sessionUid]), value: matchedSession(npcUid) },
+        { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '角色']), value: roleCounter + 1 },
+        { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '会话']), value: sessionCounter + 1 },
+    ]);
+}
+
 const PREFERENCE_TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
 
 function publicTagsForPreference(profile) {
@@ -463,61 +516,70 @@ function appendPreferenceWeightOperations(state, profile, delta, operations) {
 }
 
 /**
- * Resolves a player like locally. The score is deterministic: global account
- * performance is combined with public-profile compatibility, and only the
- * NPC's locally configured refusal threshold decides the result.
+ * Records a homepage “喜欢” purely as recommendation feedback.  It does not
+ * create a relationship, a matched session, or a role-pool entry; saving a
+ * person is the separate 收藏 action and mutual matching belongs to the
+ * dedicated AI matching tools.
  */
 export function buildLikeMatchPatch(state, { npcUid } = {}) {
-    if (!ownRecord(state) || !isNpcUid(npcUid)) return fail('like_match_invalid_command');
+    if (!ownRecord(state) || !isNpcUid(npcUid)) return fail('like_preference_invalid_command');
     const adult = assertKnownAdult(state, npcUid);
     if (!adult.ok) return adult;
     const profile = adult.value.profile;
     const relation = ownRecord(profile.与玩家关系);
-    const player = ownRecord(state.玩家);
-    const playerPublic = ownRecord(player?.公开资料);
-    const npcPublic = ownRecord(profile.公开资料);
-    const sessionCounter = ownRecord(state.系统)?.UID计数器?.会话;
     const queue = arrayAt(state, '当前队列');
-    const favorites = arrayAt(state, '收藏角色UID');
-    if (!relation || !playerPublic || !npcPublic || !queue || !favorites || !Number.isInteger(sessionCounter) || sessionCounter < 0 || sessionCounter >= 999999) {
-        return fail('like_match_state_invalid');
-    }
-    if (profile.成人验证 !== true || player?.成人验证 !== true || relation.状态 !== '陌生') return fail('npc_not_available_for_like');
-    const queued = queue.includes(npcUid);
-    const favorited = favorites.includes(npcUid);
-    // A public card can remain visible in the favourites list after its candidate
-    // record was promoted. Liking that saved card is still a valid user action;
-    // arbitrary role-pool records remain unavailable because they are neither
-    // actively queued nor explicitly saved as favourites.
-    if (!queued && !favorited) return fail('like_match_source_not_available');
-    if (!Number.isInteger(relation.全局账号表现) || relation.全局账号表现 < 0 || relation.全局账号表现 > 100
-        || !Number.isInteger(profile.拒绝阈值) || profile.拒绝阈值 < 0 || profile.拒绝阈值 > 100) return fail('like_match_score_invalid');
-    if (hasSessionForNpc(state, npcUid)) return fail('like_match_session_exists');
-
-    const compatibility = scorePublicCompatibility(playerPublic, npcPublic);
-    const overall = scoreTwoLayerMatch(relation.全局账号表现, compatibility.npcSpecificScore);
-    if (overall === null) return fail('like_match_score_invalid');
+    if (!relation || !queue) return fail('like_preference_state_invalid');
+    if (profile.成人验证 !== true || relation.状态 !== '陌生') return fail('npc_not_available_for_like');
+    if (!queue.includes(npcUid)) return fail('like_preference_source_not_available');
 
     const operations = [];
-    const promotion = promoteCandidateIfNeeded(state, npcUid, operations);
-    if (!promotion.ok) return promotion;
-    operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', 'NPC专属匹配度']), value: compatibility.npcSpecificScore });
-
-    if (overall >= profile.拒绝阈值) {
-        const sessionUid = `chat_${sessionCounter + 1}`;
-        if (!isChatSessionUid(sessionUid) || ownRecord(state.会话)?.[sessionUid]) return fail('like_match_session_uid_conflict');
-        operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', '状态']), value: '已匹配' });
-        operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid]), value: matchedSession(npcUid) });
-        operations.push({ op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '会话']), value: sessionCounter + 1 });
-    } else {
-        operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', '状态']), value: '已取消' });
-    }
-    if (queued) {
-        const removed = removeUidFromQueue(state, npcUid, operations);
-        if (!removed.ok) return removed;
-    }
+    const cooled = addUidOnce(state, '冷却角色UID', npcUid, operations);
+    if (!cooled.ok) return cooled;
+    const removed = removeUidFromQueue(state, npcUid, operations);
+    if (!removed.ok) return removed;
     const preference = appendPreferenceWeightOperations(state, profile, 3, operations);
     if (!preference.ok) return preference;
+    return success(operations);
+}
+
+/** Moves a saved candidate into an immediately usable private-chat session. */
+export function buildFavoritePrivateChatPatch(state, { npcUid } = {}) {
+    if (!ownRecord(state) || !isNpcUid(npcUid)) return fail('favorite_private_chat_invalid_command');
+    const adult = assertKnownAdult(state, npcUid);
+    if (!adult.ok) return adult;
+    if (adult.value.location !== 'role') return fail('favorite_private_chat_source_invalid');
+    const favorites = arrayAt(state, '收藏角色UID');
+    const relationship = ownRecord(adult.value.profile.与玩家关系);
+    const playerPublic = ownRecord(ownRecord(state.玩家)?.公开资料);
+    const weights = ownRecord(ownRecord(state.玩家)?.推荐偏好)?.标签权重;
+    const npcPublic = ownRecord(adult.value.profile.公开资料);
+    const refusalThreshold = adult.value.profile.拒绝阈值;
+    const sessionCounter = ownRecord(state.系统)?.UID计数器?.会话;
+    if (!favorites || !relationship || !playerPublic || !weights || !npcPublic
+        || !Number.isInteger(refusalThreshold) || refusalThreshold < 0 || refusalThreshold > 100
+        || !Number.isInteger(sessionCounter) || sessionCounter < 0 || sessionCounter >= 999999) {
+        return fail('favorite_private_chat_state_invalid');
+    }
+    const favoriteIndex = favorites.indexOf(npcUid);
+    if (favoriteIndex < 0) return fail('favorite_private_chat_not_favorited');
+    if (relationship.状态 !== '陌生' || hasSessionForNpc(state, npcUid)) return fail('favorite_private_chat_already_started');
+    const invitation = scoreFavoritePrivateChatInvitation(playerPublic, npcPublic, weights);
+    if (!invitation || !Number.isInteger(invitation.score) || invitation.score < 0 || invitation.score > 100) {
+        return fail('favorite_private_chat_score_invalid');
+    }
+    const accepted = invitation.eligible && invitation.score >= refusalThreshold;
+    const operations = [
+        { op: 'remove', path: encodeJsonPointer(['推荐', '收藏角色UID', String(favoriteIndex)]) },
+        { op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', 'NPC专属匹配度']), value: invitation.score },
+        { op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', '状态']), value: accepted ? '已匹配' : '已取消' },
+    ];
+    if (!accepted) return success(operations);
+    const sessionUid = `chat_${sessionCounter + 1}`;
+    if (!isChatSessionUid(sessionUid) || ownRecord(state.会话)?.[sessionUid]) return fail('favorite_private_chat_uid_conflict');
+    operations.push(
+        { op: 'add', path: encodeJsonPointer(['会话', sessionUid]), value: matchedSession(npcUid) },
+        { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '会话']), value: sessionCounter + 1 },
+    );
     return success(operations);
 }
 
@@ -563,6 +625,8 @@ export function buildControlledPatch(state, command) {
 
     const operations = [];
     if (command.kind === 'like') return buildLikeMatchPatch(state, { npcUid: uid });
+
+    if (command.kind === 'start_private_chat') return buildFavoritePrivateChatPatch(state, { npcUid: uid });
 
     if (command.kind === 'favorite') {
         const promotion = promoteCandidateIfNeeded(state, uid, operations);
@@ -670,6 +734,15 @@ export function validateControlledPatchWhitelist(patch) {
                 normalizeGeneratedCandidate(operation.value, { requirePersonalName: /^npc_llm_\d+$/u.test(generatedCandidate[1]) });
                 continue;
             } catch { return fail('generated_candidate_invalid'); }
+        }
+        const generatedMatchRole = /^\/角色池\/(npc_match_\d+)$/u.exec(path);
+        if (operation.op === 'add' && generatedMatchRole && isNpcUid(generatedMatchRole[1])) {
+            try {
+                const source = matchCandidateSourceFromRole(operation.value);
+                const expected = matchCandidateForRole(source, 'NSFW');
+                if (JSON.stringify(expected) === JSON.stringify(operation.value)) continue;
+            } catch { /* reject below */ }
+            return fail('candidate_match_candidate_invalid');
         }
         if (operation.op === 'add' && path === '/推荐/当前队列/-' && isNpcUid(operation.value)) continue;
         if (operation.op === 'replace' && path === '/系统/UID计数器/角色' && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 999999) continue;
@@ -789,6 +862,16 @@ export function validateControlledPatchAgainstState(state, patch) {
             : fail('recommendation_refresh_source_not_queued');
         if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
     }
+    const matchRoleAddition = patch.find((operation) => operation?.op === 'add' && /^\/角色池\/npc_match_\d+$/u.test(operation.path));
+    if (matchRoleAddition && ownRecord(matchRoleAddition.value)) {
+        try {
+            const source = matchCandidateSourceFromRole(matchRoleAddition.value);
+            const expected = buildCandidateMatchSessionPatch(state, { candidate: source });
+            if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+        } catch {
+            return fail('candidate_match_candidate_invalid');
+        }
+    }
     const chatMessageOperations = patch.filter((operation) => operation?.op === 'add' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}\/最近消息\/-$/u.test(operation.path));
     if (chatMessageOperations.length === 2) {
         const [playerOperation, npcOperation] = chatMessageOperations;
@@ -864,7 +947,7 @@ export function validateControlledPatchAgainstState(state, patch) {
         ...Object.keys(ownRecord(rolePool) ?? {}),
     ].filter(isNpcUid));
     for (const uid of knownUids) {
-        for (const kind of ['like', 'favorite', 'dislike', 'refresh', 'unfavorite']) {
+        for (const kind of ['like', 'favorite', 'dislike', 'refresh', 'unfavorite', 'start_private_chat']) {
             const generated = buildControlledPatch(state, { kind, npcUid: uid });
             if (generated.ok) exactTransitions.push(generated.value);
         }

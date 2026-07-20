@@ -7,11 +7,13 @@ import { createOpenAICompatibleClient } from './src/llm/openai-compatible-client
 import { createSettingsStore } from './src/settings/settings-store.js';
 import { createBrowserSettingsStorage } from './src/settings/browser-storage.js';
 import { createCharacterTemplateLibraryStore } from './src/characters/character-template-library-store.js';
+import { createPlayerAvatarStore } from './src/player-avatar-store.js';
 
 const EXTENSION_ROOT_ID = 'yuelema-phone-extension-root';
 const browserStorage = createBrowserSettingsStorage();
 const settingsStore = createSettingsStore({ storage: browserStorage });
 const characterLibrary = createCharacterTemplateLibraryStore({ storage: browserStorage });
+const playerAvatarStore = createPlayerAvatarStore({ storage: browserStorage });
 
 /** @type {{ destroy: () => void } | null} */
 let appInstance = null;
@@ -131,6 +133,7 @@ export async function onActivate() {
         settingsStore,
         llmClient,
         characterLibrary,
+        playerAvatarStore,
         readState: () => readLatestState({ mvu: mvu() }),
     });
 

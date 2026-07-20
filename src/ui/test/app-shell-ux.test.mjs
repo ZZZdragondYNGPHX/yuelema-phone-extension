@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installMiniDom } from '../../test-support/minidom.mjs';
 import { createMemoryStorage, createSettingsStore } from '../../settings/settings-store.js';
+import { createPlayerAvatarStore } from '../../player-avatar-store.js';
 
 const miniDom = installMiniDom();
 const { mountPhoneApp } = await import('../../app-shell.js');
@@ -169,20 +170,25 @@ test('all routed child pages keep a top-left back button and settings views stay
     }
 });
 
-test('match tools invoke isolated in-memory public profile drafts and never render secret fields', async () => {
+test('match tools create a fresh mutual match and message session without using favourites', async () => {
     const calls = [];
-    const publicProfile = adultCharacter('灵魂档案').公开资料;
+    const readResult = readyReadResult();
     const bridge = {
         emit() {},
         isPending() { return false; },
-        async generateCandidateMatchDraft(mode, options) {
+        async runCandidateMatch(mode, options) {
             calls.push({ mode, voiceText: options.voiceText });
-            return { ok: true, draft: { profile: publicProfile, explanation: '公开缘分说明', matchScore: 91, 隐藏资料: 'never render' } };
+            const matched = adultCharacter('灵魂档案');
+            matched.与玩家关系.状态 = '已匹配';
+            matched.隐藏资料 = { 实际年龄: 28, 私人备注: 'never render' };
+            readResult.state.角色池.npc_match_2 = matched;
+            readResult.state.会话.chat_2 = { 对象UID: 'npc_match_2', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
+            return { ok: true, npcUid: 'npc_match_2', sessionUid: 'chat_2', explanation: '公开缘分说明', matchScore: 91 };
         },
     };
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-candidate-match-profile', actionBridge: bridge,
-        settingsStore: createSettingsStore({ storage: createMemoryStorage() }), llmClient: null, characterLibrary: null, readState: readyReadResult,
+        settingsStore: createSettingsStore({ storage: createMemoryStorage() }), llmClient: null, characterLibrary: null, readState: () => readResult,
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
@@ -197,10 +203,12 @@ test('match tools invoke isolated in-memory public profile drafts and never rend
         click(matchButtons[1]);
         await flushUi();
         assert.deepEqual(calls, [{ mode: 'voice', voiceText: '周末想逛展，也想认真聊天' }]);
-        const profile = miniDom.document.querySelector('.yl-match-profile');
-        assert.ok(profile, '公开草稿成功后应打开独立匹配档案页');
-        assert.match(profile.textContent, /灵魂档案|VOICE MATCH|仅本次展示/u);
-        assert.doesNotMatch(profile.textContent, /never render|隐藏资料|关系分|阈值/u);
+        const match = miniDom.document.querySelector('.yl-match-row');
+        assert.ok(match, '成功后应在已互相喜欢中出现新对象');
+        assert.match(match.textContent, /灵魂档案|聊天/u);
+        assert.doesNotMatch(match.textContent, /never render|隐藏资料|关系分|阈值/u);
+        click(buttonByPage('messages'));
+        assert.match(miniDom.document.body.textContent, /灵魂档案/u, '新对象应同时进入消息列表');
     } finally {
         mounted.destroy();
     }
@@ -293,6 +301,43 @@ test('profile page owns the character creator entry and its child view returns t
         assert.match(miniDom.document.body.textContent, /个人资料/u);
         assert.match(miniDom.document.body.textContent, /收藏夹/u);
         assert.match(miniDom.document.body.textContent, /设置/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('my-page avatar is browser-local, while the public-profile editor no longer exposes an avatar reference field', () => {
+    const storage = createMemoryStorage();
+    const playerAvatarStore = createPlayerAvatarStore({ storage });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-player-avatar-menu',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null, playerAvatarStore, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        const avatar = miniDom.document.querySelector('.yl-person-avatar-button');
+        assert.ok(avatar, '我的页头像框应是独立入口');
+        click(avatar);
+        const menu = miniDom.document.querySelector('.yl-avatar-modal');
+        assert.equal(menu.hidden, false);
+        assert.match(menu.textContent, /从本地导入图片|引用图片链接|移除头像/u);
+        const link = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '头像图片链接');
+        assert.ok(link);
+        link.value = 'https://example.invalid/player-avatar.webp';
+        click(buttonByText('保存图片链接'));
+        assert.deepEqual(playerAvatarStore.snapshot(), { kind: 'url', url: 'https://example.invalid/player-avatar.webp' });
+        const image = miniDom.document.querySelector('.yl-person-avatar-button').querySelector('img');
+        assert.equal(image.getAttribute('src'), 'https://example.invalid/player-avatar.webp');
+
+        click(buttonByText('个人资料'));
+        const editor = miniDom.document.querySelector('.yl-profile-editor');
+        assert.doesNotMatch(editor.textContent, /头像引用/u);
+        click(backButton());
+        click(miniDom.document.querySelector('.yl-person-avatar-button'));
+        click(buttonByText('移除头像'));
+        assert.deepEqual(playerAvatarStore.snapshot(), { kind: 'placeholder' });
     } finally {
         mounted.destroy();
     }
@@ -761,7 +806,7 @@ test('home candidate card is a request-free visual shell with public info, keywo
     }
 });
 
-test('a saved favourite renders a cancel-favourite action and dispatches the controlled unfavorite command', async () => {
+test('a saved favourite exposes only cancellation and a dating-app private-chat action', async () => {
     const readResult = readyReadResult();
     delete readResult.state.推荐.临时候选池.npc_1;
     readResult.state.推荐.当前队列 = [];
@@ -780,10 +825,80 @@ test('a saved favourite renders a cancel-favourite action and dispatches the con
         click(buttonByPage('profile'));
         click(buttonByText('收藏夹'));
         const actions = miniDom.document.querySelector('.yl-favorite-card').querySelectorAll('button');
-        assert.deepEqual(actions.map((node) => node.getAttribute('aria-label')), ['喜欢', '不喜欢', '取消收藏', '刷新']);
+        assert.deepEqual(actions.map((node) => node.getAttribute('aria-label')), ['取消收藏', '发起私聊']);
         click(actions.find((node) => node.getAttribute('aria-label') === '取消收藏'));
         await flushUi();
         assert.deepEqual(calls, [['unfavorite', 'npc_1']]);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('accepted favourite invitation leaves favourites and opens the newly established private chat', async () => {
+    const readResult = readyReadResult();
+    delete readResult.state.推荐.临时候选池.npc_1;
+    readResult.state.推荐.当前队列 = [];
+    readResult.state.推荐.收藏角色UID = ['npc_1'];
+    readResult.state.角色池.npc_1.与玩家关系.状态 = '陌生';
+    const calls = [];
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-favourite-private-invite',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async runMvuAction(kind, npcUid) {
+                calls.push([kind, npcUid]);
+                readResult.state.推荐.收藏角色UID = [];
+                readResult.state.角色池.npc_1.与玩家关系.状态 = '已匹配';
+                readResult.state.会话.chat_1 = { 对象UID: 'npc_1', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
+                return { ok: true, sessionUid: 'chat_1', invitationOutcome: 'accepted' };
+            },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        click(buttonByText('收藏夹'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发起私聊'));
+        await flushUi();
+        assert.deepEqual(calls, [['start_private_chat', 'npc_1']]);
+        assert.ok(miniDom.document.querySelector('.yl-private-chat-screen'), '仅接受后才进入消息会话');
+        assert.equal(readResult.state.推荐.收藏角色UID.length, 0);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('declined favourite invitation stays out of messages and reports a safe rejection', async () => {
+    const readResult = readyReadResult();
+    delete readResult.state.推荐.临时候选池.npc_1;
+    readResult.state.推荐.当前队列 = [];
+    readResult.state.推荐.收藏角色UID = ['npc_1'];
+    readResult.state.角色池.npc_1.与玩家关系.状态 = '陌生';
+    const calls = [];
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-favourite-private-decline',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async runMvuAction(kind, npcUid) {
+                calls.push([kind, npcUid]);
+                readResult.state.推荐.收藏角色UID = [];
+                readResult.state.角色池.npc_1.与玩家关系.状态 = '已取消';
+                return { ok: true, sessionUid: '', invitationOutcome: 'declined' };
+            },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        click(buttonByText('收藏夹'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发起私聊'));
+        await flushUi();
+        assert.deepEqual(calls, [['start_private_chat', 'npc_1']]);
+        assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null, '婉拒不得创建或打开私聊会话');
+        assert.match(miniDom.document.body.textContent, /暂时没有接受这次私聊邀请/u);
+        assert.equal(readResult.state.会话.chat_1, undefined);
     } finally {
         mounted.destroy();
     }

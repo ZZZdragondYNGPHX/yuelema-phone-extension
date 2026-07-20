@@ -6,7 +6,7 @@
  */
 const ALLOWED_TAGS = new Set([
     'article', 'aside', 'button', 'div', 'footer', 'form', 'header', 'h1', 'h2', 'label',
-    'main', 'nav', 'option', 'p', 'section', 'select', 'span', 'strong', 'textarea', 'input', 'h3',
+    'main', 'nav', 'option', 'p', 'section', 'select', 'span', 'strong', 'textarea', 'input', 'h3', 'img',
 ]);
 
 /** @param {unknown} value */
@@ -20,8 +20,15 @@ export function text(value) {
  */
 const PROPERTY_OPTIONS = Object.freeze([
     'accept', 'autocomplete', 'checked', 'download', 'id', 'inputMode', 'max', 'maxLength',
-    'min', 'minLength', 'multiple', 'name', 'placeholder', 'rows', 'value',
+    'min', 'minLength', 'multiple', 'name', 'placeholder', 'rows', 'value', 'alt', 'src', 'loading', 'referrerPolicy',
 ]);
+
+function safeImageSource(value) {
+    const source = text(value);
+    if (/^https?:\/\/[^\s<>]+$/iu.test(source)) return source;
+    if (/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/iu.test(source)) return source;
+    return '';
+}
 
 /** @param {string} tag @param {{ className?: string, text?: unknown, ariaLabel?: string, type?: string, disabled?: boolean, pressed?: boolean, hidden?: boolean, htmlFor?: string } & Record<string, unknown>} [options] */
 export function element(tag, options = {}) {
@@ -46,6 +53,13 @@ export function element(tag, options = {}) {
         else if (key === 'multiple' && (tag === 'input' || tag === 'select')) node.multiple = Boolean(options[key]);
         else if (['min', 'max', 'minLength', 'maxLength'].includes(key) && ['input', 'textarea'].includes(tag)) node[key] = Number(options[key]);
         else if (['accept', 'autocomplete', 'download', 'id', 'inputMode', 'name', 'placeholder'].includes(key)) node.setAttribute(key === 'inputMode' ? 'inputmode' : key, text(options[key]));
+        else if (key === 'alt' && tag === 'img') node.setAttribute('alt', text(options[key]));
+        else if (key === 'loading' && tag === 'img') node.setAttribute('loading', text(options[key]));
+        else if (key === 'referrerPolicy' && tag === 'img') node.setAttribute('referrerpolicy', text(options[key]));
+        else if (key === 'src' && tag === 'img') {
+            const source = safeImageSource(options[key]);
+            if (source) node.setAttribute('src', source);
+        }
     }
     return node;
 }

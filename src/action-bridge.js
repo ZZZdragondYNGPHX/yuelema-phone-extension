@@ -1,8 +1,9 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildCharacterRegistrationPatch, buildControlledPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
+import { buildCandidateMatchSessionPatch, buildCharacterRegistrationPatch, buildControlledPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply } from './chat/private-chat-service.js';
 import { generateCandidateMatchDraft as generateCandidateMatchDraftService, generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
+import { materializeCandidateMatchDraft } from './recommendation/match-candidate-materializer.js';
 import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate } from './characters/character-authoring-service.js';
 import { generateGroupChatReply } from './groups/group-chat-service.js';
 import { generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
@@ -13,7 +14,7 @@ const PASSIVE_KINDS = new Set([
     'open_random_candidates',
     'navigate',
 ]);
-const MVU_KINDS = new Set(['like', 'favorite', 'dislike', 'refresh', 'unfavorite', 'advance_content_mode_gate', 'toggle_content_mode']);
+const MVU_KINDS = new Set(['like', 'favorite', 'dislike', 'refresh', 'unfavorite', 'start_private_chat', 'advance_content_mode_gate', 'toggle_content_mode']);
 const PERSONALIZATION_DELTAS = Object.freeze({ like: 3, favorite: 1, dislike: -3 });
 const PERSONALIZATION_PUBLIC_TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
 
@@ -129,9 +130,20 @@ export function createActionBridge({
             const built = buildControlledPatch(read.state, command);
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code, detail: built.detail };
 
+            const sessionOperation = kind === 'start_private_chat'
+                ? built.value.find((operation) => operation?.op === 'add' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}$/u.test(operation.path))
+                : null;
+            const invitationStateOperation = kind === 'start_private_chat'
+                ? built.value.find((operation) => operation?.op === 'replace' && operation.path === `/角色池/${npcUid}/与玩家关系/状态`)
+                : null;
             const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
             if (applied.ok) syncDevicePersonalization(settingsStore, read.state, kind, npcUid);
-            return applied;
+            if (!applied.ok || kind !== 'start_private_chat') return applied;
+            return {
+                ...applied,
+                sessionUid: sessionOperation?.path.split('/')[2] ?? '',
+                invitationOutcome: invitationStateOperation?.value === '已匹配' ? 'accepted' : 'declined',
+            };
         } finally {
             pending.delete(key);
         }
@@ -259,6 +271,51 @@ export function createActionBridge({
             const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
             return await generateCandidateMatchDraftService({ mode, state: read.state, settingsStore, llmClient, voiceText, signal });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /**
+     * Generates a brand-new mutual match from either saved (soul) or transient
+     * voice-derived weights, then atomically creates its role and chat session.
+     * It never reads from the recommendation queue or favourites list.
+     */
+    async function runCandidateMatch(mode, { voiceText, signal } = {}) {
+        if (!['soul', 'voice'].includes(mode)) return { ok: false, status: 'rejected', code: 'candidate_match_mode_invalid' };
+        const key = actionKey('candidate_match_' + mode, '');
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            const firstRead = readLatestState({ mvu: currentMvu });
+            if (!firstRead.ok) return firstRead;
+            const generated = await generateCandidateMatchDraftService({ mode, state: firstRead.state, settingsStore, llmClient, voiceText, signal });
+            if (!generated.ok) return { ok: false, status: 'rejected', code: generated.code, message: generated.message };
+            let materialized;
+            try {
+                materialized = materializeCandidateMatchDraft(generated.draft, {
+                    contentMode: firstRead.state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW',
+                });
+            } catch {
+                return { ok: false, status: 'rejected', code: 'candidate_match_response_invalid', message: '匹配角色草稿不符合公开资料安全格式；当前状态未改变。' };
+            }
+
+            const secondRead = readLatestState({ mvu: currentMvu });
+            if (!secondRead.ok) return secondRead;
+            const built = buildCandidateMatchSessionPatch(secondRead.state, { candidate: materialized.candidate });
+            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            const roleOperation = built.value.find((operation) => operation?.op === 'add' && /^\/角色池\/npc_match_\d+$/u.test(operation.path));
+            const sessionOperation = built.value.find((operation) => operation?.op === 'add' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}$/u.test(operation.path));
+            const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            if (!applied.ok) return applied;
+            return {
+                ...applied,
+                npcUid: roleOperation?.path.split('/')[2] ?? '',
+                sessionUid: sessionOperation?.path.split('/')[2] ?? '',
+                explanation: materialized.explanation,
+                matchScore: materialized.matchScore,
+            };
         } finally {
             pending.delete(key);
         }
@@ -428,7 +485,7 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, generateMatchDraft, generateCandidateMatchDraft, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
 }
 
 

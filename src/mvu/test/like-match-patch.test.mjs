@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildControlledPatch, buildLikeMatchPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import { buildCandidateMatchSessionPatch, buildControlledPatch, buildLikeMatchPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
 
 function candidate({ threshold = 60 } = {}) {
     return {
@@ -25,40 +25,35 @@ function state({ threshold = 60 } = {}) {
     };
 }
 
-test('like atomically moves an adult candidate, creates a matched session, and scores it locally', () => {
+test('homepage like only records recommendation feedback and never creates a match or session', () => {
     const before = state();
     const result = buildLikeMatchPatch(before, { npcUid: 'npc_case' });
     assert.equal(result.ok, true);
     assert.deepEqual(result.value.map((operation) => [operation.op, operation.path]), [
-        ['move', '/角色池/npc_case'],
-        ['replace', '/角色池/npc_case/与玩家关系/NPC专属匹配度'],
-        ['replace', '/角色池/npc_case/与玩家关系/状态'],
-        ['add', '/会话/chat_6'],
-        ['replace', '/系统/UID计数器/会话'],
+        ['add', '/推荐/冷却角色UID/-'],
         ['remove', '/推荐/当前队列/0'],
         ['add', '/玩家/推荐偏好/标签权重/电影'],
         ['add', '/玩家/推荐偏好/标签权重/夜猫子'],
         ['add', '/玩家/推荐偏好/标签权重/直接'],
         ['add', '/玩家/推荐偏好/标签权重/慢热'],
     ]);
-    assert.equal(result.value[1].value, 100);
-    assert.equal(result.value[2].value, '已匹配');
-    assert.equal(result.value[3].value.对象UID, 'npc_case');
+    assert.equal(result.value.some((operation) => operation.path.startsWith('/角色池/')), false);
+    assert.equal(result.value.some((operation) => operation.path.startsWith('/会话/')), false);
     assert.equal(validateControlledPatchAgainstState(before, result.value).ok, true);
     assert.deepEqual(before, state());
     assert.deepEqual(buildControlledPatch(before, { kind: 'like', npcUid: 'npc_case' }), result);
 });
 
-test('like records a refusal without creating a session when the configured threshold is not met', () => {
+test('homepage like ignores a refusal threshold because only the match tools establish mutual matching', () => {
     const before = state({ threshold: 90 });
     const result = buildLikeMatchPatch(before, { npcUid: 'npc_case' });
     assert.equal(result.ok, true);
     assert.equal(result.value.some((operation) => operation.path.startsWith('/会话/')), false);
-    assert.equal(result.value.find((operation) => operation.path.endsWith('/状态')).value, '已取消');
+    assert.equal(result.value.some((operation) => operation.path.endsWith('/状态')), false);
     assert.equal(validateControlledPatchAgainstState(before, result.value).ok, true);
 });
 
-test('a saved favourite can still be liked or disliked without a stale queue rejection', () => {
+test('a saved favourite is no longer a homepage like target but can still be disliked', () => {
     const likedState = state();
     likedState.角色池.npc_case = likedState.推荐.临时候选池.npc_case;
     delete likedState.推荐.临时候选池.npc_case;
@@ -66,11 +61,8 @@ test('a saved favourite can still be liked or disliked without a stale queue rej
     likedState.推荐.收藏角色UID = ['npc_case'];
 
     const liked = buildControlledPatch(likedState, { kind: 'like', npcUid: 'npc_case' });
-    assert.equal(liked.ok, true);
-    assert.equal(liked.value.some((operation) => operation.op === 'move'), false);
-    assert.equal(liked.value.some((operation) => operation.path.startsWith('/推荐/当前队列/')), false);
-    assert.equal(liked.value.some((operation) => operation.path === '/玩家/推荐偏好/标签权重/电影' && operation.value === 3), true);
-    assert.equal(validateControlledPatchAgainstState(likedState, liked.value).ok, true);
+    assert.equal(liked.ok, false);
+    assert.equal(liked.code, 'like_preference_source_not_available');
 
     const dislikedState = state();
     dislikedState.角色池.npc_case = dislikedState.推荐.临时候选池.npc_case;
@@ -83,6 +75,55 @@ test('a saved favourite can still be liked or disliked without a stale queue rej
     assert.equal(disliked.value.some((operation) => operation.path.startsWith('/推荐/当前队列/')), false);
     assert.equal(disliked.value.some((operation) => operation.path === '/玩家/推荐偏好/标签权重/电影' && operation.value === -3), true);
     assert.equal(validateControlledPatchAgainstState(dislikedState, disliked.value).ok, true);
+});
+
+test('a favourite can become a private chat without becoming a mutual-match list item', () => {
+    const favoriteState = state();
+    favoriteState.角色池.npc_case = favoriteState.推荐.临时候选池.npc_case;
+    delete favoriteState.推荐.临时候选池.npc_case;
+    favoriteState.推荐.当前队列 = [];
+    favoriteState.推荐.收藏角色UID = ['npc_case'];
+    const result = buildControlledPatch(favoriteState, { kind: 'start_private_chat', npcUid: 'npc_case' });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.value.map((operation) => [operation.op, operation.path]), [
+        ['remove', '/推荐/收藏角色UID/0'],
+        ['replace', '/角色池/npc_case/与玩家关系/NPC专属匹配度'],
+        ['replace', '/角色池/npc_case/与玩家关系/状态'],
+        ['add', '/会话/chat_6'],
+        ['replace', '/系统/UID计数器/会话'],
+    ]);
+    assert.equal(result.value[2].value, '已匹配');
+    assert.equal(result.value[3].value.对象UID, 'npc_case');
+    assert.equal(validateControlledPatchAgainstState(favoriteState, result.value).ok, true);
+});
+
+test('a favourite invitation below the role refusal threshold removes the favourite and records a rejection without a session', () => {
+    const favoriteState = state({ threshold: 95 });
+    favoriteState.角色池.npc_case = favoriteState.推荐.临时候选池.npc_case;
+    delete favoriteState.推荐.临时候选池.npc_case;
+    favoriteState.推荐.当前队列 = [];
+    favoriteState.推荐.收藏角色UID = ['npc_case'];
+    const result = buildControlledPatch(favoriteState, { kind: 'start_private_chat', npcUid: 'npc_case' });
+    assert.equal(result.ok, true);
+    assert.equal(result.value.some((operation) => operation.path.startsWith('/会话/')), false);
+    assert.equal(result.value.find((operation) => operation.path.endsWith('/状态')).value, '已取消');
+    assert.equal(validateControlledPatchAgainstState(favoriteState, result.value).ok, true);
+});
+
+test('AI match commits a brand-new npc_match role and matched session without touching favourites', () => {
+    const before = state();
+    before.推荐.收藏角色UID = ['npc_case'];
+    const result = buildCandidateMatchSessionPatch(before, { candidate: candidate() });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.value.map((operation) => [operation.op, operation.path]), [
+        ['add', '/角色池/npc_match_2'],
+        ['add', '/会话/chat_6'],
+        ['replace', '/系统/UID计数器/角色'],
+        ['replace', '/系统/UID计数器/会话'],
+    ]);
+    assert.equal(result.value[0].value.与玩家关系.状态, '已匹配');
+    assert.equal(result.value[1].value.对象UID, 'npc_match_2');
+    assert.equal(validateControlledPatchAgainstState(before, result.value).ok, true);
 });
 
 test('clicking a saved favourite again removes its bookmark and disposable candidate record', () => {
@@ -114,15 +155,15 @@ test('clicking a saved favourite again removes its bookmark and disposable candi
     assert.equal(validateControlledPatchAgainstState(matchedState, retained.value).ok, true);
 });
 
-test('forged session or score operation is rejected before the MVU parser', () => {
+test('forged mutual-match session or relationship operation is rejected before the MVU parser', () => {
     const before = state();
-    const result = buildLikeMatchPatch(before, { npcUid: 'npc_case' });
+    const result = buildCandidateMatchSessionPatch(before, { candidate: candidate() });
     const forged = structuredClone(result.value);
-    forged[3].value.对象UID = 'npc_other';
+    forged[1].value.对象UID = 'npc_other';
     assert.equal(validateControlledPatchAgainstState(before, forged).ok, false);
-    const scoreForged = structuredClone(result.value);
-    scoreForged[1].value = 99;
-    assert.equal(validateControlledPatchAgainstState(before, scoreForged).ok, false);
+    const nameForged = structuredClone(result.value);
+    nameForged[0].value.公开资料.昵称 = '智核玩家';
+    assert.equal(validateControlledPatchAgainstState(before, nameForged).ok, false);
 });
 
 

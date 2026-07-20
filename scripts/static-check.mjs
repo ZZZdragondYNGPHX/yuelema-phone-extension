@@ -11,15 +11,15 @@ const requiredFiles = [
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
-    'src/recommendation/candidate.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/soul-text-match-service.js',
+    'src/recommendation/candidate.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/match-candidate-materializer.js', 'src/recommendation/soul-text-match-service.js',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js',
     'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs',
     'src/test-support/minidom.mjs', 'src/launcher-drag.js', 'src/ui/test/launcher-drag.test.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/character-template-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
     'src/characters/test/character-template-codec.test.mjs', 'src/characters/test/character-library-store.test.mjs', 'src/characters/test/character-template-library-store.test.mjs', 'src/characters/test/avatar-codec.test.mjs', 'src/characters/test/character-authoring-service.test.mjs', 'src/characters/test/character-creator-panel.test.mjs',
-    'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
+    'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/match-candidate-materializer.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs',
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
-    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs',
+    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs',
 ];
 
 function fail(message) {
@@ -40,7 +40,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '0.1.15') fail('manifest.version 必须与扩展版本 0.1.15 统一');
+if (manifest.version !== '0.1.16') fail('manifest.version 必须与扩展版本 0.1.16 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
 if (manifest?.hooks?.activate !== 'onActivate') fail('manifest.hooks.activate 必须指向 onActivate');
 if (manifest?.hooks?.disable !== 'onDisable') fail('manifest.hooks.disable 必须指向 onDisable，确保禁用即清理内存密钥镜像');
@@ -54,15 +54,15 @@ const sourceFiles = [
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
-    'src/recommendation/candidate.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/soul-text-match-service.js',
+    'src/recommendation/candidate.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/match-candidate-materializer.js', 'src/recommendation/soul-text-match-service.js',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js',
     'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs',
     'src/test-support/minidom.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
     'src/characters/test/character-template-codec.test.mjs', 'src/characters/test/character-library-store.test.mjs', 'src/characters/test/avatar-codec.test.mjs', 'src/characters/test/character-authoring-service.test.mjs', 'src/characters/test/character-creator-panel.test.mjs',
-    'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
+    'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/match-candidate-materializer.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs',
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
-    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs',
+    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs',
 ].map(relativePath => resolve(root, relativePath));
 const sourceText = await Promise.all(sourceFiles.map(path => readFile(path, 'utf8')));
 const allSource = sourceText.join('\n');
@@ -200,12 +200,16 @@ if (!privateChatResponse.includes('normalizePrivateChatResponse') || !privateCha
 if (!privateChatService.includes('validatePrivateChatRequest') || !privateChatService.includes('buildPrivateChatContext') || !privateChatService.includes('generatePrivateChatReply')) fail('缺少私聊上下文隐私投影、请求校验或模型调用接线');
 if (!controlledPatch.includes('buildPrivateChatPatch') || !actionBridge.includes('runPrivateChat')) fail('缺少私聊受控 Patch 或唯一 MVU 写入桥接');
 if (!appShell.includes('buildMessagesPage') || !appShell.includes('buildPrivateChatPage') || !appShell.includes('openPrivateChat') || !uiModel.includes('private_chat:')) fail('缺少私聊列表、会话子页或消息路由接线');
-if (!matchScoring.includes('scorePublicCompatibility') || !matchScoring.includes('scoreTwoLayerMatch') || !controlledPatch.includes('buildLikeMatchPatch')) fail('缺少公开资料双层评分或喜欢后的受控匹配会话创建');
+if (!matchScoring.includes('scoreFavoritePrivateChatInvitation') || !controlledPatch.includes('buildFavoritePrivateChatPatch') || !actionBridge.includes('runCandidateMatch') || !controlledPatch.includes('buildCandidateMatchSessionPatch')) fail('缺少收藏主动私聊判定或独立灵魂/语音匹配会话创建');
 if (!controlledPatch.includes('appendPreferenceWeightOperations') || !controlledPatch.includes('标签权重')) fail('缺少喜欢、收藏、不喜欢的公开标签权重受控更新');
-if (!controlledPatch.includes('buildSoulMatchPreferencePatch') || !actionBridge.includes('generateMatchDraft') || !actionBridge.includes('applySoulMatchPreferenceDraft')) fail('缺少灵魂匹配草稿的确认式受控写入链');
+if (!controlledPatch.includes('buildSoulMatchPreferencePatch') || !actionBridge.includes('generateMatchDraft') || !actionBridge.includes('applySoulMatchPreferenceDraft')) fail('缺少灵魂匹配偏好草稿兼容链');
 const soulTextMatchService = await readFile(resolve(root, 'src/recommendation/soul-text-match-service.js'), 'utf8');
 if (!soulTextMatchService.includes('generateSoulMatchDraft') || !soulTextMatchService.includes('generateTextMatchDraft') || !soulTextMatchService.includes('buildSoulTextMatchContext')) fail('缺少灵魂/文字匹配服务或隐私上下文投影');
-console.log('✓ 私聊模型回复、隐私上下文、列表/会话 UI、双层评分、标签偏好、灵魂/文字匹配与匹配会话已纳入静态检查');
+const matchCandidateMaterializer = await readFile(resolve(root, 'src/recommendation/match-candidate-materializer.js'), 'utf8');
+const playerAvatarStore = await readFile(resolve(root, 'src/player-avatar-store.js'), 'utf8');
+if (!matchCandidateMaterializer.includes('materializeCandidateMatchDraft') || !matchCandidateMaterializer.includes('normalizeCandidateMatchDraft')) fail('缺少匹配公开草稿的本地角色物化边界');
+if (!playerAvatarStore.includes('PLAYER_AVATAR_STORAGE_KEY') || !playerAvatarStore.includes('createPlayerAvatarStore') || !index.includes('createPlayerAvatarStore')) fail('缺少“我的”页本地头像存储接线');
+console.log('✓ 私聊模型回复、隐私上下文、列表/会话 UI、主动私聊判定、独立灵魂/语音匹配、本地头像与偏好链已纳入静态检查');
 
 if (process.exitCode) process.exit(process.exitCode);
 console.log('静态检查通过。');

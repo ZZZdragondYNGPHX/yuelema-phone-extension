@@ -3,12 +3,14 @@ import { readLatestState } from './mvu/adapter.js';
 import { NAV_ITEMS, PAGE_COPY, createPhoneView, describeActionFailure } from './ui-model.js';
 import { buildSettingsPanel } from './settings-panel.js';
 import { buildCharacterCreatorPanel } from './characters/character-creator-panel.js';
+import { avatarAcceptAttribute, compressLocalAvatar, projectAvatarError } from './characters/avatar-codec.js';
+import { avatarImageSource } from './player-avatar-store.js';
 import { createLauncherDragController } from './launcher-drag.js';
 
-const UI_VERSION = '0.1.15';
+const UI_VERSION = '0.1.16';
 const PANEL_DRAG_THRESHOLD = 8;
-const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', dislike: '不喜欢' });
-const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', dislike: '✕' });
+const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
+const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
 const PRIMARY_PAGE_FOR = Object.freeze({
     group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
     settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
@@ -28,7 +30,7 @@ const FEATURE_BINDING_FOR_PAGE = Object.freeze({
 });
 
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
-export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, readState = () => readLatestState() }) {
+export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, readState = () => readLatestState() }) {
     const abortController = new AbortController();
     const root = documentRef.createElement('section');
     root.id = rootId;
@@ -59,6 +61,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let operationAutoCloseTimer = null;
     let privateChatRequestGeneration = 0;
     let featureBindingDialogState = null;
+    let avatarUploadPending = false;
 
     const launcher = element('button', { className: 'yl-phone-launcher', type: 'button', ariaLabel: '打开约了吗小手机', pressed: false, text: '约' });
     launcher.appendChild(element('span', { className: 'yl-phone-launcher-label', text: '约了吗' }));
@@ -122,7 +125,26 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     const bindingDialogContent = element('div', { className: 'yl-settings-panel' });
     append(bindingDialogTitlebar, [bindingDialogTitle, bindingDialogClose]);
     append(bindingDialog, [bindingDialogTitlebar, bindingDialogContent]);
-    append(root, [launcher, panel, helpPopover, operationDialog, bindingDialog]);
+    const avatarDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-avatar-modal', hidden: true });
+    avatarDialog.setAttribute('role', 'dialog');
+    avatarDialog.setAttribute('aria-modal', 'false');
+    avatarDialog.setAttribute('aria-label', '更换个人头像');
+    const avatarDialogTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const avatarDialogTitle = element('h2', { text: '更换头像' });
+    const avatarDialogClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭头像菜单' });
+    append(avatarDialogTitlebar, [avatarDialogTitle, avatarDialogClose]);
+    const avatarDialogSummary = element('p', { className: 'yl-settings-summary', text: '头像仅保存到当前浏览器，不会写入公开资料、MVU 或提示词。' });
+    const avatarFileInput = element('input', { type: 'file', accept: avatarAcceptAttribute(), ariaLabel: '选择本地头像文件' });
+    avatarFileInput.hidden = true;
+    const avatarFileButton = element('button', { className: 'yl-settings-button', type: 'button', text: '从本地导入图片' });
+    const avatarLinkField = element('label', { className: 'yl-settings-field' });
+    avatarLinkField.appendChild(element('span', { text: '引用图片链接' }));
+    const avatarLinkInput = element('input', { className: 'yl-settings-control', type: 'url', maxLength: 2048, placeholder: 'https://example.com/avatar.webp', ariaLabel: '头像图片链接' });
+    avatarLinkField.appendChild(avatarLinkInput);
+    const avatarLinkButton = element('button', { className: 'yl-settings-button', type: 'button', text: '保存图片链接' });
+    const avatarRemoveButton = element('button', { className: 'yl-settings-button yl-avatar-remove', type: 'button', text: '移除头像' });
+    append(avatarDialog, [avatarDialogTitlebar, avatarDialogSummary, avatarFileInput, avatarFileButton, avatarLinkField, avatarLinkButton, avatarRemoveButton]);
+    append(root, [launcher, panel, helpPopover, operationDialog, bindingDialog, avatarDialog]);
     documentRef.body.appendChild(root);
 
     const launcherDrag = createLauncherDragController({ launcher, documentRef, threshold: 8, edgeGap: 0 });
@@ -557,7 +579,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const actions = element('div', { className: 'yl-candidate-actions' });
         const favoriteAction = isFavoriteCandidate(candidate) ? 'unfavorite' : 'favorite';
         const helpText = {
-            like: '提高公开标签偏好并发起匹配邀请。',
+            like: '提高这位对象公开标签的偏好权重，不会创建匹配或私聊。',
             dislike: '降低相似公开标签的推荐权重。',
             favorite: '保存到收藏夹。',
             unfavorite: '取消收藏，并移除尚未建立私聊的候选资料。',
@@ -623,7 +645,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return card;
     }
     function buildCandidateDetail() {
-        const candidate = currentView.candidates.find((entry) => entry.uid === selectedCandidateUid) ?? currentView.candidate;
+        const candidate = [
+            ...(currentView.candidates ?? []),
+            ...(currentView.matches ?? []).map((match) => match.profile),
+            ...(currentView.messageSessions ?? []).map((session) => session.profile),
+        ].find((entry) => entry?.uid === selectedCandidateUid) ?? currentView.candidate;
         if (!candidate) return element('div', { className: 'yl-phone-placeholder', text: '该公开资料已不在当前可见列表。' });
         const section = element('section', { className: 'yl-public-profile' });
         section.appendChild(candidateAvatar(candidate));
@@ -631,7 +657,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         for (const [label, value] of [['年龄段', candidate.年龄段], ['性别', candidate.性别], ['性取向', candidate.性取向], ['城市', candidate.城市], ['距离范围', candidate.距离范围], ['寻找意图', candidate.寻找意图], ['简介', candidate.简介]]) if (value) section.appendChild(element('p', { className: 'yl-phone-page-description', text: `${label}：${value}` }));
         const tags = displayTags(candidate);
         if (tags.length) section.appendChild(buildTagChips(tags, '暂无关键词'));
-        section.appendChild(buildActionRow(candidate, { tooltips: false }));
+        if (currentView.candidate?.uid === candidate.uid) section.appendChild(buildActionRow(candidate, { tooltips: false }));
         return section;
     }
 
@@ -644,14 +670,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             element('strong', { text: '灵魂匹配' }),
             element('span', { text: '从已保存的个性化关键词权重里，寻找更同频的公开档案。' }),
         ]);
-        const soulButton = element('button', { className: 'yl-settings-button yl-soul-match-button', type: 'button', text: actionBridge.isPending('candidate_match_soul', '') ? '匹配中…' : '开始匹配', disabled: actionBridge.isPending('candidate_match_soul', '') || typeof actionBridge.generateCandidateMatchDraft !== 'function' });
+        const soulButton = element('button', { className: 'yl-settings-button yl-soul-match-button', type: 'button', text: actionBridge.isPending('candidate_match_soul', '') ? '匹配中…' : '开始匹配', disabled: actionBridge.isPending('candidate_match_soul', '') || typeof actionBridge.runCandidateMatch !== 'function' });
         listen(soulButton, soulButton, 'click', () => { void runCandidateMatch('soul'); }, abortController.signal); soul.appendChild(soulButton); tools.appendChild(soul);
 
         const voice = element('article', { className: 'yl-voice-match-card' });
         append(voice, [element('strong', { text: '语音匹配' }), element('span', { text: '用一段文字说说此刻想遇见怎样的人；这次提取的关键词会优先于本地偏好。' })]);
         const voiceInput = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, maxLength: 800, placeholder: '例如：想找一个周末愿意逛展、也能认真听我说话的人。', value: voiceMatchText, ariaLabel: '语音匹配文字描述' });
         listen(voiceInput, voiceInput, 'input', () => { voiceMatchText = voiceInput.value; }, abortController.signal);
-        const voiceButton = element('button', { className: 'yl-settings-button', type: 'button', text: actionBridge.isPending('candidate_match_voice', '') ? '匹配中…' : '开始匹配', disabled: actionBridge.isPending('candidate_match_voice', '') || typeof actionBridge.generateCandidateMatchDraft !== 'function' });
+        const voiceButton = element('button', { className: 'yl-settings-button', type: 'button', text: actionBridge.isPending('candidate_match_voice', '') ? '匹配中…' : '开始匹配', disabled: actionBridge.isPending('candidate_match_voice', '') || typeof actionBridge.runCandidateMatch !== 'function' });
         listen(voiceButton, voiceButton, 'click', () => { void runCandidateMatch('voice'); }, abortController.signal); append(voice, [voiceInput, voiceButton]); tools.appendChild(voice);
         section.appendChild(tools);
 
@@ -674,16 +700,16 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return section;
     }
     async function runCandidateMatch(mode) {
-        if (typeof actionBridge.generateCandidateMatchDraft !== 'function') { setFeedback('AI 匹配服务尚未就绪。'); return; }
+        if (typeof actionBridge.runCandidateMatch !== 'function') { setFeedback('AI 匹配服务尚未就绪。'); return; }
         const modeLabel = mode === 'soul' ? '灵魂匹配' : '语音匹配';
-        const operationToken = showAiLoading(modeLabel + '正在读取公开偏好并生成档案…');
+        const operationToken = showAiLoading(modeLabel + '正在读取受限偏好并生成新的互相喜欢对象…');
         setFeedback(modeLabel + '中…', operationToken); renderPage();
         let result;
-        try { result = await actionBridge.generateCandidateMatchDraft(mode, { voiceText: voiceMatchText }); } catch { result = { ok: false }; }
-        if (result?.ok && result.draft?.profile) {
-            matchedProfileDraft = { mode, ...result.draft };
-            showAiResult(true, modeLabel + '已找到一份公开心动档案。', operationToken);
-            setActivePage('match_profile');
+        try { result = await actionBridge.runCandidateMatch(mode, { voiceText: voiceMatchText }); } catch { result = { ok: false }; }
+        if (result?.ok && result.npcUid && result.sessionUid) {
+            showAiResult(true, modeLabel + '已生成新的互相喜欢对象，并加入消息。', operationToken);
+            refreshState();
+            setActivePage('matches');
             return;
         }
         const message = result?.message || describeActionFailure(result);
@@ -848,10 +874,22 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function chatNickname(session) {
         return session?.profile?.昵称 || '未命名对象';
     }
-    function chatAvatar(session, className = 'yl-session-avatar') {
+    function chatAvatar(session, className = 'yl-session-avatar', { interactive = false } = {}) {
         const nickname = chatNickname(session);
         const avatar = element('span', { className, text: nickname.slice(0, 1) || '人' });
-        avatar.setAttribute('aria-hidden', 'true');
+        if (!interactive) {
+            avatar.setAttribute('aria-hidden', 'true');
+            return avatar;
+        }
+        const openProfile = () => {
+            selectedCandidateUid = session.npcUid;
+            setActivePage('candidate_detail');
+        };
+        avatar.setAttribute('role', 'button');
+        avatar.setAttribute('tabindex', '0');
+        avatar.setAttribute('aria-label', '查看' + nickname + '的公开资料');
+        listen(avatar, avatar, 'click', openProfile, abortController.signal);
+        listen(avatar, avatar, 'keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault?.(); openProfile(); } }, abortController.signal);
         return avatar;
     }
     function openPrivateChat(sessionUid) {
@@ -916,7 +954,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function buildConversationHeader(session) {
         const header = element('section', { className: 'yl-private-chat-contact' });
-        header.appendChild(chatAvatar(session, 'yl-chat-contact-avatar'));
+        header.appendChild(chatAvatar(session, 'yl-chat-contact-avatar', { interactive: true }));
         const copy = element('div', { className: 'yl-private-chat-contact-copy' });
         copy.appendChild(element('h2', { text: chatNickname(session) }));
         const subline = element('span', { className: 'yl-private-chat-subline' });
@@ -1066,12 +1104,75 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         refreshState();
     }
 
+    function closeAvatarDialog() {
+        avatarDialog.hidden = true;
+        avatarLinkInput.value = '';
+    }
+    function openAvatarDialog() {
+        if (!playerAvatarStore || typeof playerAvatarStore.snapshot !== 'function') {
+            setFeedback('本地头像存储尚未就绪。');
+            return;
+        }
+        avatarDialog.hidden = false;
+    }
+    function playerAvatarButton(nickname) {
+        let avatar = null;
+        try { avatar = playerAvatarStore?.snapshot?.() ?? null; } catch { avatar = null; }
+        const source = avatarImageSource(avatar);
+        const button = element('button', {
+            className: 'yl-person-avatar yl-person-avatar-button', type: 'button',
+            ariaLabel: '更换个人头像', text: source ? '' : (nickname.slice(0, 1) || '我'),
+        });
+        if (source) {
+            button.appendChild(element('img', {
+                src: source, alt: '当前个人头像', loading: 'lazy', referrerPolicy: 'no-referrer',
+            }));
+        }
+        listen(button, button, 'click', openAvatarDialog, abortController.signal);
+        return button;
+    }
+    async function saveLocalAvatarFile(file) {
+        if (!file || avatarUploadPending || !playerAvatarStore || typeof playerAvatarStore.setAvatar !== 'function') return;
+        avatarUploadPending = true;
+        avatarFileButton.disabled = true;
+        try {
+            const compressed = await compressLocalAvatar(file);
+            playerAvatarStore.setAvatar({ kind: 'embedded', dataUrl: compressed.dataUrl });
+            closeAvatarDialog();
+            setFeedback('本地头像已保存到当前浏览器。');
+            renderPage();
+        } catch (error) {
+            setFeedback(projectAvatarError(error).message);
+        } finally {
+            avatarUploadPending = false;
+            avatarFileButton.disabled = false;
+            avatarFileInput.value = '';
+        }
+    }
+    function saveLinkedAvatar() {
+        if (!playerAvatarStore || typeof playerAvatarStore.setAvatar !== 'function') return;
+        try {
+            playerAvatarStore.setAvatar({ kind: 'url', url: String(avatarLinkInput.value ?? '').trim() });
+            closeAvatarDialog();
+            setFeedback('头像链接已保存到当前浏览器。');
+            renderPage();
+        } catch {
+            setFeedback('头像链接仅支持有效的 http 或 https 图片地址。');
+        }
+    }
+    function removePlayerAvatar() {
+        if (!playerAvatarStore || typeof playerAvatarStore.removeAvatar !== 'function') return;
+        try { playerAvatarStore.removeAvatar(); } catch { /* menu remains usable even if storage clearing fails */ }
+        closeAvatarDialog();
+        setFeedback('本地头像已移除。');
+        renderPage();
+    }
     function buildProfileHub() {
         const section = element('section', { className: 'yl-person-center' });
         const nickname = currentView.playerProfile.昵称 || '未填写个人资料';
         const headerCard = element('article', { className: 'yl-person-summary' });
         const hero = element('div', { className: 'yl-person-hero' });
-        hero.appendChild(element('span', { className: 'yl-person-avatar', text: nickname.slice(0, 1) || '我' }));
+        hero.appendChild(playerAvatarButton(nickname));
         headerCard.appendChild(hero);
         const copy = element('div');
         copy.appendChild(element('strong', { text: nickname }));
@@ -1094,8 +1195,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function buildProfileEditor() {
         const draft = seedPlayerDraft();
         const section = element('section', { className: 'yl-profile-editor' });
-        section.appendChild(element('p', { className: 'yl-phone-page-description', text: '只编辑公开资料；本页不会读取或显示私密层。' }));
-        const fields = [['昵称', 'text'], ['头像引用', 'url'], ['年龄段', 'text'], ['性别', 'text'], ['性取向', 'text'], ['城市', 'text'], ['距离范围', 'text'], ['寻找意图', 'text'], ['简介', 'textarea'], ['兴趣标签', 'tags'], ['生活方式标签', 'tags'], ['性格标签', 'tags'], ['沟通风格标签', 'tags']];
+        section.appendChild(element('p', { className: 'yl-phone-page-description', text: '只编辑公开资料；头像请在“我的”页点击头像单独管理，本页不会读取或显示私密层。' }));
+        const fields = [['昵称', 'text'], ['年龄段', 'text'], ['性别', 'text'], ['性取向', 'text'], ['城市', 'text'], ['距离范围', 'text'], ['寻找意图', 'text'], ['简介', 'textarea'], ['兴趣标签', 'tags'], ['生活方式标签', 'tags'], ['性格标签', 'tags'], ['沟通风格标签', 'tags']];
         for (const [key, type] of fields) {
             const block = element('label', { className: 'yl-settings-field' }); block.appendChild(element('span', { text: key }));
             const value = type === 'tags' ? draft[key].join('，') : draft[key];
@@ -1117,7 +1218,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function playerProfilePayload() {
         const draft = seedPlayerDraft();
         return Object.freeze({
-            昵称: draft.昵称, 头像引用: draft.头像引用, 年龄段: draft.年龄段, 性别: draft.性别, 性取向: draft.性取向,
+            昵称: draft.昵称, 头像引用: '', 年龄段: draft.年龄段, 性别: draft.性别, 性取向: draft.性取向,
             城市: draft.城市, 距离范围: draft.距离范围, 寻找意图: draft.寻找意图, 简介: draft.简介,
             兴趣标签: [...draft.兴趣标签], 生活方式标签: [...draft.生活方式标签], 性格标签: [...draft.性格标签], 沟通风格标签: [...draft.沟通风格标签],
         });
@@ -1149,7 +1250,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const copy = element('div', { className: 'yl-candidate-copy' });
             copy.appendChild(element('strong', { text: candidate.昵称 || '未命名对象' }));
             const tags = displayTags(candidate); if (tags.length) copy.appendChild(element('span', { text: tags.join(' · ') }));
-            card.appendChild(copy); card.appendChild(buildActionRow(candidate, { tooltips: false })); section.appendChild(card);
+            card.appendChild(copy);
+            const actions = element('div', { className: 'yl-favorite-actions' });
+            const removing = actionBridge.isPending('unfavorite', candidate.uid);
+            const cancel = element('button', { className: 'yl-settings-button yl-favorite-cancel', type: 'button', ariaLabel: '取消收藏', disabled: removing, text: removing ? '处理中…' : '取消收藏' });
+            listen(cancel, cancel, 'click', () => { void runCandidateAction('unfavorite', candidate.uid); }, abortController.signal);
+            const starting = actionBridge.isPending('start_private_chat', candidate.uid);
+            const start = element('button', { className: 'yl-settings-button yl-favorite-chat', type: 'button', ariaLabel: '发起私聊', disabled: starting || typeof actionBridge.runMvuAction !== 'function', text: starting ? '正在发起…' : '发起私聊' });
+            listen(start, start, 'click', () => { void startFavoritePrivateChat(candidate); }, abortController.signal);
+            append(actions, [cancel, start]); card.appendChild(actions); section.appendChild(card);
         }
         return section;
     }
@@ -1245,11 +1354,34 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         try { result = await request; } catch { result = { ok: false }; }
         refreshing = false;
         const message = result?.ok
-            ? (isRefresh ? '下一位候选人已生成。' : (kind === 'unfavorite' ? '已取消收藏。' : '操作已保存。'))
+            ? (isRefresh ? '下一位候选人已生成。' : (kind === 'unfavorite' ? '已取消收藏。' : (kind === 'like' ? '已记录这位对象的偏好反馈。' : '操作已保存。')))
             : (result?.message || describeActionFailure(result));
         setFeedback(message, operationToken);
         if (isRefresh) showAiResult(Boolean(result?.ok), message || '候选人未生成，请稍后重试。', operationToken);
         refreshState();
+    }
+    async function startFavoritePrivateChat(candidate) {
+        if (!candidate?.uid || typeof actionBridge.runMvuAction !== 'function') return;
+        const operationToken = setFeedback('正在发起私聊…');
+        renderPage();
+        let result;
+        try { result = await actionBridge.runMvuAction('start_private_chat', candidate.uid); }
+        catch { result = { ok: false }; }
+        if (!result?.ok) {
+            setFeedback(result?.message || describeActionFailure(result), operationToken);
+            refreshState();
+            return;
+        }
+        refreshState();
+        if (result.invitationOutcome === 'declined') {
+            setFeedback('TA 暂时没有接受这次私聊邀请。', operationToken);
+            setActivePage('favorites');
+            return;
+        }
+        const sessionUid = result.sessionUid || (currentView.messageSessions ?? []).find((session) => session.npcUid === candidate.uid)?.sessionUid;
+        setFeedback('私聊已发起，去打个招呼吧。', operationToken);
+        if (sessionUid) openPrivateChat(sessionUid);
+        else setActivePage('messages');
     }
 
     listen(launcher, launcher, 'click', () => setOpen(!open), abortController.signal);
@@ -1264,8 +1396,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(operationDismiss, operationDismiss, 'click', hideOperationDialog, abortController.signal);
     listen(operationClose, operationClose, 'click', hideOperationDialog, abortController.signal);
     listen(bindingDialogClose, bindingDialogClose, 'click', closeFeatureBindingDialog, abortController.signal);
+    listen(avatarDialogClose, avatarDialogClose, 'click', closeAvatarDialog, abortController.signal);
+    listen(avatarFileButton, avatarFileButton, 'click', () => { avatarFileInput.click?.(); }, abortController.signal);
+    listen(avatarFileInput, avatarFileInput, 'change', () => { void saveLocalAvatarFile(avatarFileInput.files?.[0]); }, abortController.signal);
+    listen(avatarLinkButton, avatarLinkButton, 'click', saveLinkedAvatar, abortController.signal);
+    listen(avatarRemoveButton, avatarRemoveButton, 'click', removePlayerAvatar, abortController.signal);
     listen(root, documentRef, "click", (event) => { if (activeHelpAnchor && event.target !== activeHelpAnchor) { helpPopover.hidden = true; activeHelpAnchor = null; } }, abortController.signal);
-    listen(root, documentRef, "keydown", (event) => { if (event.key === "Escape") { if (!operationDialog.hidden) hideOperationDialog(); else if (!bindingDialog.hidden) closeFeatureBindingDialog(); else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; } else if (open) setOpen(false); } }, abortController.signal);
+    listen(root, documentRef, "keydown", (event) => { if (event.key === "Escape") { if (!operationDialog.hidden) hideOperationDialog(); else if (!bindingDialog.hidden) closeFeatureBindingDialog(); else if (!avatarDialog.hidden) closeAvatarDialog(); else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; } else if (open) setOpen(false); } }, abortController.signal);
     renderPage();
     return Object.freeze({
         refreshState,

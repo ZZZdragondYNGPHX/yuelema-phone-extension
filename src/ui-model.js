@@ -136,6 +136,10 @@ export function projectMatchView(state) {
     if (!ownRecord(state) || !ownRecord(state.角色池)) return Object.freeze([]);
     const matches = [];
     for (const [uid, profile] of Object.entries(state.角色池)) {
+        // Mutual-match cards are created only by the dedicated AI matching
+        // transaction.  A saved recommendation can later become a private chat,
+        // but must not be misrepresented as a soul/voice mutual match.
+        if (!/^npc_match_\d+$/u.test(uid)) continue;
         const projected = projectPublicProfile(profile, uid);
         const relationship = projected ? profile.与玩家关系 : null;
         if (projected && ownRecord(relationship) && relationship.状态 === '已匹配') {
@@ -221,7 +225,12 @@ export function describeActionFailure(result) {
         npc_not_found: '该候选人已变化，请等待界面刷新。',
         npc_adult_verification_failed: '该资料未通过成年人校验，已拒绝操作。',
         like_match_source_not_available: '该资料已不在当前候选或收藏列表，请返回后刷新。',
+        like_preference_source_not_available: '这位对象已不在首页候选中；收藏后请从收藏夹发起私聊。',
         recommendation_source_not_available: '该资料已不在当前候选或收藏列表，请返回后刷新。',
+        favorite_private_chat_not_favorited: '该对象已不在收藏夹中，请返回后刷新。',
+        favorite_private_chat_already_started: '这次私聊邀请已经处理过了。',
+        favorite_private_chat_state_invalid: '当前资料缺少可用于私聊判定的公开信息。',
+        favorite_private_chat_score_invalid: '当前资料的匹配分数异常，未发起私聊。',
         content_mode_gate_state_invalid: '内容模式状态异常，未执行切换。',
         mvu_parse_returned_no_data: '本次没有可提交的变量变化。',
         mvu_parse_returned_no_stat_data: 'MVU 未返回可保存的软件状态，本次未写入。',
@@ -246,5 +255,3 @@ export function describeActionFailure(result) {
     if (messages[code]) return messages[code];
     return code ? `操作未完成，未写入任何未校验的数据。（${code}）` : '操作未完成，未写入任何未校验的数据。';
 }
-
-
