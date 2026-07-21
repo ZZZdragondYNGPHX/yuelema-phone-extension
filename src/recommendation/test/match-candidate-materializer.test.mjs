@@ -14,15 +14,42 @@ function draft() {
     };
 }
 
-test('materialized match candidate keeps AI input public-only and derives internal defaults locally', () => {
-    const result = materializeCandidateMatchDraft(draft());
+test('materialized match candidate ignores model score, derives local score, and exposes threshold comparison data', () => {
+    const playerPublicProfile = {
+        年龄段: '26-30岁', 性别: '男', 性取向: '异性恋', 城市: '上海', 距离范围: '10km以内',
+        寻找意图: '认真约会', 简介: '喜欢雨夜散步和独立电影。',
+        兴趣标签: ['独立电影'], 生活方式标签: ['夜行散步'], 性格标签: ['温和'], 沟通风格标签: ['深度对话'],
+    };
+    const localWeights = [
+        { keyword: '独立电影', weight: 5 }, { keyword: '夜行散步', weight: 5 },
+        { keyword: '温和', weight: 5 }, { keyword: '深度对话', weight: 5 },
+    ];
+    const untrusted = draft();
+    untrusted.matchScore = 1;
+    const result = materializeCandidateMatchDraft(untrusted, { playerPublicProfile, effectiveKeywordWeights: localWeights });
     assert.equal(result.candidate.成人验证, true);
     assert.equal(result.candidate.公开资料.昵称, '林舒');
     assert.equal(result.candidate.公开资料.头像引用, '');
     assert.equal(result.candidate.隐藏资料.实际年龄, 25);
     assert.equal(result.candidate.与玩家关系.状态, '陌生');
-    assert.equal(result.candidate.与玩家关系.NPC专属匹配度, 91);
+    assert.equal(result.candidate.与玩家关系.NPC专属匹配度, 94);
+    assert.equal(result.matchScore, 94);
+    assert.equal(result.cancellationThreshold, 75);
+    assert.equal(result.meetsCancellationThreshold, true);
+    assert.equal(result.shouldEstablishSession, true);
+    assert.equal(result.evaluation.heartCardScore, 90);
+    assert.equal(result.evaluation.keywordScore, 100);
     assert.equal(Object.hasOwn(result.candidate.公开资料, '隐藏资料'), false);
+});
+
+test('materializer never falls back to an unattested legacy model matchScore', () => {
+    const untrusted = draft();
+    untrusted.matchScore = 100;
+    const result = materializeCandidateMatchDraft(untrusted);
+    assert.equal(result.matchScore, 33);
+    assert.equal(result.candidate.与玩家关系.NPC专属匹配度, 33);
+    assert.equal(result.meetsCancellationThreshold, false);
+    assert.equal(result.shouldEstablishSession, false);
 });
 
 test('materialized match candidate rejects occupational names and concrete addresses before any MVU write', () => {

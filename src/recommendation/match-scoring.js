@@ -69,6 +69,15 @@ function profileTags(profile) {
 
 function normalizedWeightMap(value) {
     const result = new Map();
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const entry = record(item);
+            const tag = comparable(entry.keyword);
+            const weight = entry.weight;
+            if (tag && Number.isInteger(weight) && weight >= -5 && weight <= 5) result.set(tag, weight);
+        }
+        return result;
+    }
     const source = record(value);
     for (const [rawTag, rawWeight] of Object.entries(source)) {
         const tag = comparable(rawTag);
@@ -139,6 +148,31 @@ export function scoreKeywordCompatibility(playerProfile, npcProfile, tagWeights)
     const learnedScore = weightTotal / npcTags.length;
     const overlapScore = (sharedTags / npcTags.length) * 100;
     return Object.freeze({ score: clampInteger((learnedScore * 0.6) + (overlapScore * 0.4), 0, 100), sharedTags });
+}
+
+/**
+ * Scores an AI-generated match candidate entirely on-device.  The model may
+ * propose only the candidate's public profile; it has no authority over this
+ * result.  A conclusive public gender/orientation mismatch remains a hard
+ * refusal, while public heart-card compatibility (60%) and the effective
+ * keyword weights for this match run (40%) provide the final 0..100 score.
+ */
+export function scoreLocalCandidateMatch(playerProfile, npcProfile, effectiveKeywordWeights) {
+    const heartCard = scoreHeartCardCompatibility(playerProfile, npcProfile);
+    const keywords = scoreKeywordCompatibility(playerProfile, npcProfile, effectiveKeywordWeights);
+    const score = heartCard.eligible
+        ? clampInteger((heartCard.score * 0.6) + (keywords.score * 0.4), 0, 100)
+        : 0;
+    const reasons = [...heartCard.reasons];
+    if (keywords.sharedTags > 0) reasons.push(`公开关键词重合 ${keywords.sharedTags} 项`);
+    return Object.freeze({
+        score,
+        eligible: heartCard.eligible,
+        heartCardScore: heartCard.score,
+        keywordScore: keywords.score,
+        sharedTags: keywords.sharedTags,
+        reasons: Object.freeze(reasons),
+    });
 }
 
 /**

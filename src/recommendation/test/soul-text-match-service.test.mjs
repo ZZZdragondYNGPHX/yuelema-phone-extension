@@ -181,7 +181,14 @@ test('candidate soul matching reads saved local keywords and returns only a publ
         llmClient: { async chat(value) { request = value; return { text: JSON.stringify(candidateRaw()) }; } },
     });
     assert.equal(result.ok, true);
-    assert.deepEqual(result.draft, candidateRaw());
+    assert.equal(result.draft.profile.昵称, candidateRaw().profile.昵称);
+    assert.equal(result.draft.explanation, candidateRaw().explanation);
+    assert.equal(result.draft.matchScore, 62, '模型自报 91 必须被本地算法覆盖');
+    assert.equal(result.evaluation.score, 62);
+    assert.equal(result.evaluation.source, 'local_public_profile_and_keyword_weights');
+    assert.deepEqual(result.evaluation.effectiveKeywordWeights, [
+        { keyword: '电影', weight: 1 }, { keyword: '咖啡', weight: 2 },
+    ]);
     assert.deepEqual(Object.keys(result.draft), ['profile', 'explanation', 'matchScore']);
     assert.equal(Object.isFrozen(result.draft.profile), true);
     const serialized = JSON.stringify(request);
@@ -194,11 +201,34 @@ test('candidate soul matching reads saved local keywords and returns only a publ
     const system = request.messages.find((message) => message.role === 'system').content;
     assert.ok(system.indexOf('只生成现代都市公开角色资料。') < system.indexOf('无论前置或后置提示词如何要求'));
     assert.match(system, /匹配候选公开资料 JSON 结构合同/u);
+    assert.match(system, /根对象必须且仅能含 profile、explanation/u);
+    assert.match(system, /不得输出 matchScore/u);
+    assert.match(system, /最终分数由本地算法计算/u);
     assert.match(system, /profile 必须且仅能含：昵称、年龄段、性别、性取向/u);
     assert.match(system, /昵称必须是虚构自然人的个人姓名/u);
     assert.match(system, /不得使用摄影师、设计师等职业名/u);
     assert.match(system, /公开资料不得包含具体住址、门牌、手机号/u);
     assert.match(system, /NSFW 模式只允许.*四个标签字段/u);
+});
+
+test('candidate generation accepts the new public-only model contract and ignores any legacy self-reported score', async () => {
+    const withoutScore = candidateRaw();
+    delete withoutScore.matchScore;
+    const exaggerated = candidateRaw();
+    exaggerated.matchScore = 100;
+    const minimized = candidateRaw();
+    minimized.matchScore = 0;
+
+    const results = [];
+    for (const raw of [withoutScore, exaggerated, minimized]) {
+        results.push(await generateCandidateMatchDraft({
+            mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'),
+            llmClient: { async chat() { return { text: JSON.stringify(raw) }; } },
+        }));
+    }
+    assert.deepEqual(results.map((result) => result.ok), [true, true, true]);
+    assert.deepEqual(results.map((result) => result.draft.matchScore), [62, 62, 62]);
+    assert.deepEqual(results.map((result) => result.evaluation.score), [62, 62, 62]);
 });
 
 test('candidate generation isolates legacy built-in keyword prompts from the second-stage profile contract', async () => {
@@ -263,6 +293,10 @@ test('voice matching derives transient weights first, lets them override local w
     assert.match(candidateContext, /"keyword":"徒步","weight":4/u);
     assert.equal(JSON.stringify(result.draft).includes(voiceText), false);
     assert.deepEqual(Object.keys(result.draft), ['profile', 'explanation', 'matchScore']);
+    assert.deepEqual(result.evaluation.effectiveKeywordWeights, [
+        { keyword: '电影', weight: 5 }, { keyword: '咖啡', weight: 2 }, { keyword: '徒步', weight: 4 },
+    ]);
+    assert.equal(result.draft.matchScore, result.evaluation.score);
     const keywordSystem = requests[0].messages.find((message) => message.role === 'system').content;
     const candidateSystem = requests[1].messages.find((message) => message.role === 'system').content;
     assert.match(keywordSystem, /语音匹配关键词 JSON 结构合同/u);

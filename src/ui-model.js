@@ -252,6 +252,10 @@ export function describeActionFailure(result) {
         private_chat_response_invalid: '私聊回复未通过校验，本条消息未写入。',
         private_chat_relationship_state_invalid: '当前关系状态异常，本条消息未写入。',
         private_chat_session_messages_invalid: '当前会话记录异常，本条消息未写入。',
+        private_chat_rhythm_state_invalid: '当前角色的互动节奏设置异常，本条消息未写入。',
+        private_chat_delete_invalid_target: '该会话标识无效，未执行删除。',
+        private_chat_delete_not_found: '该会话已不存在，请返回消息列表刷新。',
+        private_chat_delete_state_invalid: '该会话状态异常，未执行删除。',
     };
     if (messages[code]) return messages[code];
     return code ? `操作未完成，未写入任何未校验的数据。（${code}）` : '操作未完成，未写入任何未校验的数据。';

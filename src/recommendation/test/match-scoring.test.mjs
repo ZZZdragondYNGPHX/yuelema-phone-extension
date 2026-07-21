@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { scoreFavoritePrivateChatInvitation, scorePublicCompatibility, scoreTwoLayerMatch } from '../match-scoring.js';
+import { scoreFavoritePrivateChatInvitation, scoreLocalCandidateMatch, scorePublicCompatibility, scoreTwoLayerMatch } from '../match-scoring.js';
 
 const player = {
     城市: '上海', 寻找意图: '聊天约会', 兴趣标签: ['电影', '展览'],
@@ -44,4 +44,25 @@ test('favourite private-chat invitation combines local keyword taste and heart-c
     }, { 电影: 5 });
     assert.equal(declined.eligible, false);
     assert.equal(declined.score, 0);
+});
+
+
+test('candidate matching score is local, deterministic, and uses the current effective keyword weights', () => {
+    const compatiblePlayer = {
+        年龄段: '26-30', 性别: '男', 性取向: '异性恋', 城市: '上海', 距离范围: '10 km', 寻找意图: '认真约会',
+        兴趣标签: ['电影'], 生活方式标签: ['徒步'], 性格标签: [], 沟通风格标签: [],
+    };
+    const compatibleNpc = {
+        年龄段: '25-29', 性别: '女', 性取向: '异性恋', 城市: '上海', 距离范围: '10 km', 寻找意图: '约会',
+        兴趣标签: ['电影'], 生活方式标签: ['徒步'], 性格标签: [], 沟通风格标签: [],
+    };
+    const local = scoreLocalCandidateMatch(compatiblePlayer, compatibleNpc, { 电影: 5, 徒步: 5 });
+    assert.deepEqual(local, {
+        score: 94, eligible: true, heartCardScore: 90, keywordScore: 100, sharedTags: 2,
+        reasons: ['性别与性取向相容', '同城', '寻找意图相近', '年龄段接近', '相遇距离已填写', '公开关键词重合 2 项'],
+    });
+
+    const disliked = scoreLocalCandidateMatch(compatiblePlayer, compatibleNpc, { 电影: -5, 徒步: -5 });
+    assert.equal(disliked.score, 70);
+    assert.equal(disliked.keywordScore, 40);
 });

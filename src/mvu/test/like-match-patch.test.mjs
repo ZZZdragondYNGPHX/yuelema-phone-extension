@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCandidateMatchSessionPatch, buildControlledPatch, buildLikeMatchPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import { buildCandidateMatchOutcomePatch, buildCandidateMatchSessionPatch, buildControlledPatch, buildLikeMatchPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
 
 function candidate({ threshold = 60 } = {}) {
     return {
@@ -126,6 +126,23 @@ test('AI match commits a brand-new npc_match role and matched session without to
     assert.equal(validateControlledPatchAgainstState(before, result.value).ok, true);
 });
 
+test('AI match below the local cancellation threshold records a declined role without creating a session', () => {
+    const before = state();
+    const result = buildCandidateMatchOutcomePatch(before, { candidate: candidate(), accepted: false });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.value.map((operation) => [operation.op, operation.path]), [
+        ['add', '/角色池/npc_match_2'],
+        ['replace', '/系统/UID计数器/角色'],
+    ]);
+    assert.equal(result.value[0].value.与玩家关系.状态, '已取消');
+    assert.equal(result.value.some((operation) => operation.path.startsWith('/会话/')), false);
+    assert.equal(result.value.some((operation) => operation.path === '/系统/UID计数器/会话'), false);
+    assert.equal(validateControlledPatchAgainstState(before, result.value).ok, true);
+
+    const forged = structuredClone(result.value);
+    forged[0].value.与玩家关系.状态 = '已匹配';
+    assert.equal(validateControlledPatchAgainstState(before, forged).ok, false);
+});
 test('clicking a saved favourite again removes its bookmark and disposable candidate record', () => {
     const savedState = state();
     savedState.角色池.npc_case = savedState.推荐.临时候选池.npc_case;

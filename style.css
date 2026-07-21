@@ -1544,3 +1544,14 @@ body.reduced-motion .yl-phone-extension *, body.reduced-motion .yl-phone-extensi
     .yl-image-keyword-row { grid-template-columns: minmax(0, 1fr) 62px auto; }
     .yl-image-keyword-actions > * { flex: 1 1 90px; }
 }
+
+/* 消息搜索、会话删除与只读输入 */
+.yl-message-search { display: block; }
+.yl-message-search-input { width: 100%; border-radius: 999px; }
+.yl-private-chat-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.yl-private-chat-delete { padding: 6px 9px; border: 1px solid rgb(255 92 116 / 48%); border-radius: 999px; color: #ffd5de; background: rgb(255 92 116 / 10%); font: inherit; font-size: .72rem; cursor: pointer; }
+.yl-chat-delete-confirmation { display: grid; gap: 9px; padding: 13px; border: 1px solid rgb(255 92 116 / 45%); border-radius: var(--yl-r-md, 16px); background: rgb(92 24 45 / 35%); }
+.yl-chat-delete-confirmation p { margin: 0; color: var(--yl-muted, #b9acc6); font-size: .78rem; line-height: 1.45; }
+.yl-chat-delete-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.yl-chat-delete-confirm { border-color: transparent; color: #fff; background: linear-gradient(135deg, #ff5c74, #d93662); }
+.yl-chat-composer.is-readonly { grid-template-columns: minmax(0, 1fr) auto; opacity: .78; }

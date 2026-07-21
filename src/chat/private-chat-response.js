@@ -6,13 +6,16 @@
  * wrapper cannot accidentally be treated as an already validated reply.
  */
 
+export const MAX_PRIVATE_CHAT_REPLY_COUNT = 6;
 export const MAX_PRIVATE_CHAT_REPLY_LENGTH = 600;
+export const MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH = 600;
 export const MAX_PRIVATE_CHAT_SESSION_SUMMARY_LENGTH = 500;
 
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SENSITIVE_KEY_PATTERN = /(?:api[\s_-]*key|authorization|token|secret|password|credential|private[\s_-]*key|密钥|令牌|密码|授权|凭据)/iu;
 const HTML_PATTERN = /<!--|<\s*\/?\s*[a-z][^>]*>/iu;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/u;
+const ARRAY_INDEX_PATTERN = /^(?:0|[1-9]\d*)$/u;
 const ERROR_PREFIX = 'private_chat_response_validation_failed:';
 const RELATIONSHIP_FIELDS = Object.freeze(['好感', '信任', '戒备', '面基意愿']);
 const USER_MESSAGES = Object.freeze({
@@ -93,6 +96,37 @@ function normalizeShortText(value, maxLength, code) {
     return value;
 }
 
+function normalizeReplies(value) {
+    if (!Array.isArray(value)) fail('private_chat_response_reply_invalid');
+    if (Object.getPrototypeOf(value) !== Array.prototype) fail('private_chat_response_unsafe_prototype');
+    if (value.length < 1 || value.length > MAX_PRIVATE_CHAT_REPLY_COUNT) {
+        fail('private_chat_response_reply_invalid');
+    }
+
+    for (const key of Reflect.ownKeys(value)) {
+        if (typeof key !== 'string') fail('private_chat_response_dangerous_key');
+        if (key === 'length') continue;
+        assertSafeKey(key);
+        if (!ARRAY_INDEX_PATTERN.test(key) || Number(key) >= value.length) {
+            fail('private_chat_response_unknown_field');
+        }
+        ownEnumerableData(value, key);
+    }
+
+    const replies = [];
+    for (let index = 0; index < value.length; index += 1) {
+        replies.push(normalizeShortText(
+            ownEnumerableData(value, String(index)),
+            MAX_PRIVATE_CHAT_REPLY_LENGTH,
+            'private_chat_response_reply_invalid',
+        ));
+    }
+    if (replies.join(' ').length > MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH) {
+        fail('private_chat_response_reply_invalid');
+    }
+    return replies;
+}
+
 function normalizeRelationship(value) {
     try {
         assertExactRecord(value, RELATIONSHIP_FIELDS);
@@ -121,17 +155,45 @@ function normalizeRelationship(value) {
 
 /**
  * Validates a parsed model response and returns a fresh, safe data-only clone.
- * The accepted schema is exactly { reply, relationship, sessionSummary? }.
+ * Preferred input: { replies: [1..6 short strings], relationship, sessionSummary? }.
+ * Legacy input: { reply: string, relationship, sessionSummary? }.
+ *
+ * Output always contains canonical `replies` plus a space-joined `reply`
+ * compatibility fallback so existing single-message consumers keep working
+ * until their write/render boundary is upgraded to consume `replies`.
  */
 export function normalizePrivateChatResponse(raw) {
     try {
-        assertExactRecord(raw, ['reply', 'relationship'], ['sessionSummary']);
-        const normalized = {
-            reply: normalizeShortText(
+        assertExactRecord(raw, ['relationship'], ['replies', 'reply', 'sessionSummary']);
+        const hasReplies = Object.hasOwn(raw, 'replies');
+        const hasReply = Object.hasOwn(raw, 'reply');
+        if (!hasReplies && !hasReply) fail('private_chat_response_missing_field');
+
+        const replies = hasReplies
+            ? normalizeReplies(ownEnumerableData(raw, 'replies'))
+            : [normalizeShortText(
                 ownEnumerableData(raw, 'reply'),
                 MAX_PRIVATE_CHAT_REPLY_LENGTH,
                 'private_chat_response_reply_invalid',
-            ),
+            )];
+        const compatibilityReply = replies.join(' ');
+        if (compatibilityReply.length > MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH) {
+            fail('private_chat_response_reply_invalid');
+        }
+        if (hasReply) {
+            const legacyReply = normalizeShortText(
+                ownEnumerableData(raw, 'reply'),
+                MAX_PRIVATE_CHAT_REPLY_LENGTH,
+                'private_chat_response_reply_invalid',
+            );
+            if (hasReplies && legacyReply !== compatibilityReply) {
+                fail('private_chat_response_reply_invalid');
+            }
+        }
+
+        const normalized = {
+            replies,
+            reply: compatibilityReply,
             relationship: normalizeRelationship(ownEnumerableData(raw, 'relationship')),
         };
         if (Object.hasOwn(raw, 'sessionSummary')) {

@@ -183,7 +183,7 @@ test('match tools create a fresh mutual match and message session without using 
             matched.隐藏资料 = { 实际年龄: 28, 私人备注: 'never render' };
             readResult.state.角色池.npc_match_2 = matched;
             readResult.state.会话.chat_2 = { 对象UID: 'npc_match_2', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
-            return { ok: true, npcUid: 'npc_match_2', sessionUid: 'chat_2', explanation: '公开缘分说明', matchScore: 91 };
+            return { ok: true, matchOutcome: 'accepted', npcUid: 'npc_match_2', sessionUid: 'chat_2', explanation: '公开缘分说明', matchScore: 91 };
         },
     };
     const mounted = mountPhoneApp({
@@ -203,12 +203,10 @@ test('match tools create a fresh mutual match and message session without using 
         click(matchButtons[1]);
         await flushUi();
         assert.deepEqual(calls, [{ mode: 'voice', voiceText: '周末想逛展，也想认真聊天' }]);
-        const match = miniDom.document.querySelector('.yl-match-row');
-        assert.ok(match, '成功后应在已互相喜欢中出现新对象');
-        assert.match(match.textContent, /灵魂档案|聊天/u);
-        assert.doesNotMatch(match.textContent, /never render|隐藏资料|关系分|阈值/u);
-        click(buttonByPage('messages'));
-        assert.match(miniDom.document.body.textContent, /灵魂档案/u, '新对象应同时进入消息列表');
+        const chat = miniDom.document.querySelector('.yl-private-chat-screen');
+        assert.ok(chat, 'accepted 应直接进入非空私聊会话');
+        assert.match(chat.textContent, /灵魂档案/u);
+        assert.doesNotMatch(chat.textContent, /never render|隐藏资料|关系分|阈值/u);
     } finally {
         mounted.destroy();
     }
@@ -902,4 +900,44 @@ test('declined favourite invitation stays out of messages and reports a safe rej
     } finally {
         mounted.destroy();
     }
+});
+
+
+test('declined match stays on matches and never opens an empty session', async () => {
+    const opened = [];
+    const bridge = { emit() {}, isPending() { return false; }, async runCandidateMatch() { return { ok: true, matchOutcome: 'declined', npcUid: 'npc_declined', sessionUid: '' }; } };
+    const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-declined-match', actionBridge: bridge, settingsStore: createSettingsStore({ storage: createMemoryStorage() }), llmClient: null, characterLibrary: null, readState: readyReadResult });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('matches'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配'));
+        await flushUi();
+        assert.match(miniDom.document.body.textContent, /灵魂匹配|语音匹配/u);
+        assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null);
+        assert.match(miniDom.document.body.textContent, /婉拒/u);
+        assert.deepEqual(opened, []);
+    } finally { mounted.destroy(); }
+});
+
+test('home feedback actions save before generating next candidate while refresh and unfavorite stay single-purpose', async () => {
+    const calls = [];
+    let next = { ok: true };
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        async runMvuAction(kind, uid) { calls.push(['save', kind, uid]); return { ok: true }; },
+        async runRecommendationInitialCandidate() { calls.push(['next']); return next; },
+        async runRecommendationRefresh(uid) { calls.push(['refresh', uid]); return { ok: true }; },
+    };
+    const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-home-auto-next', actionBridge: bridge, settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '喜欢')); await flushUi();
+        assert.deepEqual(calls.splice(0), [['save', 'like', 'npc_1'], ['next']]);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '刷新')); await flushUi();
+        assert.deepEqual(calls.splice(0), [['refresh', 'npc_1']]);
+        next = { ok: false, message: '下一位服务暂时不可用' };
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '不喜欢')); await flushUi();
+        assert.deepEqual(calls.splice(0), [['save', 'dislike', 'npc_1'], ['next']]);
+        assert.match(miniDom.document.body.textContent, /不喜欢反馈已保存.*下一位候选人生成失败/u);
+    } finally { mounted.destroy(); }
 });

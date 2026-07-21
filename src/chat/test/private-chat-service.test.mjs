@@ -19,7 +19,7 @@ function state() {
                 公开资料: { 昵称: '小满', 简介: '公开资料' },
                 仅好友资料: { 关系状态: '开放关系', 边界与偏好: '先确认同意。' },
                 隐藏资料: { 实际年龄: 28, 私人备注: '绝不泄露' },
-                偏好与边界: '角色内部字段不得发送', 拒绝阈值: 20, 已读不回阈值: 30, 取消匹配阈值: 80, 拉黑阈值: 90,
+                偏好与边界: '角色内部字段不得发送', 拒绝阈值: 20, 已读不回阈值: 55, 取消匹配阈值: 80, 拉黑阈值: 90,
                 与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 30, 信任: 40, 戒备: 20, 面基意愿: 10 },
             },
         },
@@ -32,7 +32,31 @@ function state() {
 }
 
 function response() {
-    return { reply: '晚上好，先聊聊彼此的周末？', relationship: { 好感: 2, 信任: 1, 戒备: -2, 面基意愿: 0 }, sessionSummary: '双方从周末安排开始轻松聊天。' };
+    return {
+        replies: ['晚上好。', '先聊聊彼此的周末？'],
+        relationship: { 好感: 2, 信任: 1, 戒备: -2, 面基意愿: 0 },
+        sessionSummary: '双方从周末安排开始轻松聊天。',
+    };
+}
+
+function legacyResponse() {
+    return {
+        reply: '晚上好，先聊聊彼此的周末？',
+        relationship: { 好感: 2, 信任: 1, 戒备: -2, 面基意愿: 0 },
+        sessionSummary: '双方从周末安排开始轻松聊天。',
+    };
+}
+
+function settingsStore() {
+    return {
+        resolveFunction(key) {
+            assert.equal(key, 'chat');
+            return {
+                connectionPreset: { id: 'fast', url: 'https://example.test/v1', model: 'model' },
+                promptPreset: { enabled: true, content: '保持简短。' },
+            };
+        },
+    };
 }
 
 test('private chat context includes public + matched friends-only data, never hidden or internal fields', () => {
@@ -54,31 +78,65 @@ test('private chat rejects unmatched, forged, underage and malformed messages be
     assert.equal(buildPrivateChatContext({ state: state(), sessionUid: 'chat_1', npcUid: 'npc_other', playerMessage: '你好' }).ok, false);
 });
 
-test('private chat model reply uses chat binding and returns only validated in-memory data', async () => {
+test('private chat requests replies and returns only validated multi-bubble data in memory', async () => {
     let request;
+    const current = state();
+    const before = structuredClone(current);
     const result = await generatePrivateChatReply({
-        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好',
-        settingsStore: { resolveFunction(key) { assert.equal(key, 'chat'); return { connectionPreset: { id: 'fast', url: 'https://example.test/v1', model: 'model' }, promptPreset: { enabled: true, content: '保持简短。' } }; } },
+        state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', settingsStore: settingsStore(),
         llmClient: { async chat(input) { request = input; return { text: JSON.stringify(response()) }; } },
     });
     assert.equal(result.ok, true);
-    assert.equal(result.response.reply, response().reply);
+    assert.deepEqual(result.response.replies, response().replies);
+    assert.equal(result.response.reply, '晚上好。 先聊聊彼此的周末？');
     assert.match(request.messages[0].content, /保持简短/);
+    assert.match(request.messages[0].content, /"replies"/);
+    assert.match(request.messages[0].content, /1-6/);
+    assert.match(request.messages[0].content, /不要输出旧版 reply 字段/);
     assert.doesNotMatch(JSON.stringify(request.messages), /绝不泄露|不得发送|实际年龄/);
+    assert.deepEqual(current, before);
 });
 
-test('private chat patch is exact, atomic, clamps relationship and only updates nonzero values', () => {
+test('private chat accepts old single-reply model output as one canonical bubble', async () => {
+    const result = await generatePrivateChatReply({
+        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', settingsStore: settingsStore(),
+        llmClient: { async chat() { return { text: JSON.stringify(legacyResponse()) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.response.replies, [legacyResponse().reply]);
+    assert.equal(result.response.reply, legacyResponse().reply);
+});
+
+test('private chat rejects unsafe multi-bubble model output without writes or source echo', async () => {
+    const current = state();
+    const before = structuredClone(current);
+    const result = await generatePrivateChatReply({
+        state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', settingsStore: settingsStore(),
+        llmClient: { async chat() { return { text: JSON.stringify({ ...response(), replies: ['<script>MODEL_SECRET</script>'] }) }; } },
+    });
+    assert.deepEqual(result, {
+        ok: false,
+        code: 'private_chat_response_reply_invalid',
+        message: '私聊文本不符合安全格式。',
+    });
+    assert.equal(JSON.stringify(result).includes('MODEL_SECRET'), false);
+    assert.deepEqual(current, before);
+});
+
+test('private chat patch remains compatible with the canonical response fallback', () => {
     const current = state();
     const before = structuredClone(current);
     const built = buildPrivateChatPatch(current, { sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', response: response() });
     assert.equal(built.ok, true);
     assert.deepEqual(built.value.map((operation) => operation.path), [
-        '/会话/chat_1/最近消息/-', '/会话/chat_1/最近消息/-',
+        '/会话/chat_1/最近消息/-', '/会话/chat_1/最近消息/-', '/会话/chat_1/最近消息/-',
         '/角色池/npc_adult/与玩家关系/好感', '/角色池/npc_adult/与玩家关系/信任', '/角色池/npc_adult/与玩家关系/戒备',
         '/会话/chat_1/长期摘要',
     ]);
-    assert.equal(built.value[2].value, 32);
-    assert.equal(built.value[4].value, 18);
+    assert.equal(built.value[1].value.内容, '晚上好。');
+    assert.equal(built.value[2].value.内容, '先聊聊彼此的周末？');
+    assert.equal(built.value[3].value, 32);
+    assert.equal(built.value[5].value, 18);
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
     assert.deepEqual(current, before);
 });
@@ -91,5 +149,4 @@ test('private chat patch rejects unsafe or stale operations before parse', () =>
     const stale = state(); stale.角色池.npc_adult.与玩家关系.状态 = '已取消';
     assert.equal(buildPrivateChatPatch(stale, { sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', response: response() }).ok, false);
 });
-
 

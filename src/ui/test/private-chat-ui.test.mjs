@@ -301,3 +301,57 @@ test('a late private-chat failure stays silent after the user left the conversat
         mounted.destroy();
     }
 });
+
+
+test('message search uses only nickname and latest visible message', () => {
+    const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-chat-search', actionBridge: { emit() {}, isPending() { return false; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: readResult });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        const search = miniDom.document.querySelector('[name="missing"]') ?? miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '搜索私聊');
+        assert.ok(search);
+        search.value = '林澈'; search.dispatchEvent(new Event('input'));
+        assert.ok(miniDom.document.querySelector('.yl-message-session'));
+        const latestSearch = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '搜索私聊');
+        latestSearch.value = '刚看完一部电影'; latestSearch.dispatchEvent(new Event('input'));
+        assert.ok(miniDom.document.querySelector('.yl-message-session'));
+        for (const secret of ['chat_lin', 'npc_lin', 'hidden-secret-must-not-render', '93']) {
+            const input = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '搜索私聊');
+            input.value = secret; input.dispatchEvent(new Event('input'));
+            assert.equal(miniDom.document.querySelector('.yl-message-session'), null);
+        }
+    } finally { mounted.destroy(); }
+});
+
+test('multiple contact replies render as separate bubbles and blocked chat disables input', () => {
+    const result = readResult();
+    result.state.会话.chat_lin.状态 = '已拉黑';
+    result.state.角色池.npc_lin.与玩家关系.状态 = '已拉黑';
+    result.state.会话.chat_lin.最近消息 = [
+        { 消息UID: 'a', 发送者: '角色', 内容: '第一条回复', 时间: '20:30' },
+        { 消息UID: 'b', 发送者: '角色', 内容: '第二条回复', 时间: '20:31' },
+    ];
+    const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-chat-multi-blocked', actionBridge: { emit() {}, isPending() { return false; }, runPrivateChat() { throw new Error('must not send'); } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelector('.yl-message-session'));
+        assert.equal(miniDom.document.querySelectorAll('.yl-chat-bubble').filter((node) => node.classList.contains('is-contact')).length, 2);
+        assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '私聊消息输入已禁用')?.disabled, true);
+        assert.equal(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息已禁用')?.disabled, true);
+    } finally { mounted.destroy(); }
+});
+
+test('private chat deletion uses inline confirmation, clears draft, and returns to list', async () => {
+    const result = readResult(); const calls = [];
+    const bridge = { emit() {}, isPending() { return false; }, async deletePrivateChat(uid) { calls.push(uid); delete result.state.会话[uid]; return { ok: true }; }, async runPrivateChat() { return { ok: false }; } };
+    const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-chat-delete', actionBridge: bridge, settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机')); click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages')); click(miniDom.document.querySelector('.yl-message-session'));
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息'); input.value = '保留中的草稿'; input.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '删除私聊会话'));
+        assert.ok(miniDom.document.querySelector('.yl-chat-delete-confirmation'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '确认删除私聊会话')); await flushUi();
+        assert.deepEqual(calls, ['chat_lin']); assert.ok(miniDom.document.querySelector('.yl-message-list-page') || /暂无已建立/u.test(miniDom.document.body.textContent)); assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null);
+    } finally { mounted.destroy(); }
+});

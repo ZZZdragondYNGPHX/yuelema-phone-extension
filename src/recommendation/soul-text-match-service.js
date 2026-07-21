@@ -2,6 +2,7 @@ import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { BUILTIN_PROMPT_PRESET_IDS } from '../settings/default-prompt-presets.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
 import { normalizeGeneratedPublicProfile } from './candidate.js';
+import { scoreLocalCandidateMatch } from './match-scoring.js';
 
 const MAX_MODEL_RESPONSE_CHARS = 8_000;
 const MAX_TAGS = 12;
@@ -67,13 +68,13 @@ const TEXT_MATCH_OUTPUT_CONTRACT = Object.freeze([
     'explanation 必须是 1–500 字公开筛选说明。filters 只用于本次展示，不是 JSONPatch，也不会自动保存。',
 ]);
 const CANDIDATE_MATCH_OUTPUT_CONTRACT = Object.freeze([
-    '匹配候选公开资料 JSON 结构合同：根对象必须且仅能含 profile、explanation、matchScore。',
+    '匹配候选公开资料 JSON 结构合同：根对象必须且仅能含 profile、explanation。不得输出 matchScore、评分、阈值或关系数值；最终分数由本地算法计算。',
     'profile 必须且仅能含：昵称、年龄段、性别、性取向、城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签、沟通风格标签。前八项均为非空字符串；年龄段必须明确表示成年人或 18 岁以上。',
     '昵称必须是虚构自然人的个人姓名；不得使用摄影师、设计师等职业名，兴趣或性格标签，账号名，系统、模型、助手、玩家、候选角色等概念充当昵称。',
     '四个标签字段均为最多 12 项的不重复短字符串数组；不得附带头像、仅好友资料、隐藏资料、关系分、阈值、关键词权重或其他字段。',
     '公开资料不得包含具体住址、门牌、手机号、电话号码、证件号、银行卡、真实姓名或私人账号，也不得包含未成年、胁迫、偷拍、诈骗或线下性行为演绎内容。',
     'SFW 模式不得使用成人取向或成人偏好词；NSFW 模式只允许把合规的成人取向或偏好写成四个标签字段中的短标签，不得写入简介等文本字段，也不会放宽隐私、成年与同意边界。',
-    'explanation 必须是 1–500 字公开匹配说明；matchScore 必须是 0–100 的整数。',
+    'explanation 必须是 1–500 字公开匹配说明。它只能解释公开资料与关键词方向，不得声称或夹带最终分数。',
 ]);
 const VOICE_KEYWORD_OUTPUT_CONTRACT = Object.freeze([
     '语音匹配关键词 JSON 结构合同：根对象必须且仅能含 keywordWeights。',
@@ -343,7 +344,9 @@ function assertExplicitAdult(kind, ageBand) {
  */
 export function normalizeCandidateMatchDraft(raw, { contentMode = 'SFW' } = {}) {
     const kind = 'candidate';
-    assertExactRecord(kind, raw, ['profile', 'explanation', 'matchScore']);
+    // matchScore is accepted only as a legacy transport field. Generation
+    // ignores and overwrites it with the deterministic local score below.
+    assertExactRecord(kind, raw, ['profile', 'explanation'], ['matchScore']);
     const profile = ownEnumerableData(kind, raw, 'profile');
     const textFields = {
         昵称: 80, 年龄段: 32, 性别: 48, 性取向: 80, 城市: 80, 距离范围: 48, 寻找意图: 120, 简介: 500,
@@ -371,13 +374,58 @@ export function normalizeCandidateMatchDraft(raw, { contentMode = 'SFW' } = {}) 
     const draftProfile = {};
     for (const field of Object.keys(textFields)) draftProfile[field] = normalizedPublicProfile[field];
     for (const field of tagFields) draftProfile[field] = Object.freeze(normalizedPublicProfile[field]);
-    const matchScore = ownEnumerableData(kind, raw, 'matchScore');
-    if (!Number.isInteger(matchScore) || matchScore < 0 || matchScore > 100) failResponse(kind, 'match_score_invalid');
-    return Object.freeze({
+    const normalized = {
         profile: Object.freeze(draftProfile),
         explanation: normalizeDraftText(kind, ownEnumerableData(kind, raw, 'explanation'), MAX_EXPLANATION_LENGTH),
-        matchScore,
+    };
+    if (Object.hasOwn(raw, 'matchScore')) {
+        const legacyMatchScore = ownEnumerableData(kind, raw, 'matchScore');
+        if (!Number.isInteger(legacyMatchScore) || legacyMatchScore < 0 || legacyMatchScore > 100) {
+            failResponse(kind, 'match_score_invalid');
+        }
+        normalized.matchScore = legacyMatchScore;
+    }
+    return Object.freeze(normalized);
+}
+
+const LOCAL_CANDIDATE_MATCH_EVALUATIONS = new WeakMap();
+
+function createLocallyScoredCandidateDraft(normalizedDraft, context) {
+    const evaluation = scoreLocalCandidateMatch(
+        context.playerPublicProfile,
+        normalizedDraft.profile,
+        context.keywordWeights,
+    );
+    const effectiveKeywordWeights = freezeKeywordWeights(context.keywordWeights);
+    const publicEvaluation = Object.freeze({
+        source: 'local_public_profile_and_keyword_weights',
+        score: evaluation.score,
+        eligible: evaluation.eligible,
+        heartCardScore: evaluation.heartCardScore,
+        keywordScore: evaluation.keywordScore,
+        sharedTags: evaluation.sharedTags,
+        reasons: evaluation.reasons,
+        effectiveKeywordWeights,
     });
+    const draft = Object.freeze({
+        profile: normalizedDraft.profile,
+        explanation: normalizedDraft.explanation,
+        // Compatibility field for existing preview callers. Unlike legacy model
+        // output, this value is always overwritten by the local evaluation.
+        matchScore: evaluation.score,
+    });
+    LOCAL_CANDIDATE_MATCH_EVALUATIONS.set(draft, publicEvaluation);
+    return Object.freeze({ draft, evaluation: publicEvaluation });
+}
+
+/**
+ * Returns an immutable local-evaluation attestation only for drafts produced by
+ * generateCandidateMatchDraft(). Arbitrary/model-created objects cannot forge it.
+ */
+export function getLocalCandidateMatchEvaluation(draft) {
+    return draft !== null && typeof draft === 'object'
+        ? LOCAL_CANDIDATE_MATCH_EVALUATIONS.get(draft) ?? null
+        : null;
 }
 
 /** Parses the transient voice-text -> keyword-weights stage; UI never receives it. */
@@ -649,7 +697,9 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
         });
         const raw = parseResponseJson(completion?.text);
         if (!raw) return candidateFailure('candidate_match_invalid_json');
-        return Object.freeze({ ok: true, draft: normalizeCandidateMatchDraft(raw, { contentMode: candidateContext.contentMode }) });
+        const normalizedDraft = normalizeCandidateMatchDraft(raw, { contentMode: candidateContext.contentMode });
+        const locallyScored = createLocallyScoredCandidateDraft(normalizedDraft, candidateContext);
+        return Object.freeze({ ok: true, draft: locallyScored.draft, evaluation: locallyScored.evaluation });
     } catch (error) {
         if (candidateResponseFailure(error)) return candidateFailure('candidate_match_response_invalid');
         const publicError = toPublicLlmError(error);

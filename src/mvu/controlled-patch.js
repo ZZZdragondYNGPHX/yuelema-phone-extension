@@ -2,6 +2,7 @@ import { decodeJsonPointer, encodeJsonPointer, getAtPointer, isPlainRecord } fro
 import { normalizeGeneratedCandidate } from '../recommendation/candidate.js';
 import { normalizePrivateChatResponse } from '../chat/private-chat-response.js';
 import { validatePrivateChatRequest } from '../chat/private-chat-service.js';
+import { decideInteractionRhythm } from '../chat/interaction-rhythm.js';
 import { scoreFavoritePrivateChatInvitation } from '../recommendation/match-scoring.js';
 import { normalizeSoulMatchDraft } from '../recommendation/soul-text-match-service.js';
 
@@ -9,11 +10,13 @@ export const LATEST_MESSAGE_SCOPE = Object.freeze({ type: 'message', message_id:
 export const NPC_UID_PATTERN = /^npc_[a-z0-9][a-z0-9_-]{0,63}$/i;
 
 const LIST_NAMES = new Set(['当前队列', '冷却角色UID', '收藏角色UID', '不喜欢角色UID', '拉黑角色UID']);
-const TRACKED_LIST_NAMES = new Set(['冷却角色UID', '收藏角色UID', '不喜欢角色UID']);
+const TRACKED_LIST_NAMES = new Set(['冷却角色UID', '收藏角色UID', '不喜欢角色UID', '拉黑角色UID']);
 const CHAT_SESSION_UID_PATTERN = /^chat_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const MEETUP_UID_PATTERN = /^meetup_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const RELATIONSHIP_VALUE_FIELDS = Object.freeze(['好感', '信任', '戒备', '面基意愿']);
 const MAX_CHAT_MESSAGE_LENGTH = 600;
+const READ_WITHOUT_REPLY_NOTICE = '对方已读，但暂时没有回复。';
+const BLOCKED_CHAT_NOTICE = '对方已将你拉黑，当前会话无法继续发送消息。';
 const PLAYER_PUBLIC_TEXT_LIMITS = Object.freeze({
     昵称: 80, 头像引用: 500, 年龄段: 32, 性别: 48, 性取向: 80, 城市: 80,
     距离范围: 48, 寻找意图: 120, 简介: 500,
@@ -266,7 +269,7 @@ function chatMessage(sender, uid, content) {
 }
 
 function nextChatMessageNumber(sessionUid, recentMessages) {
-    const pattern = new RegExp('^msg_' + sessionUid + '_[pn]_(\\d+)$');
+    const pattern = new RegExp('^msg_' + sessionUid + '_[pns]_(\\d+)$');
     let maximum = 0;
     for (const message of recentMessages) {
         const match = pattern.exec(ownRecord(message) ? message.消息UID : '');
@@ -275,9 +278,10 @@ function nextChatMessageNumber(sessionUid, recentMessages) {
     return Math.max(maximum + 1, recentMessages.length + 1);
 }
 /**
- * Commits one player message and one validated short model reply to an already
- * matched adult session. The model may only suggest relation deltas; all IDs,
- * paths, clamping and state checks are local to this boundary.
+ * Commits one player message and then applies the role's hidden interaction
+ * rhythm locally. A normal outcome appends 1..6 validated role bubbles; a
+ * threshold outcome appends only a fixed system notice. Thresholds, states,
+ * UIDs and paths never come from the model or UI.
  */
 export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage, response } = {}) {
     const request = validatePrivateChatRequest({ state, sessionUid, npcUid, playerMessage });
@@ -288,32 +292,49 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
     try { normalizedResponse = normalizePrivateChatResponse(response); }
     catch { return fail('private_chat_response_invalid'); }
 
-    const { session, relationship, playerMessage: normalizedMessage } = request.value;
+    const { session, npc, relationship, playerMessage: normalizedMessage } = request.value;
     const recentMessages = Array.isArray(session.最近消息) ? session.最近消息 : null;
     if (!recentMessages || recentMessages.length > 30) return fail('private_chat_session_messages_invalid');
     for (const field of RELATIONSHIP_VALUE_FIELDS) {
-        if (!Number.isInteger(relationship[field]) || relationship[field] < 0 || relationship[field] > 100) {
-            return fail('private_chat_relationship_state_invalid');
-        }
+        if (!Number.isInteger(relationship[field]) || relationship[field] < 0 || relationship[field] > 100) return fail('private_chat_relationship_state_invalid');
     }
+    const rhythm = decideInteractionRhythm({ relationship, responseRelationship: normalizedResponse.relationship, readWithoutReplyThreshold: npc.已读不回阈值, blockThreshold: npc.拉黑阈值 });
+    if (!rhythm) return fail('private_chat_rhythm_state_invalid');
 
     const nextMessageNumber = nextChatMessageNumber(sessionUid, recentMessages);
-    const operations = [
-        { op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: chatMessage('玩家', `msg_${sessionUid}_p_${nextMessageNumber}`, normalizedMessage) },
-        { op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: chatMessage('角色', `msg_${sessionUid}_n_${nextMessageNumber + 1}`, normalizedResponse.reply) },
-    ];
-    for (const field of RELATIONSHIP_VALUE_FIELDS) {
-        const delta = normalizedResponse.relationship[field];
-        if (delta !== 0) {
-            operations.push({
-                op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', field]),
-                value: clamp(relationship[field] + delta, 0, 100),
-            });
+    const operations = [{ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: chatMessage('玩家', 'msg_' + sessionUid + '_p_' + nextMessageNumber, normalizedMessage) }];
+    if (rhythm.outcome === 'replied') {
+        normalizedResponse.replies.forEach((reply, index) => operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: chatMessage('角色', 'msg_' + sessionUid + '_n_' + (nextMessageNumber + index + 1), reply) }));
+    } else {
+        const blocked = rhythm.outcome === 'blocked';
+        operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: chatMessage('系统', 'msg_' + sessionUid + '_s_' + (nextMessageNumber + 1), blocked ? BLOCKED_CHAT_NOTICE : READ_WITHOUT_REPLY_NOTICE) });
+        if (blocked) {
+            operations.push({ op: 'replace', path: encodeJsonPointer(['会话', sessionUid, '状态']), value: '已拉黑' });
+            operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', '状态']), value: '已拉黑' });
+            const listed = addUidOnce(state, '拉黑角色UID', npcUid, operations);
+            if (!listed.ok) return listed;
         }
     }
-    if (Object.hasOwn(normalizedResponse, 'sessionSummary')) {
-        operations.push({ op: 'replace', path: encodeJsonPointer(['会话', sessionUid, '长期摘要']), value: normalizedResponse.sessionSummary });
+    for (const field of RELATIONSHIP_VALUE_FIELDS) {
+        const next = rhythm.projectedRelationship[field];
+        if (next !== relationship[field]) operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', field]), value: next });
     }
+    if (rhythm.outcome === 'replied' && Object.hasOwn(normalizedResponse, 'sessionSummary')) operations.push({ op: 'replace', path: encodeJsonPointer(['会话', sessionUid, '长期摘要']), value: normalizedResponse.sessionSummary });
+    return success(operations);
+}
+
+/** Deletes one visible chat session without deleting its character profile. */
+export function buildDeletePrivateChatPatch(state, { sessionUid } = {}) {
+    if (!ownRecord(state) || !isChatSessionUid(sessionUid)) return fail('private_chat_delete_invalid_target');
+    const session = ownRecord(ownRecord(state.会话)?.[sessionUid]);
+    const npcUid = session?.对象UID;
+    const role = isNpcUid(npcUid) ? roleAt(state, npcUid) : null;
+    const relationship = ownRecord(role?.与玩家关系);
+    if (!session || !role || !relationship) return fail('private_chat_delete_not_found');
+    if (!['已匹配', '已取消', '已拉黑'].includes(session.状态) || !['已匹配', '已取消', '已拉黑'].includes(relationship.状态)) return fail('private_chat_delete_state_invalid');
+    const operations = [{ op: 'remove', path: encodeJsonPointer(['会话', sessionUid]) }];
+    if (session.状态 === '已匹配' && relationship.状态 === '已匹配') operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', '状态']), value: '已取消' });
+    else if (session.状态 !== relationship.状态) return fail('private_chat_delete_state_invalid');
     return success(operations);
 }
 
@@ -425,57 +446,46 @@ function matchedSession(npcUid) {
     };
 }
 
-function matchCandidateForRole(candidate, contentMode) {
+function matchCandidateForRole(candidate, contentMode, relationshipStatus = '已匹配') {
+    if (!['已匹配', '已取消'].includes(relationshipStatus)) throw new TypeError('match_candidate_state_invalid');
     const normalized = normalizeGeneratedCandidate(candidate, { requirePersonalName: true, contentMode });
-    return {
-        ...normalized,
-        与玩家关系: { ...normalized.与玩家关系, 状态: '已匹配' },
-    };
+    return { ...normalized, 与玩家关系: { ...normalized.与玩家关系, 状态: relationshipStatus } };
 }
 
 function matchCandidateSourceFromRole(candidate) {
-    if (!ownRecord(candidate) || !ownRecord(candidate.与玩家关系) || candidate.与玩家关系.状态 !== '已匹配') {
-        throw new TypeError('match_candidate_state_invalid');
-    }
-    return {
-        ...candidate,
-        与玩家关系: { ...candidate.与玩家关系, 状态: '陌生' },
-    };
+    if (!ownRecord(candidate) || !ownRecord(candidate.与玩家关系) || !['已匹配', '已取消'].includes(candidate.与玩家关系.状态)) throw new TypeError('match_candidate_state_invalid');
+    return { ...candidate, 与玩家关系: { ...candidate.与玩家关系, 状态: '陌生' } };
 }
 
-/**
- * Commits one independently AI-generated mutual match.  The source candidate
- * has already passed the public-only match codec and was materialized locally;
- * this boundary allocates every UID, moves no existing recommendation and
- * creates the matching message session atomically.
- */
-export function buildCandidateMatchSessionPatch(state, { candidate } = {}) {
-    if (!ownRecord(state)) return fail('candidate_match_state_invalid');
+/** Commits one locally scored candidate outcome. Declines never create a chat session. */
+export function buildCandidateMatchOutcomePatch(state, { candidate, accepted } = {}) {
+    if (!ownRecord(state) || typeof accepted !== 'boolean') return fail('candidate_match_state_invalid');
     const rolePool = ownRecord(state.角色池);
     const sessions = ownRecord(state.会话);
     const counters = ownRecord(state.系统)?.UID计数器;
     const roleCounter = counters?.角色;
     const sessionCounter = counters?.会话;
     const contentMode = ownRecord(state.软件)?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
-    if (!rolePool || !sessions || !Number.isInteger(roleCounter) || roleCounter < 0 || roleCounter >= 999999
-        || !Number.isInteger(sessionCounter) || sessionCounter < 0 || sessionCounter >= 999999) {
-        return fail('candidate_match_state_invalid');
-    }
-    let matchedCandidate;
-    try { matchedCandidate = matchCandidateForRole(candidate, contentMode); }
+    if (!rolePool || !sessions || !Number.isInteger(roleCounter) || roleCounter < 0 || roleCounter >= 999999 || !Number.isInteger(sessionCounter) || sessionCounter < 0 || sessionCounter >= 999999) return fail('candidate_match_state_invalid');
+    let materialized;
+    try { materialized = matchCandidateForRole(candidate, contentMode, accepted ? '已匹配' : '已取消'); }
     catch { return fail('candidate_match_candidate_invalid'); }
-    const npcUid = `npc_match_${roleCounter + 1}`;
-    const sessionUid = `chat_${sessionCounter + 1}`;
-    if (!isNpcUid(npcUid) || roleAt(state, npcUid) || candidateAt(state, npcUid)
-        || !isChatSessionUid(sessionUid) || sessions[sessionUid]) {
-        return fail('candidate_match_uid_conflict');
+    const npcUid = 'npc_match_' + (roleCounter + 1);
+    if (!isNpcUid(npcUid) || roleAt(state, npcUid) || candidateAt(state, npcUid)) return fail('candidate_match_uid_conflict');
+    const operations = [{ op: 'add', path: encodeJsonPointer(['角色池', npcUid]), value: materialized }];
+    let sessionUid = '';
+    if (accepted) {
+        sessionUid = 'chat_' + (sessionCounter + 1);
+        if (!isChatSessionUid(sessionUid) || sessions[sessionUid]) return fail('candidate_match_uid_conflict');
+        operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid]), value: matchedSession(npcUid) });
     }
-    return success([
-        { op: 'add', path: encodeJsonPointer(['角色池', npcUid]), value: matchedCandidate },
-        { op: 'add', path: encodeJsonPointer(['会话', sessionUid]), value: matchedSession(npcUid) },
-        { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '角色']), value: roleCounter + 1 },
-        { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '会话']), value: sessionCounter + 1 },
-    ]);
+    operations.push({ op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '角色']), value: roleCounter + 1 });
+    if (accepted) operations.push({ op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '会话']), value: sessionCounter + 1 });
+    return success(operations);
+}
+
+export function buildCandidateMatchSessionPatch(state, { candidate } = {}) {
+    return buildCandidateMatchOutcomePatch(state, { candidate, accepted: true });
 }
 
 const PREFERENCE_TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
@@ -739,7 +749,7 @@ export function validateControlledPatchWhitelist(patch) {
         if (operation.op === 'add' && generatedMatchRole && isNpcUid(generatedMatchRole[1])) {
             try {
                 const source = matchCandidateSourceFromRole(operation.value);
-                const expected = matchCandidateForRole(source, 'NSFW');
+                const expected = matchCandidateForRole(source, 'NSFW', operation.value.与玩家关系.状态);
                 if (JSON.stringify(expected) === JSON.stringify(operation.value)) continue;
             } catch { /* reject below */ }
             return fail('candidate_match_candidate_invalid');
@@ -748,7 +758,7 @@ export function validateControlledPatchWhitelist(patch) {
         if (operation.op === 'replace' && path === '/系统/UID计数器/角色' && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 999999) continue;
         if (operation.op === 'replace' && path === '/系统/UID计数器/会话' && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 999999) continue;
         if (operation.op === 'replace' && path === '/系统/UID计数器/面基' && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 999999) continue;
-        const listAdd = /^\/推荐\/(冷却角色UID|收藏角色UID|不喜欢角色UID)\/-$/u.exec(path);
+        const listAdd = /^\/推荐\/(冷却角色UID|收藏角色UID|不喜欢角色UID|拉黑角色UID)\/-$/u.exec(path);
         if (operation.op === 'add' && listAdd && isNpcUid(operation.value) && TRACKED_LIST_NAMES.has(listAdd[1])) continue;
 
         const listRemove = /^\/推荐\/(当前队列|收藏角色UID)\/(0|[1-9]\d*)$/u.exec(path);
@@ -763,7 +773,7 @@ export function validateControlledPatchWhitelist(patch) {
         if (operation.op === 'move' && move && moveTarget && move[1] === moveTarget[1] && isNpcUid(move[1])) continue;
 
         const relationship = /^\/角色池\/(npc_[A-Za-z0-9_-]{1,64})\/与玩家关系\/状态$/u.exec(path);
-        if (operation.op === 'replace' && relationship && isNpcUid(relationship[1]) && ['喜欢已发送', '已匹配', '已取消'].includes(operation.value)) continue;
+        if (operation.op === 'replace' && relationship && isNpcUid(relationship[1]) && ['喜欢已发送', '已匹配', '已取消', '已拉黑'].includes(operation.value)) continue;
         const matchScore = /^\/角色池\/(npc_[A-Za-z0-9_-]{1,64})\/与玩家关系\/NPC专属匹配度$/u.exec(path);
         if (operation.op === 'replace' && matchScore && isNpcUid(matchScore[1]) && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 100) continue;
         const newSession = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})$/u.exec(path);
@@ -774,9 +784,14 @@ export function validateControlledPatchWhitelist(patch) {
 
         const chatMessagePath = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/最近消息\/-$/u.exec(path);
         if (operation.op === 'add' && chatMessagePath && isChatSessionUid(chatMessagePath[1]) && ownRecord(operation.value)
-            && ['玩家', '角色'].includes(operation.value.发送者) && typeof operation.value.消息UID === 'string'
+            && ['玩家', '角色', '系统'].includes(operation.value.发送者) && typeof operation.value.消息UID === 'string'
             && typeof operation.value.内容 === 'string' && operation.value.内容.length > 0 && operation.value.内容.length <= MAX_CHAT_MESSAGE_LENGTH
             && operation.value.时间 === '') continue;
+        const sessionRemove = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})$/u.exec(path);
+        if (operation.op === 'remove' && sessionRemove && isChatSessionUid(sessionRemove[1])) continue;
+        const sessionStatus = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/状态$/u.exec(path);
+        if (operation.op === 'replace' && sessionStatus && isChatSessionUid(sessionStatus[1]) && ['已取消', '已拉黑'].includes(operation.value)) continue;
+
         const chatRelationship = /^\/角色池\/(npc_[A-Za-z0-9_-]{1,64})\/与玩家关系\/(好感|信任|戒备|面基意愿)$/u.exec(path);
         if (operation.op === 'replace' && chatRelationship && isNpcUid(chatRelationship[1]) && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 100) continue;
         const chatSummary = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/长期摘要$/u.exec(path);
@@ -822,7 +837,7 @@ export function validateControlledPatchAgainstState(state, patch) {
             continue;
         }
 
-        const listAdd = /^\/推荐\/(冷却角色UID|收藏角色UID|不喜欢角色UID)\/-$/u.exec(operation.path);
+        const listAdd = /^\/推荐\/(冷却角色UID|收藏角色UID|不喜欢角色UID|拉黑角色UID)\/-$/u.exec(operation.path);
         if (listAdd) {
             if (!isKnownAdultInState(state, operation.value)) return fail('tracked_uid_not_adult');
             const list = arrayAt(state, listAdd[1]);
@@ -866,21 +881,33 @@ export function validateControlledPatchAgainstState(state, patch) {
     if (matchRoleAddition && ownRecord(matchRoleAddition.value)) {
         try {
             const source = matchCandidateSourceFromRole(matchRoleAddition.value);
-            const expected = buildCandidateMatchSessionPatch(state, { candidate: source });
+            const accepted = matchRoleAddition.value.与玩家关系.状态 === '已匹配';
+            const expected = buildCandidateMatchOutcomePatch(state, { candidate: source, accepted });
             if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
         } catch {
             return fail('candidate_match_candidate_invalid');
         }
     }
+
+    const sessionRemoval = patch.find((operation) => operation?.op === 'remove' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}$/u.test(operation.path));
+    if (sessionRemoval) {
+        const sessionUid = decodeJsonPointer(sessionRemoval.path).at(-1);
+        const expected = buildDeletePrivateChatPatch(state, { sessionUid });
+        if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+    }
+
     const chatMessageOperations = patch.filter((operation) => operation?.op === 'add' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}\/最近消息\/-$/u.test(operation.path));
-    if (chatMessageOperations.length === 2) {
-        const [playerOperation, npcOperation] = chatMessageOperations;
+    if (chatMessageOperations.length >= 2 && chatMessageOperations.length <= 7) {
+        const [playerOperation, ...replyOperations] = chatMessageOperations;
         const sessionUid = playerOperation.path.split('/')[2];
         const session = ownRecord(state.会话)?.[sessionUid];
         const npcUid = ownRecord(session)?.对象UID;
-        if (playerOperation.value?.发送者 === '玩家' && npcOperation.value?.发送者 === '角色' && isChatSessionUid(sessionUid) && isNpcUid(npcUid)) {
+        const sameSession = replyOperations.every((operation) => operation.path.split('/')[2] === sessionUid);
+        const roleReplies = replyOperations.every((operation) => operation.value?.发送者 === '角色');
+        const rhythmNotice = replyOperations.length === 1 && replyOperations[0].value?.发送者 === '系统';
+        if (playerOperation.value?.发送者 === '玩家' && sameSession && (roleReplies || rhythmNotice) && isChatSessionUid(sessionUid) && isNpcUid(npcUid)) {
             const relationship = ownRecord(roleAt(state, npcUid)?.与玩家关系);
-            const response = { reply: npcOperation.value.内容, relationship: {} };
+            const response = { replies: roleReplies ? replyOperations.map((operation) => operation.value.内容) : ['节奏占位'], relationship: {} };
             let validResponse = true;
             for (const field of RELATIONSHIP_VALUE_FIELDS) {
                 const change = patch.find((operation) => operation?.op === 'replace' && operation.path === encodeJsonPointer(['角色池', npcUid, '与玩家关系', field]));
@@ -891,9 +918,7 @@ export function validateControlledPatchAgainstState(state, patch) {
             }
             const summary = patch.find((operation) => operation?.op === 'replace' && operation.path === encodeJsonPointer(['会话', sessionUid, '长期摘要']));
             if (summary) response.sessionSummary = summary.value;
-            const expected = validResponse ? buildPrivateChatPatch(state, {
-                sessionUid, npcUid, playerMessage: playerOperation.value?.内容, response,
-            }) : fail('private_chat_relationship_state_invalid');
+            const expected = validResponse ? buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage: playerOperation.value?.内容, response }) : fail('private_chat_relationship_state_invalid');
             if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
         }
     }
@@ -969,10 +994,3 @@ export function buildUpdateVariable(patch) {
         return fail('patch_not_serializable');
     }
 }
-
-
-
-
-
-
-

@@ -8,7 +8,7 @@ import { avatarImageSource } from './player-avatar-store.js';
 import { createLauncherDragController } from './launcher-drag.js';
 import { createImageManagerPanel } from './images/image-manager-panel.js';
 
-const UI_VERSION = '0.1.20';
+const UI_VERSION = '0.1.21';
 const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
@@ -42,6 +42,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let activePage = 'home';
     let refreshing = false;
     let activeMessageSessionUid = '';
+    let messageSearchQuery = '';
+    let deleteConfirmationSessionUid = '';
+    let deletingPrivateChatSessionUid = '';
     let activeMeetupSessionUid = '';
     let activeChatToolsSessionUid = '';
     let selectedCandidateUid = '';
@@ -258,6 +261,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             privateChatRequestGeneration += 1;
             activeChatToolsSessionUid = '';
             activeMeetupSessionUid = '';
+            deleteConfirmationSessionUid = '';
+            deletingPrivateChatSessionUid = '';
         }
         hideOperationDialog();
         activePage = pageId;
@@ -780,18 +785,34 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     async function runCandidateMatch(mode) {
         if (typeof actionBridge.runCandidateMatch !== 'function') { setFeedback('AI 匹配服务尚未就绪。'); return; }
         const modeLabel = mode === 'soul' ? '灵魂匹配' : '语音匹配';
-        const operationToken = showAiLoading(modeLabel + '正在读取受限偏好并生成新的互相喜欢对象…');
+        const operationToken = showAiLoading(modeLabel + '正在读取本次有效偏好并计算匹配结果…');
         setFeedback(modeLabel + '中…', operationToken); renderPage();
         let result;
         try { result = await actionBridge.runCandidateMatch(mode, { voiceText: voiceMatchText }); } catch { result = { ok: false }; }
-        if (result?.ok && result.npcUid && result.sessionUid) {
-            showAiResult(true, modeLabel + '已生成新的互相喜欢对象，并加入消息。', operationToken);
-            refreshState();
-            setActivePage('matches');
+        if (!result?.ok) {
+            const message = result?.message || describeActionFailure(result);
+            showAiResult(false, message || modeLabel + '未生成可用档案。', operationToken);
+            setFeedback(message, operationToken);
+            renderPage();
             return;
         }
-        const message = result?.message || describeActionFailure(result);
-        showAiResult(false, message || modeLabel + '未生成可用档案。', operationToken); setFeedback(message, operationToken); renderPage();
+        if (result.matchOutcome === 'declined') {
+            refreshState();
+            setActivePage('matches');
+            setFeedback('未达到对方的互动节奏要求，本次已婉拒。');
+            return;
+        }
+        const accepted = result.matchOutcome === 'accepted'
+            || (!result.matchOutcome && Boolean(result.npcUid && result.sessionUid));
+        if (!accepted || !result.npcUid || !result.sessionUid) {
+            refreshState();
+            setActivePage('matches');
+            setFeedback('匹配结果缺少可用会话，本次没有进入消息。');
+            return;
+        }
+        refreshState();
+        openPrivateChat(result.sessionUid);
+        setFeedback(modeLabel + '成功，已建立私聊会话。');
     }
     function buildMatchProfilePage() {
         const profile = matchedProfileDraft?.profile;
@@ -999,9 +1020,23 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         intro.appendChild(introCopy);
         intro.appendChild(element('span', { className: 'yl-message-list-count', text: String(sessions.length) }));
         section.appendChild(intro);
-
+        const search = element('label', { className: 'yl-message-search' });
+        const searchInput = element('input', { className: 'yl-message-search-input yl-settings-control', type: 'search', value: messageSearchQuery, placeholder: '搜索昵称或最近消息', ariaLabel: '搜索私聊' });
+        search.appendChild(searchInput);
+        listen(searchInput, searchInput, 'input', () => { messageSearchQuery = String(searchInput.value ?? ''); renderPage(); }, abortController.signal);
+        section.appendChild(search);
+        const query = messageSearchQuery.trim().toLocaleLowerCase();
+        const visibleSessions = query ? sessions.filter((session) => {
+            const nickname = chatNickname(session).toLocaleLowerCase();
+            const latestVisibleMessage = String(session.messages.at(-1)?.content ?? '').toLocaleLowerCase();
+            return nickname.includes(query) || latestVisibleMessage.includes(query);
+        }) : sessions;
+        if (!visibleSessions.length) {
+            section.appendChild(buildEmptyPlaceholder('没有找到符合条件的私聊。', { icon: '⌕' }));
+            return section;
+        }
         const sessionList = element('div', { className: 'yl-chat-session-list' });
-        for (const session of sessions) {
+        for (const session of visibleSessions) {
             const nickname = chatNickname(session);
             const lastMessage = session.messages.at(-1);
             const button = element('button', { className: 'yl-chat-session yl-message-session', type: 'button', ariaLabel: `打开与${nickname}的私聊` });
@@ -1015,10 +1050,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const titleLine = element('span', { className: 'yl-session-title-line' });
             titleLine.appendChild(element('span', { className: 'yl-session-name', text: nickname }));
             titleLine.appendChild(element('span', { className: 'yl-session-status', text: session.status }));
-            append(copy, [
-                titleLine,
-                element('span', { className: 'yl-session-preview', text: lastMessage ? lastMessage.content : '还没有消息，打个招呼吧。' }),
-            ]);
+            append(copy, [titleLine, element('span', { className: 'yl-session-preview', text: lastMessage ? lastMessage.content : '还没有消息，打个招呼吧。' })]);
             const meta = element('span', { className: 'yl-session-meta' });
             if (lastMessage?.time) meta.appendChild(element('span', { className: 'yl-session-time', text: lastMessage.time }));
             meta.appendChild(element('span', { className: 'yl-session-open-mark', text: '›' }));
@@ -1046,8 +1078,46 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         append(subline, [dot, element('span', { text: session.status === '已匹配' ? '已匹配 · 文字私聊' : session.status })]);
         copy.appendChild(subline);
         header.appendChild(copy);
-        header.appendChild(element('span', { className: 'yl-private-chat-spark', text: '♥' }));
+        const actions = element('div', { className: 'yl-private-chat-actions' });
+        const remove = element('button', { className: 'yl-private-chat-delete', type: 'button', text: '删除', ariaLabel: '删除私聊会话', disabled: deletingPrivateChatSessionUid === session.sessionUid });
+        listen(remove, remove, 'click', () => { deleteConfirmationSessionUid = session.sessionUid; renderPage(); }, abortController.signal);
+        append(actions, [remove, element('span', { className: 'yl-private-chat-spark', text: '♥' })]);
+        header.appendChild(actions);
         return header;
+    }
+    function buildDeletePrivateChatConfirmation(session) {
+        const confirmation = element('section', { className: 'yl-chat-delete-confirmation' });
+        append(confirmation, [element('strong', { text: '删除这段私聊？' }), element('p', { text: '删除后将从消息列表移除，且无法在此界面恢复。' })]);
+        const actions = element('div', { className: 'yl-chat-delete-actions' });
+        const cancel = element('button', { className: 'yl-settings-button', type: 'button', text: '取消', disabled: Boolean(deletingPrivateChatSessionUid) });
+        const confirm = element('button', { className: 'yl-settings-button yl-chat-delete-confirm', type: 'button', text: deletingPrivateChatSessionUid === session.sessionUid ? '正在删除…' : '确认删除', ariaLabel: '确认删除私聊会话', disabled: deletingPrivateChatSessionUid === session.sessionUid });
+        listen(cancel, cancel, 'click', () => { deleteConfirmationSessionUid = ''; renderPage(); }, abortController.signal);
+        listen(confirm, confirm, 'click', () => { void deletePrivateChat(session); }, abortController.signal);
+        append(actions, [cancel, confirm]); confirmation.appendChild(actions);
+        return confirmation;
+    }
+    async function deletePrivateChat(session) {
+        if (deletingPrivateChatSessionUid || typeof actionBridge.deletePrivateChat !== 'function') { setFeedback('删除会话功能尚未就绪。'); return; }
+        deletingPrivateChatSessionUid = session.sessionUid;
+        renderPage();
+        let result;
+        try { result = await actionBridge.deletePrivateChat(session.sessionUid); } catch { result = { ok: false }; }
+        if (!result?.ok) {
+            deletingPrivateChatSessionUid = '';
+            setFeedback(result?.message || describeActionFailure(result) || '会话删除失败，请稍后重试。');
+            renderPage();
+            return;
+        }
+        chatDrafts.delete(session.sessionUid);
+        meetupDrafts.delete(session.sessionUid);
+        activeMessageSessionUid = '';
+        activeChatToolsSessionUid = '';
+        activeMeetupSessionUid = '';
+        deleteConfirmationSessionUid = '';
+        deletingPrivateChatSessionUid = '';
+        refreshState();
+        setActivePage('messages');
+        setFeedback('会话已删除。');
     }
     function buildMessageBubble(session, message) {
         if (message.sender === '系统') {
@@ -1074,6 +1144,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function buildConversationPanel(session) {
         const panel = element('section', { className: 'yl-private-chat-screen' });
         panel.appendChild(buildConversationHeader(session));
+        if (deleteConfirmationSessionUid === session.sessionUid) panel.appendChild(buildDeletePrivateChatConfirmation(session));
         const privacyNote = element('p', { className: 'yl-chat-privacy-note', text: '线上短消息会通过当前“私聊”功能绑定处理；重要面基安排请单独确认。' });
         panel.appendChild(privacyNote);
         const transcript = element('div', { className: 'yl-chat-transcript', ariaLabel: `${chatNickname(session)}的私聊记录` });
@@ -1093,8 +1164,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             transcript.appendChild(replying);
         }
         panel.appendChild(transcript);
-        if (!session.canSend || typeof actionBridge.runPrivateChat !== 'function') {
-            panel.appendChild(element('div', { className: 'yl-phone-placeholder', text: session.canSend ? '私聊发送尚未就绪。' : '该会话当前为只读状态。' }));
+        if (!session.canSend) {
+            const composer = element('div', { className: 'yl-chat-composer is-readonly' });
+            const input = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 2, placeholder: session.status === '已拉黑' ? '对方已将你拉黑，无法继续发送消息。' : '该会话当前为只读状态。', ariaLabel: '私聊消息输入已禁用', disabled: true });
+            const send = element('button', { className: 'yl-chat-send-button', type: 'button', text: '不可发送', ariaLabel: '发送消息已禁用', disabled: true });
+            append(composer, [input, send]); panel.appendChild(composer);
+            return panel;
+        }
+        if (typeof actionBridge.runPrivateChat !== 'function') {
+            panel.appendChild(element('div', { className: 'yl-phone-placeholder', text: '私聊发送尚未就绪。' }));
             return panel;
         }
         const composer = element('div', { className: pending ? 'yl-chat-composer is-pending' : 'yl-chat-composer' });
@@ -1416,6 +1494,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 compressImageFile: async (file) => (await compressLocalAvatar(file)).dataUrl,
                 onFeedback: (message) => setFeedback(message),
                 onChange: () => { clearMatchedImageState(); renderPage(); },
+                onConfigure: () => openFeatureBinding([{ key: 'image_match', title: '图片匹配' }], '图片匹配设置'),
             });
             section.appendChild(imageManagerPanel.element);
             return section;
@@ -1470,22 +1549,45 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     async function runCandidateAction(kind, npcUid) {
         const isRefresh = kind === 'refresh';
-        refreshing = isRefresh;
-        const request = isRefresh && typeof actionBridge.runRecommendationRefresh === 'function'
-            ? actionBridge.runRecommendationRefresh(npcUid)
-            : actionBridge.runMvuAction(kind, npcUid);
-        const operationToken = isRefresh
-            ? showAiLoading('正在生成下一位候选人，请稍候…')
-            : setFeedback('正在保存操作…');
+        const advancesCandidate = kind === 'like' || kind === 'favorite' || kind === 'dislike';
+        refreshing = isRefresh || advancesCandidate;
+        const operationToken = isRefresh ? showAiLoading('正在生成下一位候选人，请稍候…') : setFeedback('正在保存操作…');
         setFeedback(isRefresh ? '正在生成下一位候选人…' : '正在保存操作…', operationToken); renderPage();
         let result;
-        try { result = await request; } catch { result = { ok: false }; }
+        try {
+            if (isRefresh) result = typeof actionBridge.runRecommendationRefresh === 'function' ? await actionBridge.runRecommendationRefresh(npcUid) : { ok: false, message: '刷新候选人生成功能尚未就绪。' };
+            else result = await actionBridge.runMvuAction(kind, npcUid);
+        } catch { result = { ok: false }; }
+        if (!result?.ok) {
+            refreshing = false;
+            const message = result?.message || describeActionFailure(result);
+            setFeedback(message, operationToken);
+            if (isRefresh) showAiResult(false, message || '候选人未生成，请稍后重试。', operationToken);
+            refreshState();
+            return;
+        }
+        if (!advancesCandidate) {
+            refreshing = false;
+            const message = isRefresh ? '下一位候选人已生成。' : '已取消收藏。';
+            setFeedback(message, operationToken);
+            if (isRefresh) showAiResult(true, message, operationToken);
+            refreshState();
+            return;
+        }
+        const savedLabel = kind === 'like' ? '喜欢反馈已保存' : kind === 'favorite' ? '已加入收藏夹' : '不喜欢反馈已保存';
+        if (typeof actionBridge.runRecommendationInitialCandidate !== 'function') {
+            refreshing = false;
+            setFeedback(`${savedLabel}，但下一位候选人生成功能尚未就绪。`, operationToken);
+            refreshState();
+            return;
+        }
+        let nextResult;
+        try { nextResult = await actionBridge.runRecommendationInitialCandidate(); } catch { nextResult = { ok: false }; }
         refreshing = false;
-        const message = result?.ok
-            ? (isRefresh ? '下一位候选人已生成。' : (kind === 'unfavorite' ? '已取消收藏。' : (kind === 'like' ? '已记录这位对象的偏好反馈。' : '操作已保存。')))
-            : (result?.message || describeActionFailure(result));
-        setFeedback(message, operationToken);
-        if (isRefresh) showAiResult(Boolean(result?.ok), message || '候选人未生成，请稍后重试。', operationToken);
+        if (!nextResult?.ok) {
+            const reason = nextResult?.message || describeActionFailure(nextResult) || '未知错误';
+            setFeedback(`${savedLabel}，但下一位候选人生成失败：${reason}`, operationToken);
+        } else setFeedback(`${savedLabel}，下一位候选人已生成。`, operationToken);
         refreshState();
     }
     async function startFavoritePrivateChat(candidate) {

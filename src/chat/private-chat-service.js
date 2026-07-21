@@ -119,7 +119,9 @@ function makeMessages(context, promptPreset) {
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件中一名已匹配的明确成年角色。软件层只能进行短文字聊天，不叙述线下行为或自动推进现实事件。',
         'NSFW 只是内容尺度而不是同意；任何面基、性或风险行为均须在聊天中明确双方意愿、边界，再由玩家手动切回正文。',
-        '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"reply":"1-600字短回复","relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"sessionSummary":"可选，1-500字"}。relationship 仅是本次变化建议，不能给绝对值、UID、状态、Patch 或写入路径。',
+        '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"sessionSummary":"可选，1-500字"}。',
+        'replies 必须是 1-6 条自然、简短、可分别显示为聊天气泡的字符串；每条内部禁止换行，全部消息用单个空格连接后的总长度不得超过 600 字。优先拆成符合真实即时聊天节奏的多条短消息，不要输出旧版 reply 字段。',
+        'relationship 仅是本次变化建议，不能给绝对值、UID、状态、Patch 或写入路径。',
         '不得输出、猜测或泄露任何隐藏资料；不要声称已发生线下见面或性行为。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
     ].filter(Boolean).join('\n\n');
@@ -165,6 +167,4 @@ export async function generatePrivateChatReply({ state, sessionUid, npcUid, play
         return { ok: false, code: publicError.code, message: publicError.message };
     }
 }
-
-
 

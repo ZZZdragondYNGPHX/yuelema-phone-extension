@@ -1,5 +1,5 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildCandidateMatchSessionPatch, buildCharacterRegistrationPatch, buildControlledPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
+import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildDeletePrivateChatPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply } from './chat/private-chat-service.js';
 import { generateCandidateMatchDraft as generateCandidateMatchDraftService, generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
@@ -256,12 +256,36 @@ export function createActionBridge({
                 sessionUid, npcUid, playerMessage: generated.playerMessage, response: generated.response,
             });
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
-            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            const interactionOutcome = built.value.some((operation) => operation?.op === 'replace'
+                && operation.path === '/会话/' + sessionUid + '/状态' && operation.value === '已拉黑')
+                ? 'blocked'
+                : built.value.some((operation) => operation?.op === 'add'
+                    && operation.path === '/会话/' + sessionUid + '/最近消息/-' && operation.value?.发送者 === '角色')
+                    ? 'replied'
+                    : 'read_without_reply';
+            const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            return applied.ok ? { ...applied, interactionOutcome } : applied;
         } finally {
             pending.delete(key);
         }
     }
 
+    /** Deletes one private-chat session through the same exact controlled MVU boundary. */
+    async function deletePrivateChat(sessionUid) {
+        const key = actionKey('delete_private_chat', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const built = buildDeletePrivateChatPatch(read.state, { sessionUid });
+            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        } finally {
+            pending.delete(key);
+        }
+    }
     /** Generates one in-memory public match draft; it never writes MVU state. */
     async function generateMatchDraft(kind, { signal } = {}) {
         if (!['soul', 'text'].includes(kind)) return { ok: false, status: 'rejected', code: 'match_draft_kind_invalid' };
@@ -297,9 +321,9 @@ export function createActionBridge({
     }
 
     /**
-     * Generates a brand-new mutual match from either saved (soul) or transient
-     * voice-derived weights, then atomically creates its role and chat session.
-     * It never reads from the recommendation queue or favourites list.
+     * Generates a brand-new candidate from either saved (soul) or transient
+     * voice-derived weights, then records the locally scored accepted/declined
+     * outcome. Only an accepted outcome atomically creates a chat session.
      */
     async function runCandidateMatch(mode, { voiceText, signal } = {}) {
         if (!['soul', 'voice'].includes(mode)) return { ok: false, status: 'rejected', code: 'candidate_match_mode_invalid' };
@@ -323,7 +347,8 @@ export function createActionBridge({
 
             const secondRead = readLatestState({ mvu: currentMvu });
             if (!secondRead.ok) return secondRead;
-            const built = buildCandidateMatchSessionPatch(secondRead.state, { candidate: materialized.candidate });
+            const accepted = materialized.shouldEstablishSession === true;
+            const built = buildCandidateMatchOutcomePatch(secondRead.state, { candidate: materialized.candidate, accepted });
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
             const roleOperation = built.value.find((operation) => operation?.op === 'add' && /^\/角色池\/npc_match_\d+$/u.test(operation.path));
             const sessionOperation = built.value.find((operation) => operation?.op === 'add' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}$/u.test(operation.path));
@@ -332,7 +357,8 @@ export function createActionBridge({
             return {
                 ...applied,
                 npcUid: roleOperation?.path.split('/')[2] ?? '',
-                sessionUid: sessionOperation?.path.split('/')[2] ?? '',
+                sessionUid: accepted ? (sessionOperation?.path.split('/')[2] ?? '') : '',
+                matchOutcome: accepted ? 'accepted' : 'declined',
                 explanation: materialized.explanation,
                 matchScore: materialized.matchScore,
             };
@@ -505,7 +531,7 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, deletePrivateChat, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
 }
 
 

@@ -31,7 +31,7 @@ async function flushUi(rounds = 4) {
     }
 }
 
-async function buildHarness({ seed = [], imageLibrary, compressImageFile, onChange, onFeedback } = {}) {
+async function buildHarness({ seed = [], imageLibrary, compressImageFile, onChange, onFeedback, onConfigure } = {}) {
     const store = imageLibrary ?? createStore();
     for (const input of seed) await store.add(input);
     const changes = [];
@@ -42,6 +42,7 @@ async function buildHarness({ seed = [], imageLibrary, compressImageFile, onChan
         compressImageFile,
         onChange: onChange ?? ((event) => changes.push(event)),
         onFeedback: onFeedback ?? ((message) => feedback.push(message)),
+        onConfigure,
     });
     await flushUi();
     return { store, changes, feedback, ...api };
@@ -70,6 +71,34 @@ test('返回可嵌入 DOM 节点、closeEditor/dispose，并显示空图片库�
     harness.closeEditor();
     harness.dispose();
     harness.dispose();
+});
+
+test('右上角设置按钮明确可访问，点击只调用注入的 onConfigure', async () => {
+    const calls = [];
+    const store = createStore();
+    const operationCounts = { list: 0, add: 0, update: 0, remove: 0 };
+    const imageLibrary = Object.fromEntries(Object.keys(operationCounts).map((method) => [method, async (...args) => {
+        operationCounts[method] += 1;
+        return store[method](...args);
+    }]));
+    const harness = await buildHarness({ imageLibrary, onConfigure: () => calls.push('configure') });
+    try {
+        const button = buttonByText(harness.element, '设置');
+        assert.equal(button.getAttribute('type'), 'button');
+        assert.equal(button.getAttribute('aria-label'), '配置图片管理预设');
+        assert.equal(button.classList.contains('yl-image-manager-configure'), true);
+        assert.equal(button.parentNode.classList.contains('yl-image-manager-titlebar'), true);
+
+        for (const method of Object.keys(operationCounts)) operationCounts[method] = 0;
+        button.dispatchEvent(new Event('click', { cancelable: true }));
+
+        assert.deepEqual(calls, ['configure']);
+        assert.deepEqual(operationCounts, { list: 0, add: 0, update: 0, remove: 0 });
+        assert.equal(harness.feedback.length, 0);
+        assert.equal(harness.changes.length, 0);
+    } finally {
+        harness.dispose();
+    }
 });
 
 test('URL 导入后显示网格预览并触发 onChange', async () => {

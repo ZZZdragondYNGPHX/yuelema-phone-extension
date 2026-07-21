@@ -7,7 +7,8 @@
  * controlled-patch.js is the only place that upgrades it to a matched session.
  */
 import { normalizeGeneratedCandidate } from './candidate.js';
-import { normalizeCandidateMatchDraft } from './soul-text-match-service.js';
+import { getLocalCandidateMatchEvaluation, normalizeCandidateMatchDraft } from './soul-text-match-service.js';
+import { scoreLocalCandidateMatch } from './match-scoring.js';
 
 function inferredAdultAge(ageRange) {
     const values = [...String(ageRange ?? '').matchAll(/\d{1,3}/gu)]
@@ -20,8 +21,18 @@ function inferredAdultAge(ageRange) {
  * Materializes a public-only match result without accepting any user-supplied
  * private data, UID, relationship status, or Patch path.
  */
-export function materializeCandidateMatchDraft(draft, { contentMode = 'SFW' } = {}) {
+export function materializeCandidateMatchDraft(draft, {
+    contentMode = 'SFW',
+    playerPublicProfile = {},
+    effectiveKeywordWeights = [],
+} = {}) {
+    const attestedEvaluation = getLocalCandidateMatchEvaluation(draft);
     const normalized = normalizeCandidateMatchDraft(draft, { contentMode });
+    const evaluation = attestedEvaluation ?? scoreLocalCandidateMatch(
+        playerPublicProfile,
+        normalized.profile,
+        effectiveKeywordWeights,
+    );
     const publicProfile = {
         ...normalized.profile,
         // AI match drafts deliberately never supply remote image URLs.  The
@@ -44,12 +55,22 @@ export function materializeCandidateMatchDraft(draft, { contentMode = 'SFW' } = 
         与玩家关系: {
             状态: '陌生',
             全局账号表现: 50,
-            NPC专属匹配度: normalized.matchScore,
+            NPC专属匹配度: evaluation.score,
             好感: 20,
             信任: 10,
             戒备: 15,
             面基意愿: 0,
         },
     }, { requirePersonalName: true, contentMode });
-    return Object.freeze({ candidate, explanation: normalized.explanation, matchScore: normalized.matchScore });
+    const cancellationThreshold = candidate.取消匹配阈值;
+    const meetsCancellationThreshold = evaluation.eligible !== false && evaluation.score >= cancellationThreshold;
+    return Object.freeze({
+        candidate,
+        explanation: normalized.explanation,
+        matchScore: evaluation.score,
+        cancellationThreshold,
+        meetsCancellationThreshold,
+        shouldEstablishSession: meetsCancellationThreshold,
+        evaluation,
+    });
 }

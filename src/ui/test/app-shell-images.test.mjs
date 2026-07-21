@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installMiniDom } from '../../test-support/minidom.mjs';
 import { createImageLibraryStore, createMemoryImageLibraryStorage } from '../../images/image-library-store.js';
+import { createMemoryStorage, createSettingsStore } from '../../settings/settings-store.js';
 
 const miniDom = installMiniDom();
 const { mountPhoneApp } = await import('../../app-shell.js');
@@ -121,4 +122,19 @@ test('首页候选卡背景和公开资料头像使用匹配图片，其他列�
     } finally {
         mounted.destroy();
     }
+});
+
+
+test('图片管理设置按钮打开 image_match 预设绑定', async () => {
+    const imageLibrary = createImageLibraryStore({ storage: createMemoryImageLibraryStorage() });
+    const settingsStore = createSettingsStore({ storage: createMemoryStorage() });
+    const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-image-binding', actionBridge: { emit() {}, isPending() { return false; } }, settingsStore, llmClient: null, characterLibrary: null, imageLibrary, readState: readResult });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile')); click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置'))); click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('图片管理'))); await flushUi();
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '配置图片管理预设'));
+        assert.match(miniDom.document.body.textContent, /图片匹配设置/u);
+        assert.ok(miniDom.document.querySelector('[name="image_match-quick-connection"]'));
+        assert.ok(miniDom.document.querySelector('[name="image_match-quick-prompt"]'));
+    } finally { mounted.destroy(); }
 });

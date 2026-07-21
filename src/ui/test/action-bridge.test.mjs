@@ -313,7 +313,7 @@ test('private chat runs model validation before one official MVU write transacti
             公开资料: { 昵称: '艾娃' },
             仅好友资料: { 关系状态: '单身', 边界与偏好: '先确认意愿。' },
             隐藏资料: { 实际年龄: 24, 私人备注: '不得发送' },
-            偏好与边界: '', 拒绝阈值: 0, 已读不回阈值: 0, 取消匹配阈值: 80, 拉黑阈值: 90,
+            偏好与边界: '', 拒绝阈值: 0, 已读不回阈值: 80, 取消匹配阈值: 80, 拉黑阈值: 90,
             与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0 },
         },
     };
@@ -322,17 +322,106 @@ test('private chat runs model validation before one official MVU write transacti
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
         eventEmit: async (...args) => { calls.push(['event', ...args]); }, settingsStore,
-        llmClient: { async chat() { return { text: JSON.stringify({ reply: '晚上好，聊聊周末？', relationship: { 好感: 1, 信任: 0, 戒备: -1, 面基意愿: 0 } }) }; } },
+        llmClient: { async chat() { return { text: JSON.stringify({ replies: ['晚上好。', '聊聊周末？'], relationship: { 好感: 1, 信任: 0, 戒备: -1, 面基意愿: 0 } }) }; } },
     });
 
     const result = await bridge.runPrivateChat({ sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '晚上好' });
 
     assert.equal(result.ok, true);
+    assert.equal(result.interactionOutcome, 'replied');
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
     const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
     assert.match(wrappedPatch, /会话\/chat_1\/最近消息/u);
     assert.match(wrappedPatch, /与玩家关系\/好感/u);
     assert.doesNotMatch(wrappedPatch, /不得发送/u);
+});
+
+
+test('private chat returns read_without_reply after the local rhythm builder suppresses model bubbles', async () => {
+    const initialState = recommendationState();
+    initialState.角色池 = {
+        npc_ava: {
+            成人验证: true,
+            公开资料: { 昵称: '艾娃' },
+            仅好友资料: { 关系状态: '单身', 边界与偏好: '先确认意愿。' },
+            隐藏资料: { 实际年龄: 24, 私人备注: '不得发送' },
+            偏好与边界: '', 拒绝阈值: 0, 已读不回阈值: 55, 取消匹配阈值: 80, 拉黑阈值: 90,
+            与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0 },
+        },
+    };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' } };
+    const { mvu, calls } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); }, settingsStore,
+        llmClient: { async chat() { return { text: JSON.stringify({ replies: ['这条不得写入。'], relationship: { 好感: -10, 信任: 0, 戒备: 5, 面基意愿: 0 } }) }; } },
+    });
+
+    const result = await bridge.runPrivateChat({ sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '刚才抱歉' });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.interactionOutcome, 'read_without_reply');
+    const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
+    assert.match(wrappedPatch, /对方已读，但暂时没有回复/u);
+    assert.doesNotMatch(wrappedPatch, /这条不得写入/u);
+});
+
+test('private chat returns blocked only after the controlled patch atomically blocks the role and session', async () => {
+    const initialState = recommendationState();
+    initialState.角色池 = {
+        npc_ava: {
+            成人验证: true,
+            公开资料: { 昵称: '艾娃' },
+            仅好友资料: { 关系状态: '单身', 边界与偏好: '先确认意愿。' },
+            隐藏资料: { 实际年龄: 24, 私人备注: '不得发送' },
+            偏好与边界: '', 拒绝阈值: 0, 已读不回阈值: 50, 取消匹配阈值: 80, 拉黑阈值: 80,
+            与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 0, 信任: 0, 戒备: 90, 面基意愿: 0 },
+        },
+    };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' } };
+    const { mvu, calls } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); }, settingsStore,
+        llmClient: { async chat() { return { text: JSON.stringify({ replies: ['这条不得写入。'], relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 } }) }; } },
+    });
+
+    const result = await bridge.runPrivateChat({ sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '继续发送' });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.interactionOutcome, 'blocked');
+    const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
+    assert.match(wrappedPatch, /已拉黑/u);
+    assert.match(wrappedPatch, /拉黑角色UID/u);
+    assert.doesNotMatch(wrappedPatch, /这条不得写入/u);
+});
+
+test('deletePrivateChat reads fresh state, uses the dedicated builder, and commits only through the official pipeline', async () => {
+    const initialState = recommendationState();
+    initialState.角色池 = {
+        npc_ava: {
+            成人验证: true,
+            公开资料: { 昵称: '艾娃' },
+            仅好友资料: {}, 隐藏资料: { 实际年龄: 24, 私人备注: '' },
+            偏好与边界: '', 拒绝阈值: 0, 已读不回阈值: 55, 取消匹配阈值: 80, 拉黑阈值: 90,
+            与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0 },
+        },
+    };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' } };
+    const { mvu, calls } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+    });
+
+    const result = await bridge.deletePrivateChat('chat_1');
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'parse', 'replace', 'event']);
+    const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
+    assert.match(wrappedPatch, /"op":"remove","path":"\/会话\/chat_1"/u);
+    assert.match(wrappedPatch, /与玩家关系\/状态/u);
+    assert.doesNotMatch(wrappedPatch, /角色池\/npc_ava"/u);
 });
 
 
@@ -577,8 +666,8 @@ test('soul match creates an independent npc_match session and never promotes a f
             return { text: JSON.stringify({
                 profile: {
                     昵称: '林夏', 年龄段: '25-29', 性别: '女', 性取向: '双性恋', 城市: '上海', 距离范围: '10 km',
-                    寻找意图: '先聊天再认真约会', 简介: '喜欢电影和夜跑。', 兴趣标签: ['电影'], 生活方式标签: ['夜猫子'], 性格标签: ['慢热'], 沟通风格标签: ['及时回应'],
-                }, explanation: '公开兴趣接近。', matchScore: 88,
+                    寻找意图: '先聊天再认真约会', 简介: '喜欢电影和夜跑。', 兴趣标签: ['电影'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
+                }, explanation: '公开兴趣接近。', matchScore: 1,
             }) };
         } },
         imageMatchCoordinator: {
@@ -592,6 +681,8 @@ test('soul match creates an independent npc_match session and never promotes a f
     const result = await bridge.runCandidateMatch('soul', { signal });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual([result.npcUid, result.sessionUid], ['npc_match_13', 'chat_5']);
+    assert.equal(result.matchOutcome, 'accepted');
+    assert.equal(result.matchScore, 86, '决策分数必须来自本地算法而不是模型自报的 1。');
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
     const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
     assert.match(wrappedPatch, /角色池\/npc_match_13|角色池~1npc_match_13/u);
@@ -622,9 +713,9 @@ test('voice match first resolves transient voice keywords and then commits the s
             if (modelCall === 1) return { text: '{"keywordWeights":[{"keyword":"逛展","weight":5}]}' };
             return { text: JSON.stringify({
                 profile: {
-                    昵称: '顾言', 年龄段: '26-31', 性别: '男', 性取向: '双性恋', 城市: '上海', 距离范围: '15 km',
-                    寻找意图: '想认真认识一个人', 简介: '周末喜欢看展和散步。', 兴趣标签: ['逛展'], 生活方式标签: ['周末出行'], 性格标签: ['温和'], 沟通风格标签: ['认真倾听'],
-                }, explanation: '本次语音关键词优先。', matchScore: 90,
+                    昵称: '顾言', 年龄段: '26-31', 性别: '女', 性取向: '双性恋', 城市: '上海', 距离范围: '15 km',
+                    寻找意图: '聊天', 简介: '周末喜欢看展和散步。', 兴趣标签: ['逛展'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
+                }, explanation: '本次语音关键词优先。', matchScore: 1,
             }) };
         } },
         imageMatchCoordinator: {
@@ -638,9 +729,49 @@ test('voice match first resolves transient voice keywords and then commits the s
     const result = await bridge.runCandidateMatch('voice', { voiceText: '想找愿意一起逛展、认真聊天的人。', signal });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual([result.npcUid, result.sessionUid], ['npc_match_6', 'chat_2']);
+    assert.equal(result.matchOutcome, 'accepted');
+    assert.equal(result.matchScore, 75, '临时语音关键词应覆盖同名本地权重并参与本地评分。');
     assert.equal(modelCall, 2, '语音匹配应先解析关键词，再生成候选人');
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
     assert.equal(imageMatches.length, 1, '图片匹配拒绝不得阻塞语音角色生成与 MVU 写回。');
     assert.equal(imageMatches[0][0].昵称, '顾言');
     assert.deepEqual(imageMatches[0][1], { contentMode: 'SFW', signal });
+});
+
+test('candidate match records a local-score decline without creating or incrementing a chat session', async () => {
+    const initialState = recommendationState();
+    initialState.会话 = {};
+    initialState.系统 = { UID计数器: { 角色: 8, 会话: 3 } };
+    const { mvu, calls } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: {
+            snapshot() { return { personalization: { keywordWeights: [{ keyword: '电影', weight: 5 }] } }; },
+            resolveFunction(key) { assert.equal(key, 'soul_match'); return { connectionPreset, promptPreset: { enabled: true, content: '' } }; },
+        },
+        llmClient: { async chat() {
+            return { text: JSON.stringify({
+                profile: {
+                    昵称: '周衡', 年龄段: '25-29', 性别: '男', 性取向: '异性恋', 城市: '上海', 距离范围: '10 km',
+                    寻找意图: '聊天', 简介: '模型声称高分，但公开取向不相容。', 兴趣标签: ['电影'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
+                }, explanation: '本地兼容结果优先。', matchScore: 100,
+            }) };
+        } },
+    });
+
+    const result = await bridge.runCandidateMatch('soul');
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.matchOutcome, 'declined');
+    assert.equal(result.matchScore, 0);
+    assert.equal(result.npcUid, 'npc_match_9');
+    assert.equal(result.sessionUid, '');
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
+    const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
+    const patch = JSON.parse(wrappedPatch.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)[1]);
+    assert.equal(patch.some((operation) => operation.path.startsWith('/会话/')), false);
+    assert.equal(patch.some((operation) => operation.path === '/系统/UID计数器/会话'), false);
+    assert.equal(patch.find((operation) => operation.path === '/角色池/npc_match_9').value.与玩家关系.状态, '已取消');
+    assert.equal(patch.find((operation) => operation.path === '/系统/UID计数器/角色').value, 9);
 });

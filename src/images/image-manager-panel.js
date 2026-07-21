@@ -96,6 +96,7 @@ export function createImageManagerPanel({
     compressImageFile,
     onFeedback = noop,
     onChange = noop,
+    onConfigure = noop,
 } = {}) {
     if (!documentRef || typeof documentRef.createElement !== 'function') {
         throw new TypeError('image_manager_document_invalid');
@@ -103,7 +104,7 @@ export function createImageManagerPanel({
     if (!imageLibrary || ['list', 'add', 'update', 'remove'].some((method) => typeof imageLibrary[method] !== 'function')) {
         throw new TypeError('image_manager_library_invalid');
     }
-    if (typeof onFeedback !== 'function' || typeof onChange !== 'function') {
+    if (typeof onFeedback !== 'function' || typeof onChange !== 'function' || typeof onConfigure !== 'function') {
         throw new TypeError('image_manager_callback_invalid');
     }
 
@@ -119,7 +120,17 @@ export function createImageManagerPanel({
 
     const element = createElement(documentRef, 'section', { className: 'yl-image-manager' });
     const heading = createElement(documentRef, 'header', { className: 'yl-image-manager-heading' });
-    heading.appendChild(createElement(documentRef, 'h2', { className: 'yl-image-manager-title', text: '图片管理' }));
+    const titlebar = createElement(documentRef, 'div', { className: 'yl-image-manager-titlebar yl-heading-with-help' });
+    titlebar.setAttribute('style', 'justify-content: space-between;');
+    titlebar.appendChild(createElement(documentRef, 'h2', { className: 'yl-image-manager-title', text: '图片管理' }));
+    const configureButton = createElement(documentRef, 'button', {
+        type: 'button',
+        className: 'yl-feature-options yl-image-manager-configure',
+        text: '设置',
+    });
+    configureButton.setAttribute('aria-label', '配置图片管理预设');
+    titlebar.appendChild(configureButton);
+    heading.appendChild(titlebar);
     heading.appendChild(createElement(documentRef, 'p', {
         className: 'yl-image-manager-description',
         text: '上传本地图片或导入图片链接，并为每张图片设置用于角色匹配的关键词权重。',
@@ -416,6 +427,8 @@ export function createImageManagerPanel({
             }
         });
     });
+
+    listen(configureButton, 'click', () => safeCallback(onConfigure));
 
     listen(urlButton, 'click', () => {
         void enqueueOperation(async () => {
