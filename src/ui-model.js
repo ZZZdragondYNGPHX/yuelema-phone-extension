@@ -27,6 +27,7 @@ export const PAGE_COPY = Object.freeze({
     settings_personalization: { title: '个性化内容推荐管理', description: '' },
     settings_personalization_preference: { title: '个性化内容偏好', description: '' },
     settings_images: { title: '图片管理', description: '管理只保存在当前浏览器的角色展示图片与匹配关键词。' },
+    settings_console: { title: '控制台', description: '仅显示本次小手机会话中的安全运行状态。' },
     match_profile: { title: '心动档案', description: '本次 AI 匹配的公开资料草稿；不会自动写入软件状态。' },
     candidate_detail: { title: '公开资料', description: '' },
 });

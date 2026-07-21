@@ -1331,8 +1331,8 @@
     top: 8px;
     right: 8px;
     display: grid;
-    width: 36px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
     padding: 0;
     place-items: center;
     border: 1px solid rgb(255 255 255 / 15%);
@@ -1349,7 +1349,8 @@
 .yl-dialog-close:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .yl-operation-dialog .yl-settings-actions { width: 100%; }
 .yl-operation-dialog[data-state="loading"] { border-color: rgb(142 107 255 / 55%); }
-.yl-operation-dialog[data-state="loading"]::before {
+.yl-operation-dialog[data-state="loading"]:not([data-visual])::before,
+.yl-operation-dialog[data-state="loading"][data-visual="generic"]::before {
     width: 26px;
     height: 26px;
     border: 3px solid rgb(255 255 255 / 16%);
@@ -1555,3 +1556,471 @@ body.reduced-motion .yl-phone-extension *, body.reduced-motion .yl-phone-extensi
 .yl-chat-delete-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .yl-chat-delete-confirm { border-color: transparent; color: #fff; background: linear-gradient(135deg, #ff5c74, #d93662); }
 .yl-chat-composer.is-readonly { grid-template-columns: minmax(0, 1fr) auto; opacity: .78; }
+
+/* ============ 本阶段：私聊管理、恋爱操作反馈、运行控制台与头像 ============ */
+
+/* --- 私聊右上角更多菜单 --- */
+.yl-private-chat-contact { position: relative; }
+.yl-private-chat-actions,
+.yl-private-chat-more-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-left: auto;
+}
+.yl-private-chat-more,
+.yl-private-chat-more-button,
+.yl-chat-more-button {
+    display: inline-grid;
+    width: 36px;
+    height: 36px;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--yl-border, rgb(255 255 255 / 13%));
+    border-radius: 50%;
+    color: var(--yl-muted, #b9acc6);
+    background: rgb(255 255 255 / 7%);
+    cursor: pointer;
+    font: inherit;
+    font-size: 1.15rem;
+    font-weight: 800;
+    letter-spacing: .08em;
+    line-height: 1;
+    transition: border-color var(--yl-t-fast) var(--yl-ease), background var(--yl-t-fast) var(--yl-ease), color var(--yl-t-fast) var(--yl-ease), transform var(--yl-t-fast) var(--yl-ease);
+}
+.yl-private-chat-more:hover,
+.yl-private-chat-more[aria-expanded="true"],
+.yl-private-chat-more-button:hover,
+.yl-private-chat-more-button[aria-expanded="true"],
+.yl-chat-more-button:hover,
+.yl-chat-more-button[aria-expanded="true"] {
+    border-color: rgb(255 120 170 / 55%);
+    color: #fff;
+    background: var(--yl-accent-soft, rgb(255 78 142 / 16%));
+    transform: translateY(-1px);
+}
+.yl-private-chat-more:focus-visible,
+.yl-private-chat-more-button:focus-visible,
+.yl-chat-more-button:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 3px;
+}
+.yl-private-chat-more-menu,
+.yl-chat-more-menu,
+.yl-private-chat-menu {
+    position: absolute;
+    z-index: 35;
+    top: calc(100% + 7px);
+    right: 0;
+    display: grid;
+    min-width: 164px;
+    gap: 4px;
+    padding: 6px;
+    border: 1px solid var(--yl-border-strong, rgb(255 255 255 / 26%));
+    border-radius: var(--yl-r-md, 16px);
+    background: rgb(29 23 39 / 97%);
+    box-shadow: var(--yl-shadow-lg);
+    animation: yl-chat-tool-in 140ms var(--yl-ease);
+}
+.yl-private-chat-more-menu[hidden],
+.yl-chat-more-menu[hidden],
+.yl-private-chat-menu[hidden] { display: none; }
+.yl-private-chat-menu-item,
+.yl-private-chat-more-action,
+.yl-chat-more-action,
+.yl-private-chat-menu button {
+    width: 100%;
+    min-height: 44px;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 10px;
+    color: var(--yl-text, #f8f4fb);
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    font-size: .76rem;
+    font-weight: 700;
+    text-align: left;
+    transition: color var(--yl-t-fast) var(--yl-ease), background var(--yl-t-fast) var(--yl-ease);
+}
+.yl-private-chat-menu-item:hover,
+.yl-private-chat-menu-item:focus-visible,
+.yl-private-chat-more-action:hover,
+.yl-private-chat-more-action:focus-visible,
+.yl-chat-more-action:hover,
+.yl-chat-more-action:focus-visible,
+.yl-private-chat-menu button:hover,
+.yl-private-chat-menu button:focus-visible {
+    outline: none;
+    color: #fff;
+    background: var(--yl-accent-soft, rgb(255 78 142 / 16%));
+}
+.yl-private-chat-more-action-danger,
+.yl-chat-more-action-danger,
+.yl-private-chat-menu .is-danger {
+    color: #ffd5de;
+}
+.yl-private-chat-more-action-danger:hover,
+.yl-private-chat-more-action-danger:focus-visible,
+.yl-chat-more-action-danger:hover,
+.yl-chat-more-action-danger:focus-visible,
+.yl-private-chat-menu .is-danger:hover,
+.yl-private-chat-menu .is-danger:focus-visible {
+    color: #fff;
+    background: rgb(255 92 116 / 16%);
+}
+
+/* --- 清空聊天与删除角色的两类确认区 --- */
+.yl-chat-destructive-confirmation,
+.yl-chat-clear-confirmation,
+.yl-character-delete-confirmation,
+.yl-chat-delete-confirmation {
+    display: grid;
+    gap: 9px;
+    padding: 13px;
+    border: 1px solid rgb(255 92 116 / 45%);
+    border-radius: var(--yl-r-md, 16px);
+    background: rgb(92 24 45 / 35%);
+}
+.yl-chat-clear-confirmation,
+.yl-chat-destructive-confirmation[data-kind="clear"],
+.yl-chat-destructive-confirmation[data-confirm-kind="clear"] {
+    border-color: rgb(255 201 77 / 48%);
+    background: rgb(104 72 23 / 28%);
+}
+.yl-character-delete-confirmation,
+.yl-chat-delete-confirmation,
+.yl-chat-destructive-confirmation[data-kind="delete-character"],
+.yl-chat-destructive-confirmation[data-confirm-kind="delete-character"] {
+    border-color: rgb(255 92 116 / 55%);
+    background: rgb(92 24 45 / 35%);
+}
+.yl-chat-destructive-confirmation p,
+.yl-chat-clear-confirmation p,
+.yl-character-delete-confirmation p,
+.yl-chat-delete-confirmation p {
+    margin: 0;
+    color: var(--yl-muted, #b9acc6);
+    font-size: .78rem;
+    line-height: 1.45;
+}
+.yl-chat-delete-actions,
+.yl-chat-clear-actions,
+.yl-character-delete-actions,
+.yl-chat-destructive-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+.yl-chat-clear-confirm,
+.yl-chat-clear-actions .yl-settings-button:last-child,
+.yl-chat-destructive-confirmation[data-kind="clear"] .yl-settings-button:last-child {
+    border-color: transparent;
+    color: #2c2110;
+    background: linear-gradient(135deg, #ffd76a, #f3a53b);
+}
+.yl-character-delete-confirm,
+.yl-chat-delete-confirm,
+.yl-character-delete-actions .yl-settings-button:last-child,
+.yl-chat-destructive-confirmation[data-kind="delete-character"] .yl-settings-button:last-child {
+    border-color: transparent;
+    color: #fff;
+    background: linear-gradient(135deg, #ff5c74, #d93662);
+}
+.yl-chat-clear-cancel,
+.yl-character-delete-cancel,
+.yl-chat-destructive-cancel { color: var(--yl-muted, #b9acc6); }
+
+/* --- operation dialog：两颗心、电波、依偎、心碎与分离 --- */
+.yl-operation-dialog[data-visual] { gap: 9px; }
+.yl-romance-visual {
+    position: relative;
+    display: grid;
+    grid-template-columns: 54px minmax(64px, 1fr) 54px;
+    align-items: center;
+    width: min(238px, 100%);
+    min-height: 86px;
+    margin: 1px 0 2px;
+    padding: 6px 5px;
+    overflow: hidden;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: var(--yl-r-lg, 24px);
+    background: linear-gradient(135deg, rgb(255 78 142 / 11%), rgb(142 107 255 / 12%));
+}
+.yl-romance-heart {
+    position: relative;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    color: #ff6a9d;
+    font-size: 2.25rem;
+    line-height: 1;
+    filter: drop-shadow(0 5px 9px rgb(255 78 142 / 34%));
+    transform-origin: 50% 65%;
+}
+.yl-romance-heart-left { justify-self: end; }
+.yl-romance-heart-right { justify-self: start; color: #b794ff; filter: drop-shadow(0 5px 9px rgb(142 107 255 / 34%)); }
+.yl-romance-signal {
+    position: relative;
+    display: block;
+    height: 34px;
+    margin: 0 3px;
+}
+.yl-romance-signal::before {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    left: 0;
+    height: 2px;
+    border-radius: 999px;
+    background: repeating-linear-gradient(90deg, rgb(255 189 222 / 72%) 0 7px, transparent 7px 12px);
+    content: "";
+    transform: translateY(-50%);
+}
+.yl-romance-signal::after {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 9px;
+    height: 9px;
+    border: 2px solid #ffd3e6;
+    border-radius: 50%;
+    background: var(--yl-accent, #ff4e8e);
+    box-shadow: 0 0 12px rgb(255 78 142 / 72%);
+    content: "";
+    transform: translate(-50%, -50%);
+}
+.yl-romance-visual[data-visual="connecting"] .yl-romance-heart,
+.yl-operation-dialog[data-visual="connecting"] .yl-romance-heart {
+    animation: yl-romance-heart-pulse 1.15s ease-in-out infinite;
+}
+.yl-romance-visual[data-visual="connecting"] .yl-romance-heart-right,
+.yl-operation-dialog[data-visual="connecting"] .yl-romance-heart-right { animation-delay: .18s; }
+.yl-romance-visual[data-visual="connecting"] .yl-romance-signal::after,
+.yl-operation-dialog[data-visual="connecting"] .yl-romance-signal::after { animation: yl-romance-signal-travel 1.15s linear infinite; }
+@keyframes yl-romance-heart-pulse {
+    0%, 100% { transform: translateY(1px) scale(.94); opacity: .76; }
+    50% { transform: translateY(-2px) scale(1.08); opacity: 1; }
+}
+@keyframes yl-romance-signal-travel {
+    0% { left: 0; opacity: .35; }
+    12% { opacity: 1; }
+    88% { opacity: 1; }
+    100% { left: 100%; opacity: .35; }
+}
+.yl-romance-visual[data-visual="accepted"] .yl-romance-signal,
+.yl-operation-dialog[data-visual="accepted"] .yl-romance-signal { opacity: .2; transform: scaleX(.35); }
+.yl-romance-visual[data-visual="accepted"] .yl-romance-heart-left,
+.yl-operation-dialog[data-visual="accepted"] .yl-romance-heart-left { animation: yl-romance-embrace-left 1.15s ease-in-out infinite; }
+.yl-romance-visual[data-visual="accepted"] .yl-romance-heart-right,
+.yl-operation-dialog[data-visual="accepted"] .yl-romance-heart-right { animation: yl-romance-embrace-right 1.15s ease-in-out infinite; }
+@keyframes yl-romance-embrace-left {
+    0%, 100% { transform: translateX(0) rotate(-8deg) scale(.98); }
+    42%, 70% { transform: translateX(13px) rotate(-18deg) scale(1.08); }
+}
+@keyframes yl-romance-embrace-right {
+    0%, 100% { transform: translateX(0) rotate(8deg) scale(.98); }
+    42%, 70% { transform: translateX(-13px) rotate(18deg) scale(1.08); }
+}
+.yl-romance-visual[data-visual="accepted"],
+.yl-operation-dialog[data-visual="accepted"] .yl-romance-visual {
+    border-color: rgb(95 224 165 / 45%);
+    background: radial-gradient(circle at 50% 50%, rgb(255 138 190 / 24%), transparent 54%), linear-gradient(135deg, rgb(95 224 165 / 10%), rgb(255 78 142 / 14%));
+}
+.yl-romance-visual[data-visual="declined"] .yl-romance-heart,
+.yl-operation-dialog[data-visual="declined"] .yl-romance-heart {
+    color: #d2a7bd;
+    filter: grayscale(.3) drop-shadow(0 4px 8px rgb(0 0 0 / 25%));
+    animation: yl-romance-separate 900ms ease-out both;
+}
+.yl-romance-visual[data-visual="declined"] .yl-romance-heart-right,
+.yl-operation-dialog[data-visual="declined"] .yl-romance-heart-right { color: #9e90ba; animation-delay: 70ms; }
+@keyframes yl-romance-separate {
+    from { opacity: 1; transform: translateX(0) rotate(0) scale(1); }
+    to { opacity: .48; transform: translateX(-16px) rotate(-16deg) scale(.84); }
+}
+.yl-romance-visual[data-visual="declined"] .yl-romance-heart-right,
+.yl-operation-dialog[data-visual="declined"] .yl-romance-heart-right { animation-name: yl-romance-separate-right; }
+@keyframes yl-romance-separate-right {
+    from { opacity: 1; transform: translateX(0) rotate(0) scale(1); }
+    to { opacity: .38; transform: translateX(16px) rotate(16deg) scale(.84); }
+}
+.yl-romance-visual[data-visual="declined"] .yl-romance-signal,
+.yl-operation-dialog[data-visual="declined"] .yl-romance-signal { opacity: .25; transform: scaleX(.35); }
+.yl-romance-visual[data-visual="failure"],
+.yl-operation-dialog[data-visual="failure"] .yl-romance-visual {
+    border-color: rgb(255 92 116 / 52%);
+    background: linear-gradient(135deg, rgb(255 92 116 / 15%), rgb(87 32 67 / 20%));
+}
+.yl-romance-visual[data-visual="failure"] .yl-romance-heart,
+.yl-operation-dialog[data-visual="failure"] .yl-romance-heart {
+    color: #ff6b7f;
+    animation: yl-romance-heartbreak 720ms ease-in-out both;
+}
+.yl-romance-visual[data-visual="failure"] .yl-romance-heart-right,
+.yl-operation-dialog[data-visual="failure"] .yl-romance-heart-right { color: #d38ba2; animation-delay: 80ms; }
+@keyframes yl-romance-heartbreak {
+    0% { opacity: 1; transform: translateX(0) rotate(0) scale(1); }
+    35% { opacity: 1; transform: translateX(-4px) rotate(-10deg) scale(1.08); }
+    100% { opacity: .55; transform: translateX(-12px) rotate(-22deg) scale(.82); }
+}
+.yl-romance-visual[data-visual="failure"] .yl-romance-heart-right,
+.yl-operation-dialog[data-visual="failure"] .yl-romance-heart-right { animation-name: yl-romance-heartbreak-right; }
+@keyframes yl-romance-heartbreak-right {
+    0% { opacity: 1; transform: translateX(0) rotate(0) scale(1); }
+    35% { opacity: 1; transform: translateX(4px) rotate(10deg) scale(1.08); }
+    100% { opacity: .4; transform: translateX(12px) rotate(22deg) scale(.82); }
+}
+.yl-romance-visual[data-visual="failure"] .yl-romance-signal,
+.yl-operation-dialog[data-visual="failure"] .yl-romance-signal { opacity: .75; }
+.yl-romance-visual[data-visual="failure"] .yl-romance-signal::before,
+.yl-operation-dialog[data-visual="failure"] .yl-romance-signal::before { background: linear-gradient(90deg, transparent 0 8%, #ff687f 8% 28%, transparent 28% 38%, #ff687f 38% 62%, transparent 62% 72%, #ff687f 72% 92%, transparent 92%); }
+.yl-romance-visual[data-visual="failure"] .yl-romance-signal::after,
+.yl-operation-dialog[data-visual="failure"] .yl-romance-signal::after { top: 52%; left: 50%; border-color: #ffd4dd; background: #ff5c74; content: "×"; color: #fff; font-size: .62rem; line-height: 5px; text-align: center; transform: translate(-50%, -50%); }
+
+/* --- 设置控制台：仅用于安全的运行状态摘要 --- */
+.yl-settings-console,
+.yl-operation-console,
+.yl-console-page { display: grid; gap: 10px; }
+.yl-console-toolbar,
+.yl-operation-console-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
+.yl-console-toolbar p,
+.yl-operation-console-toolbar p { margin: 0; color: var(--yl-muted, #b9acc6); font-size: .72rem; line-height: 1.4; }
+.yl-console-toolbar .yl-settings-button,
+.yl-operation-console-toolbar .yl-settings-button { min-height: 34px; padding: 7px 10px; font-size: .7rem; }
+.yl-console-list,
+.yl-operation-activity-list,
+.yl-operation-console-list { display: grid; gap: 8px; max-height: min(430px, 55dvh); overflow: auto; padding-right: 2px; }
+.yl-console-empty,
+.yl-operation-activity-empty { padding: 22px 14px; border: 1px dashed var(--yl-border-strong, rgb(255 255 255 / 26%)); border-radius: var(--yl-r-md, 16px); color: var(--yl-faint, #8d7f9b); background: rgb(255 255 255 / 3%); font-size: .74rem; text-align: center; }
+.yl-console-entry,
+.yl-operation-activity-card,
+.yl-operation-console-entry {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 9px;
+    min-width: 0;
+    padding: 10px 11px;
+    border: 1px solid var(--yl-border, rgb(255 255 255 / 13%));
+    border-radius: var(--yl-r-sm, 10px);
+    background: rgb(255 255 255 / 4%);
+}
+.yl-console-entry[data-status="running"],
+.yl-operation-activity-card[data-status="running"],
+.yl-operation-console-entry[data-status="running"] { border-color: rgb(142 107 255 / 48%); background: linear-gradient(135deg, rgb(142 107 255 / 12%), rgb(255 78 142 / 7%)); }
+.yl-console-entry[data-status="success"],
+.yl-operation-activity-card[data-status="success"],
+.yl-operation-console-entry[data-status="success"] { border-color: rgb(95 224 165 / 42%); background: rgb(95 224 165 / 7%); }
+.yl-console-entry[data-status="failure"],
+.yl-operation-activity-card[data-status="failure"],
+.yl-operation-console-entry[data-status="failure"] { border-color: rgb(255 92 116 / 48%); background: rgb(255 92 116 / 8%); }
+.yl-console-entry::before,
+.yl-operation-activity-card::before,
+.yl-operation-console-entry::before {
+    display: grid;
+    width: 10px;
+    height: 10px;
+    margin-top: 4px;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--yl-faint, #8d7f9b);
+    box-shadow: 0 0 0 3px rgb(141 127 155 / 12%);
+    content: "";
+}
+.yl-console-entry[data-status="running"]::before,
+.yl-operation-activity-card[data-status="running"]::before,
+.yl-operation-console-entry[data-status="running"]::before { background: var(--yl-accent-2, #8e6bff); box-shadow: 0 0 0 3px rgb(142 107 255 / 14%); animation: yl-console-running-pulse 1.2s ease-in-out infinite; }
+.yl-console-entry[data-status="success"]::before,
+.yl-operation-activity-card[data-status="success"]::before,
+.yl-operation-console-entry[data-status="success"]::before { background: var(--yl-success, #5fe0a5); box-shadow: 0 0 0 3px rgb(95 224 165 / 14%); }
+.yl-console-entry[data-status="failure"]::before,
+.yl-operation-activity-card[data-status="failure"]::before,
+.yl-operation-console-entry[data-status="failure"]::before { background: var(--yl-danger, #ff5c74); box-shadow: 0 0 0 3px rgb(255 92 116 / 14%); }
+@keyframes yl-console-running-pulse { 50% { opacity: .42; transform: scale(.72); } }
+.yl-console-entry-copy,
+.yl-operation-activity-copy,
+.yl-operation-console-copy { display: grid; min-width: 0; gap: 3px; }
+.yl-console-entry-copy strong,
+.yl-operation-activity-copy strong,
+.yl-operation-console-copy strong { min-width: 0; overflow: hidden; color: var(--yl-text, #f8f4fb); font-size: .77rem; text-overflow: ellipsis; white-space: nowrap; }
+.yl-console-entry-copy p,
+.yl-operation-activity-copy p,
+.yl-operation-console-copy p { margin: 0; color: var(--yl-muted, #b9acc6); font-size: .7rem; line-height: 1.42; overflow-wrap: anywhere; }
+.yl-console-status,
+.yl-operation-activity-status,
+.yl-operation-console-status { align-self: start; padding: 3px 7px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 999px; color: var(--yl-muted, #b9acc6); background: rgb(255 255 255 / 6%); font-size: .6rem; font-weight: 750; white-space: nowrap; }
+.yl-console-entry[data-status="running"] .yl-console-status,
+.yl-operation-activity-card[data-status="running"] .yl-operation-activity-status,
+.yl-operation-console-entry[data-status="running"] .yl-operation-console-status { border-color: rgb(142 107 255 / 40%); color: #d8ccff; background: rgb(142 107 255 / 14%); }
+.yl-console-entry[data-status="success"] .yl-console-status,
+.yl-operation-activity-card[data-status="success"] .yl-operation-activity-status,
+.yl-operation-console-entry[data-status="success"] .yl-operation-console-status { border-color: rgb(95 224 165 / 40%); color: #b8f6d8; background: rgb(95 224 165 / 13%); }
+.yl-console-entry[data-status="failure"] .yl-console-status,
+.yl-operation-activity-card[data-status="failure"] .yl-operation-activity-status,
+.yl-operation-console-entry[data-status="failure"] .yl-operation-console-status { border-color: rgb(255 92 116 / 46%); color: #ffd3da; background: rgb(255 92 116 / 14%); }
+.yl-console-entry time,
+.yl-operation-activity-card time,
+.yl-operation-console-entry time { grid-column: 2 / -1; color: var(--yl-faint, #8d7f9b); font-size: .6rem; }
+
+/* --- 五类头像的图片填充与失败回退 --- */
+:is(.yl-candidate-avatar, .yl-session-avatar, .yl-chat-contact-avatar, .yl-chat-message-avatar, .yl-person-avatar, .yl-match-profile-avatar, .yl-group-member-avatar, .yl-group-person-avatar) {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+}
+:is(.yl-candidate-avatar, .yl-session-avatar, .yl-chat-contact-avatar, .yl-chat-message-avatar, .yl-person-avatar, .yl-match-profile-avatar, .yl-group-member-avatar, .yl-group-person-avatar) > img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center;
+    border-radius: inherit;
+}
+:is(.yl-candidate-avatar, .yl-session-avatar, .yl-chat-contact-avatar, .yl-chat-message-avatar, .yl-person-avatar, .yl-match-profile-avatar, .yl-group-member-avatar, .yl-group-person-avatar)[data-image-status="loading"] { opacity: .78; }
+:is(.yl-candidate-avatar, .yl-session-avatar, .yl-chat-contact-avatar, .yl-chat-message-avatar, .yl-person-avatar, .yl-match-profile-avatar, .yl-group-member-avatar, .yl-group-person-avatar)[data-image-status="ready"] { background: transparent; }
+:is(.yl-candidate-avatar, .yl-session-avatar, .yl-chat-contact-avatar, .yl-chat-message-avatar, .yl-person-avatar, .yl-match-profile-avatar, .yl-group-member-avatar, .yl-group-person-avatar)[data-image-status="failed"],
+:is(.yl-candidate-avatar, .yl-session-avatar, .yl-chat-contact-avatar, .yl-chat-message-avatar, .yl-person-avatar, .yl-match-profile-avatar, .yl-group-member-avatar, .yl-group-person-avatar)[data-image-status="fallback"] {
+    background: linear-gradient(145deg, var(--yl-accent, #ff4e8e), var(--yl-accent-2, #8e6bff));
+}
+.yl-chat-message-avatar.yl-chat-self-avatar[data-image-status="failed"],
+.yl-chat-message-avatar.yl-chat-self-avatar[data-image-status="fallback"] { background: linear-gradient(145deg, #8e6bff, #613bc5); }
+.yl-session-avatar img,
+.yl-chat-contact-avatar img,
+.yl-chat-message-avatar img,
+.yl-favorite-card .yl-candidate-avatar img,
+.yl-match-row .yl-candidate-avatar img,
+.yl-group-member-avatar img { object-fit: cover; object-position: center; }
+.yl-group-member-list,
+.yl-group-members,
+.yl-group-member-grid { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.yl-group-member,
+.yl-group-member-row { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: var(--yl-muted, #b9acc6); font-size: .7rem; }
+.yl-group-member-avatar,
+.yl-group-person-avatar { width: 34px; height: 34px; border: 1px solid rgb(255 255 255 / 30%); border-radius: 50%; color: #fff; background: linear-gradient(145deg, var(--yl-accent, #ff4e8e), var(--yl-accent-2, #8e6bff)); font-size: .72rem; font-weight: 800; }
+
+/* --- 可访问性：尊重系统的减少动态偏好 --- */
+@media (prefers-reduced-motion: reduce) {
+    .yl-phone-extension .yl-romance-visual *,
+    .yl-phone-extension .yl-operation-dialog[data-visual]::before,
+    .yl-phone-extension .yl-console-entry[data-status="running"]::before,
+    .yl-phone-extension .yl-operation-activity-card[data-status="running"]::before,
+    .yl-phone-extension .yl-operation-console-entry[data-status="running"]::before {
+        animation: none !important;
+        transition: none !important;
+    }
+    .yl-phone-extension .yl-romance-visual[data-visual="accepted"] .yl-romance-heart-left,
+    .yl-phone-extension .yl-operation-dialog[data-visual="accepted"] .yl-romance-heart-left { transform: translateX(13px) rotate(-18deg) scale(1.08); }
+    .yl-phone-extension .yl-romance-visual[data-visual="accepted"] .yl-romance-heart-right,
+    .yl-phone-extension .yl-operation-dialog[data-visual="accepted"] .yl-romance-heart-right { transform: translateX(-13px) rotate(18deg) scale(1.08); }
+    .yl-phone-extension .yl-romance-visual[data-visual="declined"] .yl-romance-heart-left,
+    .yl-phone-extension .yl-operation-dialog[data-visual="declined"] .yl-romance-heart-left { opacity: .48; transform: translateX(-16px) rotate(-16deg) scale(.84); }
+    .yl-phone-extension .yl-romance-visual[data-visual="declined"] .yl-romance-heart-right,
+    .yl-phone-extension .yl-operation-dialog[data-visual="declined"] .yl-romance-heart-right { opacity: .38; transform: translateX(16px) rotate(16deg) scale(.84); }
+    .yl-phone-extension .yl-romance-visual[data-visual="failure"] .yl-romance-heart-left,
+    .yl-phone-extension .yl-operation-dialog[data-visual="failure"] .yl-romance-heart-left { opacity: .55; transform: translateX(-12px) rotate(-22deg) scale(.82); }
+    .yl-phone-extension .yl-romance-visual[data-visual="failure"] .yl-romance-heart-right,
+    .yl-phone-extension .yl-operation-dialog[data-visual="failure"] .yl-romance-heart-right { opacity: .4; transform: translateX(12px) rotate(22deg) scale(.82); }
+}

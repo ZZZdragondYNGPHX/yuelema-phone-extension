@@ -1,5 +1,5 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildDeletePrivateChatPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
+import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply } from './chat/private-chat-service.js';
 import { generateCandidateMatchDraft as generateCandidateMatchDraftService, generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
@@ -270,16 +270,36 @@ export function createActionBridge({
         }
     }
 
-    /** Deletes one private-chat session through the same exact controlled MVU boundary. */
-    async function deletePrivateChat(sessionUid) {
-        const key = actionKey('delete_private_chat', sessionUid);
+    /** Clears one private-chat session through the same exact controlled MVU boundary. */
+    async function clearPrivateChat(sessionUid) {
+        const key = actionKey('clear_private_chat', sessionUid);
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
         pending.add(key);
         try {
             const currentMvu = resolveMvu(mvu);
             const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
-            const built = buildDeletePrivateChatPatch(read.state, { sessionUid });
+            const built = buildClearPrivateChatPatch(read.state, { sessionUid });
+            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Backwards-compatible bridge name; it now means clearing the chat session. */
+    const deletePrivateChat = clearPrivateChat;
+
+    /** Deletes one character and all of its controlled state references. */
+    async function deleteCharacter(npcUid) {
+        const key = actionKey('delete_character', npcUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const built = buildDeleteCharacterPatch(read.state, { npcUid });
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
             return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         } finally {
@@ -531,7 +551,7 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, deletePrivateChat, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
 }
 
 

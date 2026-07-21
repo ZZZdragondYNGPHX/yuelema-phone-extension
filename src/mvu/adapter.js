@@ -1,5 +1,5 @@
 import { LATEST_MESSAGE_SCOPE, buildUpdateVariable, validateControlledPatchAgainstState } from './controlled-patch.js';
-import { getAtPointer, isPlainRecord } from './json-pointer.js';
+import { decodeJsonPointer, isPlainRecord } from './json-pointer.js';
 
 function unavailable(code) {
     return { ok: false, status: 'unavailable', code };
@@ -54,20 +54,96 @@ function copyMutableScope(scope) {
     return isPlainRecord(scope) ? { ...scope } : scope;
 }
 
-function validateProviderPostconditions(state, patch) {
+function resolvePatchParent(root, pointer) {
+    const segments = decodeJsonPointer(pointer);
+    const key = segments.pop();
+    let parent = root;
+    for (const segment of segments) {
+        if (Array.isArray(parent)) {
+            if (!/^(0|[1-9]\d*)$/u.test(segment) || Number(segment) >= parent.length) return null;
+            parent = parent[Number(segment)];
+        } else if (isPlainRecord(parent) && Object.hasOwn(parent, segment)) {
+            parent = parent[segment];
+        } else {
+            return null;
+        }
+    }
+    return { parent, key };
+}
+
+function removePatchValue(root, pointer) {
+    const target = resolvePatchParent(root, pointer);
+    if (!target) return { ok: false };
+    const { parent, key } = target;
+    if (Array.isArray(parent)) {
+        if (!/^(0|[1-9]\d*)$/u.test(key) || Number(key) >= parent.length) return { ok: false };
+        return { ok: true, value: parent.splice(Number(key), 1)[0] };
+    }
+    if (!isPlainRecord(parent) || !Object.hasOwn(parent, key)) return { ok: false };
+    const value = parent[key];
+    delete parent[key];
+    return { ok: true, value };
+}
+
+function addPatchValue(root, pointer, value) {
+    const target = resolvePatchParent(root, pointer);
+    if (!target) return false;
+    const { parent, key } = target;
+    const cloned = cloneJsonValue(value);
+    if (Array.isArray(parent)) {
+        if (key === '-') {
+            parent.push(cloned);
+            return true;
+        }
+        if (!/^(0|[1-9]\d*)$/u.test(key) || Number(key) > parent.length) return false;
+        parent.splice(Number(key), 0, cloned);
+        return true;
+    }
+    if (!isPlainRecord(parent)) return false;
+    parent[key] = cloned;
+    return true;
+}
+
+function applyPatchToSnapshot(beforeState, patch) {
+    const expected = cloneJsonValue(beforeState);
     for (const [operationIndex, operation] of patch.entries()) {
-        if (operation.op !== 'replace') continue;
-        let result;
         try {
-            result = getAtPointer(state, operation.path);
+            if (operation.op === 'add') {
+                if (!addPatchValue(expected, operation.path, operation.value)) throw new Error('add_failed');
+            } else if (operation.op === 'remove') {
+                if (!removePatchValue(expected, operation.path).ok) throw new Error('remove_failed');
+            } else if (operation.op === 'replace') {
+                const target = resolvePatchParent(expected, operation.path);
+                if (!target) throw new Error('replace_failed');
+                const { parent, key } = target;
+                if (Array.isArray(parent)) {
+                    if (!/^(0|[1-9]\d*)$/u.test(key) || Number(key) >= parent.length) throw new Error('replace_failed');
+                    parent[Number(key)] = cloneJsonValue(operation.value);
+                } else if (isPlainRecord(parent)) {
+                    // Some MVU schemas omit optional object fields; the host
+                    // applies replace as an object assignment in that case.
+                    parent[key] = cloneJsonValue(operation.value);
+                } else {
+                    throw new Error('replace_failed');
+                }
+            } else if (operation.op === 'move') {
+                const moved = removePatchValue(expected, operation.from);
+                if (!moved.ok || !addPatchValue(expected, operation.path, moved.value)) throw new Error('move_failed');
+            } else {
+                throw new Error('unsupported_operation');
+            }
         } catch {
             return { ok: false, operationIndex, path: operation.path };
         }
-        if (!result.found || !sameJsonValue(result.value, operation.value)) {
-            return { ok: false, operationIndex, path: operation.path };
-        }
     }
-    return { ok: true };
+    return { ok: true, expected };
+}
+
+function validateProviderPostconditions(beforeState, state, patch) {
+    const applied = applyPatchToSnapshot(beforeState, patch);
+    if (!applied.ok) return applied;
+    if (sameJsonValue(applied.expected, state)) return { ok: true };
+    return { ok: false, operationIndex: 0, path: patch[0]?.path ?? '/' };
 }
 
 function resolveEventEmitter({ eventEmit, getContext }) {
@@ -156,7 +232,7 @@ export async function applyControlledPatch({
     // A provider may return a cloned MvuData even when a command was dropped.
     // Verify every deterministic replace (including content-mode toggle) before
     // allowing replaceMvuData; this is postcondition checking, not a second write.
-    const postconditions = validateProviderPostconditions(newData.stat_data, patch);
+    const postconditions = validateProviderPostconditions(oldStateSnapshot, newData.stat_data, patch);
     if (!postconditions.ok) {
         return {
             ok: false,

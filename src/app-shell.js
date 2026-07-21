@@ -7,18 +7,20 @@ import { avatarAcceptAttribute, compressLocalAvatar, projectAvatarError } from '
 import { avatarImageSource } from './player-avatar-store.js';
 import { createLauncherDragController } from './launcher-drag.js';
 import { createImageManagerPanel } from './images/image-manager-panel.js';
+import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
+import { createOperationActivity } from './ui/operation-activity.js';
 
-const UI_VERSION = '0.1.21';
+const UI_VERSION = '0.1.22';
 const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
 const PRIMARY_PAGE_FOR = Object.freeze({
     group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_console: 'profile', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
 });
 const PAGE_PARENT_FOR = Object.freeze({
     group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', settings_console: 'settings', candidate_detail: 'home', match_profile: 'matches',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
@@ -43,8 +45,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let refreshing = false;
     let activeMessageSessionUid = '';
     let messageSearchQuery = '';
-    let deleteConfirmationSessionUid = '';
-    let deletingPrivateChatSessionUid = '';
+    let chatMoreMenuSessionUid = '';
+    let chatConfirmationSessionUid = '';
+    let chatConfirmationKind = '';
+    let destructiveChatSessionUid = '';
+    let destructiveChatKind = '';
     let activeMeetupSessionUid = '';
     let activeChatToolsSessionUid = '';
     let selectedCandidateUid = '';
@@ -70,6 +75,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let imageManagerPanel = null;
     const matchedImageByProfile = new Map();
     const imageMatchPending = new Map();
+    const operationActivity = createOperationActivity();
+    let unsubscribeOperationActivity = null;
+    let interactionGeneration = 0;
+    let isDestroyed = false;
 
     const launcher = element('button', { className: 'yl-phone-launcher', type: 'button', ariaLabel: '打开约了吗小手机', pressed: false, text: '约' });
     launcher.appendChild(element('span', { className: 'yl-phone-launcher-label', text: '约了吗' }));
@@ -114,6 +123,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         ariaLabel: '关闭操作弹窗', text: '×',
     });
     const operationTitle = element('h2', { text: '' });
+    const romanceVisual = element('div', { className: 'yl-romance-visual', hidden: true, ariaLabel: '恋爱互动状态动画' });
+    romanceVisual.setAttribute('aria-hidden', 'true');
+    const romanceLeft = element('span', { className: 'yl-romance-heart yl-romance-heart-left', text: '♥' });
+    const romanceSignal = element('span', { className: 'yl-romance-signal', text: '∿∿∿' });
+    const romanceRight = element('span', { className: 'yl-romance-heart yl-romance-heart-right', text: '♥' });
+    append(romanceVisual, [romanceLeft, romanceSignal, romanceRight]);
     const operationMessage = element('p', { className: 'yl-phone-page-description', text: '' });
     const operationActions = element('div', { className: 'yl-settings-actions' });
     const operationClose = element('button', {
@@ -121,7 +136,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         ariaLabel: '关闭操作提示', text: '关闭',
     });
     append(operationActions, [operationClose]);
-    append(operationDialog, [operationDismiss, operationTitle, operationMessage, operationActions]);
+    append(operationDialog, [operationDismiss, operationTitle, romanceVisual, operationMessage, operationActions]);
 
     const bindingDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-feature-binding-modal', hidden: true });
     bindingDialog.setAttribute('role', 'dialog');
@@ -261,8 +276,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             privateChatRequestGeneration += 1;
             activeChatToolsSessionUid = '';
             activeMeetupSessionUid = '';
-            deleteConfirmationSessionUid = '';
-            deletingPrivateChatSessionUid = '';
+            chatMoreMenuSessionUid = '';
+            chatConfirmationSessionUid = '';
+            chatConfirmationKind = '';
+            destructiveChatSessionUid = '';
+            destructiveChatKind = '';
         }
         hideOperationDialog();
         activePage = pageId;
@@ -364,11 +382,22 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         globalThis.clearTimeout(operationAutoCloseTimer);
         operationAutoCloseTimer = null;
     }
-    function renderOperationDialog({ state = 'info', title, message }, token) {
+    function renderOperationDialog({ state = 'info', title, message, visual = '' }, token) {
         if (!activeOperation || activeOperation.token !== token) return false;
         clearOperationAutoClose();
         activeOperation.state = state;
+        activeOperation.visual = visual;
         operationDialog.dataset.state = state;
+        if (visual) operationDialog.dataset.visual = visual;
+        else delete operationDialog.dataset.visual;
+        romanceVisual.hidden = !visual;
+        romanceVisual.replaceChildren();
+        if (visual) {
+            romanceVisual.dataset.visual = visual;
+            append(romanceVisual, [romanceLeft, romanceSignal, romanceRight]);
+        } else delete romanceVisual.dataset.visual;
+        romanceSignal.textContent = visual === 'accepted' ? '♥' : visual === 'declined' || visual === 'failure' ? '╳' : '∿∿∿';
+        romanceRight.textContent = visual === 'declined' || visual === 'failure' ? '♡' : '♥';
         operationDialog.hidden = false;
         operationDialog.setAttribute('role', state === 'failure' ? 'alertdialog' : 'dialog');
         operationDialog.setAttribute('aria-live', state === 'failure' ? 'assertive' : 'polite');
@@ -403,11 +432,37 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         operationDialog.hidden = true;
         operationDialog.setAttribute('aria-busy', 'false');
     }
+    function visibleOperationMessage(message, fallback) {
+        const text = String(message ?? '').trim();
+        if (!text || text.length > 320 || /(?:api[_ -]?key|authorization|bearer|stat_data|jsonpatch|prompt|stack|http(?:s)?:\/\/|\buid\b|原始响应|技术错误|\b(?:npc|chat|meetup|group)_[a-z0-9_-]+\b)/iu.test(text)) return fallback;
+        return text;
+    }
     function showAiLoading(message) {
-        return beginOperationDialog({ state: 'loading', title: 'AI 调用中', message: message || '正在加载，请稍候…' });
+        return beginOperationDialog({ state: 'loading', visual: 'connecting', title: 'AI 调用中', message: visibleOperationMessage(message, 'AI 正在为你寻找合适的回应……') });
     }
     function showAiResult(ok, message, operationToken = null) {
-        const presentation = { state: ok ? 'success' : 'failure', title: ok ? 'AI 调用成功' : 'AI 调用失败', message };
+        const presentation = {
+            state: ok ? 'success' : 'failure',
+            visual: ok ? 'accepted' : 'failure',
+            title: ok ? 'AI 调用成功' : 'AI 调用失败',
+            message: visibleOperationMessage(message, ok ? 'AI 已完成这次回应。' : '这次 AI 操作未完成，请稍后再试。'),
+        };
+        if (operationToken !== null) {
+            updateOperationDialog(operationToken, presentation);
+            return operationToken;
+        }
+        return beginOperationDialog(presentation);
+    }
+    function showRomanceLoading(title, message) {
+        return beginOperationDialog({ state: 'loading', visual: 'connecting', title, message });
+    }
+    function showRomanceResult({ accepted = false, declined = false, title, message }, operationToken = null) {
+        const presentation = {
+            state: accepted ? 'success' : 'failure',
+            visual: accepted ? 'accepted' : declined ? 'declined' : 'failure',
+            title,
+            message: visibleOperationMessage(message, accepted ? '两颗心已经靠近。' : declined ? '这次没有形成匹配，可以稍后再试。' : '这次连接未完成，请稍后再试。'),
+        };
         if (operationToken !== null) {
             updateOperationDialog(operationToken, presentation);
             return operationToken;
@@ -416,23 +471,37 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function createOperationFeedbackHandler({ ai = false } = {}) {
         let operationToken = null;
+        let activityHandle = null;
         return (message) => {
             const text = String(message ?? '');
             const presentation = feedbackPresentation(text);
             if (!presentation.message) return;
             if (presentation.state === 'loading') {
-                if (operationToken === null) operationToken = ai ? showAiLoading(text) : setFeedback(text);
-                else setFeedback(text, operationToken);
+                if (operationToken === null) {
+                    if (ai) {
+                        operationToken = showAiLoading(text);
+                        activityHandle = operationActivity.start('AI 操作', 'AI 处理中……');
+                    } else operationToken = setFeedback(text);
+                } else setFeedback(text, operationToken);
                 return;
             }
             const token = operationToken;
             operationToken = null;
+            const failed = ai && /AI.*(未|失败|无法|错误)|未完成/u.test(text);
+            const succeeded = ai && /AI.*(已|成功)|草稿已载入/u.test(text);
+            if (ai && activityHandle) {
+                if (failed) operationActivity.fail(activityHandle, 'AI 操作未完成，请稍后再试。');
+                else if (succeeded) operationActivity.succeed(activityHandle, 'AI 操作已完成。');
+                activityHandle = null;
+            }
             if (token === null) {
-                setFeedback(text);
+                if (failed) showAiResult(false, text);
+                else if (succeeded) showAiResult(true, text);
+                else setFeedback(text);
                 return;
             }
-            if (ai && /AI.*(未|失败|无法|错误)|未完成/u.test(text)) showAiResult(false, text, token);
-            else if (ai && /AI.*(已|成功)|草稿已载入/u.test(text)) showAiResult(true, text, token);
+            if (failed) showAiResult(false, text, token);
+            else if (succeeded) showAiResult(true, text, token);
             else setFeedback(text, token);
         };
     }
@@ -579,6 +648,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'favorites') page.appendChild(buildFavoritesPage());
         else if (activePage === 'settings') page.appendChild(buildSettingsHome());
         else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images'].includes(activePage)) page.appendChild(buildSettingsDetail());
+        else if (activePage === 'settings_console') page.appendChild(buildOperationConsole());
         else if (activePage === 'settings_privacy') page.appendChild(buildPrivacySettings());
         else if (activePage === 'candidate_detail') page.appendChild(buildCandidateDetail());
         content.appendChild(page);
@@ -623,24 +693,45 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         for (const tag of tags) wrapper.appendChild(element('span', { className: 'yl-chip yl-chip-tag', text: tag }));
         return wrapper;
     }
-    function candidateAvatar(candidate, { imageEnabled = false } = {}) {
-        const label = candidate.昵称 || '未命名对象';
-        const fallback = label.slice(0, 1) || '人';
-        const record = imageEnabled ? matchedImageFor(candidate) : null;
-        const avatar = element('span', { className: 'yl-candidate-avatar', ariaLabel: '查看' + label + '的公开资料', text: record ? '' : fallback });
-        if (record) {
-            avatar.dataset.imageStatus = 'matched';
-            appendImagePreview(avatar, record, 'yl-candidate-avatar-image', label + '的匹配头像', () => {
-                avatar.dataset.imageStatus = 'failed';
-                avatar.textContent = fallback;
-            });
-        } else if (imageEnabled && imageMatchPending.has(imageProfileKey(candidate))) avatar.dataset.imageStatus = 'loading';
+    function publicAvatar(profile, {
+        uid = '',
+        className = 'yl-candidate-avatar',
+        imageEnabled = true,
+        interactive = false,
+        fallback = '人',
+        imageSource = null,
+    } = {}) {
+        const nickname = profile?.昵称 || '未命名对象';
+        const matched = imageSource === null && imageEnabled ? matchedImageFor(profile) : null;
+        const profileSource = imageSource === null ? safeAvatarImageSource(profile?.头像引用) : safeAvatarImageSource(imageSource);
+        const avatar = createAvatarView({
+            documentRef,
+            nickname,
+            imageSource: matched || profileSource,
+            className,
+            imageClassName: className + '-image',
+            alt: nickname + '的头像',
+            fallback,
+        });
+        if (imageSource === null && imageEnabled && !matched && !profileSource && imageMatchPending.has(imageProfileKey(profile))) {
+            avatar.dataset.imageStatus = 'loading';
+        }
+        if (!interactive || !uid) {
+            avatar.setAttribute('aria-hidden', 'true');
+            return avatar;
+        }
+        const openProfile = () => { selectedCandidateUid = uid; setActivePage('candidate_detail'); };
         avatar.setAttribute('role', 'button');
         avatar.setAttribute('tabindex', '0');
-        const openProfile = () => { selectedCandidateUid = candidate.uid; setActivePage('candidate_detail'); };
+        avatar.setAttribute('aria-label', '查看' + nickname + '的公开资料');
         listen(avatar, avatar, 'click', openProfile, abortController.signal);
-        listen(avatar, avatar, 'keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault?.(); openProfile(); } }, abortController.signal);
+        listen(avatar, avatar, 'keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault?.(); openProfile(); }
+        }, abortController.signal);
         return avatar;
+    }
+    function candidateAvatar(candidate, { imageEnabled = true, interactive = true, className = 'yl-candidate-avatar' } = {}) {
+        return publicAvatar(candidate, { uid: candidate?.uid, className, imageEnabled, interactive });
     }
     function buildActionButton(kind, { pending = false, disabled = false } = {}) {
         const actionStyle = kind === 'unfavorite' ? 'favorite' : kind;
@@ -769,7 +860,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!matches.length) section.appendChild(buildEmptyPlaceholder('还没有互相匹配的对象。先试试上面的 AI 匹配吧。', { tag: 'p', icon: '♥' }));
         for (const match of matches) {
             const card = element('article', { className: 'yl-chat-session yl-match-row' });
-            const ring = element('span', { className: 'yl-match-avatar-ring' }); ring.appendChild(candidateAvatar(match.profile)); card.appendChild(ring);
+            const ring = element('span', { className: 'yl-match-avatar-ring' }); ring.appendChild(candidateAvatar(match.profile, { imageEnabled: true })); card.appendChild(ring);
             const info = element('div', { className: 'yl-candidate-copy' }); info.appendChild(element('strong', { text: match.profile.昵称 || '未命名对象' }));
             const detail = [match.profile.年龄段, match.profile.城市, match.profile.寻找意图].filter(Boolean).join(' · '); if (detail) info.appendChild(element('span', { text: detail })); card.appendChild(info);
             const session = (currentView.messageSessions ?? []).find((item) => item.npcUid === match.uid);
@@ -784,42 +875,53 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     async function runCandidateMatch(mode) {
         if (typeof actionBridge.runCandidateMatch !== 'function') { setFeedback('AI 匹配服务尚未就绪。'); return; }
+        const requestId = ++interactionGeneration;
+        const pageAtStart = activePage;
         const modeLabel = mode === 'soul' ? '灵魂匹配' : '语音匹配';
-        const operationToken = showAiLoading(modeLabel + '正在读取本次有效偏好并计算匹配结果…');
-        setFeedback(modeLabel + '中…', operationToken); renderPage();
+        const runningMessage = modeLabel + '中……';
+        const activityHandle = operationActivity.start(modeLabel, runningMessage);
+        const operationToken = showRomanceLoading(modeLabel, runningMessage);
+        renderPage();
         let result;
-        try { result = await actionBridge.runCandidateMatch(mode, { voiceText: voiceMatchText }); } catch { result = { ok: false }; }
+        try { result = await actionBridge.runCandidateMatch(mode, { voiceText: voiceMatchText }); }
+        catch { result = { ok: false }; }
+        if (isDestroyed || requestId !== interactionGeneration) return;
         if (!result?.ok) {
-            const message = result?.message || describeActionFailure(result);
-            showAiResult(false, message || modeLabel + '未生成可用档案。', operationToken);
-            setFeedback(message, operationToken);
+            const message = result?.message || describeActionFailure(result) || modeLabel + '未生成可用结果，请稍后再试。';
+            operationActivity.fail(activityHandle, modeLabel + '未完成，请稍后再试。');
+            showRomanceResult({ title: modeLabel + '未完成', message }, operationToken);
             renderPage();
             return;
         }
         if (result.matchOutcome === 'declined') {
             refreshState();
-            setActivePage('matches');
-            setFeedback('未达到对方的互动节奏要求，本次已婉拒。');
+            if (activePage === pageAtStart) setActivePage('matches');
+            const message = '这次没有达到彼此的互动节奏，对方已婉拒，先把心意留在这里吧。';
+            operationActivity.fail(activityHandle, modeLabel + '未匹配成功。');
+            showRomanceResult({ declined: true, title: '这次暂未牵手', message });
             return;
         }
         const accepted = result.matchOutcome === 'accepted'
             || (!result.matchOutcome && Boolean(result.npcUid && result.sessionUid));
         if (!accepted || !result.npcUid || !result.sessionUid) {
             refreshState();
-            setActivePage('matches');
-            setFeedback('匹配结果缺少可用会话，本次没有进入消息。');
+            if (activePage === pageAtStart) setActivePage('matches');
+            operationActivity.fail(activityHandle, modeLabel + '结果缺少可用会话。');
+            showRomanceResult({ title: modeLabel + '未完成', message: '匹配结果缺少可用会话，本次没有进入消息。' });
             return;
         }
         refreshState();
-        openPrivateChat(result.sessionUid);
-        setFeedback(modeLabel + '成功，已建立私聊会话。');
+        if (activePage === pageAtStart) openPrivateChat(result.sessionUid);
+        const successMessage = modeLabel + '成功，两颗心已经靠近。';
+        operationActivity.succeed(activityHandle, modeLabel + '成功，已打开私聊。');
+        showRomanceResult({ accepted: true, title: '心动连接成功', message: successMessage });
     }
     function buildMatchProfilePage() {
         const profile = matchedProfileDraft?.profile;
         if (!profile) return buildEmptyPlaceholder('本次匹配档案已失效，请返回匹配页重新开始。', { icon: '✦' });
         const section = element('section', { className: 'yl-match-profile' });
         const hero = element('article', { className: 'yl-match-profile-hero' });
-        const avatar = element('span', { className: 'yl-match-profile-avatar', text: (profile.昵称 || '心').slice(0, 1) });
+        const avatar = publicAvatar(profile, { className: 'yl-match-profile-avatar', imageEnabled: true, interactive: false, fallback: '心' });
         const copy = element('div', { className: 'yl-match-profile-copy' });
         copy.appendChild(element('span', { className: 'yl-match-profile-mode', text: matchedProfileDraft.mode === 'voice' ? 'VOICE MATCH' : 'SOUL MATCH' }));
         copy.appendChild(element('h2', { text: profile.昵称 || '未命名对象' }));
@@ -937,8 +1039,18 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const card = element('article', { className: 'yl-chat-session yl-group-card' });
             card.appendChild(element('h2', { text: group.主题 }));
             if (group.描述) card.appendChild(element('p', { className: 'yl-phone-page-description', text: group.描述 }));
-            const memberNames = (group.成员 ?? []).map((person) => person.公开资料?.昵称).filter(Boolean);
-            card.appendChild(element('p', { className: 'yl-phone-page-description', text: memberNames.length ? `成员：${memberNames.join(' · ')}` : '成员资料暂不可见' }));
+            const members = Array.isArray(group.成员) ? group.成员 : [];
+            if (members.length) {
+                const memberList = element('div', { className: 'yl-group-member-list', ariaLabel: '群聊成员' });
+                for (const person of members) {
+                    const profile = person.公开资料 ?? {};
+                    const member = element('span', { className: 'yl-group-member' });
+                    member.appendChild(publicAvatar(profile, { className: 'yl-group-member-avatar', imageEnabled: true, interactive: false }));
+                    member.appendChild(element('span', { text: profile.昵称 || '未命名成年人' }));
+                    memberList.appendChild(member);
+                }
+                card.appendChild(memberList);
+            } else card.appendChild(element('p', { className: 'yl-phone-page-description', text: '成员资料暂不可见' }));
             const discoverable = Array.isArray(group.可发现角色) ? group.可发现角色 : [];
             if (forum) {
                 card.appendChild(element('span', { className: 'yl-group-forum-state', text: discoverable.length ? `可参与讨论对象 ${discoverable.length} 位` : '暂无公开讨论对象' }));
@@ -946,7 +1058,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             } else {
                 for (const person of discoverable) {
                     const profile = person.公开资料 ?? {};
-                    const row = element('div', { className: 'yl-character-library-row' });
+                    const row = element('div', { className: 'yl-character-library-row yl-group-character-row' });
+                    row.appendChild(publicAvatar(profile, { className: 'yl-group-member-avatar', imageEnabled: true, interactive: false }));
                     row.appendChild(element('strong', { text: profile.昵称 || '未命名成年人' }));
                     const session = (currentView.messageSessions ?? []).find((item) => item.npcUid === person.UID);
                     if (session) {
@@ -974,22 +1087,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return session?.profile?.昵称 || '未命名对象';
     }
     function chatAvatar(session, className = 'yl-session-avatar', { interactive = false } = {}) {
-        const nickname = chatNickname(session);
-        const avatar = element('span', { className, text: nickname.slice(0, 1) || '人' });
-        if (!interactive) {
-            avatar.setAttribute('aria-hidden', 'true');
-            return avatar;
-        }
-        const openProfile = () => {
-            selectedCandidateUid = session.npcUid;
-            setActivePage('candidate_detail');
-        };
-        avatar.setAttribute('role', 'button');
-        avatar.setAttribute('tabindex', '0');
-        avatar.setAttribute('aria-label', '查看' + nickname + '的公开资料');
-        listen(avatar, avatar, 'click', openProfile, abortController.signal);
-        listen(avatar, avatar, 'keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault?.(); openProfile(); } }, abortController.signal);
-        return avatar;
+        return publicAvatar(session?.profile, {
+            uid: session?.npcUid,
+            className,
+            imageEnabled: true,
+            interactive,
+        });
     }
     function openPrivateChat(sessionUid) {
         const session = messageSessionByUid(sessionUid);
@@ -1066,6 +1169,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!session) return buildEmptyPlaceholder('这个私聊会话暂时不可见。请返回消息列表后重试。', { icon: '✉' });
         return buildConversationPanel(session);
     }
+    function closeChatMoreMenu() {
+        if (!chatMoreMenuSessionUid) return false;
+        chatMoreMenuSessionUid = '';
+        renderPage();
+        return true;
+    }
     function buildConversationHeader(session) {
         const header = element('section', { className: 'yl-private-chat-contact' });
         header.appendChild(chatAvatar(session, 'yl-chat-contact-avatar', { interactive: true }));
@@ -1079,45 +1188,121 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         copy.appendChild(subline);
         header.appendChild(copy);
         const actions = element('div', { className: 'yl-private-chat-actions' });
-        const remove = element('button', { className: 'yl-private-chat-delete', type: 'button', text: '删除', ariaLabel: '删除私聊会话', disabled: deletingPrivateChatSessionUid === session.sessionUid });
-        listen(remove, remove, 'click', () => { deleteConfirmationSessionUid = session.sessionUid; renderPage(); }, abortController.signal);
-        append(actions, [remove, element('span', { className: 'yl-private-chat-spark', text: '♥' })]);
+        const moreOpen = chatMoreMenuSessionUid === session.sessionUid;
+        const more = element('button', {
+            className: 'yl-private-chat-more', type: 'button', text: '…',
+            ariaLabel: '打开与' + chatNickname(session) + '的更多操作',
+            disabled: destructiveChatSessionUid === session.sessionUid,
+        });
+        more.setAttribute('aria-haspopup', 'menu');
+        more.setAttribute('aria-expanded', String(moreOpen));
+        listen(more, more, 'click', (event) => {
+            event.stopPropagation?.();
+            chatMoreMenuSessionUid = moreOpen ? '' : session.sessionUid;
+            renderPage();
+        }, abortController.signal);
+        actions.appendChild(more);
+        if (moreOpen) {
+            const menu = element('div', { className: 'yl-private-chat-more-menu', ariaLabel: '私聊更多操作' });
+            menu.setAttribute('role', 'menu');
+            const clear = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '清空聊天记录', ariaLabel: '清空聊天记录' });
+            const removeCharacter = element('button', { className: 'yl-private-chat-menu-item is-danger', type: 'button', text: '删除角色', ariaLabel: '删除角色完整数据' });
+            clear.setAttribute('role', 'menuitem');
+            removeCharacter.setAttribute('role', 'menuitem');
+            listen(clear, clear, 'click', () => {
+                chatMoreMenuSessionUid = '';
+                chatConfirmationSessionUid = session.sessionUid;
+                chatConfirmationKind = 'clear';
+                renderPage();
+            }, abortController.signal);
+            listen(removeCharacter, removeCharacter, 'click', () => {
+                chatMoreMenuSessionUid = '';
+                chatConfirmationSessionUid = session.sessionUid;
+                chatConfirmationKind = 'delete_character';
+                renderPage();
+            }, abortController.signal);
+            append(menu, [clear, removeCharacter]);
+            actions.appendChild(menu);
+        }
+        actions.appendChild(element('span', { className: 'yl-private-chat-spark', text: '♥' }));
         header.appendChild(actions);
         return header;
     }
-    function buildDeletePrivateChatConfirmation(session) {
-        const confirmation = element('section', { className: 'yl-chat-delete-confirmation' });
-        append(confirmation, [element('strong', { text: '删除这段私聊？' }), element('p', { text: '删除后将从消息列表移除，且无法在此界面恢复。' })]);
+    function buildPrivateChatConfirmation(session) {
+        const deletingCharacter = chatConfirmationKind === 'delete_character';
+        const pending = destructiveChatSessionUid === session.sessionUid;
+        const confirmation = element('section', { className: deletingCharacter ? 'yl-chat-delete-confirmation is-character-delete' : 'yl-chat-delete-confirmation is-chat-clear' });
+        if (deletingCharacter) {
+            append(confirmation, [
+                element('strong', { text: '删除' + chatNickname(session) + '的完整角色数据？' }),
+                element('p', { text: '这会一次性删除角色资料、相关私聊、面基记录、推荐列表与群组引用，且无法在此界面恢复。' }),
+            ]);
+        } else {
+            append(confirmation, [
+                element('strong', { text: '清空这段聊天记录？' }),
+                element('p', { text: '清空后会话会从消息列表移除；若当前为已匹配，关系状态会恢复为已取消。' }),
+            ]);
+        }
         const actions = element('div', { className: 'yl-chat-delete-actions' });
-        const cancel = element('button', { className: 'yl-settings-button', type: 'button', text: '取消', disabled: Boolean(deletingPrivateChatSessionUid) });
-        const confirm = element('button', { className: 'yl-settings-button yl-chat-delete-confirm', type: 'button', text: deletingPrivateChatSessionUid === session.sessionUid ? '正在删除…' : '确认删除', ariaLabel: '确认删除私聊会话', disabled: deletingPrivateChatSessionUid === session.sessionUid });
-        listen(cancel, cancel, 'click', () => { deleteConfirmationSessionUid = ''; renderPage(); }, abortController.signal);
-        listen(confirm, confirm, 'click', () => { void deletePrivateChat(session); }, abortController.signal);
-        append(actions, [cancel, confirm]); confirmation.appendChild(actions);
+        const cancel = element('button', { className: 'yl-settings-button', type: 'button', text: '取消', disabled: pending });
+        const label = deletingCharacter ? '确认删除角色完整数据' : '确认清空聊天记录';
+        const confirm = element('button', {
+            className: 'yl-settings-button yl-chat-delete-confirm', type: 'button',
+            text: pending ? '正在处理…' : (deletingCharacter ? '确认删除角色' : '确认清空'),
+            ariaLabel: label, disabled: pending,
+        });
+        listen(cancel, cancel, 'click', () => {
+            chatConfirmationSessionUid = '';
+            chatConfirmationKind = '';
+            renderPage();
+        }, abortController.signal);
+        listen(confirm, confirm, 'click', () => { void runPrivateChatDestructiveAction(session, chatConfirmationKind); }, abortController.signal);
+        append(actions, [cancel, confirm]);
+        confirmation.appendChild(actions);
         return confirmation;
     }
-    async function deletePrivateChat(session) {
-        if (deletingPrivateChatSessionUid || typeof actionBridge.deletePrivateChat !== 'function') { setFeedback('删除会话功能尚未就绪。'); return; }
-        deletingPrivateChatSessionUid = session.sessionUid;
+    async function runPrivateChatDestructiveAction(session, kind) {
+        if (destructiveChatSessionUid) return;
+        const deletingCharacter = kind === 'delete_character';
+        const action = deletingCharacter ? actionBridge.deleteCharacter : actionBridge.clearPrivateChat;
+        if (typeof action !== 'function') {
+            setFeedback(deletingCharacter ? '删除角色功能尚未就绪。' : '清空聊天记录功能尚未就绪。');
+            return;
+        }
+        destructiveChatSessionUid = session.sessionUid;
+        destructiveChatKind = kind;
+        const relatedSessionUids = messageSessions().filter((item) => item.npcUid === session.npcUid).map((item) => item.sessionUid);
         renderPage();
         let result;
-        try { result = await actionBridge.deletePrivateChat(session.sessionUid); } catch { result = { ok: false }; }
+        try { result = await action(deletingCharacter ? session.npcUid : session.sessionUid); }
+        catch { result = { ok: false }; }
         if (!result?.ok) {
-            deletingPrivateChatSessionUid = '';
-            setFeedback(result?.message || describeActionFailure(result) || '会话删除失败，请稍后重试。');
+            destructiveChatSessionUid = '';
+            destructiveChatKind = '';
+            setFeedback(result?.message || describeActionFailure(result) || (deletingCharacter ? '角色删除失败，请稍后重试。' : '聊天记录清空失败，请稍后重试。'));
             renderPage();
             return;
         }
-        chatDrafts.delete(session.sessionUid);
-        meetupDrafts.delete(session.sessionUid);
+        const sessionsToClear = deletingCharacter ? relatedSessionUids : [session.sessionUid];
+        for (const sessionUid of sessionsToClear) {
+            chatDrafts.delete(sessionUid);
+            meetupDrafts.delete(sessionUid);
+        }
+        if (deletingCharacter) {
+            selectedCandidateUid = selectedCandidateUid === session.npcUid ? '' : selectedCandidateUid;
+            clearMatchedImageState();
+        }
         activeMessageSessionUid = '';
         activeChatToolsSessionUid = '';
         activeMeetupSessionUid = '';
-        deleteConfirmationSessionUid = '';
-        deletingPrivateChatSessionUid = '';
+        chatMoreMenuSessionUid = '';
+        chatConfirmationSessionUid = '';
+        chatConfirmationKind = '';
+        destructiveChatSessionUid = '';
+        destructiveChatKind = '';
         refreshState();
         setActivePage('messages');
-        setFeedback('会话已删除。');
+        setFeedback(deletingCharacter ? '角色完整数据及其关联记录已删除。' : '聊天记录已清空，会话已从消息列表移除。');
     }
     function buildMessageBubble(session, message) {
         if (message.sender === '系统') {
@@ -1135,16 +1320,20 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (message.time) bubbleContent.appendChild(element('span', { className: 'yl-bubble-time', text: message.time }));
         row.appendChild(bubbleContent);
         if (isPlayer) {
-            const selfAvatar = element('span', { className: 'yl-chat-message-avatar yl-chat-self-avatar', text: '我' });
-            selfAvatar.setAttribute('aria-hidden', 'true');
-            row.appendChild(selfAvatar);
+            row.appendChild(publicAvatar({ 昵称: '我' }, {
+                className: 'yl-chat-message-avatar yl-chat-self-avatar',
+                imageEnabled: false,
+                interactive: false,
+                fallback: '我',
+                imageSource: playerAvatarStore?.snapshot?.() ?? '',
+            }));
         }
         return row;
     }
     function buildConversationPanel(session) {
         const panel = element('section', { className: 'yl-private-chat-screen' });
         panel.appendChild(buildConversationHeader(session));
-        if (deleteConfirmationSessionUid === session.sessionUid) panel.appendChild(buildDeletePrivateChatConfirmation(session));
+        if (chatConfirmationSessionUid === session.sessionUid) panel.appendChild(buildPrivateChatConfirmation(session));
         const privacyNote = element('p', { className: 'yl-chat-privacy-note', text: '线上短消息会通过当前“私聊”功能绑定处理；重要面基安排请单独确认。' });
         panel.appendChild(privacyNote);
         const transcript = element('div', { className: 'yl-chat-transcript', ariaLabel: `${chatNickname(session)}的私聊记录` });
@@ -1439,7 +1628,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const section = element('section', { className: 'yl-favorite-list' });
         for (const candidate of currentView.favorites) {
             const card = element('article', { className: 'yl-favorite-card' });
-            card.appendChild(candidateAvatar(candidate));
+            card.appendChild(candidateAvatar(candidate, { imageEnabled: true }));
             const copy = element('div', { className: 'yl-candidate-copy' });
             copy.appendChild(element('strong', { text: candidate.昵称 || '未命名对象' }));
             const tags = displayTags(candidate); if (tags.length) copy.appendChild(element('span', { text: tags.join(' · ') }));
@@ -1462,6 +1651,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             ['settings_prompts', '提示词预设', '只维护提示词条目与导入导出。'],
             ['settings_privacy', '隐私权限设置', '管理个性化内容推荐与当前设备偏好。'],
             ['settings_images', '图片管理', '上传或导入角色展示图，并编辑匹配关键词与权重。'],
+            ['settings_console', '控制台', '查看本次会话中的安全运行进度，不显示技术密钥或原始数据。'],
             ['about', '关于软件', '点击查看版本；连续点击五次可显示内容模式开关。'],
         ];
         for (const [page, title, note] of entries) {
@@ -1473,6 +1663,36 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             if (page === 'about' && aboutUnlocked) row.appendChild(buildContentModeSlider());
             section.appendChild(row);
         }
+        return section;
+    }
+    function buildOperationConsole() {
+        const section = element('section', { className: 'yl-operation-console' });
+        const toolbar = element('div', { className: 'yl-operation-console-toolbar' });
+        toolbar.appendChild(element('p', { text: '只保留本次小手机会话的公开状态，不持久化，也不显示密钥、内部标识、补丁或原始模型内容。' }));
+        const clear = element('button', { className: 'yl-settings-button', type: 'button', text: '清空显示记录', ariaLabel: '清空控制台显示记录' });
+        listen(clear, clear, 'click', () => { operationActivity.clear(); renderPage(); }, abortController.signal);
+        toolbar.appendChild(clear);
+        section.appendChild(toolbar);
+        const snapshot = operationActivity.snapshot();
+        if (!snapshot.entries.length) {
+            section.appendChild(buildEmptyPlaceholder('暂无运行记录。开始灵魂匹配、语音匹配或收藏主动私聊后，会在这里显示进度。', { icon: '◌' }));
+            return section;
+        }
+        const list = element('div', { className: 'yl-operation-console-list' });
+        const labels = { running: '进行中', success: '已完成', failure: '未完成' };
+        for (const entry of snapshot.entries) {
+            const card = element('article', { className: 'yl-operation-console-entry' });
+            card.dataset.status = entry.status;
+            const heading = element('div', { className: 'yl-operation-console-heading' });
+            append(heading, [
+                element('strong', { text: entry.name }),
+                element('span', { className: 'yl-operation-console-status', text: labels[entry.status] || '状态更新' }),
+            ]);
+            const time = typeof entry.updatedAt === 'string' ? entry.updatedAt.slice(11, 19) : '';
+            append(card, [heading, element('p', { text: entry.message }), element('span', { className: 'yl-operation-console-time', text: time })]);
+            list.appendChild(card);
+        }
+        section.appendChild(list);
         return section;
     }
     function buildContentModeSlider() {
@@ -1592,27 +1812,38 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     async function startFavoritePrivateChat(candidate) {
         if (!candidate?.uid || typeof actionBridge.runMvuAction !== 'function') return;
-        const operationToken = setFeedback('正在发起私聊…');
+        const requestId = ++interactionGeneration;
+        const pageAtStart = activePage;
+        const activityHandle = operationActivity.start('收藏主动私聊', '正在等待对方回应……');
+        const operationToken = showRomanceLoading('发起心动私聊', '正在等待对方回应……');
         renderPage();
         let result;
         try { result = await actionBridge.runMvuAction('start_private_chat', candidate.uid); }
         catch { result = { ok: false }; }
+        if (isDestroyed || requestId !== interactionGeneration) return;
         if (!result?.ok) {
-            setFeedback(result?.message || describeActionFailure(result), operationToken);
+            const message = result?.message || describeActionFailure(result) || '私聊邀请未完成，请稍后再试。';
+            operationActivity.fail(activityHandle, '私聊邀请未完成，请稍后再试。');
+            showRomanceResult({ title: '邀请未送达', message }, operationToken);
             refreshState();
             return;
         }
         refreshState();
         if (result.invitationOutcome === 'declined') {
-            setFeedback('TA 暂时没有接受这次私聊邀请。', operationToken);
-            setActivePage('favorites');
+            if (activePage === pageAtStart) setActivePage('favorites');
+            operationActivity.fail(activityHandle, '对方暂未接受私聊邀请。');
+            showRomanceResult({ declined: true, title: '这次暂未靠近', message: 'TA 暂时没有接受这次私聊邀请。' });
             return;
         }
         const sessionUid = result.sessionUid || (currentView.messageSessions ?? []).find((session) => session.npcUid === candidate.uid)?.sessionUid;
-        setFeedback('私聊已发起，去打个招呼吧。', operationToken);
-        if (sessionUid) openPrivateChat(sessionUid);
-        else setActivePage('messages');
+        if (activePage === pageAtStart) {
+            if (sessionUid) openPrivateChat(sessionUid);
+            else setActivePage('messages');
+        }
+        operationActivity.succeed(activityHandle, '私聊邀请已接受，已打开消息。');
+        showRomanceResult({ accepted: true, title: '心意被接住了', message: '私聊已建立，去打个招呼吧。' });
     }
+
 
     listen(launcher, launcher, 'click', () => setOpen(!open), abortController.signal);
     listen(closeButton, closeButton, "click", () => setOpen(false), abortController.signal);
@@ -1631,11 +1862,26 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(avatarFileInput, avatarFileInput, 'change', () => { void saveLocalAvatarFile(avatarFileInput.files?.[0]); }, abortController.signal);
     listen(avatarLinkButton, avatarLinkButton, 'click', saveLinkedAvatar, abortController.signal);
     listen(avatarRemoveButton, avatarRemoveButton, 'click', removePlayerAvatar, abortController.signal);
-    listen(root, documentRef, "click", (event) => { if (activeHelpAnchor && event.target !== activeHelpAnchor) { helpPopover.hidden = true; activeHelpAnchor = null; } }, abortController.signal);
-    listen(root, documentRef, "keydown", (event) => { if (event.key === "Escape") { if (!operationDialog.hidden) hideOperationDialog(); else if (!bindingDialog.hidden) closeFeatureBindingDialog(); else if (!avatarDialog.hidden) closeAvatarDialog(); else if (imageManagerPanel?.handleEscape?.()) { /* image manager handled it */ } else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; } else if (open) setOpen(false); } }, abortController.signal);
+    listen(root, documentRef, "click", (event) => {
+        if (activeHelpAnchor && event.target !== activeHelpAnchor) { helpPopover.hidden = true; activeHelpAnchor = null; }
+        if (chatMoreMenuSessionUid && !event.target?.closest?.('.yl-private-chat-actions')) closeChatMoreMenu();
+    }, abortController.signal);
+    listen(root, documentRef, "keydown", (event) => {
+        if (event.key !== "Escape") return;
+        if (!operationDialog.hidden) hideOperationDialog();
+        else if (!bindingDialog.hidden) closeFeatureBindingDialog();
+        else if (!avatarDialog.hidden) closeAvatarDialog();
+        else if (imageManagerPanel?.handleEscape?.()) { /* image manager handled it */ }
+        else if (chatMoreMenuSessionUid) closeChatMoreMenu();
+        else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; }
+        else if (open) setOpen(false);
+    }, abortController.signal);
+    unsubscribeOperationActivity = operationActivity.subscribe(() => {
+        if (open && activePage === 'settings_console') renderPage();
+    });
     renderPage();
     return Object.freeze({
         refreshState,
-        destroy() { hideOperationDialog(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { isDestroyed = true; interactionGeneration += 1; hideOperationDialog(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }

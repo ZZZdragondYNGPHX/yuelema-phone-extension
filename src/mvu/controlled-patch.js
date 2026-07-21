@@ -13,6 +13,7 @@ const LIST_NAMES = new Set(['当前队列', '冷却角色UID', '收藏角色UID'
 const TRACKED_LIST_NAMES = new Set(['冷却角色UID', '收藏角色UID', '不喜欢角色UID', '拉黑角色UID']);
 const CHAT_SESSION_UID_PATTERN = /^chat_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const MEETUP_UID_PATTERN = /^meetup_[a-z0-9][a-z0-9_-]{0,63}$/i;
+const GROUP_UID_PATTERN = /^group_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const RELATIONSHIP_VALUE_FIELDS = Object.freeze(['好感', '信任', '戒备', '面基意愿']);
 const MAX_CHAT_MESSAGE_LENGTH = 600;
 const READ_WITHOUT_REPLY_NOTICE = '对方已读，但暂时没有回复。';
@@ -260,6 +261,10 @@ function isMeetupUid(value) {
     return typeof value === 'string' && MEETUP_UID_PATTERN.test(value);
 }
 
+function isGroupUid(value) {
+    return typeof value === 'string' && GROUP_UID_PATTERN.test(value);
+}
+
 function clamp(value, lower, upper) {
     return Math.min(Math.max(value, lower), upper);
 }
@@ -323,8 +328,8 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
     return success(operations);
 }
 
-/** Deletes one visible chat session without deleting its character profile. */
-export function buildDeletePrivateChatPatch(state, { sessionUid } = {}) {
+/** Clears one visible chat session without deleting its character profile. */
+export function buildClearPrivateChatPatch(state, { sessionUid } = {}) {
     if (!ownRecord(state) || !isChatSessionUid(sessionUid)) return fail('private_chat_delete_invalid_target');
     const session = ownRecord(ownRecord(state.会话)?.[sessionUid]);
     const npcUid = session?.对象UID;
@@ -335,6 +340,99 @@ export function buildDeletePrivateChatPatch(state, { sessionUid } = {}) {
     const operations = [{ op: 'remove', path: encodeJsonPointer(['会话', sessionUid]) }];
     if (session.状态 === '已匹配' && relationship.状态 === '已匹配') operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', '状态']), value: '已取消' });
     else if (session.状态 !== relationship.状态) return fail('private_chat_delete_state_invalid');
+    return success(operations);
+}
+
+/** Backwards-compatible name; the operation has always removed the session only. */
+export const buildDeletePrivateChatPatch = buildClearPrivateChatPatch;
+
+function validUidList(value) {
+    return Array.isArray(value) && value.every(isNpcUid) && new Set(value).size === value.length;
+}
+
+function addFilteredListReplacement(state, listName, npcUid, operations) {
+    const list = arrayAt(state, listName);
+    if (!validUidList(list)) return fail('character_delete_recommendation_state_invalid', listName);
+    if (list.includes(npcUid)) {
+        operations.push({
+            op: 'replace',
+            path: encodeJsonPointer(['推荐', listName]),
+            value: list.filter((uid) => uid !== npcUid),
+        });
+    }
+    return success(undefined);
+}
+
+/**
+ * Deletes a character and every controlled reference to that character. The
+ * builder rejects malformed containers instead of emitting a partial cleanup.
+ * Counters are intentionally not decremented, so stale UIDs cannot be reused.
+ */
+export function buildDeleteCharacterPatch(state, { npcUid } = {}) {
+    if (!ownRecord(state) || !isNpcUid(npcUid)) return fail('character_delete_invalid_target');
+
+    const rolePool = ownRecord(state.角色池);
+    const recommendation = ownRecord(state.推荐);
+    const candidatePool = ownRecord(recommendation?.临时候选池);
+    const sessions = ownRecord(state.会话);
+    const meetups = ownRecord(state.面基记录);
+    const groups = ownRecord(state.群组);
+    if (!rolePool || !recommendation || !candidatePool || !sessions || !meetups || !groups) {
+        return fail('character_delete_state_invalid');
+    }
+    if (!Object.hasOwn(rolePool, npcUid) && !Object.hasOwn(candidatePool, npcUid)) {
+        return fail('character_delete_not_found');
+    }
+
+    const operations = [];
+    for (const listName of ['当前队列', '冷却角色UID', '收藏角色UID', '不喜欢角色UID', '拉黑角色UID']) {
+        const cleaned = addFilteredListReplacement(state, listName, npcUid, operations);
+        if (!cleaned.ok) return cleaned;
+    }
+
+    for (const sessionUid of Object.keys(sessions).sort()) {
+        const session = sessions[sessionUid];
+        if (ownRecord(session) && session.对象UID === npcUid) {
+            if (!isChatSessionUid(sessionUid)) return fail('character_delete_session_uid_invalid', sessionUid);
+            operations.push({ op: 'remove', path: encodeJsonPointer(['会话', sessionUid]) });
+        }
+    }
+
+    for (const meetupUid of Object.keys(meetups).sort()) {
+        const record = meetups[meetupUid];
+        if (ownRecord(record) && record.对象UID === npcUid) {
+            if (!isMeetupUid(meetupUid)) return fail('character_delete_meetup_uid_invalid', meetupUid);
+            operations.push({ op: 'remove', path: encodeJsonPointer(['面基记录', meetupUid]) });
+        }
+    }
+
+    for (const groupUid of Object.keys(groups).sort()) {
+        const group = groups[groupUid];
+        if (!isGroupUid(groupUid) || !ownRecord(group)
+            || !validUidList(group.成员UID) || !validUidList(group.可发现角色UID)) {
+            return fail('character_delete_group_state_invalid', groupUid);
+        }
+        if (group.成员UID.includes(npcUid)) {
+            operations.push({
+                op: 'replace', path: encodeJsonPointer(['群组', groupUid, '成员UID']),
+                value: group.成员UID.filter((uid) => uid !== npcUid),
+            });
+        }
+        if (group.可发现角色UID.includes(npcUid)) {
+            operations.push({
+                op: 'replace', path: encodeJsonPointer(['群组', groupUid, '可发现角色UID']),
+                value: group.可发现角色UID.filter((uid) => uid !== npcUid),
+            });
+        }
+    }
+
+    if (Object.hasOwn(candidatePool, npcUid)) {
+        operations.push({ op: 'remove', path: encodeJsonPointer(['推荐', '临时候选池', npcUid]) });
+    }
+    if (Object.hasOwn(rolePool, npcUid)) {
+        operations.push({ op: 'remove', path: encodeJsonPointer(['角色池', npcUid]) });
+    }
+    if (operations.length === 0) return fail('character_delete_not_found');
     return success(operations);
 }
 
@@ -705,7 +803,7 @@ export function buildControlledPatch(state, command) {
 
 /** @param {unknown} patch */
 export function validateControlledPatchShape(patch) {
-    if (!Array.isArray(patch) || patch.length === 0 || patch.length > 40) return fail('patch_shape_invalid');
+    if (!Array.isArray(patch) || patch.length === 0) return fail('patch_shape_invalid');
     for (const operation of patch) {
         if (!ownRecord(operation) || !['add', 'replace', 'remove', 'move'].includes(operation.op) || typeof operation.path !== 'string') {
             return fail('patch_operation_invalid');
@@ -760,6 +858,8 @@ export function validateControlledPatchWhitelist(patch) {
         if (operation.op === 'replace' && path === '/系统/UID计数器/面基' && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 999999) continue;
         const listAdd = /^\/推荐\/(冷却角色UID|收藏角色UID|不喜欢角色UID|拉黑角色UID)\/-$/u.exec(path);
         if (operation.op === 'add' && listAdd && isNpcUid(operation.value) && TRACKED_LIST_NAMES.has(listAdd[1])) continue;
+        const listReplace = /^\/推荐\/(当前队列|冷却角色UID|收藏角色UID|不喜欢角色UID|拉黑角色UID)$/u.exec(path);
+        if (operation.op === 'replace' && listReplace && LIST_NAMES.has(listReplace[1]) && validUidList(operation.value)) continue;
 
         const listRemove = /^\/推荐\/(当前队列|收藏角色UID)\/(0|[1-9]\d*)$/u.exec(path);
         if (operation.op === 'remove' && listRemove && LIST_NAMES.has(listRemove[1])) continue;
@@ -797,6 +897,7 @@ export function validateControlledPatchWhitelist(patch) {
         const chatSummary = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/长期摘要$/u.exec(path);
         if (operation.op === 'replace' && chatSummary && isChatSessionUid(chatSummary[1]) && typeof operation.value === 'string' && operation.value.length > 0 && operation.value.length <= 500) continue;
         const meetupRecord = /^\/面基记录\/(meetup_[A-Za-z0-9_-]{1,64})$/u.exec(path);
+        if (operation.op === 'remove' && meetupRecord && isMeetupUid(meetupRecord[1])) continue;
         if (operation.op === 'add' && meetupRecord && isMeetupUid(meetupRecord[1]) && ownRecord(operation.value)
             && isNpcUid(operation.value.对象UID) && typeof operation.value.时间 === 'string' && operation.value.时间.length > 0 && operation.value.时间.length <= 160
             && typeof operation.value.地点 === 'string' && operation.value.地点.length > 0 && operation.value.地点.length <= 160
@@ -805,6 +906,8 @@ export function validateControlledPatchWhitelist(patch) {
             && typeof operation.value.待确认事项 === 'string' && operation.value.待确认事项.length <= 800
             && typeof operation.value.风险提示 === 'string' && operation.value.风险提示.length <= 800
             && operation.value.状态 === '待发送' && operation.value.正文结果摘要 === '') continue;
+        const groupList = /^\/群组\/(group_[A-Za-z0-9_-]{1,64})\/(成员UID|可发现角色UID)$/u.exec(path);
+        if (operation.op === 'replace' && groupList && isGroupUid(groupList[1]) && validUidList(operation.value)) continue;
         const preferenceWeight = /^\/玩家\/推荐偏好\/标签权重\/([^/]+)$/u.exec(path);
         if ((operation.op === 'add' || operation.op === 'replace') && preferenceWeight && Number.isInteger(operation.value) && operation.value >= -5 && operation.value <= 5) continue;
 
@@ -889,10 +992,19 @@ export function validateControlledPatchAgainstState(state, patch) {
         }
     }
 
+    const characterRemoval = patch.find((operation) => operation?.op === 'remove'
+        && (/^\/角色池\/npc_[A-Za-z0-9_-]{1,64}$/u.test(operation.path)
+            || /^\/推荐\/临时候选池\/npc_[A-Za-z0-9_-]{1,64}$/u.test(operation.path)));
+    if (characterRemoval) {
+        const npcUid = decodeJsonPointer(characterRemoval.path).at(-1);
+        const expected = buildDeleteCharacterPatch(state, { npcUid });
+        if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+    }
+
     const sessionRemoval = patch.find((operation) => operation?.op === 'remove' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}$/u.test(operation.path));
     if (sessionRemoval) {
         const sessionUid = decodeJsonPointer(sessionRemoval.path).at(-1);
-        const expected = buildDeletePrivateChatPatch(state, { sessionUid });
+        const expected = buildClearPrivateChatPatch(state, { sessionUid });
         if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
     }
 

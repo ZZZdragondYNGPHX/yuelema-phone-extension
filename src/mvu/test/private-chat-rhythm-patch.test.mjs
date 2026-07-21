@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildDeletePrivateChatPatch, buildPrivateChatPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import { buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildDeletePrivateChatPatch, buildPrivateChatPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
 
 function state({ readThreshold = 55, blockThreshold = 90, relationship } = {}) {
     return {
@@ -63,9 +63,9 @@ test('block outcome atomically closes the session, records the block list and su
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
 });
 
-test('deleting a matched private chat removes only the session and cancels the relationship', () => {
+test('clearing a matched private chat removes only the session and cancels the relationship', () => {
     const current = state();
-    const built = buildDeletePrivateChatPatch(current, { sessionUid: 'chat_1' });
+    const built = buildClearPrivateChatPatch(current, { sessionUid: 'chat_1' });
     assert.deepEqual(built, { ok: true, value: [
         { op: 'remove', path: '/会话/chat_1' },
         { op: 'replace', path: '/角色池/npc_one/与玩家关系/状态', value: '已取消' },
@@ -75,8 +75,90 @@ test('deleting a matched private chat removes only the session and cancels the r
     assert.equal(validateControlledPatchAgainstState(current, forged).ok, false);
 });
 
-test('deleting an already blocked chat preserves the block relationship', () => {
+test('clearing an already blocked chat preserves the block relationship', () => {
     const current = state({ relationship: { 状态: '已拉黑', 全局账号表现: 50, NPC专属匹配度: 70, 好感: 0, 信任: 0, 戒备: 100, 面基意愿: 0 } });
     current.会话.chat_1.状态 = '已拉黑';
     assert.deepEqual(buildDeletePrivateChatPatch(current, { sessionUid: 'chat_1' }), { ok: true, value: [{ op: 'remove', path: '/会话/chat_1' }] });
+});
+
+
+test('legacy private-chat deletion builder remains an alias for clearPrivateChat', () => {
+    const current = state();
+    assert.deepEqual(
+        buildDeletePrivateChatPatch(current, { sessionUid: 'chat_1' }),
+        buildClearPrivateChatPatch(current, { sessionUid: 'chat_1' }),
+    );
+});
+
+test('deleteCharacter removes the complete character record and every controlled reference', () => {
+    const current = state();
+    const otherRole = structuredClone(current.角色池.npc_one);
+    otherRole.公开资料.昵称 = '其他角色';
+    current.角色池.npc_other = otherRole;
+    current.推荐 = {
+        当前队列: ['npc_one', 'npc_other'],
+        临时候选池: { npc_one: structuredClone(current.角色池.npc_one), npc_other: structuredClone(otherRole) },
+        冷却角色UID: ['npc_other', 'npc_one'],
+        收藏角色UID: ['npc_one'],
+        不喜欢角色UID: ['npc_other', 'npc_one'],
+        拉黑角色UID: ['npc_one', 'npc_other'],
+    };
+    current.会话.chat_2 = { 对象UID: 'npc_one', 状态: '已取消', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
+    current.会话.chat_other = { 对象UID: 'npc_other', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
+    current.面基记录 = {
+        meetup_1: { 对象UID: 'npc_one', 状态: '已结束' },
+        meetup_other: { 对象UID: 'npc_other', 状态: '已结束' },
+    };
+    current.群组 = {
+        group_city: { 主题: '城市', 描述: '', 成员UID: ['npc_one', 'npc_other'], 可发现角色UID: ['npc_one'] },
+        group_other: { 主题: '其他', 描述: '', 成员UID: ['npc_other'], 可发现角色UID: ['npc_other'] },
+    };
+
+    const built = buildDeleteCharacterPatch(current, { npcUid: 'npc_one' });
+    assert.equal(built.ok, true);
+    assert.deepEqual(built.value, [
+        { op: 'replace', path: '/推荐/当前队列', value: ['npc_other'] },
+        { op: 'replace', path: '/推荐/冷却角色UID', value: ['npc_other'] },
+        { op: 'replace', path: '/推荐/收藏角色UID', value: [] },
+        { op: 'replace', path: '/推荐/不喜欢角色UID', value: ['npc_other'] },
+        { op: 'replace', path: '/推荐/拉黑角色UID', value: ['npc_other'] },
+        { op: 'remove', path: '/会话/chat_1' },
+        { op: 'remove', path: '/会话/chat_2' },
+        { op: 'remove', path: '/面基记录/meetup_1' },
+        { op: 'replace', path: '/群组/group_city/成员UID', value: ['npc_other'] },
+        { op: 'replace', path: '/群组/group_city/可发现角色UID', value: [] },
+        { op: 'remove', path: '/推荐/临时候选池/npc_one' },
+        { op: 'remove', path: '/角色池/npc_one' },
+    ]);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+
+    const missingReference = built.value.filter((operation) => operation.path !== '/面基记录/meetup_1');
+    assert.equal(validateControlledPatchAgainstState(current, missingReference).ok, false);
+    const forgedOtherRemoval = [...built.value, { op: 'remove', path: '/会话/chat_other' }];
+    assert.equal(validateControlledPatchAgainstState(current, forgedOtherRemoval).ok, false);
+    assert.deepEqual(current.系统.UID计数器, { 角色: 1, 会话: 1, 面基: 0 });
+});
+
+test('deleteCharacter refuses malformed containers instead of leaving partial references', () => {
+    const malformed = state();
+    malformed.群组 = { group_city: { 主题: '城市', 描述: '', 成员UID: ['npc_one', 'npc_one'], 可发现角色UID: [] } };
+    assert.deepEqual(buildDeleteCharacterPatch(malformed, { npcUid: 'npc_one' }), {
+        ok: false, code: 'character_delete_group_state_invalid', detail: 'group_city',
+    });
+});
+
+
+test('deleteCharacter remains atomic when a role has more than forty references', () => {
+    const current = state();
+    current.群组 = {};
+    for (let index = 2; index <= 45; index += 1) {
+        current.会话['chat_' + index] = {
+            对象UID: 'npc_one', 状态: '已取消', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '',
+        };
+    }
+    const built = buildDeleteCharacterPatch(current, { npcUid: 'npc_one' });
+    assert.equal(built.ok, true);
+    assert.ok(built.value.length > 40);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+    assert.equal(built.value.filter((operation) => operation.op === 'remove' && operation.path.startsWith('/会话/chat_')).length, 45);
 });

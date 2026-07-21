@@ -386,6 +386,7 @@ test('operation dialogs always close and dismissed AI generations never reopen o
         const dialog = miniDom.document.querySelector('.yl-operation-dialog');
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.getAttribute('aria-busy'), 'true');
+        assert.equal(dialog.dataset.visual, 'connecting', '通用 AI 调用应使用双心电波连接动画');
         assert.match(dialog.textContent, /AI 调用中/u);
         const loadingControls = assertOperationCloseControls(dialog, 'loading');
 
@@ -474,6 +475,7 @@ test('success and failure dialogs auto-close while preserving manual close contr
 
         const dialog = miniDom.document.querySelector('.yl-operation-dialog');
         assertOperationCloseControls(dialog, 'success');
+        assert.equal(dialog.dataset.visual, 'accepted', '通用 AI 成功应切换为双心依偎动画');
         const successTimer = timers.find((timer) => timer.delay === 4000 && !timer.cleared);
         assert.ok(successTimer, '成功状态应登记自动收束计时器');
         successTimer.callback();
@@ -483,6 +485,7 @@ test('success and failure dialogs auto-close while preserving manual close contr
         click(buttonByText('生成群聊草稿'));
         await flushUi();
         assertOperationCloseControls(dialog, 'failure');
+        assert.equal(dialog.dataset.visual, 'failure', '通用 AI 失败应切换为心碎动画');
         const failureTimer = timers.find((timer) => timer.delay === 6000 && !timer.cleared);
         assert.ok(failureTimer, '失败状态应登记自动收束计时器');
         failureTimer.callback();
@@ -861,7 +864,14 @@ test('accepted favourite invitation leaves favourites and opens the newly establ
         await flushUi();
         assert.deepEqual(calls, [['start_private_chat', 'npc_1']]);
         assert.ok(miniDom.document.querySelector('.yl-private-chat-screen'), '仅接受后才进入消息会话');
+        assert.equal(miniDom.document.querySelector('.yl-operation-dialog').dataset.visual, 'accepted');
         assert.equal(readResult.state.推荐.收藏角色UID.length, 0);
+        click(buttonByPage('profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        const consolePage = miniDom.document.querySelector('.yl-operation-console');
+        assert.match(consolePage.textContent, /收藏主动私聊|私聊邀请已接受/u);
+        assert.doesNotMatch(consolePage.textContent, /npc_1|chat_1|Patch|stat_data/u);
     } finally {
         mounted.destroy();
     }
@@ -896,6 +906,7 @@ test('declined favourite invitation stays out of messages and reports a safe rej
         assert.deepEqual(calls, [['start_private_chat', 'npc_1']]);
         assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null, '婉拒不得创建或打开私聊会话');
         assert.match(miniDom.document.body.textContent, /暂时没有接受这次私聊邀请/u);
+        assert.equal(miniDom.document.querySelector('.yl-operation-dialog').dataset.visual, 'declined');
         assert.equal(readResult.state.会话.chat_1, undefined);
     } finally {
         mounted.destroy();
@@ -915,6 +926,7 @@ test('declined match stays on matches and never opens an empty session', async (
         assert.match(miniDom.document.body.textContent, /灵魂匹配|语音匹配/u);
         assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null);
         assert.match(miniDom.document.body.textContent, /婉拒/u);
+        assert.equal(miniDom.document.querySelector('.yl-operation-dialog').dataset.visual, 'declined');
         assert.deepEqual(opened, []);
     } finally { mounted.destroy(); }
 });

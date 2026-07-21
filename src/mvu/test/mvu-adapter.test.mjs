@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { decodeJsonPointer, getAtPointer } from '../json-pointer.js';
 import {
     LATEST_MESSAGE_SCOPE,
+    buildClearPrivateChatPatch,
     buildControlledPatch,
     buildUpdateVariable,
     validateControlledPatchAgainstState,
@@ -220,13 +221,13 @@ test('applyControlledPatch follows get -> parse -> replace -> event sequence', a
             calls.push(['parse', raw, old]);
             assert.equal(old, oldData);
             assert.match(raw, /<UpdateVariable><JSONPatch>/);
-            return { stat_data: { ...old.stat_data, 已回收: true } };
+            return { stat_data: { ...old.stat_data, 软件: { ...old.stat_data.软件, 内容模式: 'NSFW' } } };
         },
         async replaceMvuData(next, scope) {
             calls.push(['replace', next, scope]);
         },
     };
-    const patch = buildControlledPatch(oldData.stat_data, { kind: 'favorite', npcUid: 'npc_alpha' }).value;
+    const patch = buildControlledPatch(oldData.stat_data, { kind: 'toggle_content_mode' }).value;
     const result = await applyControlledPatch({
         patch,
         mvu,
@@ -401,5 +402,34 @@ test('provider result without stat_data is rejected before replace or event', as
     assert.equal(result.ok, false);
     assert.equal(result.status, 'no_change');
     assert.equal(result.code, 'mvu_parse_returned_no_stat_data');
+    assert.deepEqual(calls, ['parse']);
+});
+
+
+test('applyControlledPatch rejects a provider that drops a remove operation', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    oldData.stat_data.角色池.npc_alpha = npc({ status: '已匹配' });
+    oldData.stat_data.推荐.临时候选池 = {};
+    oldData.stat_data.会话.chat_1 = {
+        对象UID: 'npc_alpha', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '',
+    };
+    const patch = buildClearPrivateChatPatch(oldData.stat_data, { sessionUid: 'chat_1' }).value;
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async () => {
+            calls.push('parse');
+            const next = structuredClone(oldData);
+            next.stat_data.角色池.npc_alpha.与玩家关系.状态 = '已取消';
+            return next;
+        },
+        replaceMvuData: async () => calls.push('replace'),
+    };
+    const result = await applyControlledPatch({ patch, mvu, eventEmit: async () => calls.push('event') });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.code, 'mvu_parse_postcondition_failed');
+    assert.deepEqual(result.detail, { operationIndex: 0, path: '/会话/chat_1' });
     assert.deepEqual(calls, ['parse']);
 });

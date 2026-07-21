@@ -396,7 +396,7 @@ test('private chat returns blocked only after the controlled patch atomically bl
     assert.doesNotMatch(wrappedPatch, /这条不得写入/u);
 });
 
-test('deletePrivateChat reads fresh state, uses the dedicated builder, and commits only through the official pipeline', async () => {
+test('clearPrivateChat reads fresh state, uses the dedicated builder, and commits only through the official pipeline', async () => {
     const initialState = recommendationState();
     initialState.角色池 = {
         npc_ava: {
@@ -414,7 +414,8 @@ test('deletePrivateChat reads fresh state, uses the dedicated builder, and commi
         eventEmit: async (...args) => { calls.push(['event', ...args]); },
     });
 
-    const result = await bridge.deletePrivateChat('chat_1');
+    assert.equal(bridge.deletePrivateChat, bridge.clearPrivateChat);
+    const result = await bridge.clearPrivateChat('chat_1');
 
     assert.equal(result.ok, true);
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'parse', 'replace', 'event']);
@@ -422,6 +423,57 @@ test('deletePrivateChat reads fresh state, uses the dedicated builder, and commi
     assert.match(wrappedPatch, /"op":"remove","path":"\/会话\/chat_1"/u);
     assert.match(wrappedPatch, /与玩家关系\/状态/u);
     assert.doesNotMatch(wrappedPatch, /角色池\/npc_ava"/u);
+});
+
+
+test('deleteCharacter reads fresh state and atomically removes every character reference through the official pipeline', async () => {
+    const initialState = recommendationState();
+    initialState.系统 = { UID计数器: { 角色: 12, 会话: 8, 面基: 4, 群组: 2 } };
+    initialState.角色池 = {
+        npc_ava: adultCandidate(),
+        npc_other: { ...adultCandidate(), 公开资料: { ...adultCandidate().公开资料, 昵称: '其他角色' } },
+    };
+    initialState.推荐 = {
+        当前队列: ['npc_ava', 'npc_other'],
+        临时候选池: { npc_ava: adultCandidate() },
+        冷却角色UID: ['npc_ava'], 收藏角色UID: ['npc_ava'],
+        不喜欢角色UID: [], 拉黑角色UID: ['npc_other', 'npc_ava'],
+    };
+    initialState.会话 = {
+        chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' },
+        chat_other: { 对象UID: 'npc_other', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' },
+    };
+    initialState.面基记录 = {
+        meetup_1: { 对象UID: 'npc_ava', 状态: '待发送' },
+        meetup_other: { 对象UID: 'npc_other', 状态: '已结束' },
+    };
+    initialState.群组 = {
+        group_city: { 主题: '城市夜谈', 描述: '', 成员UID: ['npc_ava', 'npc_other'], 可发现角色UID: ['npc_ava'] },
+    };
+    const { mvu, calls } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+    });
+
+    const result = await bridge.deleteCharacter('npc_ava');
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'parse', 'replace', 'event']);
+    const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
+    const patch = JSON.parse(wrappedPatch.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)[1]);
+    assert.equal(patch.some((operation) => operation.path === '/角色池/npc_ava' && operation.op === 'remove'), true);
+    assert.equal(patch.some((operation) => operation.path === '/推荐/临时候选池/npc_ava' && operation.op === 'remove'), true);
+    assert.equal(patch.some((operation) => operation.path === '/会话/chat_1' && operation.op === 'remove'), true);
+    assert.equal(patch.some((operation) => operation.path === '/面基记录/meetup_1' && operation.op === 'remove'), true);
+    assert.deepEqual(result.data.stat_data.推荐.当前队列, ['npc_other']);
+    assert.deepEqual(result.data.stat_data.推荐.拉黑角色UID, ['npc_other']);
+    assert.deepEqual(result.data.stat_data.群组.group_city.成员UID, ['npc_other']);
+    assert.deepEqual(result.data.stat_data.群组.group_city.可发现角色UID, []);
+    assert.equal(Object.hasOwn(result.data.stat_data.角色池, 'npc_ava'), false);
+    assert.equal(Object.hasOwn(result.data.stat_data.会话, 'chat_other'), true);
+    assert.equal(Object.hasOwn(result.data.stat_data.面基记录, 'meetup_other'), true);
+    assert.deepEqual(result.data.stat_data.系统.UID计数器, { 角色: 12, 会话: 8, 面基: 4, 群组: 2 });
 });
 
 
