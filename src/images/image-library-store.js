@@ -5,13 +5,12 @@
  * accepts only image sources plus keyword weights, uses an injected async
  * localforage-style adapter, and never reads SillyTavern globals directly.
  */
-import { normalizeAvatarReference } from '../characters/character-template-codec.js';
-
 export const IMAGE_LIBRARY_SCHEMA_ID = 'yuelema.image-library';
 export const IMAGE_LIBRARY_SCHEMA_VERSION = 1;
 export const IMAGE_LIBRARY_STORAGE_KEY = 'yuelema.image-library.v1';
 export const MAX_IMAGE_LIBRARY_IMAGES = 50;
 export const MAX_IMAGE_LIBRARY_SERIALIZED_BYTES = 24 * 1024 * 1024;
+export const MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH = 1_048_576;
 export const MAX_IMAGE_KEYWORDS = 256;
 
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
@@ -178,38 +177,87 @@ function normalizeClock(now) {
     return normalizeTimestamp(timestamp);
 }
 
+function base64PrefixBytes(encoded, byteCount = 12) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const output = [];
+    let bits = 0;
+    let accumulator = 0;
+    for (const char of encoded) {
+        if (char === '=') break;
+        const value = alphabet.indexOf(char);
+        if (value < 0) fail('INVALID_IMAGE_SOURCE');
+        accumulator = (accumulator << 6) | value;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            output.push((accumulator >> bits) & 0xff);
+            if (output.length >= byteCount) break;
+        }
+    }
+    return output;
+}
+
+function normalizeEmbeddedImageDataUrl(value) {
+    if (typeof value !== 'string' || value.length === 0
+        || value.length > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH || value !== value.trim()) {
+        fail('INVALID_IMAGE_SOURCE');
+    }
+    // Validate the transport envelope and a small binary signature. Decoded image
+    // bytes are arbitrary binary and must not be scanned with text/HTML regular
+    // expressions: valid PNG/WebP/JPEG payloads can naturally contain markup-like
+    // byte sequences.
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/iu.exec(value);
+    if (!match || match[2].length === 0) fail('INVALID_IMAGE_SOURCE');
+    const mediaType = match[1].toLowerCase();
+    const encoded = match[2];
+    const prefix = base64PrefixBytes(encoded);
+    const hasPrefix = (...bytes) => bytes.every((byte, index) => prefix[index] === byte);
+    if (mediaType === 'image/png' && !hasPrefix(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) fail('INVALID_IMAGE_SOURCE');
+    if (mediaType === 'image/jpeg' && !hasPrefix(0xff, 0xd8, 0xff)) fail('INVALID_IMAGE_SOURCE');
+    if (mediaType === 'image/webp'
+        && !(hasPrefix(0x52, 0x49, 0x46, 0x46) && prefix[8] === 0x57 && prefix[9] === 0x45
+            && prefix[10] === 0x42 && prefix[11] === 0x50)) {
+        fail('INVALID_IMAGE_SOURCE');
+    }
+    return `data:${mediaType};base64,${encoded}`;
+}
+
+function normalizeRemoteImageUrl(value) {
+    if (typeof value !== 'string' || value.length === 0 || value.length > 2_048 || value !== value.trim()
+        || CONTROL_PATTERN.test(value) || HTML_PATTERN.test(value)) {
+        fail('INVALID_IMAGE_SOURCE');
+    }
+    let parsed;
+    try { parsed = new URL(value); } catch { fail('INVALID_IMAGE_SOURCE'); }
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
+        fail('INVALID_IMAGE_SOURCE');
+    }
+    for (const key of parsed.searchParams.keys()) assertSafeKey(key);
+    for (const parameterValue of parsed.searchParams.values()) {
+        if (SECRET_VALUE_PATTERN.test(parameterValue)) fail('SENSITIVE_FIELD_FORBIDDEN');
+    }
+    if (parsed.hash.includes('=')) {
+        const fragmentParams = new URLSearchParams(parsed.hash.slice(1));
+        for (const key of fragmentParams.keys()) assertSafeKey(key);
+        for (const parameterValue of fragmentParams.values()) {
+            if (SECRET_VALUE_PATTERN.test(parameterValue)) fail('SENSITIVE_FIELD_FORBIDDEN');
+        }
+    }
+    return parsed.href;
+}
+
 function normalizeSource(input) {
     assertExactObject(input, new Set(['kind', 'url', 'dataUrl']), new Set(['kind']), 'INVALID_IMAGE_SOURCE');
     const kind = ownData(input, 'kind', 'INVALID_IMAGE_SOURCE');
-    if (kind !== 'embedded' && kind !== 'url') fail('INVALID_IMAGE_SOURCE');
-
     if (kind === 'embedded') {
         assertExactObject(input, new Set(['kind', 'dataUrl']), new Set(['kind', 'dataUrl']), 'INVALID_IMAGE_SOURCE');
-    } else {
+        return { kind, dataUrl: normalizeEmbeddedImageDataUrl(ownData(input, 'dataUrl', 'INVALID_IMAGE_SOURCE')) };
+    }
+    if (kind === 'url') {
         assertExactObject(input, new Set(['kind', 'url']), new Set(['kind', 'url']), 'INVALID_IMAGE_SOURCE');
+        return { kind, url: normalizeRemoteImageUrl(ownData(input, 'url', 'INVALID_IMAGE_SOURCE')) };
     }
-
-    try {
-        const normalized = normalizeAvatarReference(input);
-        if (normalized.kind === 'url') {
-            const parsed = new URL(normalized.url);
-            for (const key of parsed.searchParams.keys()) assertSafeKey(key);
-            for (const value of parsed.searchParams.values()) {
-                if (SECRET_VALUE_PATTERN.test(value)) fail('SENSITIVE_FIELD_FORBIDDEN');
-            }
-            if (parsed.hash.includes('=')) {
-                const fragmentParams = new URLSearchParams(parsed.hash.slice(1));
-                for (const key of fragmentParams.keys()) assertSafeKey(key);
-                for (const value of fragmentParams.values()) {
-                    if (SECRET_VALUE_PATTERN.test(value)) fail('SENSITIVE_FIELD_FORBIDDEN');
-                }
-            }
-        }
-        return { ...normalized };
-    } catch (error) {
-        if (isImageLibraryError(error)) throw error;
-        fail('INVALID_IMAGE_SOURCE');
-    }
+    fail('INVALID_IMAGE_SOURCE');
 }
 
 function normalizeKeyword(value) {

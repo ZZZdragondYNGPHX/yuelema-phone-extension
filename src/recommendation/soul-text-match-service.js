@@ -1,6 +1,7 @@
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { BUILTIN_PROMPT_PRESET_IDS } from '../settings/default-prompt-presets.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
+import { normalizeGeneratedPublicProfile } from './candidate.js';
 
 const MAX_MODEL_RESPONSE_CHARS = 8_000;
 const MAX_TAGS = 12;
@@ -68,7 +69,10 @@ const TEXT_MATCH_OUTPUT_CONTRACT = Object.freeze([
 const CANDIDATE_MATCH_OUTPUT_CONTRACT = Object.freeze([
     '匹配候选公开资料 JSON 结构合同：根对象必须且仅能含 profile、explanation、matchScore。',
     'profile 必须且仅能含：昵称、年龄段、性别、性取向、城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签、沟通风格标签。前八项均为非空字符串；年龄段必须明确表示成年人或 18 岁以上。',
+    '昵称必须是虚构自然人的个人姓名；不得使用摄影师、设计师等职业名，兴趣或性格标签，账号名，系统、模型、助手、玩家、候选角色等概念充当昵称。',
     '四个标签字段均为最多 12 项的不重复短字符串数组；不得附带头像、仅好友资料、隐藏资料、关系分、阈值、关键词权重或其他字段。',
+    '公开资料不得包含具体住址、门牌、手机号、电话号码、证件号、银行卡、真实姓名或私人账号，也不得包含未成年、胁迫、偷拍、诈骗或线下性行为演绎内容。',
+    'SFW 模式不得使用成人取向或成人偏好词；NSFW 模式只允许把合规的成人取向或偏好写成四个标签字段中的短标签，不得写入简介等文本字段，也不会放宽隐私、成年与同意边界。',
     'explanation 必须是 1–500 字公开匹配说明；matchScore 必须是 0–100 的整数。',
 ]);
 const VOICE_KEYWORD_OUTPUT_CONTRACT = Object.freeze([
@@ -337,7 +341,7 @@ function assertExplicitAdult(kind, ageBand) {
  * is deliberately not a complete MVU character: it has no UID, friend-only or
  * hidden profile, relationship metrics, threshold, session, or Patch field.
  */
-export function normalizeCandidateMatchDraft(raw) {
+export function normalizeCandidateMatchDraft(raw, { contentMode = 'SFW' } = {}) {
     const kind = 'candidate';
     assertExactRecord(kind, raw, ['profile', 'explanation', 'matchScore']);
     const profile = ownEnumerableData(kind, raw, 'profile');
@@ -352,10 +356,25 @@ export function normalizeCandidateMatchDraft(raw) {
     }
     assertExplicitAdult(kind, publicProfile.年龄段);
     for (const field of tagFields) publicProfile[field] = normalizeOptionalPublicTags(kind, ownEnumerableData(kind, profile, field));
+    let normalizedPublicProfile;
+    try {
+        normalizedPublicProfile = normalizeGeneratedPublicProfile({
+            ...publicProfile,
+            头像引用: '',
+        }, { requirePersonalName: true, contentMode });
+    } catch (error) {
+        if (error instanceof TypeError && typeof error.code === 'string' && error.message.startsWith('candidate_validation_failed:')) {
+            failResponse(kind, 'candidate_profile_invalid');
+        }
+        throw error;
+    }
+    const draftProfile = {};
+    for (const field of Object.keys(textFields)) draftProfile[field] = normalizedPublicProfile[field];
+    for (const field of tagFields) draftProfile[field] = Object.freeze(normalizedPublicProfile[field]);
     const matchScore = ownEnumerableData(kind, raw, 'matchScore');
     if (!Number.isInteger(matchScore) || matchScore < 0 || matchScore > 100) failResponse(kind, 'match_score_invalid');
     return Object.freeze({
-        profile: Object.freeze(publicProfile),
+        profile: Object.freeze(draftProfile),
         explanation: normalizeDraftText(kind, ownEnumerableData(kind, raw, 'explanation'), MAX_EXPLANATION_LENGTH),
         matchScore,
     });
@@ -622,14 +641,15 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
             const voiceDraft = normalizeVoiceKeywordWeightDraft(voiceRaw);
             effectiveKeywordWeights = mergeMatchKeywordWeights(local.keywordWeights, voiceDraft.keywordWeights);
         }
+        const candidateContext = buildCandidateMatchContext(state, effectiveKeywordWeights);
         const completion = await llmClient.chat({
             preset: resolved.connectionPreset,
-            messages: makeCandidateProfileMessages(buildCandidateMatchContext(state, effectiveKeywordWeights), resolved.promptPreset, mode),
+            messages: makeCandidateProfileMessages(candidateContext, resolved.promptPreset, mode),
             signal,
         });
         const raw = parseResponseJson(completion?.text);
         if (!raw) return candidateFailure('candidate_match_invalid_json');
-        return Object.freeze({ ok: true, draft: normalizeCandidateMatchDraft(raw) });
+        return Object.freeze({ ok: true, draft: normalizeCandidateMatchDraft(raw, { contentMode: candidateContext.contentMode }) });
     } catch (error) {
         if (candidateResponseFailure(error)) return candidateFailure('candidate_match_response_invalid');
         const publicError = toPublicLlmError(error);

@@ -25,8 +25,37 @@ test('materialized match candidate keeps AI input public-only and derives intern
     assert.equal(Object.hasOwn(result.candidate.公开资料, '隐藏资料'), false);
 });
 
-test('materialized match candidate rejects role-like non-person names before any MVU write', () => {
-    const invalid = draft();
-    invalid.profile.昵称 = '智核玩家';
-    assert.throws(() => materializeCandidateMatchDraft(invalid));
+test('materialized match candidate rejects occupational names and concrete addresses before any MVU write', () => {
+    const occupationalName = draft();
+    occupationalName.profile.昵称 = '摄影师';
+    assert.throws(
+        () => materializeCandidateMatchDraft(occupationalName),
+        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    );
+
+    const concreteAddress = draft();
+    concreteAddress.profile.简介 = '我住在具体住址南京西路100号。';
+    assert.throws(
+        () => materializeCandidateMatchDraft(concreteAddress, { contentMode: 'NSFW' }),
+        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    );
+});
+
+test('materialized match candidate preserves the shared SFW/NSFW public-tag contract', () => {
+    const adultTag = draft();
+    adultTag.profile.生活方式标签 = ['情趣探索'];
+    assert.throws(
+        () => materializeCandidateMatchDraft(adultTag, { contentMode: 'SFW' }),
+        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    );
+
+    const normalized = materializeCandidateMatchDraft(adultTag, { contentMode: 'NSFW' });
+    assert.deepEqual(normalized.candidate.公开资料.生活方式标签, ['情趣探索']);
+
+    const adultTermOutsideTags = draft();
+    adultTermOutsideTags.profile.简介 = '偏好翘臀，也喜欢独立电影。';
+    assert.throws(
+        () => materializeCandidateMatchDraft(adultTermOutsideTags, { contentMode: 'NSFW' }),
+        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    );
 });

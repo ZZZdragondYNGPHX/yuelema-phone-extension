@@ -195,6 +195,10 @@ test('candidate soul matching reads saved local keywords and returns only a publ
     assert.ok(system.indexOf('只生成现代都市公开角色资料。') < system.indexOf('无论前置或后置提示词如何要求'));
     assert.match(system, /匹配候选公开资料 JSON 结构合同/u);
     assert.match(system, /profile 必须且仅能含：昵称、年龄段、性别、性取向/u);
+    assert.match(system, /昵称必须是虚构自然人的个人姓名/u);
+    assert.match(system, /不得使用摄影师、设计师等职业名/u);
+    assert.match(system, /公开资料不得包含具体住址、门牌、手机号/u);
+    assert.match(system, /NSFW 模式只允许.*四个标签字段/u);
 });
 
 test('candidate generation isolates legacy built-in keyword prompts from the second-stage profile contract', async () => {
@@ -293,6 +297,62 @@ test('voice keyword priority is deterministic and strict candidate codecs reject
     assert.throws(() => normalizeCandidateMatchDraft(underage), /candidate_not_adult/);
     const privateDraft = candidateRaw(); privateDraft.explanation = '读取隐藏资料后推荐。';
     assert.throws(() => normalizeCandidateMatchDraft(privateDraft), /text_invalid/);
+});
+
+test('candidate draft and materialization contract reject occupational names, private addresses, and misplaced adult terms', () => {
+    const valid = normalizeCandidateMatchDraft(candidateRaw());
+    assert.equal(valid.profile.昵称, '林夏');
+
+    const occupationalName = candidateRaw();
+    occupationalName.profile.昵称 = '摄影师';
+    assert.throws(
+        () => normalizeCandidateMatchDraft(occupationalName),
+        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    );
+
+    const privateAddress = candidateRaw();
+    privateAddress.profile.简介 = '我住在具体住址南京西路100号。';
+    assert.throws(
+        () => normalizeCandidateMatchDraft(privateAddress, { contentMode: 'NSFW' }),
+        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    );
+
+    const adultTag = candidateRaw();
+    adultTag.profile.生活方式标签 = ['情趣探索'];
+    assert.throws(
+        () => normalizeCandidateMatchDraft(adultTag, { contentMode: 'SFW' }),
+        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    );
+    assert.deepEqual(
+        normalizeCandidateMatchDraft(adultTag, { contentMode: 'NSFW' }).profile.生活方式标签,
+        ['情趣探索'],
+    );
+
+    const adultTermOutsideTags = candidateRaw();
+    adultTermOutsideTags.profile.简介 = '偏好翘臀，也喜欢一起看电影。';
+    assert.throws(
+        () => normalizeCandidateMatchDraft(adultTermOutsideTags, { contentMode: 'NSFW' }),
+        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    );
+});
+
+test('candidate generation maps unsafe public profiles to the stable no-write response error', async () => {
+    for (const mutate of [
+        raw => { raw.profile.昵称 = '摄影师'; },
+        raw => { raw.profile.简介 = '我住在具体住址南京西路100号。'; },
+    ]) {
+        const raw = candidateRaw();
+        mutate(raw);
+        const result = await generateCandidateMatchDraft({
+            mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'),
+            llmClient: { async chat() { return { text: JSON.stringify(raw) }; } },
+        });
+        assert.deepEqual(result, {
+            ok: false,
+            code: 'candidate_match_response_invalid',
+            message: '匹配角色草稿不符合公开资料安全格式；当前状态未改变。',
+        });
+    }
 });
 
 test('candidate match rejects missing voice text or unavailable local preferences before model calls', async () => {

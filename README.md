@@ -1,4 +1,4 @@
-# 约了吗小手机 v0.1.19（阶段 41 图片管理与图片匹配）
+# 约了吗小手机 v0.1.20（阶段 42 匹配合同与本地图片修复）
 
 这是现代现实都市「约了吗」MVU 角色卡的配套 SillyTavern UI 扩展。软件层承担推荐、线上短文本私聊、匹配、群组浏览、角色创作与面基约定；现实见面、约会及复杂长文本剧情仍由酒馆正文推进。
 
@@ -75,7 +75,7 @@ readLatestState → build…Patch → validateControlledPatchAgainstState
 1. 在 SillyTavern 的扩展管理页选择“安装扩展”，输入 Git URL：`https://github.com/ZZZdragondYNGPHX/yuelema-phone-extension.git`。
 2. 安装完成后重载 SillyTavern，确认“约了吗小手机”已启用。此扩展声明最低版本为 **SillyTavern v1.18.0**，以使用已核对的 `activate / disable / delete` lifecycle hooks。
 3. 后续版本从同一 Git 仓库更新，不再把本地工作树手工同步到 SillyTavern 安装副本。
-4. 在角色管理页面导入 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v0.1.19.json`，并为这张卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。
+4. 在角色管理页面导入 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v0.1.20.json`，并为这张卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。
 5. 首次使用时在“我的 → 设置”配置 OpenAI-compatible 连接预设、提示词预设和功能绑定；输入 API Key 后点击“保存连接预设”会将它保存到当前浏览器并立即可用，不必再额外点模型拉取按钮。禁用、删除或页面卸载只清理内存镜像；下次打开会按同一连接预设自动恢复。Key 不会进入设置导出、MVU、角色卡、提示词、日志或错误面板；需要移除时点击“删除当前已保存 API Key”。
 
 ## 本地验证（2026-07-20）
@@ -87,7 +87,7 @@ node --test
 node --input-type=module -e "await import('./index.js'); console.log('production import graph resolves')"
 ```
 
-实际结果（阶段 41）：`npm run check` 通过；全量 `node --test` **288 / 288 通过，0 failed**；`node --check`、生产 ESM import 图与 `git diff --check` 通过。图片相关回归覆盖图片库持久化合同、本地/远程来源、关键词权重、右键/长按、编辑与删除、公开资料投影、LLM 严格输出、本地回退、并发去重、缓存失效，以及首页刷新、空池生成、灵魂匹配、语音匹配的自动触发与不阻塞主链。
+实际结果（阶段 42）：`npm run check` 通过；全量 `node --test` **294 / 294 通过，0 failed**；`node --check`、生产 ESM import 图与 `git diff --check` 通过。新增回归覆盖匹配草稿与最终物化共用公开资料合同、职业式昵称/具体住址/内容模式边界，以及 PNG/JPEG/WebP 本地压缩结果的二进制签名、保存、重载预览和伪造来源拒绝。
 
 定向 DOM 回归还覆盖：设置页图片管理入口与独立路由、本地/链接导入控件、空库状态、首页候选卡背景与头像、候选公开资料头像、无匹配回退，以及未提前接入消息列表、私聊、收藏夹、匹配列表和群聊成员头像的首版边界。上述本地结果不等同于 SillyTavern 真机通过。
 
@@ -101,4 +101,4 @@ node --input-type=module -e "await import('./index.js'); console.log('production
 6. 提示词树在窄屏与触控设备上的分支线、叶节点操作区、编辑器滚动和按钮可达性；所有操作弹窗手动关闭、自动关闭和页面切换后的迟到结果防重弹。
 7. 图片库需验证宿主 `localforage` 持久化、本地图片压缩、远程链接加载/失败状态、桌面右键、移动端长按、关键词编辑与删除；确认首页背景、首页头像和公开资料头像显示正确，无匹配时回退原视觉。
 8. 首页空池生成、首页刷新、灵魂匹配、语音匹配分别确认：对应模块 LLM 正常生成角色时会自动启动图片匹配 LLM；图片请求卡住、拒绝或返回非法结果都不得阻塞角色生成、MVU 写回或会话创建。消息列表头像、私聊头像、收藏夹头像、匹配列表头像和群聊成员头像留待后续阶段接入。
-9. 本次只推送 GitHub 仓库，不手工同步本地安装副本；请通过 Git URL 更新后确认“关于软件”显示 0.1.19。最终 DOM / Prompt Viewer / 网络请求 / 导出 / 日志 / 错误面板不得出现 API Key、图片库内容以外的隐藏层、仅好友层、关系分、阈值、UID、Patch、原始响应或 `stat_data`；图片匹配请求也不得携带图片本体或图片 URL。
+9. 本次只推送 GitHub 仓库，不手工同步本地安装副本；请通过 Git URL 更新后确认“关于软件”显示 0.1.20，并分别复验灵魂/语音匹配与 PNG/JPEG/WebP 本地图片上传。最终 DOM / Prompt Viewer / 网络请求 / 导出 / 日志 / 错误面板不得出现 API Key、图片库内容以外的隐藏层、仅好友层、关系分、阈值、UID、Patch、原始响应或 `stat_data`；图片匹配请求也不得携带图片本体或图片 URL。

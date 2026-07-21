@@ -8,7 +8,7 @@ import { avatarImageSource } from './player-avatar-store.js';
 import { createLauncherDragController } from './launcher-drag.js';
 import { createImageManagerPanel } from './images/image-manager-panel.js';
 
-const UI_VERSION = '0.1.19';
+const UI_VERSION = '0.1.20';
 const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
@@ -1537,4 +1537,3 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         destroy() { hideOperationDialog(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }
-

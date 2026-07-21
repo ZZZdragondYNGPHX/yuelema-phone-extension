@@ -183,6 +183,22 @@ function normalizePublicProfile(value, contentMode, { requirePersonalName = fals
     }
     return profile;
 }
+
+/**
+ * Applies the same generated-public-profile contract used by the complete
+ * candidate validator, without requiring any friend-only or hidden fields.
+ */
+export function normalizeGeneratedPublicProfile(input, options) {
+    try {
+        const contentMode = resolveContentMode(input, options);
+        const requirePersonalName = options !== null && typeof options === 'object' && options.requirePersonalName === true;
+        return normalizePublicProfile(input, contentMode, { requirePersonalName });
+    } catch (error) {
+        if (error?.code && typeof error.code === 'string' && error.message.startsWith('candidate_validation_failed:')) throw error;
+        throw validationError('invalid_input');
+    }
+}
+
 function normalizeFriendProfile(value) {
     const keys = Object.keys(FRIEND_PROFILE_FIELDS);
     assertRecord(value, keys, '仅好友资料');
@@ -235,7 +251,7 @@ export function normalizeGeneratedCandidate(input, options) {
 
         const candidate = {
             成人验证: true,
-            公开资料: normalizePublicProfile(ownData(input, '公开资料', '候选人'), contentMode, { requirePersonalName }),
+            公开资料: normalizeGeneratedPublicProfile(ownData(input, '公开资料', '候选人'), { contentMode, requirePersonalName }),
             仅好友资料: normalizeFriendProfile(ownData(input, '仅好友资料', '候选人')),
             隐藏资料: normalizeHiddenProfile(ownData(input, '隐藏资料', '候选人')),
             偏好与边界: normalizeText(ownData(input, '偏好与边界', '候选人'), '偏好与边界', 1200, { allowEmpty: true }),

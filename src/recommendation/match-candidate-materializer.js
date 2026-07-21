@@ -21,7 +21,7 @@ function inferredAdultAge(ageRange) {
  * private data, UID, relationship status, or Patch path.
  */
 export function materializeCandidateMatchDraft(draft, { contentMode = 'SFW' } = {}) {
-    const normalized = normalizeCandidateMatchDraft(draft);
+    const normalized = normalizeCandidateMatchDraft(draft, { contentMode });
     const publicProfile = {
         ...normalized.profile,
         // AI match drafts deliberately never supply remote image URLs.  The

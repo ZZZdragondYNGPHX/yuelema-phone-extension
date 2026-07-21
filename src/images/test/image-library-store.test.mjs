@@ -4,6 +4,7 @@ import {
     IMAGE_LIBRARY_SCHEMA_ID,
     IMAGE_LIBRARY_SCHEMA_VERSION,
     IMAGE_LIBRARY_STORAGE_KEY,
+    MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH,
     MAX_IMAGE_LIBRARY_SERIALIZED_BYTES,
     ImageLibraryError,
     createImageLibraryStore,
@@ -65,8 +66,51 @@ test('accepts safe embedded and HTTP/HTTPS URL sources and normalizes image reco
         store.add({ source: { kind: 'url', url: 'file:///private/image.png' } }),
         'INVALID_IMAGE_SOURCE',
     );
+    await expectCode(
+        store.add({ source: { kind: 'url', url: 'blob:https://example.test/local-object' } }),
+        'INVALID_IMAGE_SOURCE',
+    );
 });
 
+test('accepts signature-valid embedded binary whose decoded bytes contain markup-like sequences', async () => {
+    const store = storeWithMemory();
+    // Binary image payloads are not text. This fixture deliberately contains a
+    // byte sequence that the shared avatar codec used to misclassify as HTML.
+    const binaryWithMarkupLikeBytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x08, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x00, 0x3c, 0x61, 0x3e, 0xff, 0x00]);
+    const dataUrl = `data:image/webp;base64,${binaryWithMarkupLikeBytes.toString('base64')}`;
+
+    const added = await store.add({ source: { kind: 'embedded', dataUrl } });
+    assert.deepEqual(added.source, { kind: 'embedded', dataUrl });
+
+    const reloaded = createImageLibraryStore({
+        storage: createMemoryImageLibraryStorage([[IMAGE_LIBRARY_STORAGE_KEY, await store.export()]]),
+        now: () => FIXED_TIME,
+    });
+    assert.deepEqual((await reloaded.list())[0].source, { kind: 'embedded', dataUrl });
+});
+
+test('embedded source rejects malformed, disguised, transient, and oversized values', async () => {
+    const store = storeWithMemory();
+    await expectCode(store.add({
+        source: { kind: 'embedded', dataUrl: 'data:image/webp;base64,not*base64' },
+    }), 'INVALID_IMAGE_SOURCE');
+    await expectCode(store.add({
+        source: { kind: 'embedded', dataUrl: 'data:text/html;base64,PGgxPm5vPC9oMT4=' },
+    }), 'INVALID_IMAGE_SOURCE');
+    await expectCode(store.add({
+        source: { kind: 'embedded', dataUrl: 'data:image/png;base64,PGgxPm5vPC9oMT4=' },
+    }), 'INVALID_IMAGE_SOURCE');
+    await expectCode(store.add({
+        source: { kind: 'embedded', dataUrl: 'blob:https://example.test/local-object' },
+    }), 'INVALID_IMAGE_SOURCE');
+    await expectCode(store.add({
+        source: { kind: 'embedded', dataUrl: 'file:///private/image.png' },
+    }), 'INVALID_IMAGE_SOURCE');
+    const oversized = `data:image/png;base64,iVBORw0KGgo${'A'.repeat(MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH)}`;
+    await expectCode(store.add({
+        source: { kind: 'embedded', dataUrl: oversized },
+    }), 'INVALID_IMAGE_SOURCE');
+});
 test('supports image and keyword CRUD without exposing mutable internal state', async () => {
     const store = storeWithMemory();
     const added = await store.add({
