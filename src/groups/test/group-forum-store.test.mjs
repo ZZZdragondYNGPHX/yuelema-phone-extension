@@ -26,6 +26,16 @@ function profile(nickname, overrides = {}) {
     };
 }
 
+function forumRefreshPosts(author) {
+    return [
+        { author, topic: '今日心情', title: '傍晚的风很轻', body: '下班路上听到喜欢的歌，想把这点轻松分享给大家。', tags: ['日常', '心情'] },
+        { author, topic: '附近的人', title: '浦东散步搭子', body: '傍晚想沿江散步，有同样喜欢慢走的人吗？', tags: ['附近', '散步'] },
+        { author, topic: '同城瞬间', title: '雨后的书店', body: '想找一间适合安静看书的小店。', tags: ['书店', '同城'] },
+        { author, topic: '兴趣同频', title: '周末胶片放映', body: '想找喜欢老电影的同好，一起挑一场放映。', tags: ['电影', '同好'] },
+        { author, topic: '话题广场', title: '你最近的治愈瞬间', body: '欢迎聊聊这一周让你放松下来的小事。', tags: ['话题', '分享'] },
+    ];
+}
+
 test('browser-local group/forum store persists groups, temporary people, conversations and summaries outside MVU', async () => {
     const storage = createMemoryGroupForumStorage();
     const store = createGroupForumStore({ storage, now: CLOCK });
@@ -51,10 +61,11 @@ test('browser-local group/forum store persists groups, temporary people, convers
         communityProfiles: [profile('林澈')],
         update: {
             participants: [profile('许青', { city: '杭州', mbti: 'ENFP', occupation: '插画师', interests: ['书店'] })],
-            posts: [{ author: '许青', topic: '同城瞬间', title: '雨后的书店', body: '想找一间适合安静看书的小店。', tags: ['书店', '同城'] }],
+            posts: forumRefreshPosts('许青'),
         },
     });
-    const post = createdPosts[0];
+    const post = createdPosts.find((item) => item.title === '雨后的书店');
+    assert.ok(post);
     await store.appendForumUserComment({ postId: post.id, content: '这家店听起来很适合周末。' });
     await store.appendForumModelUpdate({ postId: post.id, update: { participants: [], messages: [{ speaker: '许青', text: '下午的光线很好，欢迎来坐坐。' }] } });
     await store.saveConversationSummary({
@@ -67,14 +78,15 @@ test('browser-local group/forum store persists groups, temporary people, convers
     assert.equal(snapshot.threads[0].auto.intervalSeconds, 30);
     assert.equal(snapshot.threads[0].temporaryMembers[0].nickname, '周遥');
     assert.equal(snapshot.threads[0].messages.length, 2);
-    assert.equal(snapshot.posts.length, 1);
-    assert.equal(snapshot.posts[0].messages.length, 2);
-    assert.equal(snapshot.posts[0].summaries.length, 1);
+    assert.equal(snapshot.posts.length, 5);
+    const savedPost = snapshot.posts.find((item) => item.title === '雨后的书店');
+    assert.equal(savedPost?.messages.length, 2);
+    assert.equal(savedPost?.summaries.length, 1);
     assert.equal(Object.isFrozen(snapshot), true);
 
     const history = await store.getSummaryHistory();
     assert.deepEqual(history.groups[0].summary, { totalFloors: 2, completedFloor: 2, pendingFloorCount: 0, recordCount: 1, status: 'idle', failureStartFloor: 0, failureEndFloor: 0, failureMessage: '' });
-    assert.equal(history.posts[0].title, '雨后的书店');
+    assert.equal(history.posts.find((item) => item.title === '雨后的书店')?.title, '雨后的书店');
 
     const serialized = await storage.getItem(GROUP_FORUM_STORAGE_KEY);
     assert.equal(typeof serialized, 'string');
@@ -92,4 +104,19 @@ test('store rejects minor temporary profiles and derives existing group cache ke
     const publicGroup = { UID: 'group_alpha', 主题: '城市夜谈', 描述: '公开兴趣交流', 成员: [{ UID: 'npc_a', 公开资料: { 昵称: '林澈' } }] };
     const samePresentation = { UID: 'group_other', 主题: '城市夜谈', 描述: '公开兴趣交流', 成员: [{ UID: 'another_uid', 公开资料: { 昵称: '林澈' } }] };
     assert.equal(externalGroupCacheKey(publicGroup), externalGroupCacheKey(samePresentation));
+});
+
+test('forum refresh cache rejects partial or duplicated channel batches', async () => {
+    const store = createGroupForumStore({ now: CLOCK });
+    await store.ready();
+    const posts = forumRefreshPosts('林澈');
+    await assert.rejects(
+        store.addForumRefresh({ communityProfiles: [profile('林澈')], update: { participants: [], posts: posts.slice(0, 4) } }),
+        (error) => error instanceof GroupForumStoreError && error.code === 'INVALID_FORUM_REFRESH',
+    );
+    const repeated = [...posts.slice(0, 4), { ...posts[0], title: '重复频道不应写入' }];
+    await assert.rejects(
+        store.addForumRefresh({ communityProfiles: [profile('林澈')], update: { participants: [], posts: repeated } }),
+        (error) => error instanceof GroupForumStoreError && error.code === 'INVALID_FORUM_REFRESH',
+    );
 });

@@ -155,6 +155,8 @@
     touch-action: none;
     user-select: none;
 }
+.yl-phone-header-actions { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
+.yl-phone-drag-hint { padding: 5px 8px; border: 1px solid rgb(255 255 255 / 12%); border-radius: 999px; color: var(--yl-faint, #8d7f9b); background: rgb(255 255 255 / 4%); font-size: .61rem; letter-spacing: .02em; pointer-events: none; }
 .yl-phone-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .yl-phone-brand strong {
     background: var(--yl-grad, linear-gradient(135deg, #ff4e8e, #8e6bff));
@@ -200,7 +202,7 @@
 .yl-phone-close:hover { color: #fff; background: var(--yl-surface-strong, rgb(255 255 255 / 12%)); transform: rotate(90deg); }
 
 /* --- 内容区与页面 --- */
-.yl-phone-content { min-width: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgb(255 255 255 / 22%) transparent; }
+.yl-phone-content { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: rgb(255 255 255 / 22%) transparent; }
 .yl-phone-page { display: grid; gap: 16px; padding: 18px 16px 22px; animation: yl-page-in 200ms var(--yl-ease); }
 @keyframes yl-page-in {
     from { opacity: 0; transform: translateY(8px); }
@@ -1436,6 +1438,7 @@ body.reduced-motion .yl-phone-extension *, body.reduced-motion .yl-phone-extensi
         border-radius: var(--yl-r-lg, 24px);
     }
     .yl-phone-nav { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+    .yl-phone-drag-hint { display: none; }
     .yl-phone-nav-item { min-height: 52px; }
     .yl-settings-fields { grid-template-columns: 1fr; }
     .yl-settings-field:has(.yl-settings-textarea) { grid-column: auto; }
@@ -2130,7 +2133,7 @@ body.reduced-motion .yl-phone-extension *, body.reduced-motion .yl-phone-extensi
 .yl-local-composer { margin-top: 1px; }
 .yl-local-composer .yl-chat-send-button { width: auto; min-width: 54px; padding: 0 12px; }
 
-.yl-forum-home { position: relative; padding-top: 2px; touch-action: pan-x pan-y; }
+.yl-forum-home { position: relative; min-width: 0; padding-top: 2px; touch-action: pan-x pan-y; }
 .yl-forum-pull-indicator { position: absolute; z-index: 2; top: 0; left: 50%; display: flex; align-items: center; justify-content: center; min-width: 100px; min-height: 28px; padding: 5px 10px; border: 1px solid rgb(255 120 170 / 28%); border-radius: 999px; color: var(--yl-muted, #b9acc6); background: rgb(29 23 39 / 93%); box-shadow: var(--yl-shadow-sm); font-size: .65rem; opacity: 0; pointer-events: none; transform: translate(-50%, calc(-38px + var(--yl-forum-pull-offset, 0px))); transition: opacity 100ms ease, color 100ms ease, border-color 100ms ease; }
 .yl-forum-pull-indicator.is-visible { opacity: 1; }
 .yl-forum-pull-indicator.is-armed { border-color: rgb(255 120 170 / 70%); color: #fff; }
@@ -2140,12 +2143,17 @@ body.reduced-motion .yl-phone-extension *, body.reduced-motion .yl-phone-extensi
 .yl-forum-home-hero h2 { margin: 0; font-size: 1.22rem; letter-spacing: .02em; }
 .yl-forum-home-hero p { margin: 0; color: var(--yl-muted, #b9acc6); font-size: .76rem; }
 .yl-forum-pull-hint { color: rgb(255 174 204 / 88%); font-size: .61rem; }
-.yl-forum-channel-strip { display: flex; gap: 8px; overflow: auto; padding: 2px 1px 5px; }
-.yl-forum-channel { display: grid; flex: 0 0 79px; justify-items: center; gap: 3px; padding: 9px 4px; border: 1px solid var(--yl-border, rgb(255 255 255 / 13%)); border-radius: 14px; background: rgb(255 255 255 / 4%); text-align: center; }
+.yl-forum-channel-strip { display: flex; gap: 8px; overflow: auto hidden; overscroll-behavior-inline: contain; padding: 2px 1px 5px; scrollbar-width: none; }
+.yl-forum-channel-strip::-webkit-scrollbar { display: none; }
+.yl-forum-channel { display: grid; flex: 0 0 79px; min-height: 78px; justify-items: center; gap: 3px; padding: 9px 4px; border: 1px solid var(--yl-border, rgb(255 255 255 / 13%)); border-radius: 14px; color: var(--yl-text, #f8f4fb); background: rgb(255 255 255 / 4%); cursor: pointer; font: inherit; text-align: center; transition: border-color var(--yl-t-fast) var(--yl-ease), background var(--yl-t-fast) var(--yl-ease), transform var(--yl-t-fast) var(--yl-ease); }
+.yl-forum-channel:hover, .yl-forum-channel:focus-visible { border-color: rgb(255 130 178 / 65%); background: rgb(255 91 151 / 13%); outline: none; transform: translateY(-1px); }
+.yl-forum-channel.is-active { border-color: rgb(255 126 176 / 80%); background: linear-gradient(135deg, rgb(255 78 142 / 28%), rgb(142 107 255 / 19%)); box-shadow: 0 7px 18px rgb(255 78 142 / 15%); }
 .yl-forum-channel b { display: grid; width: 29px; height: 29px; border-radius: 50%; place-items: center; color: #fff; background: var(--yl-grad); font-size: .82rem; }
+.yl-forum-channel.is-active b { box-shadow: 0 0 0 3px rgb(255 255 255 / 12%); }
 .yl-forum-channel strong { font-size: .66rem; white-space: nowrap; }
 .yl-forum-channel small { color: var(--yl-faint, #8d7f9b); font-size: .54rem; white-space: nowrap; }
 .yl-forum-feed { display: grid; gap: 10px; }
+.yl-forum-feed-heading { margin: 2px 2px 0; color: var(--yl-muted, #b9acc6); font-size: .7rem; font-weight: 700; }
 .yl-forum-feed-card { display: grid; gap: 8px; width: 100%; padding: 13px; border: 1px solid rgb(255 255 255 / 12%); border-radius: 18px; color: var(--yl-text, #f8f4fb); background: linear-gradient(135deg, rgb(255 255 255 / 7%), rgb(255 184 213 / 5%)); cursor: pointer; font: inherit; text-align: left; transition: transform var(--yl-t-fast) var(--yl-ease), border-color var(--yl-t-fast) var(--yl-ease); }
 .yl-forum-feed-card:hover { border-color: rgb(255 128 174 / 52%); transform: translateY(-1px); }
 .yl-forum-feed-author { display: flex; align-items: center; gap: 8px; }

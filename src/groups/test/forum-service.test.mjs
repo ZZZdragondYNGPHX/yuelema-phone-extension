@@ -94,6 +94,16 @@ function localProfile(nickname, overrides = {}) {
     };
 }
 
+function forumRefreshPosts(author) {
+    return [
+        { author, topic: '今日心情', title: '午后的一点松弛', body: '忙完手头的事情，给自己买了一杯喜欢的饮料。', tags: ['日常', '心情'] },
+        { author, topic: '附近的人', title: '附近的公园散步', body: '傍晚想去公园慢走，有人也在附近吗？', tags: ['附近', '散步'] },
+        { author, topic: '同城瞬间', title: '午后花店', body: '发现一家阳光很好的小花店，适合慢慢挑花。', tags: ['同城', '花店'] },
+        { author, topic: '兴趣同频', title: '交换一张书单', body: '最近读到一本很喜欢的小说，想认识也爱阅读的朋友。', tags: ['阅读', '同好'] },
+        { author, topic: '话题广场', title: '周末的快乐清单', body: '分享一个让你期待周末的小计划吧。', tags: ['话题', '周末'] },
+    ];
+}
+
 test('forum home refresh only consumes public community context and returns local posts with temporary adults', async () => {
     let request;
     const built = buildForumHomeRefreshContext({ state: state(), existingTitles: ['上周咖啡散步'] });
@@ -103,13 +113,31 @@ test('forum home refresh only consumes public community context and returns loca
         state: state(), existingTitles: ['上周咖啡散步'], settingsStore: { resolveFunction: settings },
         llmClient: { async chat(input) { request = input; return { text: JSON.stringify({
             participants: [localProfile('苏晴', { city: '上海', mbti: 'ISFP', occupation: '花艺师', interests: ['花店'] })],
-            posts: [{ author: '苏晴', topic: '同城瞬间', title: '午后花店', body: '发现一家阳光很好的小花店，适合慢慢挑花。', tags: ['同城', '花店'] }],
+            posts: forumRefreshPosts('苏晴'),
         }) }; } },
     });
     assert.equal(result.ok, true);
-    assert.equal(result.update.posts[0].author, '苏晴');
+    assert.equal(result.update.posts.length, 5);
+    assert.deepEqual(result.update.posts.map((post) => post.topic), ['今日心情', '附近的人', '同城瞬间', '兴趣同频', '话题广场']);
     assert.match(request.messages[0].content, /心动社区首页更新模型/u);
+    assert.match(request.messages[0].content, /今日心情、附近的人、同城瞬间、兴趣同频、话题广场各一篇/u);
     assert.doesNotMatch(JSON.stringify(request.messages), /玩家隐藏资料|成员隐藏资料|不得进入论坛/u);
+});
+
+test('forum home refresh rejects a model batch that omits or duplicates a fixed channel', async () => {
+    const incomplete = await generateForumHomeRefresh({
+        state: state(), existingTitles: [], settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ participants: [], posts: forumRefreshPosts('许青').slice(0, 4) }) }; } },
+    });
+    assert.equal(incomplete.code, 'forum_update_response_invalid');
+
+    const posts = forumRefreshPosts('许青');
+    const duplicated = [...posts.slice(0, 4), { ...posts[0], title: '重复频道' }];
+    const repeated = await generateForumHomeRefresh({
+        state: state(), existingTitles: [], settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ participants: [], posts: duplicated }) }; } },
+    });
+    assert.equal(repeated.code, 'forum_update_response_invalid');
 });
 
 test('opened forum posts use forum binding for local comment updates and reject non-adult participants', async () => {

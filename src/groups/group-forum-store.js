@@ -18,6 +18,25 @@ export const MAX_POST_MESSAGES = 240;
 export const MAX_CONVERSATION_SUMMARIES = 64;
 export const MAX_GROUP_FORUM_SERIALIZED_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_GROUP_AUTO_SETTINGS = Object.freeze({ enabled: false, intervalSeconds: 30 });
+/** Fixed homepage sections. A complete AI refresh must update each one once. */
+export const FORUM_CHANNELS = Object.freeze([
+    Object.freeze({ id: 'daily_mood', icon: '＋', title: '今日心情', note: '记录此刻' }),
+    Object.freeze({ id: 'nearby_people', icon: '⌖', title: '附近的人', note: '同城心动' }),
+    Object.freeze({ id: 'city_moments', icon: '◌', title: '同城瞬间', note: '热门动态' }),
+    Object.freeze({ id: 'shared_interests', icon: '☆', title: '兴趣同频', note: '寻找同好' }),
+    Object.freeze({ id: 'topic_square', icon: '#', title: '话题广场', note: '一起聊聊' }),
+]);
+
+/** Maps legacy or malformed cached topics to the safe catch-all channel for display. */
+export function forumChannelForTopic(value) {
+    const topic = typeof value === 'string' ? value.trim().normalize('NFKC') : '';
+    return FORUM_CHANNELS.find((channel) => channel.title === topic) ?? FORUM_CHANNELS[FORUM_CHANNELS.length - 1];
+}
+
+/** Incoming refresh payloads may use only the fixed, visible section titles. */
+export function isKnownForumChannelTopic(value) {
+    return typeof value === 'string' && FORUM_CHANNELS.some((channel) => channel.title === value.trim().normalize('NFKC'));
+}
 
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]/u;
 const HTML_PATTERN = /<!--|<\s*\/?\s*[a-z][^>]*>/iu;
@@ -483,7 +502,7 @@ function normalizeForumRefresh(value) {
     assertExactObject(value, new Set(['participants', 'posts']), new Set(['participants', 'posts']), 'INVALID_FORUM_REFRESH');
     const participants = ownData(value, 'participants', 'INVALID_FORUM_REFRESH');
     const posts = ownData(value, 'posts', 'INVALID_FORUM_REFRESH');
-    if (!Array.isArray(participants) || participants.length > 6 || !Array.isArray(posts) || posts.length < 1 || posts.length > 6) fail('INVALID_FORUM_REFRESH');
+    if (!Array.isArray(participants) || participants.length > 6 || !Array.isArray(posts) || posts.length !== FORUM_CHANNELS.length) fail('INVALID_FORUM_REFRESH');
     const names = new Set();
     const normalizedParticipants = participants.map((profile) => {
         const normalized = normalizeGroupForumProfile(profile);
@@ -492,11 +511,15 @@ function normalizeForumRefresh(value) {
         names.add(key);
         return normalized;
     });
+    const seenTopics = new Set();
     const normalizedPosts = posts.map((post) => {
         assertExactObject(post, new Set(['author', 'topic', 'title', 'body', 'tags']), new Set(['author', 'topic', 'title', 'body', 'tags']), 'INVALID_FORUM_REFRESH');
+        const topic = safeText(ownData(post, 'topic', 'INVALID_FORUM_REFRESH'), 80);
+        if (!isKnownForumChannelTopic(topic) || seenTopics.has(topic)) fail('INVALID_FORUM_REFRESH');
+        seenTopics.add(topic);
         return {
             author: safeText(ownData(post, 'author', 'INVALID_FORUM_REFRESH'), 80),
-            topic: safeText(ownData(post, 'topic', 'INVALID_FORUM_REFRESH'), 80),
+            topic,
             title: safeText(ownData(post, 'title', 'INVALID_FORUM_REFRESH'), 120),
             body: safeText(ownData(post, 'body', 'INVALID_FORUM_REFRESH'), 1_200),
             tags: normalizeTags(ownData(post, 'tags', 'INVALID_FORUM_REFRESH'), 6),

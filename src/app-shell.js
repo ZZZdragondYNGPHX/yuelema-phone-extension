@@ -9,9 +9,9 @@ import { createLauncherDragController } from './launcher-drag.js';
 import { createImageManagerPanel } from './images/image-manager-panel.js';
 import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
-import { DEFAULT_GROUP_AUTO_SETTINGS, externalGroupCacheKey, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
+import { DEFAULT_GROUP_AUTO_SETTINGS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 
-const UI_VERSION = '0.1.26';
+const UI_VERSION = '0.1.27';
 const PANEL_DRAG_THRESHOLD = 8;
 const FORUM_PULL_THRESHOLD = 88;
 const FORUM_WHEEL_RELEASE_DELAY = 180;
@@ -72,6 +72,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     const forumCommentDrafts = new Map();
     let activeGroupCacheKey = '';
     let activeForumPostId = '';
+    let activeForumChannelId = '';
     let groupListMenuOpen = false;
     let groupSearchOpen = false;
     let groupSearchQuery = '';
@@ -84,6 +85,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let groupAutoGeneration = 0;
     let forumPullState = null;
     let forumWheelPullState = null;
+    let forumInteractionAbortController = null;
     let forumRefreshing = false;
     let localSummaryTarget = null;
     let localSummaryBusy = false;
@@ -121,7 +123,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     const statusLine = element('span', { className: 'yl-phone-status' });
     append(brand, [element('strong', { text: '约了吗' }), statusDot, statusLine]);
     const closeButton = element('button', { className: 'yl-phone-close', type: 'button', ariaLabel: '关闭约了吗小手机', text: '×' });
-    append(header, [brand, closeButton]);
+    const headerActions = element('div', { className: 'yl-phone-header-actions' });
+    const dragHint = element('span', { className: 'yl-phone-drag-hint', text: '⠿ 拖动' });
+    dragHint.setAttribute('aria-hidden', 'true');
+    append(headerActions, [dragHint, closeButton]);
+    append(header, [brand, headerActions]);
     const content = element('main', { className: 'yl-phone-content' });
     const nav = element('nav', { className: 'yl-phone-nav', ariaLabel: '约了吗主导航' });
     const navButtons = new Map();
@@ -691,6 +697,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function renderPage() {
         helpPopover.hidden = true; activeHelpAnchor = null;
+        cancelForumPullInteractions();
         imageManagerPanel?.dispose?.();
         imageManagerPanel = null;
         const copy = PAGE_COPY[activePage];
@@ -1035,6 +1042,19 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function socialPosts() { return Array.isArray(groupForumSnapshot?.posts) ? groupForumSnapshot.posts : []; }
     function socialThreadFor(key) { return socialThreads().find((thread) => thread.key === key) ?? null; }
     function socialPostFor(id) { return socialPosts().find((post) => post.id === id) ?? null; }
+    function activeForumChannel() { return FORUM_CHANNELS.find((channel) => channel.id === activeForumChannelId) ?? null; }
+    function forumChannelForPost(post) { return forumChannelForTopic(post?.topic); }
+    function forumPostsForActiveChannel() {
+        const channel = activeForumChannel();
+        return channel ? socialPosts().filter((post) => forumChannelForPost(post).id === channel.id) : socialPosts();
+    }
+    function selectForumChannel(channelId) {
+        if (!FORUM_CHANNELS.some((channel) => channel.id === channelId)) return;
+        activeForumChannelId = activeForumChannelId === channelId ? '' : channelId;
+        cancelForumPullInteractions();
+        content.scrollTop = 0;
+        renderPage();
+    }
     function defaultLocalConversation() {
         return { messages: [], summaries: [], summaryStatus: { status: 'idle', startFloor: 0, endFloor: 0, message: '' } };
     }
@@ -1470,6 +1490,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         forumPullState = null;
         if (pointer?.indicator) resetForumPullIndicator(pointer.indicator);
         cancelForumWheelPull();
+        const controller = forumInteractionAbortController;
+        forumInteractionAbortController = null;
+        controller?.abort?.();
     }
     function normalizedWheelDelta(event) {
         const raw = Number(event?.deltaY);
@@ -1480,6 +1503,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return raw;
     }
     function bindForumPullToRefresh(surface, indicator) {
+        const controller = new AbortController();
+        forumInteractionAbortController = controller;
         const start = (event) => {
             if (forumRefreshing || event?.isPrimary === false || event?.pointerType === 'mouse') return;
             if (!forumIsAtTop(surface)) return;
@@ -1513,6 +1538,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             if (forumRefreshing || event?.ctrlKey || forumPullState) return;
             const delta = normalizedWheelDelta(event);
             if (!delta) return;
+            if (Math.abs(Number(event?.deltaX) || 0) > Math.abs(delta)) return;
             if (!forumIsAtTop(surface)) { cancelForumWheelPull(); return; }
             if (delta > 0) {
                 // On desktop, reversing from an upward wheel pull into normal
@@ -1538,33 +1564,50 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 if (shouldRefresh) void runForumHomeRefresh();
             }, FORUM_WHEEL_RELEASE_DELAY);
         };
-        listen(surface, surface, 'pointerdown', start, abortController.signal);
-        listen(surface, surface, 'pointermove', move, abortController.signal);
-        listen(surface, surface, 'pointerup', end, abortController.signal);
-        listen(surface, surface, 'pointercancel', end, abortController.signal);
-        listen(surface, surface, 'wheel', wheel, abortController.signal);
+        listen(surface, surface, 'pointerdown', start, controller.signal);
+        listen(surface, surface, 'pointermove', move, controller.signal);
+        listen(surface, surface, 'pointerup', end, controller.signal);
+        listen(surface, surface, 'pointercancel', end, controller.signal);
+        // The persistent phone content area is the browser's actual scroll container.
+        // Listening there makes a wheel over the forum heading and feed behave alike.
+        listen(surface, content, 'wheel', wheel, controller.signal);
     }
     function buildForumPage() {
         const section = element('section', { className: 'yl-forum-home' });
         const pull = element('div', { className: forumRefreshing ? 'yl-forum-pull-indicator is-visible is-refreshing' : 'yl-forum-pull-indicator', text: forumRefreshing ? '正在刷新心动社区…' : '↻ 下拉刷新' });
+        const selectedChannel = activeForumChannel();
         section.appendChild(pull); bindForumPullToRefresh(section, pull);
         const hero = element('section', { className: 'yl-forum-home-hero' });
-        append(hero, [element('h2', { text: '心动社区 ♥' }), element('p', { text: '分享生活 · 遇见心动的 TA' }), element('span', { className: 'yl-forum-pull-hint', text: '顶部：手机下拉松开；电脑向上滚动后停滚刷新' })]); section.appendChild(hero);
+        const heroTitle = selectedChannel ? `${selectedChannel.title} · 子区` : '心动社区 ♥';
+        const heroDescription = selectedChannel ? `${selectedChannel.note} · 只显示该频道的本地帖子` : '分享生活 · 遇见心动的 TA';
+        const pullHint = selectedChannel
+            ? `当前：${selectedChannel.title}；再点高亮频道返回全部动态。顶部可刷新全部五个频道。`
+            : '顶部：手机下拉松开；电脑向上滚动后停滚刷新全部频道。';
+        append(hero, [element('h2', { text: heroTitle }), element('p', { text: heroDescription }), element('span', { className: 'yl-forum-pull-hint', text: pullHint })]); section.appendChild(hero);
         const channels = element('div', { className: 'yl-forum-channel-strip' });
-        for (const [icon, title, note] of [['＋', '今日心情', '记录此刻'], ['⌖', '附近的人', '同城心动'], ['◌', '同城瞬间', '热门动态'], ['☆', '兴趣同频', '寻找同好'], ['#', '话题广场', '一起聊聊']]) {
-            const card = element('span', { className: 'yl-forum-channel' }); append(card, [element('b', { text: icon }), element('strong', { text: title }), element('small', { text: note })]); channels.appendChild(card);
+        for (const channel of FORUM_CHANNELS) {
+            const selected = selectedChannel?.id === channel.id;
+            const card = element('button', { className: selected ? 'yl-forum-channel is-active' : 'yl-forum-channel', type: 'button', pressed: selected, ariaLabel: selected ? `返回心动社区全部动态（当前${channel.title}）` : `进入${channel.title}子区` });
+            card.setAttribute('data-forum-channel', channel.id);
+            append(card, [element('b', { text: channel.icon }), element('strong', { text: channel.title }), element('small', { text: channel.note })]);
+            listen(card, card, 'click', () => selectForumChannel(channel.id), abortController.signal);
+            channels.appendChild(card);
         }
         section.appendChild(channels);
-        const posts = socialPosts();
-        if (!posts.length) section.appendChild(buildEmptyPlaceholder('还没有本地帖子。请在顶部手机下拉松开，或电脑向上滚动后停滚；提示就位才会刷新首页。', { icon: '↻' }));
+        const posts = forumPostsForActiveChannel();
+        if (!posts.length) {
+            const channelName = selectedChannel?.title ?? '心动社区';
+            section.appendChild(buildEmptyPlaceholder(`${channelName}还没有本地帖子。请在顶部手机下拉松开，或电脑向上滚动后停滚；AI 会同时刷新五个频道。`, { icon: '↻' }));
+        }
         else {
             const feed = element('div', { className: 'yl-forum-feed' });
+            feed.appendChild(element('h3', { className: 'yl-forum-feed-heading', text: selectedChannel ? `${selectedChannel.title} · ${posts.length} 条本地帖子` : `社区动态 · ${posts.length} 条本地帖子` }));
             for (const post of posts) {
                 const card = element('button', { className: 'yl-forum-feed-card', type: 'button', ariaLabel: `打开帖子：${post.title}` });
                 const author = safeLocalDisplayProfile(post.author);
                 const authorRow = element('span', { className: 'yl-forum-feed-author' });
                 authorRow.appendChild(publicAvatar(author, { className: 'yl-group-member-avatar', imageEnabled: true, interactive: false }));
-                const authorCopy = element('span'); append(authorCopy, [element('strong', { text: author.昵称 }), element('small', { text: [post.topic, author.城市].filter(Boolean).join(' · ') || '心动社区' })]); authorRow.appendChild(authorCopy);
+                const authorCopy = element('span'); append(authorCopy, [element('strong', { text: author.昵称 }), element('small', { text: [forumChannelForPost(post).title, author.城市].filter(Boolean).join(' · ') || '心动社区' })]); authorRow.appendChild(authorCopy);
                 const preview = post.body.length > 160 ? `${post.body.slice(0, 160)}…` : post.body;
                 append(card, [authorRow, element('h3', { text: post.title }), element('p', { text: preview }), element('span', { className: 'yl-forum-feed-footer', text: `${post.messages.length} 条评论 · ${post.tags.map((tag) => '#' + tag).join(' ')}` })]);
                 listen(card, card, 'click', () => { activeForumPostId = post.id; setActivePage('forum_post'); }, abortController.signal);
@@ -1577,7 +1620,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     async function runForumHomeRefresh() {
         if (forumRefreshing || !actionBridge.generateForumHomeRefresh || actionBridge.isPending?.('forum_home_refresh', '')) return;
         forumRefreshing = true; renderPage();
-        const activity = operationActivity.start('论坛首页刷新', '正在根据公开社区信息刷新首页帖子。');
+        const activity = operationActivity.start('论坛首页刷新', '正在根据公开社区信息刷新全部五个频道的帖子。');
         let result;
         try { result = await actionBridge.generateForumHomeRefresh({ existingTitles: socialPosts().slice(0, 24).map((post) => post.title) }); }
         catch { result = { ok: false }; }

@@ -2,7 +2,7 @@ import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
 import { buildPublicGroupLlmContext, cleanGroupLlmText, isSafeGroupLlmOutput, parseGroupLlmJson, projectPublicPlayerProfile } from './group-llm-safety.js';
 import { buildGroupBrowseModel } from './group-discovery-service.js';
-import { groupForumProfileForModel, normalizeGroupForumProfile, publicProfileToGroupForumProfile } from './group-forum-store.js';
+import { FORUM_CHANNELS, groupForumProfileForModel, isKnownForumChannelTopic, normalizeGroupForumProfile, publicProfileToGroupForumProfile } from './group-forum-store.js';
 
 const ERROR_MESSAGES = Object.freeze({
     forum_target_invalid: '请选择一个可用的论坛主题。',
@@ -182,6 +182,7 @@ export function buildForumHomeRefreshContext({ state, existingTitles = [] } = {}
         playerPublicProfile: projectPublicPlayerProfile(state.玩家),
         communities: community.communities,
         knownPeople: community.people,
+        channels: Object.freeze(FORUM_CHANNELS.map(({ title, note }) => Object.freeze({ title, note }))),
         existingTitles: Object.freeze(cleanTitles),
     }) });
 }
@@ -190,7 +191,7 @@ function normalizeForumHomeUpdate(value, knownPeople) {
     if (!ownRecord(value) || Object.keys(value).sort().join(',') !== 'participants,posts') return null;
     const participants = ownValue(value, 'participants');
     const posts = ownValue(value, 'posts');
-    if (!Array.isArray(participants) || participants.length > 6 || !Array.isArray(posts) || posts.length < 1 || posts.length > 6) return null;
+    if (!Array.isArray(participants) || participants.length > 6 || !Array.isArray(posts) || posts.length !== FORUM_CHANNELS.length) return null;
     const names = new Set(knownPeople.map((profile) => String(profile.nickname).normalize('NFKC').toLowerCase()));
     const normalizedParticipants = [];
     for (const participant of participants) {
@@ -202,6 +203,7 @@ function normalizeForumHomeUpdate(value, knownPeople) {
             normalizedParticipants.push(profile);
         } catch { return null; }
     }
+    const seenTopics = new Set();
     const normalizedPosts = [];
     for (const post of posts) {
         if (!ownRecord(post) || Object.keys(post).sort().join(',') !== 'author,body,tags,title,topic') return null;
@@ -210,8 +212,9 @@ function normalizeForumHomeUpdate(value, knownPeople) {
         const title = cleanGroupLlmText(ownValue(post, 'title'), 120);
         const body = cleanGroupLlmText(ownValue(post, 'body'), 1_200);
         const tags = ownValue(post, 'tags');
-        if (!author || !topic || !title || !body || !names.has(author.normalize('NFKC').toLowerCase()) || !Array.isArray(tags) || tags.length > 6
+        if (!author || !topic || !title || !body || !isKnownForumChannelTopic(topic) || seenTopics.has(topic) || !names.has(author.normalize('NFKC').toLowerCase()) || !Array.isArray(tags) || tags.length > 6
             || !isSafeGroupLlmOutput(topic, 80) || !isSafeGroupLlmOutput(title, 120) || !isSafeGroupLlmOutput(body, 1_200)) return null;
+        seenTopics.add(topic);
         const cleanTags = [];
         for (const tag of tags) {
             const clean = cleanGroupLlmText(tag, 32);
@@ -227,10 +230,11 @@ function makeForumHomeMessages(context, promptPreset) {
     const preset = promptSections(promptPreset);
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
-        '你是现代现实都市线上约会软件的心动社区首页更新模型。只根据公开社区主题和公开人物资料，生成 1–6 篇适合首页展示的短帖子。',
+        '你是现代现实都市线上约会软件的心动社区首页更新模型。只根据公开社区主题和公开人物资料，为首页的全部固定频道生成短帖子。',
+        `每次刷新都必须且只能生成 ${FORUM_CHANNELS.length} 篇帖子：今日心情、附近的人、同城瞬间、兴趣同频、话题广场各一篇。posts 中的 topic 必须精确等于这五个频道名之一，五个频道不能遗漏、重复或自行改名；点击频道后会只显示对应 topic 的本地帖子。`,
         '可以使用 knownPeople 中已有人物的 nickname；如需新作者，必须先在 participants 给出其公开关键资料。participants 只放本次新出现的临时角色，已有角色不要重复。每位临时角色必须含 nickname、ageRange、gender、city、mbti、zodiac、occupation、interests、presence、matchRate。',
         '软件层只处理线上文字。不得演绎、确认或描述线下性行为；NSFW 不等于同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。',
-        '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"participants":[{"nickname":"","ageRange":"","gender":"","city":"","mbti":"","zodiac":"","occupation":"","interests":[""],"presence":"在线","matchRate":null}],"posts":[{"author":"knownPeople或participants昵称","topic":"1-80字","title":"1-120字","body":"1-1200字","tags":["1-32字"]}]}。不得输出 HTML、控制字符、UpdateVariable 或 JSONPatch。',
+        '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"participants":[{"nickname":"","ageRange":"","gender":"","city":"","mbti":"","zodiac":"","occupation":"","interests":[""],"presence":"在线","matchRate":null}],"posts":[{"author":"knownPeople或participants昵称","topic":"五个固定频道名之一","title":"1-120字","body":"1-1200字","tags":["1-32字"]}]}。不得输出 HTML、控制字符、UpdateVariable 或 JSONPatch。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
     ].filter(Boolean).join('\n\n');
     return Object.freeze([

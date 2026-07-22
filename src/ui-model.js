@@ -19,7 +19,7 @@ export const PAGE_COPY = Object.freeze({
     group_chat_room: { title: '聊天群', description: '', help: '自动更新仅在当前群打开时按设定秒数调用“聊天群”预设；关闭后改为玩家发言后更新。' },
     group_chat_create: { title: '创建聊天群', description: '群成员只可从已有私聊角色中选择；新群只保存公开资料快照到当前浏览器。', help: '不会建立新私聊、不会改动 MVU 群组或酒馆正文。' },
     group_chat_summary: { title: '聊天总结', description: '这份群聊总结仅保存在浏览器本地，不会写入 MVU。' },
-    group_forum: { title: '心动社区', description: '', help: '在首页下拉并松开才会调用“论坛”预设刷新帖子；首页本身不保存总结。' },
+    group_forum: { title: '心动社区', description: '', help: '顶部手机下拉松开、桌面向上滚轮停滚才会调用“论坛”预设；每次刷新会更新五个频道，点击频道仅查看对应本地帖子。首页本身不保存总结。' },
     forum_post: { title: '论坛帖子', description: '', help: '帖子讨论和临时评论者只保存在当前浏览器，不写入 MVU。' },
     forum_post_summary: { title: '聊天总结', description: '这份帖子讨论总结仅保存在浏览器本地，不会写入 MVU。' },
     profile: { title: '我的', description: '' },

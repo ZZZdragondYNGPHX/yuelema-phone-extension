@@ -67,6 +67,16 @@ function wheel(deltaY, deltaMode = 0) {
     return event;
 }
 
+function forumRefreshPosts(author, { cityTitle = '雨后的书店', cityBody = '想找一间适合安静看书的小店。' } = {}) {
+    return [
+        { author, topic: '今日心情', title: '今天的小确幸', body: '下班路上买到喜欢的甜点，想把好心情分享出来。', tags: ['日常', '心情'] },
+        { author, topic: '附近的人', title: '附近的晚风', body: '傍晚想在江边散步，欢迎同城朋友一起聊聊。', tags: ['附近', '散步'] },
+        { author, topic: '同城瞬间', title: cityTitle, body: cityBody, tags: ['书店', '同城'] },
+        { author, topic: '兴趣同频', title: '周末影展同好', body: '想找喜欢电影的人一起选一场周末影展。', tags: ['电影', '同好'] },
+        { author, topic: '话题广场', title: '你的治愈小事', body: '聊聊这一周让你感觉被治愈的瞬间吧。', tags: ['话题', '分享'] },
+    ];
+}
+
 test('chat group menu creates a browser-local room from private-chat public profiles and honors automatic-update mode', async () => {
     const events = [];
     const writes = { parse: 0, replace: 0, event: 0, groupUpdates: 0 };
@@ -275,7 +285,7 @@ test('about entry shows a version dialog and reveals the SFW/NSFW slider after f
             click(about());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /约了吗 0\.1\.26/u);
+            assert.match(dialog.textContent, /约了吗 0\.1\.27/u);
         }
         await flushUi();
 
@@ -330,13 +340,15 @@ test('summary archive lists private chats, local chat groups, and forum posts wh
     const group = await groupForumStore.createGroup({ name: '同城看展群', members: [member] });
     await groupForumStore.appendGroupUserMessage({ key: group.id, title: group.name, content: '周末一起看展吗？' });
     await groupForumStore.saveConversationSummary({ target: { kind: 'group', id: group.id }, startFloor: 1, endFloor: 1, content: '玩家在群内发出周末看展邀请。' });
-    const [post] = await groupForumStore.addForumRefresh({
+    const createdPosts = await groupForumStore.addForumRefresh({
         communityProfiles: [],
         update: {
             participants: [{ ...member, nickname: '许青', city: '杭州', mbti: 'ENFP', occupation: '插画师', interests: ['书店'] }],
-            posts: [{ author: '许青', topic: '同城瞬间', title: '雨后的书店', body: '想找安静看书的小店。', tags: ['书店'] }],
+            posts: forumRefreshPosts('许青'),
         },
     });
+    const post = createdPosts.find((item) => item.title === '雨后的书店');
+    assert.ok(post);
     await groupForumStore.appendForumUserComment({ postId: post.id, content: '周末会开放吗？' });
     await groupForumStore.saveConversationSummary({ target: { kind: 'post', id: post.id }, startFloor: 1, endFloor: 1, content: '玩家询问书店周末是否开放。' });
 
@@ -374,7 +386,7 @@ test('forum home only calls AI after an armed pull gesture, and opened posts upd
         emit() {}, isPending() { return false; },
         async generateForumHomeRefresh() {
             homeCalls += 1;
-            return { ok: true, communityProfiles: [], update: { participants: [temporaryProfile], posts: [{ author: '苏晴', topic: '同城瞬间', title: '雨后的书店', body: '想找一间适合安静看书的小店。', tags: ['书店', '同城'] }] } };
+            return { ok: true, communityProfiles: [], update: { participants: [temporaryProfile], posts: forumRefreshPosts('苏晴') } };
         },
         async generateForumPostConversationUpdate(request) {
             postCalls += 1;
@@ -415,8 +427,45 @@ test('forum home only calls AI after an armed pull gesture, and opened posts upd
         await flushUi();
         assert.equal(postCalls, 1);
         const snapshot = await groupForumStore.snapshot();
-        assert.equal(snapshot.posts[0].messages.length, 2);
+        assert.equal(snapshot.posts.find((post) => post.title === '雨后的书店')?.messages.length, 2);
         assert.doesNotMatch(JSON.stringify(snapshot), /session-secret|对象UID|stat_data/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('forum channel cards are actionable subareas and filter the local feed without issuing an extra AI request', async () => {
+    const profile = {
+        nickname: '许青', ageRange: '25-29', gender: '女', city: '杭州', mbti: 'ENFP', zodiac: '双鱼座', occupation: '插画师', interests: ['书店'], presence: '在线', matchRate: null,
+    };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    await groupForumStore.addForumRefresh({ communityProfiles: [], update: { participants: [profile], posts: forumRefreshPosts('许青') } });
+    let refreshCalls = 0;
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-channels',
+        actionBridge: { emit() {}, isPending() { return false; }, async generateForumHomeRefresh() { refreshCalls += 1; return { ok: false }; } },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('心动社区')));
+        const content = miniDom.document.querySelector('.yl-phone-content');
+        content.scrollTop = 48;
+        const mood = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('data-forum-channel') === 'daily_mood');
+        assert.ok(mood);
+        click(mood);
+        assert.equal(content.scrollTop, 0, '进入子区后应回到该频道列表顶部');
+        assert.match(miniDom.document.body.textContent, /今日心情 · 子区/u);
+        assert.match(miniDom.document.body.textContent, /今天的小确幸/u);
+        assert.doesNotMatch(miniDom.document.body.textContent, /雨后的书店/u);
+        const activeMood = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('data-forum-channel') === 'daily_mood');
+        assert.equal(activeMood.getAttribute('aria-pressed'), 'true');
+        assert.match(activeMood.getAttribute('aria-label'), /返回心动社区全部动态/u);
+        click(activeMood);
+        assert.match(miniDom.document.body.textContent, /雨后的书店/u);
+        assert.equal(refreshCalls, 0, '切换本地频道不应额外调用论坛 AI');
     } finally {
         mounted.destroy();
     }
@@ -444,7 +493,7 @@ test('desktop wheel pull refreshes only from the forum top after the wheel settl
             emit() {}, isPending() { return false; },
             async generateForumHomeRefresh() {
                 homeCalls += 1;
-                return { ok: true, communityProfiles: [], update: { participants: [temporaryProfile], posts: [{ author: '江晚', topic: '同城瞬间', title: '美术馆的午后', body: '想找一位同好一起看新展。', tags: ['展览'] }] } };
+                return { ok: true, communityProfiles: [], update: { participants: [temporaryProfile], posts: forumRefreshPosts('江晚', { cityTitle: '美术馆的午后', cityBody: '想找一位同好一起看新展。' }) } };
             },
         },
         settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
@@ -457,7 +506,7 @@ test('desktop wheel pull refreshes only from the forum top after the wheel settl
         const surface = miniDom.document.querySelector('.yl-forum-home');
 
         content.scrollTop = 24;
-        surface.dispatchEvent(wheel(-200));
+        content.dispatchEvent(wheel(-200));
         assert.equal(timers.length, 0, '非顶部滚轮不能开始刷新手势');
 
         content.scrollTop = 0;
@@ -465,21 +514,21 @@ test('desktop wheel pull refreshes only from the forum top after the wheel settl
         surface.dispatchEvent(pointer('pointermove', 120, 9, 'mouse'));
         surface.dispatchEvent(pointer('pointerup', 120, 9, 'mouse'));
         assert.equal(miniDom.document.querySelector('.yl-forum-pull-indicator').classList.contains('is-armed'), false, '桌面鼠标拖动不应替代滚轮刷新');
-        surface.dispatchEvent(wheel(-100));
-        surface.dispatchEvent(wheel(-100));
+        content.dispatchEvent(wheel(-100));
+        content.dispatchEvent(wheel(-100));
         const armed = miniDom.document.querySelector('.yl-forum-pull-indicator');
         assert.equal(armed.classList.contains('is-armed'), true);
         const cancelledTimer = timers.at(-1);
         assert.equal(cancelledTimer.delay, 180);
-        surface.dispatchEvent(wheel(40));
+        content.dispatchEvent(wheel(40));
         assert.equal(cancelledTimer.cleared, true);
         assert.equal(armed.classList.contains('is-visible'), false);
         cancelledTimer.callback();
         await flushUi();
         assert.equal(homeCalls, 0, '反向向下滚动必须取消本轮刷新');
 
-        surface.dispatchEvent(wheel(-100));
-        surface.dispatchEvent(wheel(-100));
+        content.dispatchEvent(wheel(-100));
+        content.dispatchEvent(wheel(-100));
         const releaseTimer = timers.at(-1);
         releaseTimer.callback();
         await flushUi();
