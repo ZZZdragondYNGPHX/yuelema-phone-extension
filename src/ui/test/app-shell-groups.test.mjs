@@ -77,6 +77,14 @@ function forumRefreshPosts(author, { cityTitle = '雨后的书店', cityBody = '
     ];
 }
 
+function connectionPreset(id, name = id) {
+    return {
+        id, name,
+        url: 'https://api.example.invalid/v1', model: `${id}-model`,
+        temperature: 0.6, maxTokens: 256, timeoutMs: 30_000, transportMode: 'json',
+    };
+}
+
 test('chat group menu creates a browser-local room from private-chat public profiles and honors automatic-update mode', async () => {
     const events = [];
     const writes = { parse: 0, replace: 0, event: 0, groupUpdates: 0 };
@@ -136,7 +144,10 @@ test('chat group menu creates a browser-local room from private-chat public prof
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '自动更新设置'));
         const enabled = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启聊天群自动更新');
         const seconds = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '自动更新时间秒数');
-        enabled.checked = true; seconds.value = '5';
+        assert.equal(seconds.disabled, true, '关闭自动更新时，秒数输入应不可编辑');
+        enabled.checked = true; enabled.dispatchEvent(new Event('change'));
+        assert.equal(seconds.disabled, false, '开启后，秒数输入应立即可编辑');
+        seconds.value = '5';
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确定'));
         await flushUi();
         const secondInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入群消息');
@@ -194,7 +205,10 @@ test('enabled group auto-update invokes the selected group AI on its configured 
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '自动更新设置'));
         const enabled = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启聊天群自动更新');
         const seconds = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '自动更新时间秒数');
-        enabled.checked = true; seconds.value = '5';
+        assert.equal(seconds.disabled, true);
+        enabled.checked = true; enabled.dispatchEvent(new Event('change'));
+        assert.equal(seconds.disabled, false);
+        seconds.value = '5';
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确定'));
         await flushUi();
         assert.equal(timers.length, 1);
@@ -213,7 +227,7 @@ test('enabled group auto-update invokes the selected group AI on its configured 
     }
 });
 
-test('group room right-top more menu exposes exit, clear-history, and per-group automatic settings without touching MVU', async () => {
+test('group room right-top more menu exposes exit, clear-history, automatic settings, and per-group presets without touching MVU', async () => {
     const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
     await groupForumStore.ready();
     const member = { nickname: '林澈', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '摄影师', interests: ['摄影'], presence: '在线', matchRate: null };
@@ -231,7 +245,7 @@ test('group room right-top more menu exposes exit, clear-history, and per-group 
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开菜单测试群'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开菜单测试群的更多操作'));
-        assert.match(miniDom.document.body.textContent, /退出群聊|清空群历史|自动更新设置/u);
+        assert.match(miniDom.document.body.textContent, /退出群聊|清空群历史|自动更新设置|预设/u);
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '清空群历史'));
         assert.match(miniDom.document.body.textContent, /只会删除聊天消息/u);
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '确认清空群历史'));
@@ -250,6 +264,50 @@ test('group room right-top more menu exposes exit, clear-history, and per-group 
         assert.equal(snapshot.groups.length, 0);
         assert.equal(snapshot.threads.length, 0);
         assert.equal(miniDom.document.body.textContent.includes('菜单测试群'), false);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('group preset binding is removed from the chat-group home and saved independently for each room', async () => {
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const member = { nickname: '林澈', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '摄影师', interests: ['摄影'], presence: '在线', matchRate: null };
+    const first = await groupForumStore.createGroup({ name: '预设甲群', members: [member] });
+    await groupForumStore.createGroup({ name: '预设乙群', members: [{ ...member, nickname: '周遥' }] });
+    const settingsStore = createSettingsStore({ storage: createMemoryStorage() });
+    settingsStore.addConnectionPreset(connectionPreset('group_conn', '群聊连接'));
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-group-local-binding',
+        actionBridge: { emit() {}, isPending() { return false; } }, settingsStore, llmClient: null,
+        characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
+        assert.equal(miniDom.document.querySelector('.yl-feature-options'), null, '聊天群首页不应再显示全局绑定设置');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === `打开${first.name}`));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === `打开${first.name}的更多操作`));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '预设'));
+        const firstConnection = miniDom.document.querySelector('[name="group_chat-quick-connection"]');
+        assert.ok(firstConnection, '预设应在具体群的更多菜单内打开');
+        firstConnection.value = 'group_conn';
+        const firstPrompt = miniDom.document.querySelector('[name="group_chat-quick-prompt"]');
+        firstPrompt.value = 'builtin_group_chat_sfw';
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '保存此功能绑定'));
+        await flushUi();
+        let snapshot = await groupForumStore.snapshot();
+        assert.deepEqual(snapshot.threads.find((thread) => thread.key === first.id)?.bindings.SFW, { connectionPresetId: 'group_conn', promptPresetId: 'builtin_group_chat_sfw' });
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关闭功能预设选项'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '返回'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开预设乙群'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开预设乙群的更多操作'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '预设'));
+        assert.equal(miniDom.document.querySelector('[name="group_chat-quick-connection"]').value, '', '另一群不应继承第一群的绑定');
+        snapshot = await groupForumStore.snapshot();
+        assert.equal(snapshot.threads.some((thread) => thread.key !== first.id && thread.bindings.SFW.connectionPresetId === 'group_conn'), false);
+        assert.equal(settingsStore.snapshot().functionModeBindings.group_chat.SFW.connectionPresetId, null, '群内绑定不能反写到全局设置仓库');
     } finally {
         mounted.destroy();
     }
@@ -329,7 +387,7 @@ test('about entry shows a version dialog and reveals the SFW/NSFW slider after f
             click(about());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /约了吗 0\.1\.28/u);
+            assert.match(dialog.textContent, /约了吗 0\.1\.29/u);
         }
         await flushUi();
 
@@ -531,6 +589,9 @@ test('heart community settings toggle updates all existing local posts on its ti
     const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
     await groupForumStore.ready();
     await groupForumStore.addForumRefresh({ communityProfiles: [], update: { participants: [profile], posts: forumRefreshPosts('顾宁') } });
+    const settingsStore = createSettingsStore({ storage: createMemoryStorage() });
+    settingsStore.addConnectionPreset(connectionPreset('channel_conn', '频道连接'));
+    settingsStore.addConnectionPreset(connectionPreset('post_conn', '帖子连接'));
     let homeCalls = 0;
     let existingCalls = 0;
     const mounted = mountPhoneApp({
@@ -543,19 +604,27 @@ test('heart community settings toggle updates all existing local posts on its ti
                 assert.equal(request.posts.length, 5);
                 return { ok: true, update: { updates: request.posts.map((post, index) => ({ slot: index + 1, title: `自动更新：${post.title}`, body: `这是第${index + 1}篇已有帖子的新内容。`, tags: ['自动更新'] })) } };
             },
-        }, settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+        }, settingsStore, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('心动社区')));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开心动社区设置'));
-        const enabled = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启心动社区自动更新');
-        enabled.checked = true;
+        const enabled = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启帖子自动更新');
+        const interval = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '帖子自动更新时间秒数');
+        assert.equal(interval.disabled, true, '关闭帖子自动更新时，秒数输入必须是灰色不可编辑');
+        enabled.checked = true; enabled.dispatchEvent(new Event('change'));
+        assert.equal(interval.disabled, false);
+        interval.value = '11';
+        miniDom.document.querySelector('[name="forum-channel-connection"]').value = 'channel_conn';
+        miniDom.document.querySelector('[name="forum-channel-prompt"]').value = 'builtin_forum_sfw';
+        miniDom.document.querySelector('[name="forum-post-connection"]').value = 'post_conn';
+        miniDom.document.querySelector('[name="forum-post-prompt"]').value = 'builtin_forum_sfw';
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确定'));
         await flushUi();
         assert.equal(timers.length, 1);
-        assert.equal(timers[0].delay, 30_000);
+        assert.equal(timers[0].delay, 11_000);
         timers[0].callback();
         await flushUi();
         const snapshot = await groupForumStore.snapshot();
@@ -564,6 +633,8 @@ test('heart community settings toggle updates all existing local posts on its ti
         assert.equal(snapshot.posts.length, 5);
         assert.match(snapshot.posts[0].title, /^自动更新：/u);
         assert.equal(snapshot.posts.every((post) => post.tags[0] === '自动更新'), true);
+        assert.deepEqual(snapshot.forumAuto.channelBindings.SFW, { connectionPresetId: 'channel_conn', promptPresetId: 'builtin_forum_sfw' });
+        assert.deepEqual(snapshot.forumAuto.postBindings.SFW, { connectionPresetId: 'post_conn', promptPresetId: 'builtin_forum_sfw' });
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '返回'));
         assert.equal(timers[0].cleared, true, '离开心动社区时必须停止既有帖子自动更新');
     } finally {
@@ -636,6 +707,90 @@ test('desktop wheel pull refreshes only from the forum top after the wheel settl
         await flushUi();
         assert.equal(homeCalls, 1, '顶部向上滚动达到阈值、停滚后才刷新');
         assert.match(miniDom.document.body.textContent, /美术馆的午后/u);
+    } finally {
+        mounted.destroy();
+        globalThis.setTimeout = previousSetTimeout;
+        globalThis.clearTimeout = previousClearTimeout;
+    }
+});
+
+test('forum top refresh replaces old posts and bottom loading appends posts only after reaching the end', async () => {
+    const previousSetTimeout = globalThis.setTimeout;
+    const previousClearTimeout = globalThis.clearTimeout;
+    const timers = [];
+    globalThis.setTimeout = (callback, delay) => {
+        const timer = { callback, delay, cleared: false };
+        timers.push(timer);
+        return timer;
+    };
+    globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
+    const oldProfile = { nickname: '旧作者', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '编辑', interests: ['阅读'], presence: '在线', matchRate: null };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const oldBatch = await groupForumStore.addForumRefresh({ communityProfiles: [], update: { participants: [oldProfile], posts: forumRefreshPosts('旧作者', { cityTitle: '旧帖子' }) } });
+    const oldPost = oldBatch.find((post) => post.title === '旧帖子');
+    await groupForumStore.appendForumUserComment({ postId: oldPost.id, content: '旧评论。' });
+    await groupForumStore.saveConversationSummary({ target: { kind: 'post', id: oldPost.id }, startFloor: 1, endFloor: 1, content: '旧总结。' });
+    const requests = [];
+    const freshProfile = { ...oldProfile, nickname: '新作者', occupation: '策展人' };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-replace-append',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async generateForumHomeRefresh(request) {
+                requests.push(request);
+                const prefix = request.refreshMode === 'replace' ? '替换' : '追加';
+                return {
+                    ok: true, communityProfiles: [],
+                    update: { participants: [freshProfile], posts: forumRefreshPosts('新作者', { cityTitle: `${prefix}新帖子` }).map((post) => ({ ...post, title: `${prefix}：${post.title}` })) },
+                };
+            },
+        }, settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('心动社区')));
+        const content = miniDom.document.querySelector('.yl-phone-content');
+        Object.defineProperties(content, {
+            clientHeight: { value: 100, configurable: true },
+            scrollHeight: { value: 500, configurable: true },
+            scrollTop: { value: 0, writable: true, configurable: true },
+        });
+        let surface = miniDom.document.querySelector('.yl-forum-home');
+        surface.dispatchEvent(pointer('pointerdown', 0, 31));
+        surface.dispatchEvent(pointer('pointermove', 104, 31));
+        surface.dispatchEvent(pointer('pointerup', 104, 31));
+        await flushUi();
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0].refreshMode, 'replace');
+        let snapshot = await groupForumStore.snapshot();
+        assert.equal(snapshot.posts.length, 5);
+        assert.equal(snapshot.posts.some((post) => post.id === oldPost.id), false, '顶部刷新成功后应删除旧帖和总结');
+        assert.equal((await groupForumStore.getSummaryHistory()).posts.some((entry) => entry.id === oldPost.id), false);
+
+        content.scrollTop = 400;
+        surface = miniDom.document.querySelector('.yl-forum-home');
+        content.dispatchEvent(wheel(100));
+        const cancelled = timers.at(-1);
+        content.dispatchEvent(wheel(-40));
+        assert.equal(cancelled.cleared, true, '到底后的反向滚轮必须取消追加');
+        cancelled.callback();
+        await flushUi();
+        assert.equal(requests.length, 1);
+
+        content.scrollTop = 400;
+        content.dispatchEvent(wheel(100));
+        content.dispatchEvent(wheel(100));
+        const release = timers.at(-1);
+        release.callback();
+        await flushUi();
+        assert.equal(requests.length, 2);
+        assert.equal(requests[1].refreshMode, 'append');
+        snapshot = await groupForumStore.snapshot();
+        assert.equal(snapshot.posts.length, 10, '底部加载应保留五篇旧帖并追加五篇新帖');
+        assert.equal(snapshot.posts.some((post) => post.title === '替换：替换新帖子'), true);
+        assert.equal(snapshot.posts.some((post) => post.title === '追加：追加新帖子'), true);
     } finally {
         mounted.destroy();
         globalThis.setTimeout = previousSetTimeout;

@@ -240,19 +240,17 @@ test('feature option entries are scoped to each requested app surface', () => {
         closeBinding();
 
         click(buttonByPage('groups'));
-        click(pageOption());
-        assert.ok(miniDom.document.querySelector('[name="group_chat-quick-connection"]'));
-        assert.ok(miniDom.document.querySelector('[name="forum-quick-connection"]'));
-        closeBinding();
+        assert.equal(pageOption(), null, '群组首页不应再提供聊天群/论坛的全局绑定设置');
         click(buttonByText('聊天群'));
-        click(pageOption());
-        assert.ok(miniDom.document.querySelector('[name="group_chat-quick-connection"]'));
-        closeBinding();
+        assert.equal(pageOption(), null, '聊天群首页不应再提供全局绑定设置');
         click(backButton());
         click(buttonByText('心动社区'));
         click(pageOption());
-        assert.ok(miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启心动社区自动更新'));
-        assert.ok(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '配置心动社区内容提示词预设'));
+        assert.ok(miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启帖子自动更新'));
+        assert.ok(miniDom.document.querySelector('[name="forum-channel-connection"]'));
+        assert.ok(miniDom.document.querySelector('[name="forum-channel-prompt"]'));
+        assert.ok(miniDom.document.querySelector('[name="forum-post-connection"]'));
+        assert.ok(miniDom.document.querySelector('[name="forum-post-prompt"]'));
         assert.equal(miniDom.document.querySelector('[name="forum-quick-connection"]'), null);
         closeForumSettings();
 

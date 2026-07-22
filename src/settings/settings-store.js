@@ -626,19 +626,34 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         return persist(next);
     }
 
-    function resolveFunction(functionKey, { contentMode } = {}) {
+    /**
+     * Resolves the normal settings binding, optionally overlaying a browser-local
+     * group/forum binding. The overlay is never persisted in this settings
+     * document, so group/forum choices cannot leak into exports or MVU state.
+     */
+    function resolveFunction(functionKey, { contentMode, binding: localBindingInput } = {}) {
         if (!FUNCTION_KEYS.includes(functionKey)) fail('UNKNOWN_FUNCTION', '不支持该功能绑定。');
         const source = current();
         const binding = source.functionBindings[functionKey];
         const selectedContentMode = contentMode === undefined ? null : cleanContentMode(contentMode);
         const modeBinding = selectedContentMode === null ? null : source.functionModeBindings[functionKey][selectedContentMode];
-        const connectionPresetId = modeBinding?.connectionPresetId ?? binding.connectionPresetId ?? source.defaults.connectionPresetId;
+        const localBinding = localBindingInput === undefined ? null : normalizeBinding(localBindingInput);
+        if (localBinding !== null) {
+            validateBindingPresetReferences(
+                localBinding,
+                `${functionKey}/local`,
+                new Set(source.connectionPresets.map((preset) => preset.id)),
+                new Map(source.promptPresets.map((preset) => [preset.id, preset])),
+                selectedContentMode,
+            );
+        }
+        const connectionPresetId = localBinding?.connectionPresetId ?? modeBinding?.connectionPresetId ?? binding.connectionPresetId ?? source.defaults.connectionPresetId;
         // Live AI functions always declare a content mode. Do not fall through
         // to a global prompt here: that would make a SFW preset usable in NSFW
         // (or the reverse) merely because a mode-specific choice was cleared.
         const promptPresetId = selectedContentMode === null
-            ? binding.promptPresetId ?? source.defaults.promptPresetId
-            : modeBinding?.promptPresetId ?? null;
+            ? localBinding?.promptPresetId ?? binding.promptPresetId ?? source.defaults.promptPresetId
+            : localBinding?.promptPresetId ?? modeBinding?.promptPresetId ?? null;
         return Object.freeze({
             functionKey,
             contentMode: selectedContentMode,
@@ -647,6 +662,7 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
             usedDefaultConnectionPreset: modeBinding?.connectionPresetId == null && binding.connectionPresetId === null,
             usedDefaultPromptPreset: selectedContentMode === null && binding.promptPresetId === null,
             usedModeBinding: modeBinding !== null,
+            usedLocalBinding: localBinding !== null,
         });
     }
 

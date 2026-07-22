@@ -9,7 +9,7 @@
  */
 
 export const GROUP_FORUM_SCHEMA_ID = 'yuelema.group-forum';
-export const GROUP_FORUM_SCHEMA_VERSION = 2;
+export const GROUP_FORUM_SCHEMA_VERSION = 3;
 // Keep the established key so schema v1 browser caches can be migrated in place.
 export const GROUP_FORUM_STORAGE_KEY = 'yuelema.group-forum.v1';
 export const MAX_LOCAL_GROUPS = 24;
@@ -19,10 +19,18 @@ export const MAX_POST_MESSAGES = 240;
 export const MAX_CONVERSATION_SUMMARIES = 64;
 export const MAX_GROUP_FORUM_SERIALIZED_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_GROUP_AUTO_SETTINGS = Object.freeze({ enabled: false, intervalSeconds: 30 });
-export const DEFAULT_FORUM_AUTO_SETTINGS = Object.freeze({ enabled: false });
-// Forum automatic updates deliberately use one bounded, code-owned cadence.
-// The UI exposes only its on/off setting; new posts remain pull-to-refresh only.
-export const FORUM_AUTO_UPDATE_INTERVAL_SECONDS = 30;
+const LOCAL_CONTENT_MODES = Object.freeze(['SFW', 'NSFW']);
+const EMPTY_LOCAL_BINDING = Object.freeze({ connectionPresetId: null, promptPresetId: null });
+const DEFAULT_LOCAL_MODE_BINDINGS = Object.freeze({
+    SFW: EMPTY_LOCAL_BINDING,
+    NSFW: EMPTY_LOCAL_BINDING,
+});
+export const DEFAULT_FORUM_AUTO_SETTINGS = Object.freeze({
+    enabled: false,
+    intervalSeconds: 30,
+    channelBindings: DEFAULT_LOCAL_MODE_BINDINGS,
+    postBindings: DEFAULT_LOCAL_MODE_BINDINGS,
+});
 /** Fixed homepage sections. A complete AI refresh must update each one once. */
 export const FORUM_CHANNELS = Object.freeze([
     Object.freeze({ id: 'daily_mood', icon: '＋', title: '今日心情', note: '记录此刻' }),
@@ -252,10 +260,59 @@ export function normalizeGroupAutoSettings(value) {
     return { enabled: value.enabled, intervalSeconds: safeInteger(value.intervalSeconds, 5, 3600, 'INVALID_AUTO_SETTINGS') };
 }
 
-export function normalizeForumAutoSettings(value) {
-    assertExactObject(value, new Set(['enabled']), new Set(['enabled']), 'INVALID_FORUM_AUTO_SETTINGS');
+function defaultLocalBinding() {
+    return { connectionPresetId: null, promptPresetId: null };
+}
+
+function defaultLocalModeBindings() {
+    return { SFW: defaultLocalBinding(), NSFW: defaultLocalBinding() };
+}
+
+function defaultForumAutoSettings() {
+    return {
+        enabled: false,
+        intervalSeconds: 30,
+        channelBindings: defaultLocalModeBindings(),
+        postBindings: defaultLocalModeBindings(),
+    };
+}
+
+function normalizeOptionalPresetId(value, code) {
+    if (value === null) return null;
+    if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/u.test(value)) fail(code);
+    return value;
+}
+
+export function normalizeLocalPresetBinding(value, code = 'INVALID_LOCAL_BINDING') {
+    assertExactObject(value, new Set(['connectionPresetId', 'promptPresetId']), new Set(['connectionPresetId', 'promptPresetId']), code);
+    return {
+        connectionPresetId: normalizeOptionalPresetId(ownData(value, 'connectionPresetId', code), code),
+        promptPresetId: normalizeOptionalPresetId(ownData(value, 'promptPresetId', code), code),
+    };
+}
+
+function normalizeLocalModeBindings(value, code = 'INVALID_LOCAL_BINDING') {
+    assertExactObject(value, new Set(LOCAL_CONTENT_MODES), new Set(LOCAL_CONTENT_MODES), code);
+    return Object.fromEntries(LOCAL_CONTENT_MODES.map((contentMode) => [
+        contentMode,
+        normalizeLocalPresetBinding(ownData(value, contentMode, code), code),
+    ]));
+}
+
+export function normalizeForumAutoSettings(value, { legacy = false } = {}) {
+    if (legacy) {
+        assertExactObject(value, new Set(['enabled']), new Set(['enabled']), 'INVALID_FORUM_AUTO_SETTINGS');
+        if (typeof value.enabled !== 'boolean') fail('INVALID_FORUM_AUTO_SETTINGS');
+        return { ...defaultForumAutoSettings(), enabled: value.enabled };
+    }
+    assertExactObject(value, new Set(['enabled', 'intervalSeconds', 'channelBindings', 'postBindings']), new Set(['enabled', 'intervalSeconds', 'channelBindings', 'postBindings']), 'INVALID_FORUM_AUTO_SETTINGS');
     if (typeof value.enabled !== 'boolean') fail('INVALID_FORUM_AUTO_SETTINGS');
-    return { enabled: value.enabled };
+    return {
+        enabled: value.enabled,
+        intervalSeconds: safeInteger(ownData(value, 'intervalSeconds', 'INVALID_FORUM_AUTO_SETTINGS'), 5, 3600, 'INVALID_FORUM_AUTO_SETTINGS'),
+        channelBindings: normalizeLocalModeBindings(ownData(value, 'channelBindings', 'INVALID_FORUM_AUTO_SETTINGS'), 'INVALID_FORUM_AUTO_SETTINGS'),
+        postBindings: normalizeLocalModeBindings(ownData(value, 'postBindings', 'INVALID_FORUM_AUTO_SETTINGS'), 'INVALID_FORUM_AUTO_SETTINGS'),
+    };
 }
 
 function normalizeTargetKey(value) {
@@ -311,8 +368,11 @@ function normalizeSummaryStatus(value) {
     };
 }
 
-function normalizeThread(value) {
-    assertExactObject(value, new Set(['key', 'title', 'auto', 'temporaryMembers', 'messages', 'summaries', 'summaryStatus']), new Set(['key', 'title', 'auto', 'temporaryMembers', 'messages', 'summaries', 'summaryStatus']), 'INVALID_DOCUMENT');
+function normalizeThread(value, { legacy = false } = {}) {
+    const fields = legacy
+        ? new Set(['key', 'title', 'auto', 'temporaryMembers', 'messages', 'summaries', 'summaryStatus'])
+        : new Set(['key', 'title', 'auto', 'bindings', 'temporaryMembers', 'messages', 'summaries', 'summaryStatus']);
+    assertExactObject(value, fields, fields, 'INVALID_DOCUMENT');
     const temporaryMembers = ownData(value, 'temporaryMembers', 'INVALID_DOCUMENT');
     const messages = ownData(value, 'messages', 'INVALID_DOCUMENT');
     const summaries = ownData(value, 'summaries', 'INVALID_DOCUMENT');
@@ -334,6 +394,7 @@ function normalizeThread(value) {
         key: normalizeTargetKey(ownData(value, 'key', 'INVALID_DOCUMENT')),
         title: safeText(ownData(value, 'title', 'INVALID_DOCUMENT'), 120),
         auto: normalizeGroupAutoSettings(ownData(value, 'auto', 'INVALID_DOCUMENT')),
+        bindings: legacy ? defaultLocalModeBindings() : normalizeLocalModeBindings(ownData(value, 'bindings', 'INVALID_DOCUMENT'), 'INVALID_DOCUMENT'),
         temporaryMembers: normalizedMembers,
         messages: normalizedMessages,
         summaries: normalizedSummaries,
@@ -424,7 +485,7 @@ function makeDefaultDocument() {
         groups: [],
         threads: [],
         posts: [],
-        forumAuto: { ...DEFAULT_FORUM_AUTO_SETTINGS },
+        forumAuto: defaultForumAutoSettings(),
         exitedExternalGroupKeys: [],
     };
 }
@@ -432,9 +493,10 @@ function makeDefaultDocument() {
 function normalizeDocument(value) {
     if (!isPlainRecord(value)) fail('INVALID_DOCUMENT');
     const schemaVersion = ownData(value, 'schemaVersion', 'INVALID_DOCUMENT');
-    if (schemaVersion !== 1 && schemaVersion !== GROUP_FORUM_SCHEMA_VERSION) fail('UNSUPPORTED_VERSION');
-    const isLegacy = schemaVersion === 1;
-    const documentFields = isLegacy
+    if (![1, 2, GROUP_FORUM_SCHEMA_VERSION].includes(schemaVersion)) fail('UNSUPPORTED_VERSION');
+    const isV1 = schemaVersion === 1;
+    const isLegacy = schemaVersion !== GROUP_FORUM_SCHEMA_VERSION;
+    const documentFields = isV1
         ? new Set(['schema', 'schemaVersion', 'nextId', 'groups', 'threads', 'posts'])
         : new Set(['schema', 'schemaVersion', 'nextId', 'groups', 'threads', 'posts', 'forumAuto', 'exitedExternalGroupKeys']);
     assertExactObject(value, documentFields, documentFields, 'INVALID_DOCUMENT');
@@ -449,7 +511,7 @@ function normalizeDocument(value) {
         if (groupIds.has(group.id)) fail('INVALID_DOCUMENT');
         groupIds.add(group.id);
     }
-    const normalizedThreads = threads.map(normalizeThread);
+    const normalizedThreads = threads.map((thread) => normalizeThread(thread, { legacy: isLegacy }));
     const keys = new Set();
     for (const thread of normalizedThreads) {
         if (keys.has(thread.key)) fail('INVALID_DOCUMENT');
@@ -462,7 +524,7 @@ function normalizeDocument(value) {
         if (postIds.has(post.id)) fail('INVALID_DOCUMENT');
         postIds.add(post.id);
     }
-    const exitedExternalGroupKeys = isLegacy ? [] : (() => {
+    const exitedExternalGroupKeys = isV1 ? [] : (() => {
         const input = ownData(value, 'exitedExternalGroupKeys', 'INVALID_DOCUMENT');
         if (!Array.isArray(input) || input.length > MAX_LOCAL_GROUPS * 3) fail('INVALID_DOCUMENT');
         const seen = new Set();
@@ -479,7 +541,7 @@ function normalizeDocument(value) {
         groups: normalizedGroups,
         threads: normalizedThreads,
         posts: normalizedPosts,
-        forumAuto: isLegacy ? { ...DEFAULT_FORUM_AUTO_SETTINGS } : normalizeForumAutoSettings(ownData(value, 'forumAuto', 'INVALID_DOCUMENT')),
+        forumAuto: isV1 ? defaultForumAutoSettings() : normalizeForumAutoSettings(ownData(value, 'forumAuto', 'INVALID_DOCUMENT'), { legacy: schemaVersion === 2 }),
         exitedExternalGroupKeys,
     };
 }
@@ -696,6 +758,7 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
             key: normalizedKey,
             title: safeText(title, 120),
             auto: { ...DEFAULT_GROUP_AUTO_SETTINGS },
+            bindings: defaultLocalModeBindings(),
             temporaryMembers: [], messages: [], summaries: [],
             summaryStatus: { status: 'idle', startFloor: 0, endFloor: 0, message: '' },
         };
@@ -784,6 +847,19 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
         });
     }
 
+    /** Saves one group's local SFW/NSFW preset reference without touching global settings or MVU. */
+    async function setGroupBinding({ key, title, contentMode, binding } = {}) {
+        return enqueue(async () => {
+            await ensureLoaded();
+            if (!LOCAL_CONTENT_MODES.includes(contentMode)) fail('INVALID_CONTENT_MODE');
+            const next = clone(document);
+            const thread = threadFor(next, key, title);
+            thread.bindings[contentMode] = normalizeLocalPresetBinding(binding);
+            await commit(next);
+            return project(thread);
+        });
+    }
+
     /** Deletes only browser-local group transcript-derived data, keeping the group and its per-group automatic setting. */
     async function clearGroupHistory({ key, title } = {}) {
         return enqueue(async () => {
@@ -854,7 +930,7 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
         });
     }
 
-    async function addForumRefresh({ update, communityProfiles = [] } = {}) {
+    async function saveForumRefresh({ update, communityProfiles = [], replace = false } = {}) {
         return enqueue(async () => {
             await ensureLoaded();
             if (!Array.isArray(communityProfiles)) fail('INVALID_FORUM_REFRESH');
@@ -866,9 +942,12 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
             }
             for (const profile of normalized.participants) known.set(profile.nickname.normalize('NFKC').toLowerCase(), profile);
             const next = clone(document);
+            // A top replacement refresh intentionally discards the full old
+            // post object, including comments and local summary records.
+            if (replace) next.posts = [];
+            if (next.posts.length + normalized.posts.length > MAX_FORUM_POSTS) fail('POST_LIMIT_REACHED');
             const created = [];
             for (const draft of normalized.posts) {
-                if (next.posts.length >= MAX_FORUM_POSTS) fail('POST_LIMIT_REACHED');
                 const author = known.get(draft.author.normalize('NFKC').toLowerCase());
                 if (!author) fail('MODEL_SPEAKER_UNKNOWN');
                 const participants = normalized.participants.filter((profile) => profile.nickname !== author.nickname);
@@ -883,6 +962,16 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
             await commit(next);
             return project(created);
         });
+    }
+
+    /** Bottom loading appends a fresh fixed five-channel batch while retaining all old posts and summaries. */
+    async function addForumRefresh(input = {}) {
+        return saveForumRefresh({ ...input, replace: false });
+    }
+
+    /** Top pull refresh replaces every old local post, so old comments and summaries disappear with those posts. */
+    async function replaceForumPosts(input = {}) {
+        return saveForumRefresh({ ...input, replace: true });
     }
 
     /** Replaces visible copy for every existing local forum post without creating any new post. */
@@ -992,12 +1081,14 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
         snapshot,
         createGroup,
         setGroupAuto,
+        setGroupBinding,
         clearGroupHistory,
         exitGroup,
         setForumAuto,
         appendGroupUserMessage,
         appendGroupModelUpdate,
         addForumRefresh,
+        replaceForumPosts,
         updateExistingForumPosts,
         appendForumUserComment,
         appendForumModelUpdate,

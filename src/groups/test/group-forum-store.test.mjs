@@ -77,6 +77,7 @@ test('browser-local group/forum store persists groups, temporary people, convers
     assert.equal(snapshot.groups.length, 1);
     assert.equal(snapshot.threads[0].auto.enabled, true);
     assert.equal(snapshot.threads[0].auto.intervalSeconds, 30);
+    assert.deepEqual(snapshot.threads[0].bindings.SFW, { connectionPresetId: null, promptPresetId: null });
     assert.equal(snapshot.threads[0].temporaryMembers[0].nickname, '周遥');
     assert.equal(snapshot.threads[0].messages.length, 2);
     assert.equal(snapshot.posts.length, 5);
@@ -103,19 +104,31 @@ test('group history can be cleared independently, leaving deletes browser-local 
     const store = createGroupForumStore({ storage, now: CLOCK });
     const migrated = await store.ready();
     assert.equal(migrated.schemaVersion, GROUP_FORUM_SCHEMA_VERSION);
-    assert.deepEqual(migrated.forumAuto, { enabled: false });
+    assert.equal(migrated.forumAuto.enabled, false);
+    assert.equal(migrated.forumAuto.intervalSeconds, 30);
+    assert.deepEqual(migrated.forumAuto.channelBindings.SFW, { connectionPresetId: null, promptPresetId: null });
 
     const group = await store.createGroup({ name: '清理测试群', members: [profile('林澈')] });
     await store.appendGroupUserMessage({ key: group.id, title: group.name, content: '这条消息会被清空。' });
     await store.setGroupAuto({ key: group.id, title: group.name, settings: { enabled: true, intervalSeconds: 45 } });
+    await store.setGroupBinding({ key: group.id, title: group.name, contentMode: 'SFW', binding: { connectionPresetId: 'conn_group', promptPresetId: 'prompt_group_sfw' } });
     await store.clearGroupHistory({ key: group.id, title: group.name });
     let snapshot = await store.snapshot();
     assert.equal(snapshot.groups.length, 1);
     assert.equal(snapshot.threads[0].messages.length, 0);
     assert.equal(snapshot.threads[0].auto.intervalSeconds, 45);
+    assert.deepEqual(snapshot.threads[0].bindings.SFW, { connectionPresetId: 'conn_group', promptPresetId: 'prompt_group_sfw' });
 
-    await store.setForumAuto({ settings: { enabled: true } });
-    assert.deepEqual((await store.snapshot()).forumAuto, { enabled: true });
+    await store.setForumAuto({ settings: {
+        enabled: true, intervalSeconds: 18,
+        channelBindings: { SFW: { connectionPresetId: 'conn_channel', promptPresetId: 'prompt_channel_sfw' }, NSFW: { connectionPresetId: null, promptPresetId: null } },
+        postBindings: { SFW: { connectionPresetId: 'conn_post', promptPresetId: 'prompt_post_sfw' }, NSFW: { connectionPresetId: null, promptPresetId: null } },
+    } });
+    assert.deepEqual((await store.snapshot()).forumAuto, {
+        enabled: true, intervalSeconds: 18,
+        channelBindings: { SFW: { connectionPresetId: 'conn_channel', promptPresetId: 'prompt_channel_sfw' }, NSFW: { connectionPresetId: null, promptPresetId: null } },
+        postBindings: { SFW: { connectionPresetId: 'conn_post', promptPresetId: 'prompt_post_sfw' }, NSFW: { connectionPresetId: null, promptPresetId: null } },
+    });
     await store.exitGroup({ key: group.id });
     snapshot = await store.snapshot();
     assert.equal(snapshot.groups.length, 0);
@@ -123,6 +136,22 @@ test('group history can be cleared independently, leaving deletes browser-local 
 
     await store.exitGroup({ key: 'ext_1234abcd' });
     assert.deepEqual((await store.snapshot()).exitedExternalGroupKeys, ['ext_1234abcd']);
+});
+
+test('v0.1.28 local cache migrates old forum and group settings to independent bindings', async () => {
+    const storage = createMemoryGroupForumStorage();
+    await storage.setItem(GROUP_FORUM_STORAGE_KEY, JSON.stringify({
+        schema: 'yuelema.group-forum', schemaVersion: 2, nextId: 1,
+        groups: [], threads: [], posts: [], forumAuto: { enabled: true }, exitedExternalGroupKeys: [],
+    }));
+    const store = createGroupForumStore({ storage, now: CLOCK });
+    const migrated = await store.ready();
+    assert.equal(migrated.schemaVersion, 3);
+    assert.deepEqual(migrated.forumAuto, {
+        enabled: true, intervalSeconds: 30,
+        channelBindings: { SFW: { connectionPresetId: null, promptPresetId: null }, NSFW: { connectionPresetId: null, promptPresetId: null } },
+        postBindings: { SFW: { connectionPresetId: null, promptPresetId: null }, NSFW: { connectionPresetId: null, promptPresetId: null } },
+    });
 });
 
 test('forum automatic update replaces every existing post copy without creating a post or touching conversations', async () => {
@@ -143,6 +172,33 @@ test('forum automatic update replaces every existing post copy without creating 
         store.updateExistingForumPosts({ update: { updates: [{ slot: 1, title: '不完整', body: '不应写入。', tags: [] }] } }),
         (error) => error instanceof GroupForumStoreError && error.code === 'INVALID_FORUM_EXISTING_UPDATE',
     );
+});
+
+test('top replacement discards old local posts and summaries while bottom append retains them', async () => {
+    const store = createGroupForumStore({ now: CLOCK });
+    await store.ready();
+    const firstBatch = await store.addForumRefresh({ communityProfiles: [profile('林澈')], update: { participants: [], posts: forumRefreshPosts('林澈') } });
+    const oldPost = firstBatch.find((post) => post.title === '雨后的书店');
+    await store.appendForumUserComment({ postId: oldPost.id, content: '旧帖评论。' });
+    await store.saveConversationSummary({ target: { kind: 'post', id: oldPost.id }, startFloor: 1, endFloor: 1, content: '旧帖总结。' });
+
+    await store.replaceForumPosts({
+        communityProfiles: [profile('许青')],
+        update: { participants: [], posts: forumRefreshPosts('许青').map((post) => ({ ...post, title: `替换：${post.title}` })) },
+    });
+    let snapshot = await store.snapshot();
+    assert.equal(snapshot.posts.length, 5);
+    assert.equal(snapshot.posts.some((post) => post.id === oldPost.id), false, '替换必须删除旧帖子及其对话/总结');
+    assert.equal((await store.getSummaryHistory()).posts.some((entry) => entry.id === oldPost.id), false);
+
+    await store.addForumRefresh({
+        communityProfiles: [profile('周遥')],
+        update: { participants: [], posts: forumRefreshPosts('周遥').map((post) => ({ ...post, title: `追加：${post.title}` })) },
+    });
+    snapshot = await store.snapshot();
+    assert.equal(snapshot.posts.length, 10);
+    assert.equal(snapshot.posts.some((post) => post.title === '替换：雨后的书店'), true, '追加必须保留旧帖子');
+    assert.equal(snapshot.posts.some((post) => post.title === '追加：雨后的书店'), true);
 });
 
 test('store rejects minor temporary profiles and derives existing group cache keys from public presentation only', async () => {

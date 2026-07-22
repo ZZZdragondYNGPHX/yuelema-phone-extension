@@ -604,56 +604,56 @@ export function createActionBridge({
     }
 
     /** Reads MVU only for a public projection, then generates a browser-local group update. */
-    async function generateGroupConversationUpdate({ group, history, trigger = 'user', signal } = {}) {
+    async function generateGroupConversationUpdate({ group, history, trigger = 'user', binding, signal } = {}) {
         const key = actionKey('group_chat_update', typeof group?.cacheKey === 'string' ? group.cacheKey : '');
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
         pending.add(key);
         try {
             const read = readLatestState({ mvu: resolveMvu(mvu) });
             if (!read.ok) return read;
-            return await generateGroupChatUpdateService({ state: read.state, group, history, trigger, settingsStore, llmClient, signal });
+            return await generateGroupChatUpdateService({ state: read.state, group, history, trigger, binding, settingsStore, llmClient, signal });
         } finally {
             pending.delete(key);
         }
     }
 
     /** The forum home is refreshed only by the UI's armed pull gesture; it remains local data. */
-    async function generateForumHomeRefresh({ existingTitles, signal } = {}) {
+    async function generateForumHomeRefresh({ existingTitles, refreshMode = 'append', binding, signal } = {}) {
         const key = actionKey('forum_home_refresh', '');
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
         pending.add(key);
         try {
             const read = readLatestState({ mvu: resolveMvu(mvu) });
             if (!read.ok) return read;
-            return await generateForumHomeRefreshService({ state: read.state, existingTitles, settingsStore, llmClient, signal });
+            return await generateForumHomeRefreshService({ state: read.state, existingTitles, refreshMode, binding, settingsStore, llmClient, signal });
         } finally {
             pending.delete(key);
         }
     }
 
     /** Updates the current browser-local forum posts without creating new ones. */
-    async function generateForumExistingPostsUpdate({ posts, signal } = {}) {
+    async function generateForumExistingPostsUpdate({ posts, binding, signal } = {}) {
         const key = actionKey('forum_existing_update', '');
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
         pending.add(key);
         try {
             const read = readLatestState({ mvu: resolveMvu(mvu) });
             if (!read.ok) return read;
-            return await generateForumExistingPostsUpdateService({ state: read.state, posts, settingsStore, llmClient, signal });
+            return await generateForumExistingPostsUpdateService({ state: read.state, posts, binding, settingsStore, llmClient, signal });
         } finally {
             pending.delete(key);
         }
     }
 
     /** Generates local-only comment updates for an opened forum post. */
-    async function generateForumPostConversationUpdate({ postId, post, history, signal } = {}) {
+    async function generateForumPostConversationUpdate({ postId, post, history, binding, signal } = {}) {
         const key = actionKey('forum_post_update', postId);
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
         pending.add(key);
         try {
             const read = readLatestState({ mvu: resolveMvu(mvu) });
             if (!read.ok) return read;
-            return await generateForumPostConversationUpdateService({ state: read.state, post, history, settingsStore, llmClient, signal });
+            return await generateForumPostConversationUpdateService({ state: read.state, post, history, binding, settingsStore, llmClient, signal });
         } finally {
             pending.delete(key);
         }

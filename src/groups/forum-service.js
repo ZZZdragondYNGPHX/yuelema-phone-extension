@@ -228,11 +228,11 @@ function normalizeForumHomeUpdate(value, knownPeople) {
     return Object.freeze({ participants: Object.freeze(normalizedParticipants), posts: Object.freeze(normalizedPosts) });
 }
 
-function makeForumHomeMessages(context, promptPreset) {
+function makeForumHomeMessages(context, promptPreset, refreshMode = 'append') {
     const preset = promptSections(promptPreset);
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
-        '你是现代现实都市线上约会软件的心动社区首页更新模型。只根据公开社区主题和公开人物资料，为首页的全部固定频道生成短帖子。',
+        `你是现代现实都市线上约会软件的心动社区首页更新模型。只根据公开社区主题和公开人物资料，为首页的全部固定频道生成短帖子。本次是${refreshMode === 'replace' ? '顶部替换刷新，生成成功后程序会删除旧本地帖子及其总结' : '底部追加刷新，程序会保留旧本地帖子并追加新帖子'}。`,
         `每次刷新都必须且只能生成 ${FORUM_CHANNELS.length} 篇帖子：今日心情、附近的人、同城瞬间、兴趣同频、话题广场各一篇。posts 中的 topic 必须精确等于这五个频道名之一，五个频道不能遗漏、重复或自行改名；点击频道后会只显示对应 topic 的本地帖子。`,
         '可以使用 knownPeople 中已有人物的 nickname；如需新作者，必须先在 participants 给出其公开关键资料。participants 只放本次新出现的临时角色，已有角色不要重复。每位临时角色必须含 nickname、ageRange、gender、city、mbti、zodiac、occupation、interests、presence、matchRate。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
@@ -246,18 +246,19 @@ function makeForumHomeMessages(context, promptPreset) {
     ]);
 }
 
-/** Calls the forum binding only after a deliberate, armed pull-to-refresh gesture. */
-export async function generateForumHomeRefresh({ state, existingTitles, settingsStore, llmClient, signal } = {}) {
+/** Calls the channel binding only after a deliberate, armed top/bottom refresh gesture. */
+export async function generateForumHomeRefresh({ state, existingTitles, refreshMode = 'append', binding, settingsStore, llmClient, signal } = {}) {
     const built = buildForumHomeRefreshContext({ state, existingTitles });
     if (!built.ok) return built;
+    if (!['replace', 'append'].includes(refreshMode)) return updateFailure('forum_home_context_invalid');
     if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return updateFailure('forum_update_settings_unavailable');
     if (!llmClient || typeof llmClient.chat !== 'function') return updateFailure('forum_update_llm_unavailable');
     let resolved;
-    try { resolved = settingsStore.resolveFunction('forum', { contentMode: built.context.contentMode }); }
+    try { resolved = settingsStore.resolveFunction('forum', { contentMode: built.context.contentMode, binding }); }
     catch { return updateFailure('forum_update_settings_invalid'); }
     if (!resolved?.connectionPreset) return updateFailure('forum_update_connection_missing');
     try {
-        const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeForumHomeMessages(built.context, resolved.promptPreset), signal });
+        const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeForumHomeMessages(built.context, resolved.promptPreset, refreshMode), signal });
         const parsed = parseGroupLlmJson(completion?.text);
         if (!parsed) return updateFailure('forum_update_invalid_json');
         const update = normalizeForumHomeUpdate(parsed, built.context.knownPeople);
@@ -361,13 +362,13 @@ function makeForumExistingPostsMessages(context, promptPreset) {
 }
 
 /** Calls the forum binding to update existing local posts only; it never creates a post. */
-export async function generateForumExistingPostsUpdate({ state, posts, settingsStore, llmClient, signal } = {}) {
+export async function generateForumExistingPostsUpdate({ state, posts, binding, settingsStore, llmClient, signal } = {}) {
     const built = buildForumExistingPostsUpdateContext({ state, posts });
     if (!built.ok) return built;
     if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return updateFailure('forum_update_settings_unavailable');
     if (!llmClient || typeof llmClient.chat !== 'function') return updateFailure('forum_update_llm_unavailable');
     let resolved;
-    try { resolved = settingsStore.resolveFunction('forum', { contentMode: built.context.contentMode }); }
+    try { resolved = settingsStore.resolveFunction('forum', { contentMode: built.context.contentMode, binding }); }
     catch { return updateFailure('forum_update_settings_invalid'); }
     if (!resolved?.connectionPreset) return updateFailure('forum_update_connection_missing');
     try {
@@ -455,13 +456,13 @@ function makeForumPostMessages(context, promptPreset) {
 }
 
 /** Local-only comments after a user reply in an opened forum post. */
-export async function generateForumPostConversationUpdate({ state, post, history, settingsStore, llmClient, signal } = {}) {
+export async function generateForumPostConversationUpdate({ state, post, history, binding, settingsStore, llmClient, signal } = {}) {
     const built = buildForumPostUpdateContext({ state, post, history });
     if (!built.ok) return built;
     if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return updateFailure('forum_update_settings_unavailable');
     if (!llmClient || typeof llmClient.chat !== 'function') return updateFailure('forum_update_llm_unavailable');
     let resolved;
-    try { resolved = settingsStore.resolveFunction('forum', { contentMode: built.context.contentMode }); }
+    try { resolved = settingsStore.resolveFunction('forum', { contentMode: built.context.contentMode, binding }); }
     catch { return updateFailure('forum_update_settings_invalid'); }
     if (!resolved?.connectionPreset) return updateFailure('forum_update_connection_missing');
     try {

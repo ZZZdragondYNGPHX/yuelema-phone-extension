@@ -62,14 +62,14 @@ function normalizeGroupChatReply(value) {
 }
 
 /** Calls the dedicated group_chat binding and returns a validated in-memory draft only. */
-export async function generateGroupChatReply({ state, groupUid, playerMessage, settingsStore, llmClient, signal } = {}) {
+export async function generateGroupChatReply({ state, groupUid, playerMessage, binding, settingsStore, llmClient, signal } = {}) {
     const built = buildGroupChatContext({ state, groupUid, playerMessage });
     if (!built.ok) return built;
     if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return failure('group_chat_settings_unavailable');
     if (!llmClient || typeof llmClient.chat !== 'function') return failure('group_chat_llm_unavailable');
 
     let resolved;
-    try { resolved = settingsStore.resolveFunction('group_chat', { contentMode: built.context.contentMode }); }
+    try { resolved = settingsStore.resolveFunction('group_chat', { contentMode: built.context.contentMode, binding }); }
     catch { return failure('group_chat_settings_invalid'); }
     if (!resolved?.connectionPreset) return failure('group_chat_connection_missing');
 
@@ -247,13 +247,13 @@ function normalizeGroupUpdate(value, existingMembers) {
  * Generates a local-only group conversation update. The action bridge only reads
  * MVU to build a public projection; this service never persists or patches it.
  */
-export async function generateGroupChatUpdate({ state, group, history, trigger = 'user', settingsStore, llmClient, signal } = {}) {
+export async function generateGroupChatUpdate({ state, group, history, trigger = 'user', binding, settingsStore, llmClient, signal } = {}) {
     const built = buildGroupChatUpdateContext({ state, group, history });
     if (!built.ok) return built;
     if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return updateFailure('group_update_settings_unavailable');
     if (!llmClient || typeof llmClient.chat !== 'function') return updateFailure('group_update_llm_unavailable');
     let resolved;
-    try { resolved = settingsStore.resolveFunction('group_chat', { contentMode: built.context.contentMode }); }
+    try { resolved = settingsStore.resolveFunction('group_chat', { contentMode: built.context.contentMode, binding }); }
     catch { return updateFailure('group_update_settings_invalid'); }
     if (!resolved?.connectionPreset) return updateFailure('group_update_connection_missing');
     try {

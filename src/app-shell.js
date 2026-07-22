@@ -9,9 +9,9 @@ import { createLauncherDragController } from './launcher-drag.js';
 import { createImageManagerPanel } from './images/image-manager-panel.js';
 import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
-import { DEFAULT_FORUM_AUTO_SETTINGS, DEFAULT_GROUP_AUTO_SETTINGS, FORUM_AUTO_UPDATE_INTERVAL_SECONDS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
+import { DEFAULT_FORUM_AUTO_SETTINGS, DEFAULT_GROUP_AUTO_SETTINGS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 
-const UI_VERSION = '0.1.28';
+const UI_VERSION = '0.1.29';
 const PANEL_DRAG_THRESHOLD = 8;
 const FORUM_PULL_THRESHOLD = 88;
 const FORUM_WHEEL_RELEASE_DELAY = 180;
@@ -30,11 +30,7 @@ const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
     matches: Object.freeze([{ key: 'soul_match', title: '灵魂匹配' }, { key: 'text_match', title: '语音匹配' }]),
     messages: Object.freeze([{ key: 'chat', title: '私聊' }]),
-    groups: Object.freeze([{ key: 'group_chat', title: '聊天群' }, { key: 'forum', title: '论坛' }]),
-    group_chat: Object.freeze([{ key: 'group_chat', title: '聊天群' }]),
-    group_chat_room: Object.freeze([{ key: 'group_chat', title: '聊天群' }]),
     group_forum: Object.freeze([{ key: 'forum', title: '论坛' }]),
-    forum_post: Object.freeze([{ key: 'forum', title: '论坛' }]),
     character_creator: Object.freeze([{ key: 'character_ai_completion', title: 'AI 完善补全' }, { key: 'character_full_authoring', title: 'AI 完整创作' }]),
 });
 
@@ -91,6 +87,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let forumWheelPullState = null;
     let forumInteractionAbortController = null;
     let forumRefreshing = false;
+    let forumRefreshMode = '';
     let forumAutoTimer = null;
     let forumAutoGeneration = 0;
     let localSummaryTarget = null;
@@ -648,8 +645,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         bindingDialogContent.replaceChildren();
         featureBindingDialogState = null;
     }
-    function openFeatureBinding(features, dialogTitle = '功能预设选项') {
-        if (!settingsStore || typeof settingsStore.snapshot !== 'function' || typeof settingsStore.bindFunction !== 'function') {
+    function openFeatureBinding(features, dialogTitle = '功能预设选项', options = {}) {
+        if (!settingsStore || typeof settingsStore.snapshot !== 'function') {
             setFeedback('本地预设尚未就绪。');
             return;
         }
@@ -657,14 +654,17 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         try { snapshot = settingsStore.snapshot(); } catch { setFeedback('无法读取已保存的预设。'); return; }
         const contentMode = currentView.mode === 'NSFW' ? 'NSFW' : 'SFW';
         const modePromptPresets = snapshot.promptPresets.filter((preset) => preset.contentMode === contentMode);
-        featureBindingDialogState = { features, dialogTitle };
+        const readBinding = typeof options.readBinding === 'function' ? options.readBinding : null;
+        const saveBinding = typeof options.saveBinding === 'function' ? options.saveBinding : null;
+        featureBindingDialogState = { features, dialogTitle, options };
         bindingDialogTitle.textContent = `${dialogTitle} · ${contentMode}`;
         bindingDialogContent.replaceChildren();
         if (!snapshot.connectionPresets.length && !modePromptPresets.length) {
             bindingDialogContent.appendChild(element('p', { className: 'yl-phone-page-description', text: '当前模式还没有可绑定的连接或提示词预设。请先在“我的 → 设置 → 连接设置 / 提示词预设”中创建，并为提示词标记对应模式。' }));
         }
         for (const feature of features) {
-            const binding = snapshot.functionModeBindings?.[feature.key]?.[contentMode]
+            const binding = readBinding?.(feature, contentMode, snapshot)
+                ?? snapshot.functionModeBindings?.[feature.key]?.[contentMode]
                 ?? snapshot.functionBindings?.[feature.key]
                 ?? { connectionPresetId: null, promptPresetId: null };
             const row = element('section', { className: 'yl-settings-binding yl-feature-binding-row' });
@@ -684,12 +684,16 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             append(fields, [connectionField, promptField]); row.appendChild(fields);
             const save = element('button', { className: 'yl-settings-button', type: 'button', text: '保存此功能绑定' });
             listen(save, save, 'click', () => {
-                try {
-                    const next = { connectionPresetId: connection.value || null, promptPresetId: prompt.value || null };
-                    if (typeof settingsStore.bindFunctionForContentMode === 'function') settingsStore.bindFunctionForContentMode(feature.key, contentMode, next);
-                    else settingsStore.bindFunction(feature.key, next);
-                    setFeedback(feature.title + '的 ' + contentMode + ' 预设绑定已保存。');
-                } catch { setFeedback('预设绑定未保存，请确认选择的预设仍存在。'); }
+                void (async () => {
+                    try {
+                        const next = { connectionPresetId: connection.value || null, promptPresetId: prompt.value || null };
+                        if (saveBinding) await saveBinding(feature, contentMode, next, snapshot);
+                        else if (typeof settingsStore.bindFunctionForContentMode === 'function') settingsStore.bindFunctionForContentMode(feature.key, contentMode, next);
+                        else if (typeof settingsStore.bindFunction === 'function') settingsStore.bindFunction(feature.key, next);
+                        else throw new Error('binding unavailable');
+                        setFeedback(feature.title + '的 ' + contentMode + ' 预设绑定已保存。');
+                    } catch { setFeedback('预设绑定未保存，请确认选择的预设仍存在。'); }
+                })();
             }, abortController.signal);
             row.appendChild(save); bindingDialogContent.appendChild(row);
         }
@@ -1084,13 +1088,36 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         renderPage();
     }
     function defaultLocalConversation() {
-        return { messages: [], summaries: [], summaryStatus: { status: 'idle', startFloor: 0, endFloor: 0, message: '' } };
+        return {
+            auto: { ...DEFAULT_GROUP_AUTO_SETTINGS },
+            bindings: { SFW: { connectionPresetId: null, promptPresetId: null }, NSFW: { connectionPresetId: null, promptPresetId: null } },
+            messages: [], summaries: [], summaryStatus: { status: 'idle', startFloor: 0, endFloor: 0, message: '' },
+        };
+    }
+    function currentContentMode() { return currentView.mode === 'NSFW' ? 'NSFW' : 'SFW'; }
+    function blankLocalBinding() { return { connectionPresetId: null, promptPresetId: null }; }
+    function localBindingForMode(bindings, contentMode = currentContentMode()) {
+        const candidate = bindings?.[contentMode];
+        return candidate && typeof candidate === 'object'
+            ? { connectionPresetId: candidate.connectionPresetId ?? null, promptPresetId: candidate.promptPresetId ?? null }
+            : blankLocalBinding();
+    }
+    function localModeBindings(bindings) {
+        return { SFW: localBindingForMode(bindings, 'SFW'), NSFW: localBindingForMode(bindings, 'NSFW') };
+    }
+    function withLocalBinding(bindings, binding, contentMode = currentContentMode()) {
+        const next = localModeBindings(bindings);
+        next[contentMode] = { connectionPresetId: binding?.connectionPresetId ?? null, promptPresetId: binding?.promptPresetId ?? null };
+        return next;
     }
     function forumAutoSettings() {
         const saved = groupForumSnapshot?.forumAuto;
-        return saved && typeof saved === 'object' && saved.enabled === true
-            ? { enabled: true }
-            : { ...DEFAULT_FORUM_AUTO_SETTINGS };
+        return {
+            enabled: saved?.enabled === true,
+            intervalSeconds: Number.isInteger(saved?.intervalSeconds) ? saved.intervalSeconds : DEFAULT_FORUM_AUTO_SETTINGS.intervalSeconds,
+            channelBindings: localModeBindings(saved?.channelBindings),
+            postBindings: localModeBindings(saved?.postBindings),
+        };
     }
     function localSummaryInfo(conversation) {
         const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
@@ -1247,8 +1274,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const enabled = element('input', { type: 'checkbox', checked: current.enabled === true, ariaLabel: '开启聊天群自动更新' });
         enabledField.appendChild(enabled);
         const enabledLabel = element('label', { className: 'yl-settings-field' }); append(enabledLabel, [element('span', { text: '开启自动更新' }), enabledField]);
-        const interval = element('input', { className: 'yl-settings-control', type: 'number', min: 5, max: 3600, value: String(Number.isInteger(current.intervalSeconds) ? current.intervalSeconds : DEFAULT_GROUP_AUTO_SETTINGS.intervalSeconds), inputMode: 'numeric', ariaLabel: '自动更新时间秒数' });
-        const intervalField = element('label', { className: 'yl-settings-field' }); append(intervalField, [element('span', { text: '更新时间（s）' }), interval, element('span', { className: 'yl-settings-summary', text: '可设为 5–3600 秒。仅在当前聊天群界面打开时运行。' })]);
+        const interval = element('input', { className: 'yl-settings-control', type: 'number', min: 5, max: 3600, value: String(Number.isInteger(current.intervalSeconds) ? current.intervalSeconds : DEFAULT_GROUP_AUTO_SETTINGS.intervalSeconds), inputMode: 'numeric', ariaLabel: '自动更新时间秒数', disabled: current.enabled !== true });
+        const intervalField = element('label', { className: 'yl-settings-field' }); append(intervalField, [element('span', { text: '更新时间（s）' }), interval, element('span', { className: 'yl-settings-summary', text: '关闭时不可编辑；开启后可设为 5–3600 秒。仅在当前聊天群界面打开时运行。' })]);
+        listen(enabled, enabled, 'change', () => { interval.disabled = !enabled.checked; }, abortController.signal);
         groupAutoContent.appendChild(enabledLabel); groupAutoContent.appendChild(intervalField);
         const actions = element('div', { className: 'yl-settings-actions' });
         const cancel = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '取消' });
@@ -1256,20 +1284,31 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         listen(cancel, cancel, 'click', closeGroupAutoDialog, abortController.signal);
         listen(confirm, confirm, 'click', () => {
             const seconds = Number(interval.value);
-            if (!Number.isInteger(seconds) || seconds < 5 || seconds > 3600) { setFeedback('更新时间请填写 5–3600 秒之间的整数。'); return; }
+            if (enabled.checked && (!Number.isInteger(seconds) || seconds < 5 || seconds > 3600)) { setFeedback('更新时间请填写 5–3600 秒之间的整数。'); return; }
+            const intervalSeconds = Number.isInteger(seconds) && seconds >= 5 && seconds <= 3600 ? seconds : DEFAULT_GROUP_AUTO_SETTINGS.intervalSeconds;
             if (!groupForumStore?.setGroupAuto) { setFeedback('本地聊天群缓存尚未就绪。'); return; }
             void (async () => {
                 try {
-                    await groupForumStore.setGroupAuto({ key: group.cacheKey, title: group.name, settings: { enabled: Boolean(enabled.checked), intervalSeconds: seconds } });
+                    await groupForumStore.setGroupAuto({ key: group.cacheKey, title: group.name, settings: { enabled: Boolean(enabled.checked), intervalSeconds } });
                     await syncGroupForumSnapshot({ rerender: false });
                     closeGroupAutoDialog();
-                    setFeedback(enabled.checked ? `已开启自动更新：每 ${seconds}s。` : '已关闭自动更新；之后会在你发言后更新。');
+                    setFeedback(enabled.checked ? `已开启自动更新：每 ${intervalSeconds}s。` : '已关闭自动更新；之后会在你发言后更新。');
                     renderPage(); syncGroupAutoTimer();
                 } catch { setFeedback('自动更新设置没有保存，请稍后重试。'); }
             })();
         }, abortController.signal);
         append(actions, [cancel, confirm]); groupAutoContent.appendChild(actions);
         groupAutoDialog.hidden = false;
+    }
+    function openGroupPresetDialog(group) {
+        openFeatureBinding([{ key: 'group_chat', title: group.name + '聊天群' }], `${group.name} · 预设`, {
+            readBinding: (_feature, contentMode) => localBindingForMode(groupConversation(group).bindings, contentMode),
+            saveBinding: async (_feature, contentMode, binding) => {
+                if (!groupForumStore?.setGroupBinding) throw new Error('local group bindings unavailable');
+                await groupForumStore.setGroupBinding({ key: group.cacheKey, title: group.name, contentMode, binding });
+                await syncGroupForumSnapshot({ rerender: false });
+            },
+        });
     }
     function stopGroupAutoTimer() {
         if (groupAutoTimer !== null) clearInterval(groupAutoTimer);
@@ -1291,7 +1330,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!group || !actionBridge.generateGroupConversationUpdate || actionBridge.isPending?.('group_chat_update', cacheKey)) return;
         const activity = operationActivity.start('聊天群自动更新', '正在按设定时间更新当前聊天群。');
         let result;
-        try { result = await actionBridge.generateGroupConversationUpdate({ group, history: localHistoryForModel(groupConversation(group)), trigger: 'auto' }); }
+        try {
+            result = await actionBridge.generateGroupConversationUpdate({
+                group,
+                history: localHistoryForModel(groupConversation(group)),
+                trigger: 'auto',
+                binding: localBindingForMode(groupConversation(group).bindings),
+            });
+        }
         catch { result = { ok: false }; }
         if (isDestroyed || generation !== groupAutoGeneration || activeGroupCacheKey !== cacheKey) {
             operationActivity.dismiss(activity, '聊天群已离开，自动更新结果未展示。');
@@ -1315,41 +1361,84 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         forumSettingsDialog.hidden = true;
         forumSettingsContent.replaceChildren();
     }
+    function buildLocalBindingZone({ title, description, binding, namePrefix } = {}) {
+        const contentMode = currentContentMode();
+        const zone = element('section', { className: 'yl-forum-settings-zone' });
+        append(zone, [element('h3', { text: `${title} · ${contentMode}` }), element('p', { className: 'yl-settings-summary', text: description })]);
+        let snapshot = null;
+        try { snapshot = settingsStore?.snapshot?.() ?? null; } catch { snapshot = null; }
+        const current = binding ?? blankLocalBinding();
+        if (!snapshot || !Array.isArray(snapshot.connectionPresets) || !Array.isArray(snapshot.promptPresets)) {
+            zone.appendChild(element('p', { className: 'yl-settings-summary', text: '预设列表暂不可用；保存后会保留空绑定并继续使用既有默认设置。' }));
+            return { zone, getBinding: () => blankLocalBinding() };
+        }
+        const modePrompts = snapshot.promptPresets.filter((preset) => preset.contentMode === contentMode);
+        const connection = element('select', { className: 'yl-settings-control', name: `${namePrefix}-connection`, ariaLabel: `${title}连接预设` });
+        const prompt = element('select', { className: 'yl-settings-control', name: `${namePrefix}-prompt`, ariaLabel: `${title}提示词预设` });
+        for (const [value, label] of [['', '使用默认连接'], ...snapshot.connectionPresets.map((preset) => [preset.id, preset.name])]) {
+            const option = element('option', { value, text: label }); option.selected = value === (current.connectionPresetId ?? ''); connection.appendChild(option);
+        }
+        for (const [value, label] of [['', '不附加提示词预设'], ...modePrompts.map((preset) => [preset.id, preset.name])]) {
+            const option = element('option', { value, text: label }); option.selected = value === (current.promptPresetId ?? ''); prompt.appendChild(option);
+        }
+        const fields = element('div', { className: 'yl-settings-fields' });
+        const connectionField = element('label', { className: 'yl-settings-field' }); append(connectionField, [element('span', { text: '连接预设' }), connection]);
+        const promptField = element('label', { className: 'yl-settings-field' }); append(promptField, [element('span', { text: '提示词预设' }), prompt]);
+        append(fields, [connectionField, promptField]); zone.appendChild(fields);
+        return { zone, getBinding: () => ({ connectionPresetId: connection.value || null, promptPresetId: prompt.value || null }) };
+    }
     function openForumSettingsDialog() {
         const current = forumAutoSettings();
         forumSettingsTitle.textContent = '心动社区设置';
         forumSettingsContent.replaceChildren();
         forumSettingsContent.appendChild(element('p', {
             className: 'yl-phone-page-description',
-            text: `自动更新开启后，仅在心动社区首页打开期间每 ${FORUM_AUTO_UPDATE_INTERVAL_SECONDS}s 改写所有已存在的本地帖子；不会生成新帖子。新帖子只能通过顶部下拉/向上滚轮刷新生成。`,
+            text: '频道更新只生成固定五频道的新帖子；帖子更新只改写已存在本地帖子的可见内容。两套连接与提示词预设互不影响，模型不能改变程序固定的数据框架。',
         }));
+        const channelFields = buildLocalBindingZone({
+            title: '频道更新区',
+            description: '用于顶部替换刷新或底部追加刷新时生成新帖子。每次仍由代码强制生成五个固定频道各一篇。',
+            binding: localBindingForMode(current.channelBindings),
+            namePrefix: 'forum-channel',
+        });
+        forumSettingsContent.appendChild(channelFields.zone);
+        const postZone = element('section', { className: 'yl-forum-settings-zone' });
+        append(postZone, [element('h3', { text: '帖子更新区' }), element('p', { className: 'yl-settings-summary', text: '自动更新只改写所有已经存在的本地帖子；用户在帖子内发表评论后，也使用此处绑定来更新讨论。' })]);
         const enabledField = element('label', { className: 'yl-switch yl-group-auto-switch' });
-        const enabled = element('input', { type: 'checkbox', checked: current.enabled === true, ariaLabel: '开启心动社区自动更新' });
+        const enabled = element('input', { type: 'checkbox', checked: current.enabled === true, ariaLabel: '开启帖子自动更新' });
         enabledField.appendChild(enabled);
         const enabledLabel = element('label', { className: 'yl-settings-field' }); append(enabledLabel, [element('span', { text: '开启自动更新' }), enabledField]);
-        forumSettingsContent.appendChild(enabledLabel);
-        const contentPreset = element('button', {
-            className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: `内容提示词预设（${currentView.mode === 'NSFW' ? 'NSFW' : 'SFW'}）`,
-            ariaLabel: '配置心动社区内容提示词预设', disabled: !settingsStore || typeof settingsStore.snapshot !== 'function',
+        const interval = element('input', { className: 'yl-settings-control', type: 'number', min: 5, max: 3600, inputMode: 'numeric', value: String(current.intervalSeconds), disabled: current.enabled !== true, ariaLabel: '帖子自动更新时间秒数' });
+        const intervalField = element('label', { className: 'yl-settings-field' }); append(intervalField, [element('span', { text: '更新时间（s）' }), interval, element('span', { className: 'yl-settings-summary', text: '关闭时不可编辑；开启后可设为 5–3600 秒，仅在社区首页打开时运行。' })]);
+        listen(enabled, enabled, 'change', () => { interval.disabled = !enabled.checked; }, abortController.signal);
+        const autoRow = element('div', { className: 'yl-forum-auto-settings-row' }); append(autoRow, [enabledLabel, intervalField]);
+        postZone.appendChild(autoRow);
+        const postFields = buildLocalBindingZone({
+            title: '帖子更新预设',
+            description: '只影响帖子与评论的公开内容风格；帖子数量、频道、作者、临时角色、评论和 JSON 结构均由代码固定。',
+            binding: localBindingForMode(current.postBindings),
+            namePrefix: 'forum-post',
         });
-        const presetNote = element('p', { className: 'yl-settings-summary', text: '提示词预设只能影响帖子和评论的内容风格；频道、现有帖子槽位、角色资料和 JSON 结构均固定在代码中。' });
-        listen(contentPreset, contentPreset, 'click', () => {
-            closeForumSettingsDialog();
-            openFeatureBinding([{ key: 'forum', title: '心动社区内容' }], '心动社区内容预设');
-        }, abortController.signal);
-        forumSettingsContent.appendChild(contentPreset); forumSettingsContent.appendChild(presetNote);
+        postZone.appendChild(postFields.zone); forumSettingsContent.appendChild(postZone);
         const actions = element('div', { className: 'yl-settings-actions' });
         const cancel = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '取消' });
         const save = element('button', { className: 'yl-settings-button', type: 'button', text: '确定' });
         listen(cancel, cancel, 'click', closeForumSettingsDialog, abortController.signal);
         listen(save, save, 'click', () => {
+            const seconds = Number(interval.value);
+            if (enabled.checked && (!Number.isInteger(seconds) || seconds < 5 || seconds > 3600)) { setFeedback('更新时间请填写 5–3600 秒之间的整数。'); return; }
+            const intervalSeconds = Number.isInteger(seconds) && seconds >= 5 && seconds <= 3600 ? seconds : DEFAULT_FORUM_AUTO_SETTINGS.intervalSeconds;
             if (!groupForumStore?.setForumAuto) { setFeedback('心动社区自动更新设置暂不可用。'); return; }
             void (async () => {
                 try {
-                    await groupForumStore.setForumAuto({ settings: { enabled: Boolean(enabled.checked) } });
+                    await groupForumStore.setForumAuto({ settings: {
+                        enabled: Boolean(enabled.checked), intervalSeconds,
+                        channelBindings: withLocalBinding(current.channelBindings, channelFields.getBinding()),
+                        postBindings: withLocalBinding(current.postBindings, postFields.getBinding()),
+                    } });
                     await syncGroupForumSnapshot({ rerender: false });
                     closeForumSettingsDialog();
-                    setFeedback(enabled.checked ? `心动社区自动更新已开启：每 ${FORUM_AUTO_UPDATE_INTERVAL_SECONDS}s 更新已有帖子。` : '心动社区自动更新已关闭；下拉刷新仍可生成新帖子。');
+                    setFeedback(enabled.checked ? `帖子自动更新已开启：每 ${intervalSeconds}s 更新已有帖子。` : '帖子自动更新已关闭；频道刷新仍可创建新帖子。');
                     renderPage(); syncForumAutoTimer();
                 } catch { setFeedback('心动社区自动更新设置没有保存，请稍后重试。'); }
             })();
@@ -1367,7 +1456,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!open || activePage !== 'group_forum' || auto.enabled !== true || !socialPosts().length) { stopForumAutoTimer(); return; }
         if (forumAutoTimer !== null) return;
         const generation = ++forumAutoGeneration;
-        forumAutoTimer = setInterval(() => { void runForumExistingPostsAutoUpdate(generation); }, FORUM_AUTO_UPDATE_INTERVAL_SECONDS * 1000);
+        forumAutoTimer = setInterval(() => { void runForumExistingPostsAutoUpdate(generation); }, auto.intervalSeconds * 1000);
     }
     async function runForumExistingPostsAutoUpdate(generation) {
         if (isDestroyed || !open || activePage !== 'group_forum' || generation !== forumAutoGeneration || forumAutoSettings().enabled !== true) return;
@@ -1375,7 +1464,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!posts.length || !actionBridge.generateForumExistingPostsUpdate || actionBridge.isPending?.('forum_existing_update', '')) return;
         const activity = operationActivity.start('心动社区自动更新', '正在更新所有已存在的本地帖子，不会生成新帖子。');
         let result;
-        try { result = await actionBridge.generateForumExistingPostsUpdate({ posts }); }
+        try { result = await actionBridge.generateForumExistingPostsUpdate({ posts, binding: localBindingForMode(forumAutoSettings().postBindings) }); }
         catch { result = { ok: false }; }
         if (isDestroyed || generation !== forumAutoGeneration || activePage !== 'group_forum') {
             operationActivity.dismiss(activity, '心动社区已离开，自动更新结果未展示。');
@@ -1429,11 +1518,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const exit = element('button', { className: 'yl-private-chat-menu-item is-danger', type: 'button', text: '退出群聊', ariaLabel: '退出群聊并删除本地群数据' });
             const clear = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '清空群历史', ariaLabel: '仅清空当前聊天群历史' });
             const auto = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '自动更新设置', ariaLabel: '设置聊天群自动更新' });
-            for (const item of [exit, clear, auto]) item.setAttribute('role', 'menuitem');
+            const preset = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '预设', ariaLabel: `配置${group.name}的预设` });
+            for (const item of [exit, clear, auto, preset]) item.setAttribute('role', 'menuitem');
             listen(exit, exit, 'click', () => { groupRoomMenuOpen = false; groupRoomConfirmation = 'exit'; groupRoomConfirmationKey = group.cacheKey; renderPage(); }, abortController.signal);
             listen(clear, clear, 'click', () => { groupRoomMenuOpen = false; groupRoomConfirmation = 'clear'; groupRoomConfirmationKey = group.cacheKey; renderPage(); }, abortController.signal);
-            listen(auto, auto, 'click', () => { groupRoomMenuOpen = false; openGroupAutoDialog(group); }, abortController.signal);
-            append(menu, [exit, clear, auto]); wrapper.appendChild(menu);
+            listen(auto, auto, 'click', () => { groupRoomMenuOpen = false; renderPage(); openGroupAutoDialog(group); }, abortController.signal);
+            listen(preset, preset, 'click', () => { groupRoomMenuOpen = false; renderPage(); openGroupPresetDialog(group); }, abortController.signal);
+            append(menu, [exit, clear, auto, preset]); wrapper.appendChild(menu);
         }
         return wrapper;
     }
@@ -1654,7 +1745,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const activity = operationActivity.start('聊天群更新', '正在生成群友的本地更新。');
         renderPage();
         let result;
-        try { result = await actionBridge.generateGroupConversationUpdate({ group, history: localHistoryForModel(groupConversation(group)), trigger }); }
+        try {
+            result = await actionBridge.generateGroupConversationUpdate({
+                group,
+                history: localHistoryForModel(groupConversation(group)),
+                trigger,
+                binding: localBindingForMode(groupConversation(group).bindings),
+            });
+        }
         catch { result = { ok: false }; }
         if (isDestroyed || activeGroupCacheKey !== group.cacheKey) { operationActivity.dismiss(activity, '聊天群已离开，更新结果未展示。'); return; }
         if (!result?.ok || !result.update) {
@@ -1672,30 +1770,43 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const surfaceTop = Number(surface?.scrollTop);
         return !(Number.isFinite(contentTop) && contentTop > 0) && !(Number.isFinite(surfaceTop) && surfaceTop > 0);
     }
-    function resetForumPullIndicator(indicator) {
-        if (!indicator) return;
-        indicator.classList.toggle('is-visible', false); indicator.classList.toggle('is-armed', false); indicator.classList.toggle('is-refreshing', false);
-        indicator.style?.setProperty?.('--yl-forum-pull-offset', '0px');
-        indicator.textContent = '↻ 下拉刷新';
+    function forumIsAtBottom(surface) {
+        const candidates = [content, surface].map((node) => ({
+            scrollTop: Number(node?.scrollTop),
+            scrollHeight: Number(node?.scrollHeight),
+            clientHeight: Number(node?.clientHeight),
+        })).filter((item) => Number.isFinite(item.scrollHeight) && Number.isFinite(item.clientHeight) && item.scrollHeight > item.clientHeight);
+        if (!candidates.length) return false;
+        return candidates.some((item) => Math.max(0, item.scrollTop || 0) >= item.scrollHeight - item.clientHeight - 2);
     }
-    function updateForumPullIndicator(indicator, distance, armed, source = 'touch') {
+    function resetForumPullIndicator(indicator, kind = 'replace') {
+        if (!indicator) return;
+        indicator.classList.toggle('is-visible', false); indicator.classList.toggle('is-armed', false); indicator.classList.toggle('is-refreshing', false); indicator.classList.toggle('is-append', kind === 'append');
+        indicator.style?.setProperty?.('--yl-forum-pull-offset', '0px');
+        indicator.textContent = kind === 'append' ? '↓ 上拉加载更多' : '↻ 下拉刷新';
+    }
+    function updateForumPullIndicator(indicator, distance, armed, { source = 'touch', kind = 'replace' } = {}) {
         if (!indicator) return;
         const offset = Math.min(160, Math.max(0, Math.round(distance * 0.55)));
         indicator.style?.setProperty?.('--yl-forum-pull-offset', `${offset}px`);
-        indicator.classList.toggle('is-visible', distance > 0); indicator.classList.toggle('is-armed', armed);
-        indicator.textContent = armed ? (source === 'wheel' ? '↻ 停止滚轮以刷新' : '↻ 松开刷新') : (source === 'wheel' ? '↻ 向上滚动刷新' : '↻ 继续下拉');
+        indicator.classList.toggle('is-visible', distance > 0); indicator.classList.toggle('is-armed', armed); indicator.classList.toggle('is-append', kind === 'append');
+        if (kind === 'append') {
+            indicator.textContent = armed ? (source === 'wheel' ? '↓ 停止滚轮以加载' : '↓ 松开加载更多') : (source === 'wheel' ? '↓ 向下滚动加载' : '↓ 继续上拉加载');
+        } else {
+            indicator.textContent = armed ? (source === 'wheel' ? '↻ 停止滚轮以刷新' : '↻ 松开刷新') : (source === 'wheel' ? '↻ 向上滚动刷新' : '↻ 继续下拉');
+        }
     }
     function cancelForumWheelPull() {
         const state = forumWheelPullState;
         if (!state) return;
         if (state.releaseTimer !== null) clearTimeout(state.releaseTimer);
         forumWheelPullState = null;
-        resetForumPullIndicator(state.indicator);
+        resetForumPullIndicator(state.indicator, state.kind);
     }
     function cancelForumPullInteractions() {
         const pointer = forumPullState;
         forumPullState = null;
-        if (pointer?.indicator) resetForumPullIndicator(pointer.indicator);
+        if (pointer?.indicator) resetForumPullIndicator(pointer.indicator, pointer.kind);
         cancelForumWheelPull();
         const controller = forumInteractionAbortController;
         forumInteractionAbortController = null;
@@ -1709,27 +1820,37 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (mode === 2) return raw * Math.max(120, Number(content?.clientHeight) || 480);
         return raw;
     }
-    function bindForumPullToRefresh(surface, indicator) {
+    function bindForumPullToRefresh(surface, replacementIndicator, appendIndicator) {
         const controller = new AbortController();
         forumInteractionAbortController = controller;
         const start = (event) => {
             if (forumRefreshing || event?.isPrimary === false || event?.pointerType === 'mouse') return;
-            if (!forumIsAtTop(surface)) return;
+            const kind = forumIsAtTop(surface) ? 'replace' : (forumIsAtBottom(surface) ? 'append' : '');
+            if (!kind) return;
             cancelForumWheelPull();
-            forumPullState = { pointerId: event?.pointerId, startY: Number(event?.clientY) || 0, peak: 0, cancelled: false, indicator };
+            forumPullState = {
+                pointerId: event?.pointerId,
+                startY: Number(event?.clientY) || 0,
+                peak: 0,
+                cancelled: false,
+                kind,
+                direction: kind === 'append' ? -1 : 1,
+                indicator: kind === 'append' ? appendIndicator : replacementIndicator,
+            };
             surface.setPointerCapture?.(event?.pointerId);
         };
         const move = (event) => {
             const state = forumPullState;
             if (!state || (state.pointerId !== undefined && event?.pointerId !== undefined && state.pointerId !== event.pointerId)) return;
-            const distance = (Number(event?.clientY) || 0) - state.startY;
-            if (!forumIsAtTop(surface) || distance <= 0 || distance < state.peak - 4) {
+            const distance = ((Number(event?.clientY) || 0) - state.startY) * state.direction;
+            const stillAtBoundary = state.kind === 'replace' ? forumIsAtTop(surface) : forumIsAtBottom(surface);
+            if (!stillAtBoundary || distance <= 0 || distance < state.peak - 4) {
                 if (state.peak > 0) state.cancelled = true;
-                resetForumPullIndicator(state.indicator); return;
+                resetForumPullIndicator(state.indicator, state.kind); return;
             }
             state.peak = Math.max(state.peak, distance);
             const armed = distance >= FORUM_PULL_THRESHOLD && !state.cancelled;
-            updateForumPullIndicator(state.indicator, distance, armed, 'touch');
+            updateForumPullIndicator(state.indicator, distance, armed, { source: 'touch', kind: state.kind });
             if (distance > 0) event?.preventDefault?.();
         };
         const end = (event) => {
@@ -1738,37 +1859,40 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             try { surface.releasePointerCapture?.(state.pointerId); } catch { /* Pointer capture may already be gone. */ }
             forumPullState = null;
             const shouldRefresh = !state.cancelled && state.peak >= FORUM_PULL_THRESHOLD;
-            resetForumPullIndicator(state.indicator);
-            if (shouldRefresh) void runForumHomeRefresh();
+            resetForumPullIndicator(state.indicator, state.kind);
+            if (shouldRefresh) void runForumHomeRefresh({ mode: state.kind });
         };
         const wheel = (event) => {
             if (forumRefreshing || event?.ctrlKey || forumPullState) return;
             const delta = normalizedWheelDelta(event);
             if (!delta) return;
             if (Math.abs(Number(event?.deltaX) || 0) > Math.abs(delta)) return;
-            if (!forumIsAtTop(surface)) { cancelForumWheelPull(); return; }
-            if (delta > 0) {
-                // On desktop, reversing from an upward wheel pull into normal
-                // downward scrolling cancels the current refresh gesture.
-                cancelForumWheelPull();
-                return;
-            }
+            const requestedKind = delta < 0 && forumIsAtTop(surface)
+                ? 'replace'
+                : (delta > 0 && forumIsAtBottom(surface) ? 'append' : '');
             let state = forumWheelPullState;
+            if (state && (!requestedKind || state.kind !== requestedKind)) { cancelForumWheelPull(); return; }
             if (!state) {
-                state = { distance: 0, indicator, releaseTimer: null };
+                if (!requestedKind) return;
+                state = {
+                    kind: requestedKind,
+                    distance: 0,
+                    indicator: requestedKind === 'append' ? appendIndicator : replacementIndicator,
+                    releaseTimer: null,
+                };
                 forumWheelPullState = state;
             }
             const increment = Math.min(72, Math.max(8, Math.abs(delta) * 0.55));
             state.distance = Math.min(FORUM_WHEEL_MAX_DISTANCE, state.distance + increment);
-            updateForumPullIndicator(state.indicator, state.distance, state.distance >= FORUM_PULL_THRESHOLD, 'wheel');
+            updateForumPullIndicator(state.indicator, state.distance, state.distance >= FORUM_PULL_THRESHOLD, { source: 'wheel', kind: state.kind });
             event?.preventDefault?.();
             if (state.releaseTimer !== null) clearTimeout(state.releaseTimer);
             state.releaseTimer = setTimeout(() => {
                 if (forumWheelPullState !== state) return;
                 forumWheelPullState = null;
                 const shouldRefresh = state.distance >= FORUM_PULL_THRESHOLD;
-                resetForumPullIndicator(state.indicator);
-                if (shouldRefresh) void runForumHomeRefresh();
+                resetForumPullIndicator(state.indicator, state.kind);
+                if (shouldRefresh) void runForumHomeRefresh({ mode: state.kind });
             }, FORUM_WHEEL_RELEASE_DELAY);
         };
         listen(surface, surface, 'pointerdown', start, controller.signal);
@@ -1781,19 +1905,22 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function buildForumPage() {
         const section = element('section', { className: 'yl-forum-home' });
-        const pull = element('div', { className: forumRefreshing ? 'yl-forum-pull-indicator is-visible is-refreshing' : 'yl-forum-pull-indicator', text: forumRefreshing ? '正在刷新心动社区…' : '↻ 下拉刷新' });
+        const replacing = forumRefreshing && forumRefreshMode === 'replace';
+        const appending = forumRefreshing && forumRefreshMode === 'append';
+        const pull = element('div', { className: replacing ? 'yl-forum-pull-indicator is-visible is-refreshing' : 'yl-forum-pull-indicator', text: replacing ? '正在替换心动社区帖子…' : '↻ 下拉刷新' });
+        const appendPull = element('div', { className: appending ? 'yl-forum-append-indicator yl-forum-pull-indicator is-visible is-refreshing is-append' : 'yl-forum-append-indicator yl-forum-pull-indicator is-append', text: appending ? '正在追加心动社区帖子…' : '↓ 上拉加载更多' });
         const selectedChannel = activeForumChannel();
         const auto = forumAutoSettings();
-        section.appendChild(pull); bindForumPullToRefresh(section, pull);
+        section.appendChild(pull); bindForumPullToRefresh(section, pull, appendPull);
         const hero = element('section', { className: 'yl-forum-home-hero' });
         const heroTitle = selectedChannel ? `${selectedChannel.title} · 子区` : '心动社区 ♥';
         const heroDescription = selectedChannel ? `${selectedChannel.note} · 只显示该频道的本地帖子` : '分享生活 · 遇见心动的 TA';
         const autoHint = auto.enabled
-            ? `自动更新已开启：每 ${FORUM_AUTO_UPDATE_INTERVAL_SECONDS}s 仅更新已有帖子。`
-            : '自动更新已关闭。';
+            ? `帖子自动更新已开启：每 ${auto.intervalSeconds}s 仅更新已有帖子。`
+            : '帖子自动更新已关闭。';
         const pullHint = selectedChannel
-            ? `当前：${selectedChannel.title}；再点高亮频道返回全部动态。顶部刷新才会新增五个频道帖子。${autoHint}`
-            : `顶部：手机下拉松开；电脑向上滚动后停滚才会新增五个频道帖子。${autoHint}`;
+            ? `当前：${selectedChannel.title}；再点高亮频道返回全部动态。顶部下拉会替换旧帖子，滑到最底后继续上拉会追加新帖子。${autoHint}`
+            : `顶部：手机下拉松开或电脑向上滚动后停滚，会替换旧帖子；到底后手机继续上拉或电脑向下滚动，会追加五个频道的新帖子。${autoHint}`;
         append(hero, [element('h2', { text: heroTitle }), element('p', { text: heroDescription }), element('span', { className: 'yl-forum-pull-hint', text: pullHint })]); section.appendChild(hero);
         const channels = element('div', { className: 'yl-forum-channel-strip' });
         for (const channel of FORUM_CHANNELS) {
@@ -1826,24 +1953,34 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             }
             section.appendChild(feed);
         }
+        section.appendChild(appendPull);
         return section;
     }
-    async function runForumHomeRefresh() {
+    async function runForumHomeRefresh({ mode = 'replace' } = {}) {
         if (forumRefreshing || !actionBridge.generateForumHomeRefresh || actionBridge.isPending?.('forum_home_refresh', '')) return;
-        forumRefreshing = true; renderPage();
-        const activity = operationActivity.start('论坛首页刷新', '正在根据公开社区信息刷新全部五个频道的帖子。');
+        if (!['replace', 'append'].includes(mode)) return;
+        forumRefreshing = true; forumRefreshMode = mode; renderPage();
+        const replacing = mode === 'replace';
+        const activity = operationActivity.start('论坛首页刷新', replacing ? '正在替换旧帖子并刷新全部五个频道。' : '正在保留旧帖子并追加全部五个频道。');
         let result;
-        try { result = await actionBridge.generateForumHomeRefresh({ existingTitles: socialPosts().slice(0, 24).map((post) => post.title) }); }
+        try {
+            result = await actionBridge.generateForumHomeRefresh({
+                existingTitles: replacing ? [] : socialPosts().slice(0, 24).map((post) => post.title),
+                refreshMode: mode,
+                binding: localBindingForMode(forumAutoSettings().channelBindings),
+            });
+        }
         catch { result = { ok: false }; }
-        forumRefreshing = false;
+        forumRefreshing = false; forumRefreshMode = '';
         if (isDestroyed || activePage !== 'group_forum') { operationActivity.dismiss(activity, '论坛首页已离开，刷新结果未展示。'); return; }
         if (!result?.ok || !result.update) {
             operationActivity.fail(activity, '论坛首页未刷新。'); setFeedback(result?.message || '论坛首页刷新未完成，请稍后重试。'); renderPage(); return;
         }
         try {
-            await groupForumStore?.addForumRefresh?.({ update: result.update, communityProfiles: result.communityProfiles ?? [] });
+            const saveRefresh = replacing ? groupForumStore?.replaceForumPosts : groupForumStore?.addForumRefresh;
+            await saveRefresh?.({ update: result.update, communityProfiles: result.communityProfiles ?? [] });
             await syncGroupForumSnapshot({ rerender: false });
-            operationActivity.succeed(activity, '心动社区首页已刷新到本地缓存。'); renderPage(); syncForumAutoTimer();
+            operationActivity.succeed(activity, replacing ? '旧帖子已替换为新的五频道帖子。' : '新帖子已追加到本地缓存。'); renderPage(); syncForumAutoTimer();
         } catch { operationActivity.fail(activity, '论坛首页更新没有保存到本地缓存。'); setFeedback('论坛首页更新没有保存到本地缓存。'); renderPage(); }
     }
     function buildForumPostPage() {
@@ -1898,7 +2035,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!actionBridge.generateForumPostConversationUpdate || actionBridge.isPending?.('forum_post_update', post.id)) return;
         const activity = operationActivity.start('论坛帖子更新', '正在生成帖子下的本地讨论。'); renderPage();
         let result;
-        try { result = await actionBridge.generateForumPostConversationUpdate({ postId: post.id, post, history: localHistoryForModel(post) }); }
+        try {
+            result = await actionBridge.generateForumPostConversationUpdate({
+                postId: post.id,
+                post,
+                history: localHistoryForModel(post),
+                binding: localBindingForMode(forumAutoSettings().postBindings),
+            });
+        }
         catch { result = { ok: false }; }
         if (isDestroyed || activeForumPostId !== post.id) { operationActivity.dismiss(activity, '帖子已离开，更新结果未展示。'); return; }
         if (!result?.ok || !result.update) {
@@ -3002,7 +3146,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         setFeedback(`已切换为 ${currentView.mode === 'SFW' ? 'NSFW' : 'SFW'}。`, operationToken);
         refreshState();
         if (!bindingDialog.hidden && featureBindingDialogState) {
-            openFeatureBinding(featureBindingDialogState.features, featureBindingDialogState.dialogTitle);
+            openFeatureBinding(featureBindingDialogState.features, featureBindingDialogState.dialogTitle, featureBindingDialogState.options);
         }
     }
 
