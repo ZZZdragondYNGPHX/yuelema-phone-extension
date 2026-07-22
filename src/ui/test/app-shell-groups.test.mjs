@@ -53,11 +53,17 @@ function click(node) {
     node.dispatchEvent(new Event('click'));
 }
 
-function pointer(type, clientY, pointerId = 1) {
+function pointer(type, clientY, pointerId = 1, pointerType = undefined) {
     const event = new Event(type, { cancelable: true });
     Object.defineProperties(event, {
-        clientY: { value: clientY }, pointerId: { value: pointerId }, isPrimary: { value: true },
+        clientY: { value: clientY }, pointerId: { value: pointerId }, pointerType: { value: pointerType }, isPrimary: { value: true },
     });
+    return event;
+}
+
+function wheel(deltaY, deltaMode = 0) {
+    const event = new Event('wheel', { cancelable: true });
+    Object.defineProperties(event, { deltaY: { value: deltaY }, deltaMode: { value: deltaMode } });
     return event;
 }
 
@@ -269,7 +275,7 @@ test('about entry shows a version dialog and reveals the SFW/NSFW slider after f
             click(about());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /约了吗 0\.1\.25/u);
+            assert.match(dialog.textContent, /约了吗 0\.1\.26/u);
         }
         await flushUi();
 
@@ -413,5 +419,75 @@ test('forum home only calls AI after an armed pull gesture, and opened posts upd
         assert.doesNotMatch(JSON.stringify(snapshot), /session-secret|对象UID|stat_data/u);
     } finally {
         mounted.destroy();
+    }
+});
+
+test('desktop wheel pull refreshes only from the forum top after the wheel settles, and reverse scrolling cancels it', async () => {
+    const previousSetTimeout = globalThis.setTimeout;
+    const previousClearTimeout = globalThis.clearTimeout;
+    const timers = [];
+    globalThis.setTimeout = (callback, delay) => {
+        const timer = { callback, delay, cleared: false };
+        timers.push(timer);
+        return timer;
+    };
+    globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
+    let homeCalls = 0;
+    const temporaryProfile = {
+        nickname: '江晚', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INTJ', zodiac: '天蝎座', occupation: '策展人', interests: ['展览'], presence: '在线', matchRate: null,
+    };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-wheel-pull',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async generateForumHomeRefresh() {
+                homeCalls += 1;
+                return { ok: true, communityProfiles: [], update: { participants: [temporaryProfile], posts: [{ author: '江晚', topic: '同城瞬间', title: '美术馆的午后', body: '想找一位同好一起看新展。', tags: ['展览'] }] } };
+            },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('心动社区')));
+        const content = miniDom.document.querySelector('.yl-phone-content');
+        const surface = miniDom.document.querySelector('.yl-forum-home');
+
+        content.scrollTop = 24;
+        surface.dispatchEvent(wheel(-200));
+        assert.equal(timers.length, 0, '非顶部滚轮不能开始刷新手势');
+
+        content.scrollTop = 0;
+        surface.dispatchEvent(pointer('pointerdown', 0, 9, 'mouse'));
+        surface.dispatchEvent(pointer('pointermove', 120, 9, 'mouse'));
+        surface.dispatchEvent(pointer('pointerup', 120, 9, 'mouse'));
+        assert.equal(miniDom.document.querySelector('.yl-forum-pull-indicator').classList.contains('is-armed'), false, '桌面鼠标拖动不应替代滚轮刷新');
+        surface.dispatchEvent(wheel(-100));
+        surface.dispatchEvent(wheel(-100));
+        const armed = miniDom.document.querySelector('.yl-forum-pull-indicator');
+        assert.equal(armed.classList.contains('is-armed'), true);
+        const cancelledTimer = timers.at(-1);
+        assert.equal(cancelledTimer.delay, 180);
+        surface.dispatchEvent(wheel(40));
+        assert.equal(cancelledTimer.cleared, true);
+        assert.equal(armed.classList.contains('is-visible'), false);
+        cancelledTimer.callback();
+        await flushUi();
+        assert.equal(homeCalls, 0, '反向向下滚动必须取消本轮刷新');
+
+        surface.dispatchEvent(wheel(-100));
+        surface.dispatchEvent(wheel(-100));
+        const releaseTimer = timers.at(-1);
+        releaseTimer.callback();
+        await flushUi();
+        assert.equal(homeCalls, 1, '顶部向上滚动达到阈值、停滚后才刷新');
+        assert.match(miniDom.document.body.textContent, /美术馆的午后/u);
+    } finally {
+        mounted.destroy();
+        globalThis.setTimeout = previousSetTimeout;
+        globalThis.clearTimeout = previousClearTimeout;
     }
 });

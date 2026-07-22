@@ -11,8 +11,11 @@ import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
 import { DEFAULT_GROUP_AUTO_SETTINGS, externalGroupCacheKey, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 
-const UI_VERSION = '0.1.25';
+const UI_VERSION = '0.1.26';
 const PANEL_DRAG_THRESHOLD = 8;
+const FORUM_PULL_THRESHOLD = 88;
+const FORUM_WHEEL_RELEASE_DELAY = 180;
+const FORUM_WHEEL_MAX_DISTANCE = 288;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
 const PRIMARY_PAGE_FOR = Object.freeze({
@@ -80,6 +83,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let groupAutoTimerKey = '';
     let groupAutoGeneration = 0;
     let forumPullState = null;
+    let forumWheelPullState = null;
     let forumRefreshing = false;
     let localSummaryTarget = null;
     let localSummaryBusy = false;
@@ -310,6 +314,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (open) refreshState();
         else {
             stopGroupAutoTimer();
+            cancelForumPullInteractions();
             privateChatRequestGeneration += 1;
             activeChatToolsSessionUid = '';
             activeMeetupSessionUid = '';
@@ -334,6 +339,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         if (!preserveOperation) hideOperationDialog();
         if (activePage === 'group_chat_room' && pageId !== 'group_chat_room') stopGroupAutoTimer();
+        if (activePage === 'group_forum' && pageId !== 'group_forum') cancelForumPullInteractions();
         activePage = pageId;
         actionBridge.emit('navigate', { page: pageId });
         renderPage();
@@ -1434,21 +1440,50 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             void maybeRunLocalAutomaticSummary({ kind: 'group', id: group.cacheKey, title: group.name });
         } catch { operationActivity.fail(activity, '聊天群更新没有保存到本地缓存。'); setFeedback('聊天群更新没有保存到本地缓存。'); }
     }
+    function forumIsAtTop(surface) {
+        const contentTop = Number(content?.scrollTop);
+        const surfaceTop = Number(surface?.scrollTop);
+        return !(Number.isFinite(contentTop) && contentTop > 0) && !(Number.isFinite(surfaceTop) && surfaceTop > 0);
+    }
     function resetForumPullIndicator(indicator) {
         if (!indicator) return;
         indicator.classList.toggle('is-visible', false); indicator.classList.toggle('is-armed', false); indicator.classList.toggle('is-refreshing', false);
         indicator.style?.setProperty?.('--yl-forum-pull-offset', '0px');
+        indicator.textContent = '↻ 下拉刷新';
     }
-    function updateForumPullIndicator(indicator, distance, armed) {
+    function updateForumPullIndicator(indicator, distance, armed, source = 'touch') {
         if (!indicator) return;
         const offset = Math.min(160, Math.max(0, Math.round(distance * 0.55)));
         indicator.style?.setProperty?.('--yl-forum-pull-offset', `${offset}px`);
         indicator.classList.toggle('is-visible', distance > 0); indicator.classList.toggle('is-armed', armed);
+        indicator.textContent = armed ? (source === 'wheel' ? '↻ 停止滚轮以刷新' : '↻ 松开刷新') : (source === 'wheel' ? '↻ 向上滚动刷新' : '↻ 继续下拉');
+    }
+    function cancelForumWheelPull() {
+        const state = forumWheelPullState;
+        if (!state) return;
+        if (state.releaseTimer !== null) clearTimeout(state.releaseTimer);
+        forumWheelPullState = null;
+        resetForumPullIndicator(state.indicator);
+    }
+    function cancelForumPullInteractions() {
+        const pointer = forumPullState;
+        forumPullState = null;
+        if (pointer?.indicator) resetForumPullIndicator(pointer.indicator);
+        cancelForumWheelPull();
+    }
+    function normalizedWheelDelta(event) {
+        const raw = Number(event?.deltaY);
+        if (!Number.isFinite(raw) || raw === 0) return 0;
+        const mode = Number(event?.deltaMode);
+        if (mode === 1) return raw * 16;
+        if (mode === 2) return raw * Math.max(120, Number(content?.clientHeight) || 480);
+        return raw;
     }
     function bindForumPullToRefresh(surface, indicator) {
         const start = (event) => {
-            if (forumRefreshing || event?.isPrimary === false || (event?.pointerType === 'mouse' && Number(event.button) !== 0)) return;
-            if (Number(surface.scrollTop) > 0) return;
+            if (forumRefreshing || event?.isPrimary === false || event?.pointerType === 'mouse') return;
+            if (!forumIsAtTop(surface)) return;
+            cancelForumWheelPull();
             forumPullState = { pointerId: event?.pointerId, startY: Number(event?.clientY) || 0, peak: 0, cancelled: false, indicator };
             surface.setPointerCapture?.(event?.pointerId);
         };
@@ -1456,13 +1491,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const state = forumPullState;
             if (!state || (state.pointerId !== undefined && event?.pointerId !== undefined && state.pointerId !== event.pointerId)) return;
             const distance = (Number(event?.clientY) || 0) - state.startY;
-            if (distance <= 0 || distance < state.peak - 4) {
+            if (!forumIsAtTop(surface) || distance <= 0 || distance < state.peak - 4) {
                 if (state.peak > 0) state.cancelled = true;
                 resetForumPullIndicator(state.indicator); return;
             }
             state.peak = Math.max(state.peak, distance);
-            const armed = distance >= 88 && !state.cancelled;
-            updateForumPullIndicator(state.indicator, distance, armed);
+            const armed = distance >= FORUM_PULL_THRESHOLD && !state.cancelled;
+            updateForumPullIndicator(state.indicator, distance, armed, 'touch');
             if (distance > 0) event?.preventDefault?.();
         };
         const end = (event) => {
@@ -1470,28 +1505,58 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             if (!state || (state.pointerId !== undefined && event?.pointerId !== undefined && state.pointerId !== event.pointerId)) return;
             try { surface.releasePointerCapture?.(state.pointerId); } catch { /* Pointer capture may already be gone. */ }
             forumPullState = null;
-            const shouldRefresh = !state.cancelled && state.peak >= 88;
+            const shouldRefresh = !state.cancelled && state.peak >= FORUM_PULL_THRESHOLD;
             resetForumPullIndicator(state.indicator);
             if (shouldRefresh) void runForumHomeRefresh();
+        };
+        const wheel = (event) => {
+            if (forumRefreshing || event?.ctrlKey || forumPullState) return;
+            const delta = normalizedWheelDelta(event);
+            if (!delta) return;
+            if (!forumIsAtTop(surface)) { cancelForumWheelPull(); return; }
+            if (delta > 0) {
+                // On desktop, reversing from an upward wheel pull into normal
+                // downward scrolling cancels the current refresh gesture.
+                cancelForumWheelPull();
+                return;
+            }
+            let state = forumWheelPullState;
+            if (!state) {
+                state = { distance: 0, indicator, releaseTimer: null };
+                forumWheelPullState = state;
+            }
+            const increment = Math.min(72, Math.max(8, Math.abs(delta) * 0.55));
+            state.distance = Math.min(FORUM_WHEEL_MAX_DISTANCE, state.distance + increment);
+            updateForumPullIndicator(state.indicator, state.distance, state.distance >= FORUM_PULL_THRESHOLD, 'wheel');
+            event?.preventDefault?.();
+            if (state.releaseTimer !== null) clearTimeout(state.releaseTimer);
+            state.releaseTimer = setTimeout(() => {
+                if (forumWheelPullState !== state) return;
+                forumWheelPullState = null;
+                const shouldRefresh = state.distance >= FORUM_PULL_THRESHOLD;
+                resetForumPullIndicator(state.indicator);
+                if (shouldRefresh) void runForumHomeRefresh();
+            }, FORUM_WHEEL_RELEASE_DELAY);
         };
         listen(surface, surface, 'pointerdown', start, abortController.signal);
         listen(surface, surface, 'pointermove', move, abortController.signal);
         listen(surface, surface, 'pointerup', end, abortController.signal);
         listen(surface, surface, 'pointercancel', end, abortController.signal);
+        listen(surface, surface, 'wheel', wheel, abortController.signal);
     }
     function buildForumPage() {
         const section = element('section', { className: 'yl-forum-home' });
         const pull = element('div', { className: forumRefreshing ? 'yl-forum-pull-indicator is-visible is-refreshing' : 'yl-forum-pull-indicator', text: forumRefreshing ? '正在刷新心动社区…' : '↻ 下拉刷新' });
         section.appendChild(pull); bindForumPullToRefresh(section, pull);
         const hero = element('section', { className: 'yl-forum-home-hero' });
-        append(hero, [element('h2', { text: '心动社区 ♥' }), element('p', { text: '分享生活 · 遇见心动的 TA' }), element('span', { className: 'yl-forum-pull-hint', text: '在顶部轻轻下拉，松开后刷新帖子' })]); section.appendChild(hero);
+        append(hero, [element('h2', { text: '心动社区 ♥' }), element('p', { text: '分享生活 · 遇见心动的 TA' }), element('span', { className: 'yl-forum-pull-hint', text: '顶部：手机下拉松开；电脑向上滚动后停滚刷新' })]); section.appendChild(hero);
         const channels = element('div', { className: 'yl-forum-channel-strip' });
         for (const [icon, title, note] of [['＋', '今日心情', '记录此刻'], ['⌖', '附近的人', '同城心动'], ['◌', '同城瞬间', '热门动态'], ['☆', '兴趣同频', '寻找同好'], ['#', '话题广场', '一起聊聊']]) {
             const card = element('span', { className: 'yl-forum-channel' }); append(card, [element('b', { text: icon }), element('strong', { text: title }), element('small', { text: note })]); channels.appendChild(card);
         }
         section.appendChild(channels);
         const posts = socialPosts();
-        if (!posts.length) section.appendChild(buildEmptyPlaceholder('还没有本地帖子。请从论坛首页顶部向下拉到提示就位后松开，AI 才会刷新首页。', { icon: '↻' }));
+        if (!posts.length) section.appendChild(buildEmptyPlaceholder('还没有本地帖子。请在顶部手机下拉松开，或电脑向上滚动后停滚；提示就位才会刷新首页。', { icon: '↻' }));
         else {
             const feed = element('div', { className: 'yl-forum-feed' });
             for (const post of posts) {
@@ -2840,6 +2905,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     renderPage();
     return Object.freeze({
         refreshState,
-        destroy() { isDestroyed = true; stopGroupAutoTimer(); clearSummaryToast(); hideOperationDialog(); closeGroupMemberPicker(); closeGroupAutoDialog(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { isDestroyed = true; stopGroupAutoTimer(); cancelForumPullInteractions(); clearSummaryToast(); hideOperationDialog(); closeGroupMemberPicker(); closeGroupAutoDialog(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }
