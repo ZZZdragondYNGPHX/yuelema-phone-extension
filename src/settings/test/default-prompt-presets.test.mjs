@@ -59,7 +59,7 @@ test('SFW 内置提示词继续限制露骨或性化内容', () => {
     }
 });
 
-test('NSFW 内置提示词允许自愿成年人的直接线上成人表达且不再要求克制', () => {
+test('NSFW 内置提示词以自愿成年人的主动线上成人表达为默认', () => {
     for (const preset of presetsByMode('NSFW')) {
         assert.match(preset.content, /明确成年|所有人物必须明确成年|明确成年的/, `${preset.id} 缺少成年边界`);
         assert.match(preset.content, /自愿/, `${preset.id} 缺少自愿边界`);
@@ -67,8 +67,13 @@ test('NSFW 内置提示词允许自愿成年人的直接线上成人表达且不
         assert.match(preset.content, /同意可撤回|同意明确且可撤回/, `${preset.id} 缺少可撤回同意边界`);
         assert.match(
             preset.content,
-            /直白调情|直截了当地调情|直接的成人调情|露骨文爱|欲望表达|欲望偏好/,
+            /直白调情|直截了当地调情|直接的成人调情|成人调情|主动调情|露骨文爱|线上文爱|欲望表达|欲望偏好|情色角色扮演|成人向特征/,
             `${preset.id} 缺少直接成人表达许可`,
+        );
+        assert.match(
+            preset.content,
+            /优先|默认主动|主要话题|完整保留/,
+            `${preset.id} 没有把成人表达放在默认优先级`,
         );
         assert.doesNotMatch(
             preset.content,
@@ -76,6 +81,13 @@ test('NSFW 内置提示词允许自愿成年人的直接线上成人表达且不
             `${preset.id} 不得继续施加成人尺度限制`,
         );
     }
+});
+
+test('NSFW 推荐人物预设不再把普通社交或含糊成人标签当作默认', () => {
+    const preset = createBuiltinPromptPresets().find((item) => item.id === BUILTIN_PROMPT_PRESET_IDS.recommendationNsfw);
+    assert.match(preset.content, /不把普通饭搭子或轻社交当作默认/);
+    assert.match(preset.content, /至少一个公开标签应直接给出成人向特征/);
+    assert.doesNotMatch(preset.content, /只能克制地放在允许的公开/u);
 });
 
 test('NSFW 内置提示词仍保留同意、隐私、线上边界和现实行动硬限制', () => {

@@ -8,7 +8,7 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 8;
+export const SETTINGS_SCHEMA_VERSION = 9;
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -34,7 +34,7 @@ const SECRET_FIELD_NAMES = new Set([
 ]);
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
-const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 5, 6, 7]);
+const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 5, 6, 7, 8]);
 
 export class YueLeMaSettingsError extends Error {
     constructor(code, message) {
@@ -204,6 +204,15 @@ function appendMissingBuiltinPromptPresets(presets) {
         seen.add(preset.id);
     }
     return next;
+}
+
+/** v0.1.31 and earlier kept stock NSFW prompt IDs after their source text changed. Refresh only those stock IDs once; user-created prompt IDs remain untouched. */
+function upgradeBuiltinNsfwPromptPresets(presets, sourceVersion) {
+    if (sourceVersion > 8) return presets;
+    const currentBuiltinById = new Map(createBuiltinPromptPresets()
+        .filter((preset) => preset.contentMode === 'NSFW')
+        .map((preset) => [preset.id, normalizePromptPreset(preset)]));
+    return presets.map((preset) => currentBuiltinById.get(preset.id) ?? preset);
 }
 
 function promptIdForContentMode(presetId, contentMode, promptById) {
@@ -392,7 +401,10 @@ export function normalizeSettingsDocument(input) {
     const isLegacySchema = candidate.schemaVersion < SETTINGS_SCHEMA_VERSION;
     const connectionPresets = candidate.connectionPresets.map(normalizeConnectionPreset);
     const promptPresets = isLegacySchema
-        ? appendMissingBuiltinPromptPresets(candidate.promptPresets.map(normalizePromptPreset))
+        ? upgradeBuiltinNsfwPromptPresets(
+            appendMissingBuiltinPromptPresets(candidate.promptPresets.map(normalizePromptPreset)),
+            candidate.schemaVersion,
+        )
         : candidate.promptPresets.map(normalizePromptPreset);
     const connectionIds = new Set(connectionPresets.map((preset) => preset.id));
     const promptIds = new Set(promptPresets.map((preset) => preset.id));

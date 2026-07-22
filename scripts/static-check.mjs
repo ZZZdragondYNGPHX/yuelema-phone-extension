@@ -42,7 +42,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '0.1.31') fail('manifest.version 必须与扩展版本 0.1.31 统一');
+if (manifest.version !== '0.1.32') fail('manifest.version 必须与扩展版本 0.1.32 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -107,7 +107,7 @@ console.log('✓ API Key 仅通过专用浏览器缓存保存，并与设置导�
 const appShell = await readFile(resolve(root, 'src/app-shell.js'), 'utf8');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShell.includes("const UI_VERSION = '0.1.31'")) fail('关于软件 UI_VERSION 必须与扩展版本 0.1.31 统一');
+if (!appShell.includes("const UI_VERSION = '0.1.32'")) fail('关于软件 UI_VERSION 必须与扩展版本 0.1.32 统一');
 const index = await readFile(resolve(root, 'index.js'), 'utf8');
 if (!index.includes('export function onDisable') || !index.includes('export function onDelete') || !index.includes('clearSessionKeys()')) fail('缺少扩展禁用/删除时清理内存密钥镜像的生命周期实现');
 for (const label of ['首页', '匹配', '消息', '群组', '我的']) {

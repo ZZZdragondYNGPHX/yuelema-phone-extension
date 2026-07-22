@@ -11,7 +11,7 @@ import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
 import { DEFAULT_FORUM_AUTO_SETTINGS, DEFAULT_GROUP_AUTO_SETTINGS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 
-const UI_VERSION = '0.1.31';
+const UI_VERSION = '0.1.32';
 const PANEL_DRAG_THRESHOLD = 8;
 const FORUM_PULL_THRESHOLD = 88;
 const FORUM_WHEEL_RELEASE_DELAY = 180;
