@@ -1,4 +1,4 @@
-# 约了吗小手机 v0.1.30（阶段 52 分模式关系路线与面基门禁）
+# 约了吗小手机 v0.1.31（阶段 53 MVU Schema 兼容与解析隔离）
 
 这是现代现实都市「约了吗」MVU 角色卡的配套 SillyTavern UI 扩展。软件层承担推荐、线上短文本私聊、匹配、群组浏览、角色创作与面基约定；现实见面、约会及复杂长文本剧情仍由酒馆正文推进。
 
@@ -80,7 +80,7 @@ readLatestState → build…Patch → validateControlledPatchAgainstState
 1. 在 SillyTavern 的扩展管理页选择“安装扩展”，输入 Git URL：`https://github.com/ZZZdragondYNGPHX/yuelema-phone-extension.git`。
 2. 安装完成后重载 SillyTavern，确认“约了吗小手机”已启用。此扩展声明最低版本为 **SillyTavern v1.18.0**，以使用已核对的 `activate / disable / delete` lifecycle hooks。
 3. 后续版本从同一 Git 仓库更新，不再把本地工作树手工同步到 SillyTavern 安装副本。
-4. 在角色管理页面导入 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v0.1.30.json`，并为这张卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。
+4. 在角色管理页面导入 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v0.1.31.json`，并为这张卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。
 5. 首次使用时在“我的 → 设置”配置 OpenAI-compatible 连接预设、提示词预设和功能绑定；输入 API Key 后点击“保存连接预设”会将它保存到当前浏览器并立即可用，不必再额外点模型拉取按钮。禁用、删除或页面卸载只清理内存镜像；下次打开会按同一连接预设自动恢复。Key 不会进入设置导出、MVU、角色卡、提示词、日志或错误面板；需要移除时点击“删除当前已保存 API Key”。
 
 ## 本地验证（2026-07-22）
@@ -92,9 +92,15 @@ node --test
 node --input-type=module -e "await import('./index.js'); console.log('production import graph resolves')"
 ```
 
-实际结果（阶段 52）：`npm run check` 通过；全量 `node --test` **404 / 404 通过，0 failed**；关键源码 `node --check`、生产 ESM import 图与 `git diff --check` 通过；角色卡构建器已生成 `约了吗_MVU_v0.1.30.json`（41371 bytes）。新增回归覆盖 SFW / NSFW 成人表达隔离、双模式关键词字典与旧 SFW 迁移、三路线关系增长、面基灰显/路线草稿和受控阈值复核。上述本地结果不等同于 SillyTavern 真机通过。
+实际结果（阶段 53）：`npm run check` 通过；全量 `node --test` **405 / 405 通过，0 failed**；关键源码 `node --check`、生产 ESM import 图与 `git diff --check` 通过；角色卡构建器已生成 `约了吗_MVU_v0.1.31.json`。新增回归覆盖：`parseMessage` 只接收隔离副本，旧 Schema 静默剥离 `友情值 / 心动值 / 欲望值` 时会被精确识别、拒绝写回且不会污染活动 `stat_data`。上述本地结果不等同于 SillyTavern 真机通过。
 
 定向 DOM 回归还确认：搜索只消费公开私聊投影；清空聊天不会删除角色，删除角色会清理受控 MVU 中全部关联引用；阈值、关系分、UID、Patch 与 `stat_data` 不进入普通 DOM或控制台；匹配婉拒不会打开空会话；手动关闭提示、页面切换、关闭小手机或销毁后，迟到结果不会重开弹窗或强制导航。上述本地结果不等同于 SillyTavern 真机通过。
+
+## 阶段 53（v0.1.31）
+
+- 对 `Mvu.parseMessage` 的输入先做隔离克隆。即使某个 provider 在解析失败或后置校验失败时原地变更传入对象，扩展也不会让未通过校验的半解析状态泄漏到活动 `stat_data`。
+- 若候选写入后的 parser 结果只丢失三条已纳入候选合同的关系路线字段 `友情值 / 心动值 / 欲望值`，扩展将其判定为“当前聊天仍使用旧 MVU Schema”，给出导入同版本角色卡并**新开聊天**的明确提示；模型草稿不写入，保留原状态。
+- 必须从 Git URL 更新扩展至 `0.1.31`、导入 `约了吗_MVU_v0.1.31.json` 并新开聊天，再分别验证 SFW / NSFW 首页首位生成与刷新。旧聊天中的已加载 Schema 不会因仅更新扩展而自动升级。
 
 ## 阶段 52（v0.1.30）
 

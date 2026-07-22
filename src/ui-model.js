@@ -275,6 +275,8 @@ export function describeActionFailure(result) {
         mvu_parse_returned_no_stat_data: 'MVU 未返回可保存的软件状态，本次未写入。',
         mvu_parse_made_no_change: 'MVU 未接受本次修改（状态未发生变化），未写入任何数据。',
         mvu_parse_failed: 'MVU 解析本次修改时出错，未写入任何数据。',
+        mvu_parse_input_clone_failed: 'MVU 的临时解析副本不可用，本次未写入任何数据。',
+        mvu_relationship_routes_schema_outdated: '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。',
         mvu_replace_failed: 'MVU 保存本次修改时出错。',
         mvu_read_failed: '读取当前状态失败，未写入任何数据。',
         private_chat_invalid_target: '当前私聊会话已变化，请返回消息列表后重试。',

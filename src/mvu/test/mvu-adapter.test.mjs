@@ -7,6 +7,7 @@ import {
     LATEST_MESSAGE_SCOPE,
     buildClearPrivateChatPatch,
     buildControlledPatch,
+    buildRecommendationInitialCandidatePatch,
     buildUpdateVariable,
     validateControlledPatchAgainstState,
     validateControlledPatchWhitelist,
@@ -42,6 +43,25 @@ function stateFixture() {
             收藏角色UID: [],
             不喜欢角色UID: [],
             拉黑角色UID: [],
+        },
+    };
+}
+
+function completeCandidate() {
+    return {
+        成人验证: true,
+        公开资料: {
+            昵称: '林澈', 头像引用: '', 年龄段: '25-29', 性别: '女', 性取向: '异性恋',
+            城市: '上海', 距离范围: '10 km', 寻找意图: '先聊天再约会', 简介: '喜欢阅读和散步。',
+            兴趣标签: ['阅读'], 生活方式标签: ['早起'], 性格标签: ['温和'], 沟通风格标签: ['直接'],
+        },
+        仅好友资料: { 关系状态: '单身', 边界与偏好: '尊重边界。' },
+        隐藏资料: { 实际年龄: 26, 私人备注: '' },
+        偏好与边界: '',
+        拒绝阈值: 20, 已读不回阈值: 40, 取消匹配阈值: 60, 拉黑阈值: 90,
+        与玩家关系: {
+            状态: '陌生', 全局账号表现: 50, NPC专属匹配度: 0, 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0,
+            友情值: 0, 心动值: 0, 欲望值: 0,
         },
     };
 }
@@ -219,7 +239,8 @@ test('applyControlledPatch follows get -> parse -> replace -> event sequence', a
         },
         async parseMessage(raw, old) {
             calls.push(['parse', raw, old]);
-            assert.equal(old, oldData);
+            assert.notEqual(old, oldData);
+            assert.deepEqual(old, oldData);
             assert.match(raw, /<UpdateVariable><JSONPatch>/);
             return { stat_data: { ...old.stat_data, 软件: { ...old.stat_data.软件, 内容模式: 'NSFW' } } };
         },
@@ -308,7 +329,7 @@ test('parse resolving with an unchanged stat_data is reported as rejected, not a
     assert.deepEqual(calls, ['parse']);
 });
 
-test('content-mode toggle survives an in-place provider mutation and preserves the old event snapshot', async () => {
+test('content-mode toggle isolates live state from an in-place provider mutation and preserves the old event snapshot', async () => {
     const calls = [];
     const oldData = { stat_data: stateFixture() };
     let replacedData;
@@ -341,7 +362,45 @@ test('content-mode toggle survives an in-place provider mutation and preserves t
     assert.deepEqual(calls, ['parse', 'replace', 'event']);
     assert.equal(replacedData.stat_data.软件.内容模式, 'NSFW');
     assert.equal(eventOldData.stat_data.软件.内容模式, 'SFW');
-    assert.equal(oldData.stat_data.软件.内容模式, 'NSFW');
+    assert.equal(oldData.stat_data.软件.内容模式, 'SFW');
+});
+
+test('stripped relationship routes identify an outdated schema without leaking a partial parse into live state', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    oldData.stat_data.推荐.当前队列 = [];
+    oldData.stat_data.推荐.临时候选池 = {};
+    const built = buildRecommendationInitialCandidatePatch(oldData.stat_data, { candidate: completeCandidate() });
+    assert.equal(built.ok, true);
+    const candidateOperation = built.value.find((operation) => operation.op === 'add' && operation.path.startsWith('/推荐/临时候选池/'));
+    assert.ok(candidateOperation);
+    const uid = candidateOperation.path.split('/').at(-1);
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async (_raw, data) => {
+            calls.push('parse');
+            const candidate = structuredClone(candidateOperation.value);
+            delete candidate.与玩家关系.友情值;
+            delete candidate.与玩家关系.心动值;
+            delete candidate.与玩家关系.欲望值;
+            data.stat_data.推荐.临时候选池[uid] = candidate;
+            data.stat_data.推荐.当前队列.push(uid);
+            data.stat_data.系统.UID计数器.角色 += 1;
+            return data;
+        },
+        replaceMvuData: async () => calls.push('replace'),
+    };
+
+    const result = await applyControlledPatch({ patch: built.value, mvu, eventEmit: async () => calls.push('event') });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.code, 'mvu_relationship_routes_schema_outdated');
+    assert.deepEqual(result.detail, { operationIndex: 0, path: candidateOperation.path });
+    assert.deepEqual(calls, ['parse']);
+    assert.equal(oldData.stat_data.推荐.临时候选池[uid], undefined);
+    assert.deepEqual(oldData.stat_data.推荐.当前队列, []);
+    assert.equal(oldData.stat_data.系统.UID计数器.角色, 1);
 });
 
 test('content-mode toggle is persisted only when provider output satisfies the exact replace', async () => {

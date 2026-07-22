@@ -1,5 +1,7 @@
 import { LATEST_MESSAGE_SCOPE, buildUpdateVariable, validateControlledPatchAgainstState } from './controlled-patch.js';
-import { decodeJsonPointer, isPlainRecord } from './json-pointer.js';
+import { decodeJsonPointer, getAtPointer, isPlainRecord } from './json-pointer.js';
+
+const RELATIONSHIP_ROUTE_FIELDS = Object.freeze(['友情值', '心动值', '欲望值']);
 
 function unavailable(code) {
     return { ok: false, status: 'unavailable', code };
@@ -44,6 +46,22 @@ function cloneJsonValue(value) {
         return clone;
     }
     return value;
+}
+
+// parseMessage is documented as a pure old-data -> new-data transformation, but
+// some provider builds mutate the supplied envelope while parsing. Never hand it
+// the live getMvuData result: a rejected partial parse must not leak into the
+// host's in-memory state before replaceMvuData has approved it.
+function cloneMvuDataForParse(value) {
+    if (typeof structuredClone === 'function') {
+        try {
+            return structuredClone(value);
+        } catch {
+            // MvuData is expected to be a JSON-shaped envelope; fall through to
+            // the own-property-only clone if a host adds an unclonable wrapper.
+        }
+    }
+    return cloneJsonValue(value);
 }
 
 // Some MVU builds normalize the message-scope options in place (for example,
@@ -146,6 +164,25 @@ function validateProviderPostconditions(beforeState, state, patch) {
     return { ok: false, operationIndex: 0, path: patch[0]?.path ?? '/' };
 }
 
+function findStrippedRelationshipRoutes(state, patch) {
+    for (const [operationIndex, operation] of patch.entries()) {
+        if (operation?.op !== 'add' || typeof operation.path !== 'string') continue;
+        if (!/^\/(?:推荐\/临时候选池|角色池)\/npc_[A-Za-z0-9_-]{1,64}$/u.test(operation.path)) continue;
+        const expectedRelationship = operation.value?.与玩家关系;
+        if (!isPlainRecord(expectedRelationship) || !RELATIONSHIP_ROUTE_FIELDS.every((field) => Object.hasOwn(expectedRelationship, field))) continue;
+
+        const actualCandidate = getAtPointer(state, operation.path);
+        const actualRelationship = actualCandidate.found && isPlainRecord(actualCandidate.value)
+            ? actualCandidate.value.与玩家关系
+            : null;
+        if (!isPlainRecord(actualRelationship)) continue;
+        if (RELATIONSHIP_ROUTE_FIELDS.some((field) => !Object.hasOwn(actualRelationship, field))) {
+            return { operationIndex, path: operation.path };
+        }
+    }
+    return null;
+}
+
 function resolveEventEmitter({ eventEmit, getContext }) {
     if (typeof eventEmit === 'function') return eventEmit;
     if (typeof getContext === 'function') {
@@ -213,9 +250,14 @@ export async function applyControlledPatch({
     const wrapped = buildUpdateVariable(patch);
     if (!wrapped.ok) return { ok: false, status: 'rejected', code: wrapped.code, detail: wrapped.detail };
 
+    const parseInput = cloneMvuDataForParse(oldData);
+    if (!isPlainRecord(parseInput) || !isPlainRecord(parseInput.stat_data)) {
+        return { ok: false, status: 'no_change', code: 'mvu_parse_input_clone_failed' };
+    }
+
     let newData;
     try {
-        newData = await mvu.parseMessage(wrapped.value, oldData);
+        newData = await mvu.parseMessage(wrapped.value, parseInput);
     } catch (error) {
         return failed('mvu_parse_failed', error);
     }
@@ -234,11 +276,12 @@ export async function applyControlledPatch({
     // allowing replaceMvuData; this is postcondition checking, not a second write.
     const postconditions = validateProviderPostconditions(oldStateSnapshot, newData.stat_data, patch);
     if (!postconditions.ok) {
+        const relationshipRoutes = findStrippedRelationshipRoutes(newData.stat_data, patch);
         return {
             ok: false,
             status: 'no_change',
-            code: 'mvu_parse_postcondition_failed',
-            detail: { operationIndex: postconditions.operationIndex, path: postconditions.path },
+            code: relationshipRoutes ? 'mvu_relationship_routes_schema_outdated' : 'mvu_parse_postcondition_failed',
+            detail: relationshipRoutes ?? { operationIndex: postconditions.operationIndex, path: postconditions.path },
         };
     }
 

@@ -69,6 +69,7 @@ test('unavailable read result never returns a raw state object', () => {
 test('saved-card source failures stay user-facing and do not expose internal queue codes', () => {
     assert.equal(describeActionFailure({ code: 'like_match_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
     assert.equal(describeActionFailure({ code: 'recommendation_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
+    assert.equal(describeActionFailure({ code: 'mvu_relationship_routes_schema_outdated' }), '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。');
 });
 
 test('private chat view exposes only public profile and session-visible transcript', () => {
