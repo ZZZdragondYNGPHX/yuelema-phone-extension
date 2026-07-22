@@ -1,4 +1,5 @@
 import { buildGroupBrowseModel } from './groups/group-discovery-service.js';
+import { listConversationSummaryRecords, listUnsummarizedConversationMessages, normalizeConversationSummaryState } from './chat/conversation-summary.js';
 
 export const NAV_ITEMS = Object.freeze([
     { id: 'home', label: '首页', icon: '⌂' },
@@ -28,6 +29,11 @@ export const PAGE_COPY = Object.freeze({
     settings_personalization_preference: { title: '个性化内容偏好', description: '' },
     settings_images: { title: '图片管理', description: '管理只保存在当前浏览器的角色展示图片与匹配关键词。' },
     settings_console: { title: '控制台', description: '仅显示本次小手机会话中的安全运行状态。' },
+    settings_chat_summary: { title: '对话总结', description: '设置自动总结策略，并浏览各角色的总结档案。' },
+    settings_chat_summary_config: { title: '总结方案', description: '选择预设，并设置自动总结间隔与失败重试次数。' },
+    settings_chat_summary_history: { title: '总结档案', description: '按角色查看已保存的对话总结。' },
+    settings_chat_summary_history_detail: { title: '角色总结', description: '' },
+    private_chat_summary: { title: '聊天总结', description: '查看本次私聊的总结结果并按需重新总结。' },
     match_profile: { title: '心动档案', description: '本次 AI 匹配的公开资料草稿；不会自动写入软件状态。' },
     candidate_detail: { title: '公开资料', description: '' },
 });
@@ -160,7 +166,7 @@ export function projectPrivateChatView(state) {
         const profile = projectPublicProfile(state.角色池[npcUid], npcUid);
         if (!profile) continue;
         const messages = [];
-        for (const raw of Array.isArray(session.最近消息) ? session.最近消息.slice(-30) : []) {
+        for (const raw of Array.isArray(session.最近消息) ? session.最近消息.slice(-240) : []) {
             if (!ownRecord(raw) || !CHAT_SENDERS.has(raw.发送者)) continue;
             const content = safeText(raw.内容, 600);
             if (!content) continue;
@@ -168,9 +174,29 @@ export function projectPrivateChatView(state) {
                 messageUid: safeText(raw.消息UID, 80), sender: raw.发送者, content, time: safeText(raw.时间, 80),
             }));
         }
+        const summaryState = normalizeConversationSummaryState(session);
+        const summaryRecords = listConversationSummaryRecords(session).map((record) => Object.freeze({
+            summaryUid: record.uid,
+            startLayer: record.startLayer,
+            endLayer: record.endLayer,
+            content: record.content,
+            time: record.time,
+        }));
+        const totalLayers = Number.isInteger(session.对话层数) && session.对话层数 >= messages.length
+            ? session.对话层数 : messages.length;
         sessions.push(Object.freeze({
             sessionUid, npcUid, status: session.状态, profile, messages: Object.freeze(messages),
-            summary: safeText(session.长期摘要, 500), canSend: session.状态 === '已匹配',
+            summary: safeText(session.长期摘要, 500),
+            summaryInfo: Object.freeze({
+                totalLayers,
+                pendingMessageCount: listUnsummarizedConversationMessages(session).length,
+                records: Object.freeze(summaryRecords),
+                status: summaryState.status,
+                failureReason: summaryState.failureReason,
+                targetSummaryUid: summaryState.targetSummaryUid,
+                attempts: summaryState.attempts,
+            }),
+            canSend: session.状态 === '已匹配',
         }));
     }
     return Object.freeze(sessions.sort((left, right) => left.sessionUid.localeCompare(right.sessionUid, 'zh-Hans-CN')));
@@ -253,6 +279,7 @@ export function describeActionFailure(result) {
         private_chat_response_invalid: '私聊回复未通过校验，本条消息未写入。',
         private_chat_relationship_state_invalid: '当前关系状态异常，本条消息未写入。',
         private_chat_session_messages_invalid: '当前会话记录异常，本条消息未写入。',
+        private_chat_history_requires_summary: '聊天记录已达到保留上限；请先完成未整理的聊天总结后再发送。',
         private_chat_rhythm_state_invalid: '当前角色的互动节奏设置异常，本条消息未写入。',
         private_chat_delete_invalid_target: '该会话标识无效，未执行删除。',
         private_chat_delete_not_found: '该会话已不存在，请返回消息列表刷新。',

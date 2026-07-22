@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installMiniDom } from '../../test-support/minidom.mjs';
+import { createMemoryStorage, createSettingsStore } from '../../settings/settings-store.js';
 
 const miniDom = installMiniDom();
 const { mountPhoneApp } = await import('../../app-shell.js');
@@ -142,6 +143,104 @@ test('private chat uses a distinct mobile conversation surface and only calls th
         const refreshedInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
         assert.equal(refreshedInput.value, '', '受控写入成功后只清除当前会话的本地草稿');
         assert.deepEqual(events.map((entry) => entry.payload.page), ['messages', 'private_chat']);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('chat summary settings disable their two subpages until enabled, then render a per-character summary archive', () => {
+    const result = readResult();
+    result.state.会话.chat_lin.对话层数 = 4;
+    result.state.会话.chat_lin.最近消息 = [
+        { 消息UID: 'm1', 发送者: '角色', 内容: '晚上好，今天过得怎么样？', 时间: '20:30', 层数: 1 },
+        { 消息UID: 'm2', 发送者: '玩家', 内容: '刚看完一部电影，想和你分享。', 时间: '20:32', 层数: 2 },
+        { 消息UID: 'm3', 发送者: '角色', 内容: '我也喜欢电影。', 时间: '20:33', 层数: 3 },
+        { 消息UID: 'm4', 发送者: '玩家', 内容: '下次一起看展吧。', 时间: '20:34', 层数: 4 },
+    ];
+    result.state.会话.chat_lin.总结 = {
+        已总结消息UID: 'm2', 总结序号: 1,
+        记录: [{ 总结UID: 'summary_1', 起始消息UID: 'm1', 结束消息UID: 'm2', 起始层数: 1, 结束层数: 2, 内容: '双方从电影开始聊天。', 时间: '' }],
+        状态: '成功', 失败原因: '', 目标总结UID: '', 尝试次数: 1,
+    };
+    const settingsStore = createSettingsStore({ storage: createMemoryStorage() });
+    const bridge = { emit() {}, isPending() { return false; }, runPrivateChatSummary() { return Promise.resolve({ ok: true, remainingMessageCount: 0 }); } };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-chat-summary-settings', actionBridge: bridge,
+        settingsStore, llmClient: null, characterLibrary: null, readState: () => result,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '对话总结'));
+
+        const plan = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '总结方案');
+        const archive = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '总结档案');
+        assert.equal(plan.disabled, true);
+        assert.equal(archive.disabled, true);
+        const toggle = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '自动对话总结开关');
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change'));
+
+        const enabledPlan = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '总结方案');
+        const enabledArchive = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '总结档案');
+        assert.equal(enabledPlan.disabled, false);
+        assert.equal(enabledArchive.disabled, false);
+        click(enabledPlan);
+        assert.ok(miniDom.document.querySelector('.yl-chat-summary-config'));
+        assert.ok(miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '每几条消息层自动总结'));
+        assert.ok(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '保存'));
+
+        click(miniDom.document.querySelector('.yl-page-back'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '总结档案'));
+        assert.ok(miniDom.document.querySelector('.yl-chat-summary-history'));
+        assert.match(miniDom.document.body.textContent, /已对话 4 层 · 1 条总结 · 2 条待整理/u);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '查看林澈的总结档案'));
+        assert.match(miniDom.document.body.textContent, /第 1–2 层总结|双方从电影开始聊天/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('a successful private-chat reply starts background summary work and shows only a compact top-of-chat result toast', async () => {
+    const settingsStore = createSettingsStore({ storage: createMemoryStorage() });
+    settingsStore.setChatSummarySettings({ enabled: true, interval: 2, retryLimit: 0 });
+    let privatePending = false;
+    const summaryCalls = [];
+    const bridge = {
+        emit() {},
+        isPending(kind) { return kind === 'private_chat' && privatePending; },
+        runPrivateChat() {
+            privatePending = true;
+            return Promise.resolve().then(() => {
+                privatePending = false;
+                return { ok: true, summaryCheckRequested: true };
+            });
+        },
+        runPrivateChatSummary(request) {
+            summaryCalls.push(request);
+            return Promise.resolve({ ok: true, remainingMessageCount: 0 });
+        },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-chat-summary-toast', actionBridge: bridge,
+        settingsStore, llmClient: null, characterLibrary: null, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
+        input.value = '继续聊电影吧。';
+        input.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息'));
+        await flushUi();
+
+        assert.deepEqual(summaryCalls, [{ sessionUid: 'chat_lin', npcUid: 'npc_lin', summaryUid: '', automatic: true }]);
+        const toast = miniDom.document.querySelector('.yl-chat-summary-toast');
+        assert.ok(toast);
+        assert.match(toast.textContent, /聊天总结已完成|已自动整理本次私聊/u);
+        assert.equal(miniDom.document.querySelector('.yl-operation-dialog').hidden, true, '自动总结不得弹出阻塞式操作弹窗');
     } finally {
         mounted.destroy();
     }

@@ -3,6 +3,17 @@ import { normalizeGeneratedCandidate } from '../recommendation/candidate.js';
 import { normalizePrivateChatResponse } from '../chat/private-chat-response.js';
 import { validatePrivateChatRequest } from '../chat/private-chat-service.js';
 import { decideInteractionRhythm } from '../chat/interaction-rhythm.js';
+import {
+    MAX_CHAT_HISTORY_MESSAGES,
+    MAX_CHAT_SUMMARY_RECORDS,
+    countUnsummarizedConversationLayers,
+    listConversationSummaryRecords,
+    listUnsummarizedConversationMessages,
+    normalizeConversationSummaryFailure,
+    normalizeConversationSummaryState,
+    normalizeGeneratedConversationSummary,
+    summaryRecordSource,
+} from '../chat/conversation-summary.js';
 import { scoreFavoritePrivateChatInvitation } from '../recommendation/match-scoring.js';
 import { normalizeSoulMatchDraft } from '../recommendation/soul-text-match-service.js';
 
@@ -270,7 +281,7 @@ function clamp(value, lower, upper) {
 }
 
 function chatMessage(sender, uid, content) {
-    return Object.freeze({ 消息UID: uid, 发送者: sender, 内容: content, 时间: '' });
+    return Object.freeze({ 消息UID: uid, 发送者: sender, 内容: content, 时间: '', 层数: 0 });
 }
 
 function nextChatMessageNumber(sessionUid, recentMessages) {
@@ -299,7 +310,7 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
 
     const { session, npc, relationship, playerMessage: normalizedMessage } = request.value;
     const recentMessages = Array.isArray(session.最近消息) ? session.最近消息 : null;
-    if (!recentMessages || recentMessages.length > 30) return fail('private_chat_session_messages_invalid');
+    if (!recentMessages || recentMessages.length > MAX_CHAT_HISTORY_MESSAGES) return fail('private_chat_session_messages_invalid');
     for (const field of RELATIONSHIP_VALUE_FIELDS) {
         if (!Number.isInteger(relationship[field]) || relationship[field] < 0 || relationship[field] > 100) return fail('private_chat_relationship_state_invalid');
     }
@@ -307,12 +318,47 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
     if (!rhythm) return fail('private_chat_rhythm_state_invalid');
 
     const nextMessageNumber = nextChatMessageNumber(sessionUid, recentMessages);
-    const operations = [{ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: chatMessage('玩家', 'msg_' + sessionUid + '_p_' + nextMessageNumber, normalizedMessage) }];
+    const appendedMessageCount = rhythm.outcome === 'replied' ? normalizedResponse.replies.length + 1 : 2;
+    const retainedOverflow = Math.max(0, recentMessages.length + appendedMessageCount - MAX_CHAT_HISTORY_MESSAGES);
+    if (retainedOverflow > 0) {
+        const marker = normalizeConversationSummaryState(session).lastMessageUid;
+        const markerIndex = marker
+            ? recentMessages.map((message) => ownRecord(message)?.消息UID).lastIndexOf(marker)
+            : -1;
+        // Only the already summarized prefix may age out of the bounded raw
+        // transcript. Losing a pending message would make a later summary or
+        // meetup handoff silently incomplete, so refuse the send instead.
+        if (markerIndex + 1 < retainedOverflow) return fail('private_chat_history_requires_summary');
+    }
+    const maxStoredLayer = recentMessages.reduce((maximum, message) => {
+        const layer = ownRecord(message) && Number.isInteger(message.层数) && message.层数 >= 0 ? message.层数 : 0;
+        return Math.max(maximum, layer);
+    }, 0);
+    // Pre-summary cards have no layer field, so their retained message count is
+    // the only safe legacy fallback. New cards may contain system notices that
+    // intentionally share the preceding dialogue layer.
+    const hasStoredLayers = recentMessages.some((message) => ownRecord(message) && Number.isInteger(message.层数) && message.层数 >= 0);
+    const legacyFallbackLayerCount = hasStoredLayers ? maxStoredLayer : recentMessages.length;
+    const knownLayerCount = Number.isInteger(session.对话层数) && session.对话层数 >= maxStoredLayer && session.对话层数 <= 999999
+        ? session.对话层数 : legacyFallbackLayerCount;
+    let nextLayer = knownLayerCount;
+    const messageForLayer = (sender, uid, content) => {
+        // “层” means a player or character utterance. A locally generated
+        // delivery/read notice remains part of the transcript but must not make
+        // an automatic summary fire earlier than the configured dialogue count.
+        if (sender !== '系统') nextLayer += 1;
+        return { ...chatMessage(sender, uid, content), 层数: nextLayer };
+    };
+    const operations = [];
+    for (let index = 0; index < retainedOverflow; index += 1) {
+        operations.push({ op: 'remove', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '0']) });
+    }
+    operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: messageForLayer('玩家', 'msg_' + sessionUid + '_p_' + nextMessageNumber, normalizedMessage) });
     if (rhythm.outcome === 'replied') {
-        normalizedResponse.replies.forEach((reply, index) => operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: chatMessage('角色', 'msg_' + sessionUid + '_n_' + (nextMessageNumber + index + 1), reply) }));
+        normalizedResponse.replies.forEach((reply, index) => operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: messageForLayer('角色', 'msg_' + sessionUid + '_n_' + (nextMessageNumber + index + 1), reply) }));
     } else {
         const blocked = rhythm.outcome === 'blocked';
-        operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: chatMessage('系统', 'msg_' + sessionUid + '_s_' + (nextMessageNumber + 1), blocked ? BLOCKED_CHAT_NOTICE : READ_WITHOUT_REPLY_NOTICE) });
+        operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: messageForLayer('系统', 'msg_' + sessionUid + '_s_' + (nextMessageNumber + 1), blocked ? BLOCKED_CHAT_NOTICE : READ_WITHOUT_REPLY_NOTICE) });
         if (blocked) {
             operations.push({ op: 'replace', path: encodeJsonPointer(['会话', sessionUid, '状态']), value: '已拉黑' });
             operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', '状态']), value: '已拉黑' });
@@ -324,8 +370,163 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
         const next = rhythm.projectedRelationship[field];
         if (next !== relationship[field]) operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', field]), value: next });
     }
-    if (rhythm.outcome === 'replied' && Object.hasOwn(normalizedResponse, 'sessionSummary')) operations.push({ op: 'replace', path: encodeJsonPointer(['会话', sessionUid, '长期摘要']), value: normalizedResponse.sessionSummary });
+    operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '对话层数']), value: nextLayer });
     return success(operations);
+}
+
+function summarySessionTarget(state, sessionUid, npcUid) {
+    if (!ownRecord(state) || !isChatSessionUid(sessionUid) || !isNpcUid(npcUid)) return fail('chat_summary_invalid_target');
+    const session = ownRecord(ownRecord(state.会话)?.[sessionUid]);
+    const adult = assertKnownAdult(state, npcUid);
+    if (!session || !adult.ok || adult.value.location !== 'role' || session.对象UID !== npcUid) {
+        return fail(adult.ok ? 'chat_summary_session_not_found' : adult.code);
+    }
+    if (!Array.isArray(session.最近消息) || session.最近消息.length > MAX_CHAT_HISTORY_MESSAGES) return fail('chat_summary_session_messages_invalid');
+    if (session.总结 !== undefined && !ownRecord(session.总结)) return fail('chat_summary_state_invalid');
+    if (session.总结?.记录 !== undefined && !Array.isArray(session.总结.记录)) return fail('chat_summary_state_invalid');
+    return success({ session, role: adult.value.profile });
+}
+
+function validSummaryAttemptCount(value) {
+    return Number.isInteger(value) && value >= 1 && value <= 6;
+}
+
+function validSourceMessageUids(value) {
+    return Array.isArray(value) && value.length > 0 && value.length <= MAX_CHAT_HISTORY_MESSAGES
+        && value.every((uid) => typeof uid === 'string' && uid.length > 0 && uid.length <= 80)
+        && new Set(value).size === value.length;
+}
+
+function resolveSummarySource(session, sourceMessageUids, summaryUid) {
+    if (!validSourceMessageUids(sourceMessageUids)) return fail('chat_summary_source_invalid');
+    if (summaryUid) {
+        const historical = summaryRecordSource(session, summaryUid);
+        if (!historical.ok) return fail(historical.code);
+        const expected = historical.messages.map((message) => message.uid);
+        if (expected.length !== sourceMessageUids.length || expected.some((uid, index) => uid !== sourceMessageUids[index])) {
+            return fail('chat_summary_source_changed');
+        }
+        return success({ messages: historical.messages, record: historical.record });
+    }
+    const pending = listUnsummarizedConversationMessages(session);
+    if (pending.length < sourceMessageUids.length || sourceMessageUids.some((uid, index) => pending[index]?.uid !== uid)) {
+        return fail('chat_summary_source_changed');
+    }
+    return success({ messages: Object.freeze(pending.slice(0, sourceMessageUids.length)), record: null });
+}
+
+function summaryStateValue({ state, records, status, failureReason = '', targetSummaryUid = '', attempts }) {
+    return {
+        已总结消息UID: state.lastMessageUid,
+        总结序号: state.sequence,
+        记录: records.map((record) => ({
+            总结UID: record.uid,
+            起始消息UID: record.startMessageUid,
+            结束消息UID: record.endMessageUid,
+            起始层数: record.startLayer,
+            结束层数: record.endLayer,
+            内容: record.content,
+            时间: record.time,
+        })),
+        状态: status,
+        失败原因: failureReason,
+        目标总结UID: targetSummaryUid,
+        尝试次数: attempts,
+    };
+}
+
+function isControlledConversationSummary(value) {
+    if (!ownRecord(value)) return false;
+    const keys = Object.keys(value).sort();
+    const expectedKeys = ['已总结消息UID', '总结序号', '记录', '状态', '失败原因', '目标总结UID', '尝试次数'].sort();
+    if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) return false;
+    const normalized = normalizeConversationSummaryState({ 总结: value });
+    const canonical = summaryStateValue({
+        state: normalized,
+        records: normalized.records,
+        status: normalized.status,
+        failureReason: normalized.status === '失败' ? normalized.failureReason : '',
+        targetSummaryUid: normalized.status === '失败' ? normalized.targetSummaryUid : '',
+        attempts: normalized.attempts,
+    });
+    return JSON.stringify(canonical) === JSON.stringify(value);
+}
+
+/**
+ * Stores one validated LLM summary (or replaces a chosen record) through the
+ * same controlled Patch boundary. The source message IDs must be the exact
+ * current prefix so late model responses cannot summarize or erase new text.
+ */
+export function buildPrivateChatSummaryPatch(state, { sessionUid, npcUid, summary, sourceMessageUids, summaryUid = '', attempts = 1 } = {}) {
+    const target = summarySessionTarget(state, sessionUid, npcUid);
+    if (!target.ok) return target;
+    if (!validSummaryAttemptCount(attempts)) return fail('chat_summary_attempts_invalid');
+    const normalizedSummary = normalizeGeneratedConversationSummary({ summary });
+    if (!normalizedSummary) return fail('chat_summary_content_invalid');
+    const source = resolveSummarySource(target.value.session, sourceMessageUids, summaryUid);
+    if (!source.ok) return source;
+
+    const current = normalizeConversationSummaryState(target.value.session);
+    const records = [...current.records];
+    let record;
+    let nextState;
+    if (summaryUid) {
+        const index = records.findIndex((item) => item.uid === summaryUid);
+        if (index < 0) return fail('chat_summary_record_not_found');
+        record = { ...records[index], content: normalizedSummary };
+        records[index] = record;
+        nextState = summaryStateValue({ state: current, records, status: '成功', attempts });
+    } else {
+        const sourceMessages = source.value.messages;
+        const nextSequence = Math.max(current.sequence, records.length) + 1;
+        const nextUid = `summary_${nextSequence}`;
+        if (records.some((item) => item.uid === nextUid)) return fail('chat_summary_uid_conflict');
+        record = {
+            uid: nextUid,
+            startMessageUid: sourceMessages[0].uid,
+            endMessageUid: sourceMessages.at(-1).uid,
+            startLayer: sourceMessages[0].layer,
+            endLayer: sourceMessages.at(-1).layer,
+            content: normalizedSummary,
+            time: '',
+        };
+        const nextRecords = [...records, record].slice(-MAX_CHAT_SUMMARY_RECORDS);
+        nextState = summaryStateValue({
+            state: { ...current, lastMessageUid: record.endMessageUid, sequence: nextSequence },
+            records: nextRecords,
+            status: '成功',
+            attempts,
+        });
+    }
+    return success({
+        patch: [{ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '总结']), value: nextState }],
+        summaryUid: record.uid,
+        remainingMessageCount: summaryUid ? listUnsummarizedConversationMessages(target.value.session).length
+            : listUnsummarizedConversationMessages({ ...target.value.session, 总结: nextState }).length,
+        remainingLayerCount: summaryUid ? countUnsummarizedConversationLayers(target.value.session)
+            : countUnsummarizedConversationLayers({ ...target.value.session, 总结: nextState }),
+    });
+}
+
+/** Persists a public-safe failure state so the user can retry from chat history. */
+export function buildPrivateChatSummaryFailurePatch(state, { sessionUid, npcUid, reason, summaryUid = '', attempts = 1 } = {}) {
+    const target = summarySessionTarget(state, sessionUid, npcUid);
+    if (!target.ok) return target;
+    if (!validSummaryAttemptCount(attempts)) return fail('chat_summary_attempts_invalid');
+    const current = normalizeConversationSummaryState(target.value.session);
+    if (summaryUid && !current.records.some((record) => record.uid === summaryUid)) return fail('chat_summary_record_not_found');
+    const nextState = summaryStateValue({
+        state: current,
+        records: current.records,
+        status: '失败',
+        failureReason: normalizeConversationSummaryFailure(reason),
+        targetSummaryUid: summaryUid,
+        attempts,
+    });
+    return success({
+        patch: [{ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '总结']), value: nextState }],
+        summaryUid,
+    });
 }
 
 /** Clears one visible chat session without deleting its character profile. */
@@ -455,6 +656,7 @@ function normalizeMeetupText(value, maxLength, required) {
 function meetupDraft({ nickname, time, place, mutualIntent, confirmedBoundaries, pendingItems, riskNotice }) {
     const subject = normalizeMeetupText(nickname, 80, false) || '该匹配对象';
     const details = [
+        `与${subject}角色约定面基（必须查询并且遵循该角色的公开资料、已确认边界与会话总结；不得推断或泄露非公开资料）。`,
         `对象：${subject}`,
         `时间：${time}`,
         `地点：${place}`,
@@ -485,6 +687,9 @@ export function buildMeetupHandoffPatch(state, request = {}) {
         || !session || session.对象UID !== npcUid || session.状态 !== '已匹配'
         || !Number.isInteger(meetupCounter) || meetupCounter < 0 || meetupCounter >= 999999) {
         return fail('meetup_preconditions_not_met');
+    }
+    if (listUnsummarizedConversationMessages(session).length > 0) {
+        return fail('meetup_summary_required');
     }
     const values = {};
     for (const [inputName, storedName, maxLength, required] of MEETUP_FIELDS) {
@@ -539,6 +744,16 @@ function matchedSession(npcUid) {
         状态: '已匹配',
         最近消息: [],
         长期摘要: '',
+        对话层数: 0,
+        总结: {
+            已总结消息UID: '',
+            总结序号: 0,
+            记录: [],
+            状态: '空闲',
+            失败原因: '',
+            目标总结UID: '',
+            尝试次数: 0,
+        },
         已确认边界: '',
         已确认承诺: '',
     };
@@ -880,13 +1095,20 @@ export function validateControlledPatchWhitelist(patch) {
         if (operation.op === 'add' && newSession && isChatSessionUid(newSession[1]) && ownRecord(operation.value)
             && operation.value.对象UID && isNpcUid(operation.value.对象UID) && operation.value.状态 === '已匹配'
             && Array.isArray(operation.value.最近消息) && operation.value.最近消息.length === 0
-            && operation.value.长期摘要 === '' && operation.value.已确认边界 === '' && operation.value.已确认承诺 === '') continue;
+            && operation.value.长期摘要 === '' && operation.value.对话层数 === 0 && isControlledConversationSummary(operation.value.总结)
+            && operation.value.已确认边界 === '' && operation.value.已确认承诺 === '') continue;
 
         const chatMessagePath = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/最近消息\/-$/u.exec(path);
         if (operation.op === 'add' && chatMessagePath && isChatSessionUid(chatMessagePath[1]) && ownRecord(operation.value)
             && ['玩家', '角色', '系统'].includes(operation.value.发送者) && typeof operation.value.消息UID === 'string'
             && typeof operation.value.内容 === 'string' && operation.value.内容.length > 0 && operation.value.内容.length <= MAX_CHAT_MESSAGE_LENGTH
-            && operation.value.时间 === '') continue;
+            && operation.value.时间 === '' && Number.isInteger(operation.value.层数) && operation.value.层数 >= 1 && operation.value.层数 <= 999999) continue;
+        const chatMessageTrim = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/最近消息\/0$/u.exec(path);
+        if (operation.op === 'remove' && chatMessageTrim && isChatSessionUid(chatMessageTrim[1])) continue;
+        const chatLayerCount = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/对话层数$/u.exec(path);
+        if (operation.op === 'add' && chatLayerCount && isChatSessionUid(chatLayerCount[1]) && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 999999) continue;
+        const chatConversationSummary = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/总结$/u.exec(path);
+        if (operation.op === 'add' && chatConversationSummary && isChatSessionUid(chatConversationSummary[1]) && isControlledConversationSummary(operation.value)) continue;
         const sessionRemove = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})$/u.exec(path);
         if (operation.op === 'remove' && sessionRemove && isChatSessionUid(sessionRemove[1])) continue;
         const sessionStatus = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/状态$/u.exec(path);
@@ -1008,6 +1230,65 @@ export function validateControlledPatchAgainstState(state, patch) {
         if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
     }
 
+    const conversationSummaryOperation = patch.find((operation) => operation?.op === 'add' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}\/总结$/u.test(operation.path));
+    if (conversationSummaryOperation && patch.length === 1) {
+        const sessionUid = conversationSummaryOperation.path.split('/')[2];
+        const session = ownRecord(state.会话)?.[sessionUid];
+        const npcUid = ownRecord(session)?.对象UID;
+        const next = normalizeConversationSummaryState({ 总结: conversationSummaryOperation.value });
+        const previous = normalizeConversationSummaryState(session);
+        if (isChatSessionUid(sessionUid) && isNpcUid(npcUid)) {
+            if (next.status === '失败') {
+                const expected = buildPrivateChatSummaryFailurePatch(state, {
+                    sessionUid,
+                    npcUid,
+                    reason: next.failureReason,
+                    summaryUid: next.targetSummaryUid,
+                    attempts: next.attempts,
+                });
+                if (expected.ok && JSON.stringify(expected.value.patch) === JSON.stringify(patch)) return success(undefined);
+            }
+            if (next.status === '成功') {
+                let targetSummaryUid = '';
+                let summaryRecord = null;
+                const added = next.records.filter((record) => !previous.records.some((item) => item.uid === record.uid));
+                if (added.length === 1) {
+                    summaryRecord = added[0];
+                    const pending = listUnsummarizedConversationMessages(session);
+                    const endIndex = pending.findIndex((message) => message.uid === summaryRecord.endMessageUid);
+                    if (endIndex >= 0) {
+                        const sourceMessageUids = pending.slice(0, endIndex + 1).map((message) => message.uid);
+                        const expected = buildPrivateChatSummaryPatch(state, {
+                            sessionUid, npcUid, summary: summaryRecord.content, sourceMessageUids, attempts: next.attempts,
+                        });
+                        if (expected.ok && JSON.stringify(expected.value.patch) === JSON.stringify(patch)) return success(undefined);
+                    }
+                } else {
+                    const changed = next.records.filter((record) => {
+                        const old = previous.records.find((item) => item.uid === record.uid);
+                        return old && old.content !== record.content;
+                    });
+                    targetSummaryUid = changed.length === 1 ? changed[0].uid : previous.targetSummaryUid;
+                    if (targetSummaryUid) {
+                        const historical = summaryRecordSource(session, targetSummaryUid);
+                        summaryRecord = next.records.find((record) => record.uid === targetSummaryUid) ?? null;
+                        if (historical.ok && summaryRecord) {
+                            const expected = buildPrivateChatSummaryPatch(state, {
+                                sessionUid,
+                                npcUid,
+                                summary: summaryRecord.content,
+                                sourceMessageUids: historical.messages.map((message) => message.uid),
+                                summaryUid: targetSummaryUid,
+                                attempts: next.attempts,
+                            });
+                            if (expected.ok && JSON.stringify(expected.value.patch) === JSON.stringify(patch)) return success(undefined);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     const chatMessageOperations = patch.filter((operation) => operation?.op === 'add' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}\/最近消息\/-$/u.test(operation.path));
     if (chatMessageOperations.length >= 2 && chatMessageOperations.length <= 7) {
         const [playerOperation, ...replyOperations] = chatMessageOperations;
@@ -1028,8 +1309,6 @@ export function validateControlledPatchAgainstState(state, patch) {
                     response.relationship[field] = change.value - relationship[field];
                 } else response.relationship[field] = 0;
             }
-            const summary = patch.find((operation) => operation?.op === 'replace' && operation.path === encodeJsonPointer(['会话', sessionUid, '长期摘要']));
-            if (summary) response.sessionSummary = summary.value;
             const expected = validResponse ? buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage: playerOperation.value?.内容, response }) : fail('private_chat_relationship_state_invalid');
             if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
         }

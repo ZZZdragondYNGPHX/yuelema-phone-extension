@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPrivateChatContext, generatePrivateChatReply } from '../private-chat-service.js';
+import { buildPrivateChatContext, generatePrivateChatReply, generatePrivateChatSummary } from '../private-chat-service.js';
 import { buildPrivateChatPatch, validateControlledPatchAgainstState } from '../../mvu/controlled-patch.js';
 
 function state() {
@@ -25,7 +25,13 @@ function state() {
         },
         推荐: { 当前队列: [], 临时候选池: {}, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
         会话: {
-            chat_1: { 对象UID: 'npc_adult', 状态: '已匹配', 最近消息: [{ 消息UID: 'old', 发送者: '角色', 内容: '嗨', 时间: '' }], 长期摘要: '', 已确认边界: '', 已确认承诺: '' },
+            chat_1: {
+                对象UID: 'npc_adult', 状态: '已匹配',
+                最近消息: [{ 消息UID: 'old', 发送者: '角色', 内容: '嗨', 时间: '', 层数: 1 }],
+                长期摘要: '', 对话层数: 1,
+                总结: { 已总结消息UID: '', 总结序号: 0, 记录: [], 状态: '空闲', 失败原因: '', 目标总结UID: '', 尝试次数: 0 },
+                已确认边界: '', 已确认承诺: '',
+            },
         },
         面基记录: {},
     };
@@ -59,6 +65,19 @@ function settingsStore() {
     };
 }
 
+function summarySettingsStore() {
+    return {
+        getChatSummarySettings() { return { enabled: true, interval: 2, retryLimit: 1 }; },
+        resolveFunction(key) {
+            assert.equal(key, 'chat_summary');
+            return {
+                connectionPreset: { id: 'summary', url: 'https://example.test/v1', model: 'model' },
+                promptPreset: { enabled: true, content: '只记录已经明确说过的内容。' },
+            };
+        },
+    };
+}
+
 test('private chat context includes public + matched friends-only data, never hidden or internal fields', () => {
     const built = buildPrivateChatContext({ state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好' });
     assert.equal(built.ok, true);
@@ -67,6 +86,36 @@ test('private chat context includes public + matched friends-only data, never hi
     assert.match(serialized, /开放关系/);
     assert.doesNotMatch(serialized, /绝不泄露|不得发送|角色内部字段|实际年龄|私人备注/);
     assert.equal(built.context.recentMessages.length, 1);
+});
+
+test('private chat context sends full retained history when summaries are off, or records plus only pending messages when on', () => {
+    const current = state();
+    current.会话.chat_1.最近消息 = Array.from({ length: 30 }, (_, index) => ({
+        消息UID: `m_${index + 1}`,
+        发送者: index % 2 === 0 ? '玩家' : '角色',
+        内容: `第${index + 1}层聊天`,
+        时间: '',
+        层数: index + 1,
+    }));
+    current.会话.chat_1.对话层数 = 30;
+    current.会话.chat_1.总结 = {
+        已总结消息UID: 'm_20', 总结序号: 1,
+        记录: [{ 总结UID: 'summary_1', 起始消息UID: 'm_1', 结束消息UID: 'm_20', 起始层数: 1, 结束层数: 20, 内容: '前二十层已聊过周末安排。', 时间: '' }],
+        状态: '成功', 失败原因: '', 目标总结UID: '', 尝试次数: 1,
+    };
+
+    const full = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '继续聊', summaryEnabled: false });
+    assert.equal(full.ok, true);
+    assert.equal(full.context.contextStrategy, 'full_retained_history');
+    assert.equal(full.context.recentMessages.length, 30);
+    assert.equal(Object.hasOwn(full.context, 'summaryRecords'), false);
+
+    const summarized = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '继续聊', summaryEnabled: true });
+    assert.equal(summarized.ok, true);
+    assert.equal(summarized.context.contextStrategy, 'summary_records_plus_unsummarized_messages');
+    assert.deepEqual(summarized.context.summaryRecords, [{ range: '第1-20层', content: '前二十层已聊过周末安排。' }]);
+    assert.equal(summarized.context.unsummarizedMessages.length, 10);
+    assert.equal(Object.hasOwn(summarized.context, 'recentMessages'), false);
 });
 
 test('private chat rejects unmatched, forged, underage and malformed messages before any model request', () => {
@@ -107,6 +156,28 @@ test('private chat accepts old single-reply model output as one canonical bubble
     assert.equal(result.response.reply, legacyResponse().reply);
 });
 
+test('private chat summary uses its dedicated preset and returns only validated in-memory text and anchors', async () => {
+    const current = state();
+    let request;
+    const result = await generatePrivateChatSummary({
+        state: current,
+        sessionUid: 'chat_1',
+        npcUid: 'npc_adult',
+        settingsStore: summarySettingsStore(),
+        llmClient: {
+            async chat(input) {
+                request = input;
+                return { text: '{"summary":"双方礼貌打招呼，并准备继续聊周末安排。"}' };
+            },
+        },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.summary, '双方礼貌打招呼，并准备继续聊周末安排。');
+    assert.deepEqual(result.source, { messageUids: ['old'], summaryUid: '' });
+    assert.match(request.messages[0].content, /连续摘要/u);
+    assert.doesNotMatch(JSON.stringify(request.messages), /绝不泄露|不得发送|实际年龄|私人备注/u);
+});
+
 test('private chat rejects unsafe multi-bubble model output without writes or source echo', async () => {
     const current = state();
     const before = structuredClone(current);
@@ -131,12 +202,13 @@ test('private chat patch remains compatible with the canonical response fallback
     assert.deepEqual(built.value.map((operation) => operation.path), [
         '/会话/chat_1/最近消息/-', '/会话/chat_1/最近消息/-', '/会话/chat_1/最近消息/-',
         '/角色池/npc_adult/与玩家关系/好感', '/角色池/npc_adult/与玩家关系/信任', '/角色池/npc_adult/与玩家关系/戒备',
-        '/会话/chat_1/长期摘要',
+        '/会话/chat_1/对话层数',
     ]);
     assert.equal(built.value[1].value.内容, '晚上好。');
     assert.equal(built.value[2].value.内容, '先聊聊彼此的周末？');
     assert.equal(built.value[3].value, 32);
     assert.equal(built.value[5].value, 18);
+    assert.equal(built.value.at(-1).value, 4);
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
     assert.deepEqual(current, before);
 });

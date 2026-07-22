@@ -5,9 +5,10 @@
  */
 import { createConnectionPreset } from '../llm/openai-compatible-client.js';
 import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-prompt-presets.js';
+import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 5;
+export const SETTINGS_SCHEMA_VERSION = 6;
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -15,6 +16,7 @@ export const MAX_PROMPT_PRESETS = 128;
 export const MAX_PERSONALIZATION_KEYWORDS = 256;
 export const FUNCTION_KEYS = Object.freeze([
     'chat',
+    'chat_summary',
     'character_authoring',
     'character_ai_completion',
     'character_full_authoring',
@@ -32,7 +34,7 @@ const SECRET_FIELD_NAMES = new Set([
 ]);
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
-const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4]);
+const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 5]);
 
 export class YueLeMaSettingsError extends Error {
     constructor(code, message) {
@@ -124,6 +126,7 @@ function makeDefaultDocument() {
         functionModeBindings: Object.fromEntries(FUNCTION_KEYS.map((key) => [key, Object.fromEntries(
             CONTENT_MODES.map((contentMode) => [contentMode, modeBindingForDefault(key, contentMode, promptById)]),
         )])),
+        chatSummary: { ...DEFAULT_CHAT_SUMMARY_SETTINGS },
         personalization: {
             enabled: true,
             keywordWeights: [],
@@ -297,6 +300,13 @@ function normalizePersonalization(input) {
     };
 }
 
+function normalizeChatSummary(input) {
+    if (input === undefined || input === null) return { ...DEFAULT_CHAT_SUMMARY_SETTINGS };
+    const normalized = normalizeChatSummarySettings(safeClone(input));
+    if (!normalized) fail('INVALID_CHAT_SUMMARY', '对话总结设置无效。');
+    return { ...normalized };
+}
+
 function assertSize(document) {
     const encoded = JSON.stringify(document);
     if (new TextEncoder().encode(encoded).byteLength > MAX_SERIALIZED_BYTES) {
@@ -308,7 +318,7 @@ function assertSize(document) {
 export function normalizeSettingsDocument(input) {
     const candidate = safeClone(input);
     if (!isPlainObject(candidate)) fail('INVALID_SETTINGS', '设置文档必须是对象。');
-    const allowed = new Set(['schema', 'schemaVersion', 'connectionPresets', 'promptPresets', 'defaults', 'functionBindings', 'functionModeBindings', 'personalization']);
+    const allowed = new Set(['schema', 'schemaVersion', 'connectionPresets', 'promptPresets', 'defaults', 'functionBindings', 'functionModeBindings', 'chatSummary', 'personalization']);
     if (Object.keys(candidate).some((key) => !allowed.has(key))) {
         fail('INVALID_SETTINGS', '设置文档包含不支持的字段。');
     }
@@ -382,6 +392,7 @@ export function normalizeSettingsDocument(input) {
         { migrateModeMismatch: isLegacySchema },
     );
 
+    const chatSummary = normalizeChatSummary(candidate.chatSummary);
     const personalization = normalizePersonalization(candidate.personalization);
     const normalized = {
         schema: SETTINGS_SCHEMA_ID,
@@ -391,6 +402,7 @@ export function normalizeSettingsDocument(input) {
         defaults,
         functionBindings,
         functionModeBindings,
+        chatSummary,
         personalization,
     };
     assertSize(normalized);
@@ -478,7 +490,7 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         } catch {
             fail('INVALID_IMPORT_JSON', '设置 JSON 无法解析。');
         }
-        // Re-save a normalized legacy document so v1–v3 users receive the
+        // Re-save a normalized legacy document so v1–v5 users receive the
         // editable built-ins and mode bindings exactly once in local storage.
         return persist(parsed);
     }
@@ -624,6 +636,16 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         });
     }
 
+    function getChatSummarySettings() {
+        return { ...current().chatSummary };
+    }
+
+    function setChatSummarySettings(input) {
+        const next = cloneDocument(current());
+        next.chatSummary = normalizeChatSummary(input);
+        return persist(next);
+    }
+
     function setPersonalizationEnabled(enabled) {
         if (typeof enabled !== 'boolean') fail('INVALID_PERSONALIZATION', '个性化内容推荐开关必须为布尔值。');
         const next = cloneDocument(current());
@@ -729,6 +751,8 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         bindFunction,
         bindFunctionForContentMode,
         resolveFunction,
+        getChatSummarySettings,
+        setChatSummarySettings,
         setPersonalizationEnabled,
         setPersonalizationKeywordWeights,
         ensurePersonalizationKeywordWeights,

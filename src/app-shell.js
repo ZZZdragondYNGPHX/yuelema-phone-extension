@@ -10,17 +10,17 @@ import { createImageManagerPanel } from './images/image-manager-panel.js';
 import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
 
-const UI_VERSION = '0.1.23';
+const UI_VERSION = '0.1.24';
 const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
 const PRIMARY_PAGE_FOR = Object.freeze({
     group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_console: 'profile', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
 });
 const PAGE_PARENT_FOR = Object.freeze({
     group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', settings_console: 'settings', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', settings_console: 'settings', settings_chat_summary: 'settings', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', candidate_detail: 'home', match_profile: 'matches',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
@@ -51,6 +51,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let destructiveChatSessionUid = '';
     let destructiveChatKind = '';
     let activeMeetupSessionUid = '';
+    let summaryHistorySessionUid = '';
     let activeChatToolsSessionUid = '';
     let selectedCandidateUid = '';
     let matchedProfileDraft = null;
@@ -70,6 +71,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let activeOperation = null;
     let operationAutoCloseTimer = null;
     let privateChatRequestGeneration = 0;
+    let summaryToast = null;
+    let summaryToastTimer = null;
     let featureBindingDialogState = null;
     let avatarUploadPending = false;
     let imageManagerPanel = null;
@@ -266,13 +269,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             privateChatRequestGeneration += 1;
             activeChatToolsSessionUid = '';
             activeMeetupSessionUid = '';
+            clearSummaryToast();
             hideOperationDialog();
         }
     }
     function setActivePage(pageId, { preserveOperation = false } = {}) {
         if (pageId === 'about') { showAboutSoftware(); return; }
         if (!PAGE_COPY[pageId]) return;
-        if (activePage === 'private_chat' && pageId !== 'private_chat') {
+        const privateChatRoute = (page) => page === 'private_chat' || page === 'private_chat_summary';
+        if (privateChatRoute(activePage) && !privateChatRoute(pageId)) {
             privateChatRequestGeneration += 1;
             activeChatToolsSessionUid = '';
             activeMeetupSessionUid = '';
@@ -281,6 +286,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             chatConfirmationKind = '';
             destructiveChatSessionUid = '';
             destructiveChatKind = '';
+            clearSummaryToast();
         }
         if (!preserveOperation) hideOperationDialog();
         activePage = pageId;
@@ -645,6 +651,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'match_profile') page.appendChild(buildMatchProfilePage());
         else if (activePage === 'messages') page.appendChild(buildMessagesPage());
         else if (activePage === 'private_chat') page.appendChild(buildPrivateChatPage());
+        else if (activePage === 'private_chat_summary') page.appendChild(buildPrivateChatSummaryPage());
         else if (activePage === 'groups') page.appendChild(buildGroupsPage());
         else if (activePage === 'group_chat') page.appendChild(buildGroupChatPage());
         else if (activePage === 'group_forum') page.appendChild(buildForumPage());
@@ -655,6 +662,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'settings') page.appendChild(buildSettingsHome());
         else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images'].includes(activePage)) page.appendChild(buildSettingsDetail());
         else if (activePage === 'settings_console') page.appendChild(buildOperationConsole());
+        else if (activePage === 'settings_chat_summary') page.appendChild(buildChatSummarySettingsHome());
+        else if (activePage === 'settings_chat_summary_config') page.appendChild(buildChatSummaryConfigPage());
+        else if (activePage === 'settings_chat_summary_history') page.appendChild(buildChatSummaryHistoryPage());
+        else if (activePage === 'settings_chat_summary_history_detail') page.appendChild(buildChatSummaryHistoryDetailPage());
         else if (activePage === 'settings_privacy') page.appendChild(buildPrivacySettings());
         else if (activePage === 'candidate_detail') page.appendChild(buildCandidateDetail());
         content.appendChild(page);
@@ -1220,10 +1231,16 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (moreOpen) {
             const menu = element('div', { className: 'yl-private-chat-more-menu', ariaLabel: '私聊更多操作' });
             menu.setAttribute('role', 'menu');
+            const summary = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '聊天总结', ariaLabel: '查看聊天总结', disabled: !chatSummaryEnabled() });
             const clear = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '清空聊天记录', ariaLabel: '清空聊天记录' });
             const removeCharacter = element('button', { className: 'yl-private-chat-menu-item is-danger', type: 'button', text: '删除角色', ariaLabel: '删除角色完整数据' });
             clear.setAttribute('role', 'menuitem');
             removeCharacter.setAttribute('role', 'menuitem');
+            summary.setAttribute('role', 'menuitem');
+            listen(summary, summary, 'click', () => {
+                chatMoreMenuSessionUid = '';
+                setActivePage('private_chat_summary');
+            }, abortController.signal);
             listen(clear, clear, 'click', () => {
                 chatMoreMenuSessionUid = '';
                 chatConfirmationSessionUid = session.sessionUid;
@@ -1236,7 +1253,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 chatConfirmationKind = 'delete_character';
                 renderPage();
             }, abortController.signal);
-            append(menu, [clear, removeCharacter]);
+            append(menu, [summary, clear, removeCharacter]);
             actions.appendChild(menu);
         }
         actions.appendChild(element('span', { className: 'yl-private-chat-spark', text: '♥' }));
@@ -1345,10 +1362,140 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         return row;
     }
+    function isPrivateChatVisible(sessionUid) {
+        return open && activePage === 'private_chat' && activeMessageSessionUid === sessionUid;
+    }
+    function clearSummaryToast() {
+        if (summaryToastTimer !== null) clearTimeout(summaryToastTimer);
+        summaryToastTimer = null;
+        summaryToast = null;
+    }
+    function showSummaryToast(sessionUid, { success, message, summaryUid = '' } = {}) {
+        clearSummaryToast();
+        summaryToast = {
+            sessionUid,
+            success: Boolean(success),
+            message: String(message ?? '').slice(0, 240),
+            summaryUid: String(summaryUid ?? '').slice(0, 80),
+        };
+        summaryToastTimer = setTimeout(() => {
+            const activeToast = summaryToast;
+            summaryToast = null;
+            summaryToastTimer = null;
+            if (activeToast && isPrivateChatVisible(activeToast.sessionUid)) renderPage();
+        }, 5_500);
+        if (isPrivateChatVisible(sessionUid)) renderPage();
+    }
+    function buildSummaryToast(session) {
+        if (!summaryToast || summaryToast.sessionUid !== session.sessionUid) return null;
+        const toast = element('section', { className: summaryToast.success ? 'yl-chat-summary-toast is-success' : 'yl-chat-summary-toast is-failure' });
+        toast.setAttribute('role', 'status');
+        const copy = element('div', { className: 'yl-chat-summary-toast-copy' });
+        append(copy, [
+            element('strong', { text: summaryToast.success ? '聊天总结已完成' : '聊天总结未完成' }),
+            element('span', { text: summaryToast.message || (summaryToast.success ? '已写入会话总结记录。' : '请稍后重新总结。') }),
+        ]);
+        toast.appendChild(copy);
+        if (!summaryToast.success) {
+            const retry = element('button', { className: 'yl-settings-button yl-chat-summary-toast-retry', type: 'button', text: '重新总结', ariaLabel: '重新总结当前聊天' });
+            const targetSummaryUid = summaryToast.summaryUid;
+            listen(retry, retry, 'click', () => { clearSummaryToast(); void runChatSummaryForSession(session, { summaryUid: targetSummaryUid }); }, abortController.signal);
+            toast.appendChild(retry);
+        }
+        return toast;
+    }
+    function summaryStatusText(info) {
+        if (info.status === '失败') return `上次总结未完成：${info.failureReason}`;
+        if (info.status === '成功') return info.records.length ? `已保存 ${info.records.length} 条总结记录。` : '最近一次总结已完成。';
+        return info.pendingMessageCount ? `有 ${info.pendingMessageCount} 条消息待整理。` : '暂时没有需要整理的新消息。';
+    }
+    async function runChatSummaryForSession(session, { summaryUid = '', automatic = false } = {}) {
+        if (typeof actionBridge.runPrivateChatSummary !== 'function') {
+            if (!automatic) setFeedback('聊天总结功能尚未就绪。');
+            return;
+        }
+        if (actionBridge.isPending?.('chat_summary', session.sessionUid)) return;
+        let request;
+        try {
+            request = actionBridge.runPrivateChatSummary({ sessionUid: session.sessionUid, npcUid: session.npcUid, summaryUid, automatic });
+        } catch {
+            request = Promise.resolve({ ok: false, code: 'chat_summary_failed', message: '聊天总结未完成，请稍后重试。' });
+        }
+        if (!automatic) renderPage();
+        let result;
+        try { result = await request; } catch { result = { ok: false, code: 'chat_summary_failed', message: '聊天总结未完成，请稍后重试。' }; }
+        refreshState();
+        if (automatic) {
+            if (result?.silent || result?.code === 'ui_action_pending') return;
+            if (isPrivateChatVisible(session.sessionUid)) {
+                showSummaryToast(session.sessionUid, {
+                    success: Boolean(result?.ok),
+                    summaryUid: result?.ok ? '' : (summaryUid || currentView.messageSessions.find((item) => item.sessionUid === session.sessionUid)?.summaryInfo?.targetSummaryUid || ''),
+                    message: result?.ok ? '已自动整理本次私聊，并同步到会话摘要。' : (result?.message || '总结未完成，可在右上角“…”的聊天总结中重试。'),
+                });
+            }
+            if (result?.ok && Number(result.remainingLayerCount) >= chatSummarySettings().interval && chatSummaryEnabled()) {
+                void runChatSummaryForSession(session, { automatic: true });
+            }
+            return;
+        }
+        setFeedback(result?.ok ? '聊天总结已保存。' : (result?.message || '聊天总结未完成，请稍后重试。'));
+    }
+    function buildConversationSummaryDetail(session, { actionsEnabled = true, historyMode = false } = {}) {
+        const info = session.summaryInfo;
+        const section = element('section', { className: 'yl-chat-summary-detail' });
+        const overview = element('section', { className: 'yl-chat-summary-overview' });
+        append(overview, [
+            element('strong', { text: `${chatNickname(session)} · 已对话 ${info.totalLayers} 层` }),
+            element('p', { text: summaryStatusText(info) }),
+        ]);
+        const summaryPending = Boolean(actionBridge.isPending?.('chat_summary', session.sessionUid));
+        if (actionsEnabled && info.pendingMessageCount > 0) {
+            const summarize = element('button', { className: 'yl-settings-button', type: 'button', text: summaryPending ? '正在总结…' : '立即总结未整理消息', disabled: summaryPending });
+            listen(summarize, summarize, 'click', () => { void runChatSummaryForSession(session); }, abortController.signal);
+            overview.appendChild(summarize);
+        }
+        if (actionsEnabled && info.status === '失败') {
+            const retry = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: summaryPending ? '正在重新总结…' : '重新总结', disabled: summaryPending });
+            listen(retry, retry, 'click', () => { void runChatSummaryForSession(session, { summaryUid: info.targetSummaryUid }); }, abortController.signal);
+            overview.appendChild(retry);
+        }
+        section.appendChild(overview);
+        if (!info.records.length) {
+            section.appendChild(buildEmptyPlaceholder(historyMode ? '这个角色还没有已完成的总结记录。' : '还没有已完成的总结记录；达到设定层数后会静默自动整理。', { icon: '⌁' }));
+            return section;
+        }
+        const list = element('div', { className: 'yl-chat-summary-record-list' });
+        for (const record of [...info.records].reverse()) {
+            const card = element('article', { className: 'yl-chat-summary-record' });
+            const heading = element('div', { className: 'yl-chat-summary-record-heading' });
+            append(heading, [
+                element('strong', { text: `第 ${record.startLayer}–${record.endLayer} 层总结` }),
+                record.time ? element('span', { text: record.time }) : element('span', { text: '已保存' }),
+            ]);
+            card.appendChild(heading);
+            card.appendChild(element('p', { text: record.content }));
+            if (actionsEnabled) {
+                const retry = element('button', { className: 'yl-settings-button yl-settings-button-secondary yl-chat-summary-record-retry', type: 'button', text: summaryPending ? '正在处理…' : '重新总结这一段', disabled: summaryPending });
+                listen(retry, retry, 'click', () => { void runChatSummaryForSession(session, { summaryUid: record.summaryUid }); }, abortController.signal);
+                card.appendChild(retry);
+            }
+            list.appendChild(card);
+        }
+        section.appendChild(list);
+        return section;
+    }
+    function buildPrivateChatSummaryPage() {
+        const session = messageSessionByUid(activeMessageSessionUid);
+        if (!session) return buildEmptyPlaceholder('这个私聊会话暂时不可见。请返回消息列表后重试。', { icon: '✉' });
+        return buildConversationSummaryDetail(session, { actionsEnabled: chatSummaryEnabled() });
+    }
     function buildConversationPanel(session) {
         const panel = element('section', { className: 'yl-private-chat-screen' });
         panel.appendChild(buildConversationHeader(session));
         if (chatConfirmationSessionUid === session.sessionUid) panel.appendChild(buildPrivateChatConfirmation(session));
+        const summaryToastElement = buildSummaryToast(session);
+        if (summaryToastElement) panel.appendChild(summaryToastElement);
         const privacyNote = element('p', { className: 'yl-chat-privacy-note', text: '线上短消息会通过当前“私聊”功能绑定处理；重要面基安排请单独确认。' });
         panel.appendChild(privacyNote);
         const transcript = element('div', { className: 'yl-chat-transcript', ariaLabel: `${chatNickname(session)}的私聊记录` });
@@ -1465,6 +1612,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             setFeedback(message || '私聊回复未生成，请稍后重试。');
         }
         refreshState();
+        if (result?.ok && result.summaryCheckRequested) {
+            void runChatSummaryForSession(session, { automatic: true });
+        }
     }
     function meetupFieldsFor(sessionUid) {
         if (!meetupDrafts.has(sessionUid)) meetupDrafts.set(sessionUid, { time: '', place: '', mutualIntent: '', confirmedBoundaries: '', pendingItems: '', riskNotice: '' });
@@ -1659,6 +1809,162 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         return section;
     }
+    function chatSummarySettings() {
+        const fallback = { enabled: false, interval: 20, retryLimit: 2 };
+        try {
+            const saved = settingsStore?.getChatSummarySettings?.() ?? settingsStore?.snapshot?.().chatSummary;
+            if (!saved || typeof saved !== 'object') return fallback;
+            return {
+                enabled: saved.enabled === true,
+                interval: Number.isInteger(saved.interval) ? saved.interval : fallback.interval,
+                retryLimit: Number.isInteger(saved.retryLimit) ? saved.retryLimit : fallback.retryLimit,
+            };
+        } catch {
+            return fallback;
+        }
+    }
+    function chatSummaryEnabled() {
+        return chatSummarySettings().enabled;
+    }
+    function summarySettingEntry(title, note, page, disabled = false) {
+        const button = element('button', { className: 'yl-center-entry', type: 'button', ariaLabel: title, disabled });
+        append(button, [element('strong', { text: title }), element('span', { text: note }), element('span', { text: '›' })]);
+        if (!disabled) listen(button, button, 'click', () => setActivePage(page), abortController.signal);
+        return button;
+    }
+    function buildChatSummarySettingsHome() {
+        const section = element('section', { className: 'yl-settings-home yl-chat-summary-settings-home' });
+        const settings = chatSummarySettings();
+        const status = element('section', { className: 'yl-chat-summary-status-card' });
+        const statusCopy = element('div', { className: 'yl-chat-summary-status-copy' });
+        append(statusCopy, [
+            element('strong', { text: settings.enabled ? '自动总结已开启' : '自动总结已关闭' }),
+            element('p', { text: settings.enabled
+                ? `每 ${settings.interval} 条消息层自动整理一次，失败后最多重试 ${settings.retryLimit} 次。`
+                : '关闭时私聊会把当前已保存的完整聊天记录交给私聊模型；下方两个入口会保持不可操作。' }),
+        ]);
+        const switchLabel = element('label', { className: 'yl-switch yl-chat-summary-switch' });
+        const toggle = element('input', { type: 'checkbox', checked: settings.enabled, ariaLabel: '自动对话总结开关' });
+        switchLabel.appendChild(toggle);
+        listen(toggle, toggle, 'change', () => {
+            if (!settingsStore || typeof settingsStore.setChatSummarySettings !== 'function') {
+                setFeedback('对话总结设置暂不可用。');
+                toggle.checked = settings.enabled;
+                return;
+            }
+            try {
+                settingsStore.setChatSummarySettings({ ...settings, enabled: Boolean(toggle.checked) });
+                setFeedback(toggle.checked ? '自动对话总结已开启。' : '自动对话总结已关闭。');
+            } catch {
+                setFeedback('对话总结开关未保存，请稍后重试。');
+            }
+            renderPage();
+        }, abortController.signal);
+        append(status, [statusCopy, switchLabel]);
+        section.appendChild(status);
+        section.appendChild(summarySettingEntry(
+            '总结方案',
+            settings.enabled ? '选择当前内容模式的连接与提示词预设，并设定消息层数和重试次数。' : '请先开启自动总结。',
+            'settings_chat_summary_config',
+            !settings.enabled,
+        ));
+        section.appendChild(summarySettingEntry(
+            '总结档案',
+            settings.enabled ? '像消息列表一样按角色查看已保存的总结记录。' : '请先开启自动总结。',
+            'settings_chat_summary_history',
+            !settings.enabled,
+        ));
+        return section;
+    }
+    function appendPresetOptions(select, options, selectedValue) {
+        for (const [value, label] of options) {
+            const option = element('option', { value, text: label });
+            option.selected = value === selectedValue;
+            select.appendChild(option);
+        }
+    }
+    function buildChatSummaryConfigPage() {
+        if (!chatSummaryEnabled()) return buildEmptyPlaceholder('自动对话总结当前已关闭。请返回上一页开启后再配置。', { icon: '◌' });
+        if (!settingsStore || typeof settingsStore.snapshot !== 'function' || typeof settingsStore.setChatSummarySettings !== 'function') {
+            return buildEmptyPlaceholder('对话总结设置暂不可用。', { icon: '◌' });
+        }
+        let snapshot;
+        try { snapshot = settingsStore.snapshot(); } catch { return buildEmptyPlaceholder('无法读取已保存的总结设置。', { icon: '◌' }); }
+        const contentMode = currentView.mode === 'NSFW' ? 'NSFW' : 'SFW';
+        const settings = chatSummarySettings();
+        const binding = snapshot.functionModeBindings?.chat_summary?.[contentMode]
+            ?? snapshot.functionBindings?.chat_summary
+            ?? { connectionPresetId: null, promptPresetId: null };
+        const section = element('section', { className: 'yl-settings-panel yl-chat-summary-config' });
+        section.appendChild(element('p', { className: 'yl-phone-page-description', text: `以下设置只保存到当前浏览器；预设绑定仅影响当前 ${contentMode} 内容模式。` }));
+        const fields = element('div', { className: 'yl-settings-fields' });
+        const connection = element('select', { className: 'yl-settings-control', ariaLabel: '对话总结连接预设', name: 'chat-summary-connection' });
+        appendPresetOptions(connection, [['', '使用默认连接'], ...(snapshot.connectionPresets ?? []).map((preset) => [preset.id, preset.name])], binding.connectionPresetId ?? '');
+        const prompt = element('select', { className: 'yl-settings-control', ariaLabel: '对话总结提示词预设', name: 'chat-summary-prompt' });
+        const promptOptions = (snapshot.promptPresets ?? []).filter((preset) => preset.contentMode === contentMode);
+        appendPresetOptions(prompt, [['', '不附加提示词预设'], ...promptOptions.map((preset) => [preset.id, preset.name])], binding.promptPresetId ?? '');
+        const interval = element('input', { className: 'yl-settings-control', type: 'number', min: 2, max: 60, value: String(settings.interval), inputMode: 'numeric', ariaLabel: '每几条消息层自动总结' });
+        const retries = element('input', { className: 'yl-settings-control', type: 'number', min: 0, max: 5, value: String(settings.retryLimit), inputMode: 'numeric', ariaLabel: '总结失败重试次数' });
+        const connectionField = element('label', { className: 'yl-settings-field' }); append(connectionField, [element('span', { text: '连接预设' }), connection]);
+        const promptField = element('label', { className: 'yl-settings-field' }); append(promptField, [element('span', { text: '提示词预设' }), prompt]);
+        const intervalField = element('label', { className: 'yl-settings-field' }); append(intervalField, [element('span', { text: '每 X 条消息层自动总结' }), interval, element('span', { className: 'yl-settings-summary', text: '玩家与角色各发一条都算一层；例如 88 层可形成约 4 条 20 层总结。' })]);
+        const retryField = element('label', { className: 'yl-settings-field' }); append(retryField, [element('span', { text: '失败重试次数' }), retries, element('span', { className: 'yl-settings-summary', text: '失败后自动重试；最终失败会在聊天总结里保留原因和重新总结入口。' })]);
+        append(fields, [connectionField, promptField, intervalField, retryField]);
+        section.appendChild(fields);
+        const actions = element('div', { className: 'yl-settings-actions' });
+        const cancel = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '取消' });
+        const save = element('button', { className: 'yl-settings-button', type: 'button', text: '保存' });
+        listen(cancel, cancel, 'click', () => setActivePage('settings_chat_summary'), abortController.signal);
+        listen(save, save, 'click', () => {
+            const nextInterval = Number(interval.value);
+            const nextRetries = Number(retries.value);
+            if (!Number.isInteger(nextInterval) || nextInterval < 2 || nextInterval > 60 || !Number.isInteger(nextRetries) || nextRetries < 0 || nextRetries > 5) {
+                setFeedback('请把自动总结间隔设为 2–60，把重试次数设为 0–5。');
+                return;
+            }
+            try {
+                const nextBinding = { connectionPresetId: connection.value || null, promptPresetId: prompt.value || null };
+                if (typeof settingsStore.bindFunctionForContentMode === 'function') settingsStore.bindFunctionForContentMode('chat_summary', contentMode, nextBinding);
+                else settingsStore.bindFunction('chat_summary', nextBinding);
+                settingsStore.setChatSummarySettings({ enabled: true, interval: nextInterval, retryLimit: nextRetries });
+                setFeedback('对话总结方案已保存。');
+                setActivePage('settings_chat_summary');
+            } catch {
+                setFeedback('总结方案未保存，请确认预设仍存在且内容模式匹配。');
+            }
+        }, abortController.signal);
+        append(actions, [cancel, save]);
+        section.appendChild(actions);
+        return section;
+    }
+    function buildChatSummaryHistoryPage() {
+        if (!chatSummaryEnabled()) return buildEmptyPlaceholder('自动对话总结当前已关闭。请返回上一页开启后再查看总结档案。', { icon: '◌' });
+        const sessions = messageSessions();
+        if (!sessions.length) return buildEmptyPlaceholder('还没有可查看的私聊会话。', { icon: '✦' });
+        const section = element('section', { className: 'yl-chat-page yl-message-list-page yl-chat-summary-history' });
+        section.appendChild(element('p', { className: 'yl-phone-page-description', text: '选择一位角色，查看该会话的消息层数、自动总结记录与未总结内容。' }));
+        const list = element('div', { className: 'yl-chat-session-list' });
+        for (const session of sessions) {
+            const info = session.summaryInfo;
+            const button = element('button', { className: 'yl-chat-session yl-message-session', type: 'button', ariaLabel: `查看${chatNickname(session)}的总结档案` });
+            button.appendChild(chatAvatar(session));
+            const copy = element('span', { className: 'yl-session-copy' });
+            append(copy, [
+                element('span', { className: 'yl-session-name', text: chatNickname(session) }),
+                element('span', { className: 'yl-session-preview', text: `已对话 ${info.totalLayers} 层 · ${info.records.length} 条总结${info.pendingMessageCount ? ` · ${info.pendingMessageCount} 条待整理` : ''}` }),
+            ]);
+            append(button, [copy, element('span', { className: 'yl-session-open-mark', text: '›' })]);
+            listen(button, button, 'click', () => { summaryHistorySessionUid = session.sessionUid; setActivePage('settings_chat_summary_history_detail'); }, abortController.signal);
+            list.appendChild(button);
+        }
+        section.appendChild(list);
+        return section;
+    }
+    function buildChatSummaryHistoryDetailPage() {
+        const session = messageSessionByUid(summaryHistorySessionUid);
+        if (!session) return buildEmptyPlaceholder('这位角色的会话暂时不可见，请返回总结档案后重试。', { icon: '◌' });
+        return buildConversationSummaryDetail(session, { actionsEnabled: true, historyMode: true });
+    }
     function buildSettingsHome() {
         const section = element('section', { className: 'yl-settings-home' });
         const entries = [
@@ -1666,6 +1972,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             ['settings_prompts', '提示词预设', '只维护提示词条目与导入导出。'],
             ['settings_privacy', '隐私权限设置', '管理个性化内容推荐与当前设备偏好。'],
             ['settings_images', '图片管理', '上传或导入角色展示图，并编辑匹配关键词与权重。'],
+            ['settings_chat_summary', '对话总结', '按消息层数自动整理私聊，并把摘要写入当前 MVU 会话。'],
             ['settings_console', '控制台', '查看本次会话中的安全运行进度，不显示技术密钥或原始数据。'],
             ['about', '关于软件', '点击查看版本；连续点击五次可显示内容模式开关。'],
         ];
@@ -1917,6 +2224,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     renderPage();
     return Object.freeze({
         refreshState,
-        destroy() { isDestroyed = true; hideOperationDialog(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { isDestroyed = true; clearSummaryToast(); hideOperationDialog(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }

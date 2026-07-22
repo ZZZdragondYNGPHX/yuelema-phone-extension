@@ -1,7 +1,8 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
+import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
-import { generatePrivateChatReply } from './chat/private-chat-service.js';
+import { generatePrivateChatReply, generatePrivateChatSummary } from './chat/private-chat-service.js';
+import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
 import { generateCandidateMatchDraft as generateCandidateMatchDraftService, generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
 import { materializeCandidateMatchDraft } from './recommendation/match-candidate-materializer.js';
 import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate } from './characters/character-authoring-service.js';
@@ -102,6 +103,17 @@ export function createActionBridge({
     onControlledAction = () => {},
 }) {
     const pending = new Set();
+
+    function chatSummarySettings() {
+        try {
+            const saved = settingsStore?.getChatSummarySettings?.();
+            return saved && typeof saved === 'object'
+                ? { ...DEFAULT_CHAT_SUMMARY_SETTINGS, ...saved }
+                : { ...DEFAULT_CHAT_SUMMARY_SETTINGS };
+        } catch {
+            return { ...DEFAULT_CHAT_SUMMARY_SETTINGS };
+        }
+    }
 
     function startImageMatch(publicProfile, contentMode, signal) {
         if (typeof imageMatchCoordinator?.match !== 'function') return;
@@ -264,7 +276,104 @@ export function createActionBridge({
                     ? 'replied'
                     : 'read_without_reply';
             const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
-            return applied.ok ? { ...applied, interactionOutcome } : applied;
+            const summarySettings = chatSummarySettings();
+            return applied.ok ? {
+                ...applied,
+                interactionOutcome,
+                summaryCheckRequested: interactionOutcome === 'replied' && summarySettings.enabled,
+            } : applied;
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /**
+     * Generates and commits one summary in the background. It never blocks a
+     * chat reply: a late summary may only cover the exact source prefix it read,
+     * so messages sent while the model is working remain pending for the next run.
+     */
+    async function runPrivateChatSummary({ sessionUid, npcUid, summaryUid = '', automatic = false, force = false, signal } = {}) {
+        const key = actionKey('chat_summary', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const settings = chatSummarySettings();
+            if (automatic && !settings.enabled && !force) {
+                return { ok: false, status: 'rejected', code: 'chat_summary_disabled', silent: true };
+            }
+            const retries = settings.retryLimit;
+            let latestFailure = { code: 'chat_summary_failed', message: '总结未完成，请稍后重试。' };
+            for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
+                const currentMvu = resolveMvu(mvu);
+                const firstRead = readLatestState({ mvu: currentMvu });
+                if (!firstRead.ok) return firstRead;
+                const session = firstRead.state?.会话?.[sessionUid];
+                if (automatic && !force && !summaryUid && !isConversationSummaryDue(session, settings.interval)) {
+                    return { ok: false, status: 'rejected', code: 'chat_summary_not_due', silent: true };
+                }
+                const generated = await generatePrivateChatSummary({
+                    state: firstRead.state, sessionUid, npcUid, summaryUid, settingsStore, llmClient, signal,
+                });
+                if (generated.ok) {
+                    const secondRead = readLatestState({ mvu: currentMvu });
+                    if (!secondRead.ok) return secondRead;
+                    const built = buildPrivateChatSummaryPatch(secondRead.state, {
+                        sessionUid,
+                        npcUid,
+                        summary: generated.summary,
+                        sourceMessageUids: generated.source.messageUids,
+                        summaryUid: generated.source.summaryUid,
+                        attempts: attempt,
+                    });
+                    if (built.ok) {
+                        const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
+                        if (applied.ok) {
+                            return {
+                                ...applied,
+                                summary: generated.summary,
+                                summaryUid: built.value.summaryUid,
+                                attempts: attempt,
+                                automatic,
+                                remainingMessageCount: built.value.remainingMessageCount,
+                                remainingLayerCount: built.value.remainingLayerCount,
+                            };
+                        }
+                        latestFailure = { code: applied.code || 'chat_summary_write_failed', message: '总结结果未能保存，请稍后重试。' };
+                    } else {
+                        latestFailure = { code: built.code, message: '聊天内容发生变化，本次总结未保存。' };
+                    }
+                } else {
+                    latestFailure = { code: generated.code, message: generated.message || '总结未完成，请稍后重试。' };
+                    if (['chat_summary_no_pending_messages', 'chat_summary_record_not_found'].includes(generated.code)) {
+                        return { ok: false, status: 'rejected', ...latestFailure, silent: true };
+                    }
+                }
+            }
+
+            // A model/validation failure is itself a controlled, visible state:
+            // only its public-safe projected reason is persisted, never raw API
+            // responses, URLs, keys, or stack traces.
+            const currentMvu = resolveMvu(mvu);
+            const finalRead = readLatestState({ mvu: currentMvu });
+            if (!finalRead.ok) return finalRead;
+            const failed = buildPrivateChatSummaryFailurePatch(finalRead.state, {
+                sessionUid,
+                npcUid,
+                reason: latestFailure.message,
+                summaryUid,
+                attempts: retries + 1,
+            });
+            if (!failed.ok) return { ok: false, status: 'rejected', code: latestFailure.code, message: latestFailure.message };
+            const persisted = await applyControlledPatch({ patch: failed.value.patch, mvu: currentMvu, eventEmit, getContext });
+            return {
+                ok: false,
+                status: 'rejected',
+                code: latestFailure.code,
+                message: latestFailure.message,
+                attempts: retries + 1,
+                failurePersisted: Boolean(persisted?.ok),
+                automatic,
+            };
         } finally {
             pending.delete(key);
         }
@@ -414,14 +523,36 @@ export function createActionBridge({
         pending.add(key);
         try {
             const currentMvu = resolveMvu(mvu);
-            const read = readLatestState({ mvu: currentMvu });
+            let read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
+            let forcedSummaryCount = 0;
+            while (listUnsummarizedConversationMessages(read.state?.会话?.[request?.sessionUid]).length > 0) {
+                if (forcedSummaryCount >= 4) {
+                    return { ok: false, status: 'rejected', code: 'meetup_summary_still_pending', message: '还有未总结聊天内容，请稍后重新尝试面基。' };
+                }
+                const summary = await runPrivateChatSummary({
+                    sessionUid: request?.sessionUid,
+                    npcUid: request?.npcUid,
+                    force: true,
+                });
+                if (!summary?.ok) {
+                    return {
+                        ok: false,
+                        status: 'rejected',
+                        code: 'meetup_summary_failed',
+                        message: summary?.message || '面基前的聊天总结未完成，请在“聊天总结”中重试后再继续。',
+                    };
+                }
+                forcedSummaryCount += 1;
+                read = readLatestState({ mvu: currentMvu });
+                if (!read.ok) return read;
+            }
             const built = buildMeetupHandoffPatch(read.state, request);
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
             const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
             if (!applied.ok) return applied;
             const handoff = appendMeetupDraft(built.value.draft);
-            return { ...applied, meetupUid: built.value.meetupUid, draftApplied: handoff.ok, draftCode: handoff.ok ? '' : handoff.reason };
+            return { ...applied, meetupUid: built.value.meetupUid, draftApplied: handoff.ok, draftCode: handoff.ok ? '' : handoff.reason, forcedSummaryCount };
         } finally {
             pending.delete(key);
         }
@@ -551,7 +682,7 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
 }
 
 

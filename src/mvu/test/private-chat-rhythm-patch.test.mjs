@@ -34,6 +34,32 @@ test('normal private chat appends each validated reply as its own bubble', () =>
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
 });
 
+test('bounded transcript only trims an already summarized prefix and never drops pending layers', () => {
+    const current = state();
+    current.会话.chat_1.最近消息 = Array.from({ length: 240 }, (_, index) => ({
+        消息UID: `m_${index + 1}`,
+        发送者: index % 2 === 0 ? '玩家' : '角色',
+        内容: `第${index + 1}条消息`,
+        时间: '',
+        层数: index + 1,
+    }));
+    current.会话.chat_1.对话层数 = 240;
+    current.会话.chat_1.总结 = { 已总结消息UID: 'm_3', 总结序号: 1, 记录: [], 状态: '成功', 失败原因: '', 目标总结UID: '', 尝试次数: 1 };
+
+    const built = buildPrivateChatPatch(current, { sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '继续聊', response: response() });
+    assert.equal(built.ok, true);
+    assert.deepEqual(built.value.slice(0, 3).map((operation) => [operation.op, operation.path]), [
+        ['remove', '/会话/chat_1/最近消息/0'],
+        ['remove', '/会话/chat_1/最近消息/0'],
+        ['remove', '/会话/chat_1/最近消息/0'],
+    ]);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+
+    current.会话.chat_1.总结.已总结消息UID = 'm_2';
+    const unsafe = buildPrivateChatPatch(current, { sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '不能丢失未总结消息', response: response() });
+    assert.deepEqual(unsafe, { ok: false, code: 'private_chat_history_requires_summary', detail: '' });
+});
+
 test('read-without-reply stores the player message and a fixed system notice only', () => {
     const current = state();
     const built = buildPrivateChatPatch(current, {
@@ -44,6 +70,8 @@ test('read-without-reply stores the player message and a fixed system notice onl
     const messages = built.value.filter((operation) => operation.path === '/会话/chat_1/最近消息/-');
     assert.deepEqual(messages.map((operation) => operation.value.发送者), ['玩家', '系统']);
     assert.equal(messages[1].value.内容, '对方已读，但暂时没有回复。');
+    assert.deepEqual(messages.map((operation) => operation.value.层数), [1, 1], '系统送达提示属于记录，但不应额外计入玩家/角色对话层数');
+    assert.equal(built.value.at(-1).value, 1);
     assert.equal(built.value.some((operation) => operation.path === '/会话/chat_1/长期摘要'), false);
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
 });

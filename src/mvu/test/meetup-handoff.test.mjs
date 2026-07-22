@@ -61,6 +61,14 @@ test('meetup handoff refuses missing confirmed boundaries and forged record cont
     assert.equal(validateControlledPatchAgainstState(state, forged).ok, false);
 });
 
+test('meetup handoff requires every retained private-chat layer to have a controlled summary first', () => {
+    const state = matchedState();
+    state.会话.chat_1.最近消息 = [{ 消息UID: 'm_1', 发送者: '玩家', 内容: '我们约周六见。', 时间: '', 层数: 1 }];
+    state.会话.chat_1.对话层数 = 1;
+    state.会话.chat_1.总结 = { 已总结消息UID: '', 总结序号: 0, 记录: [], 状态: '空闲', 失败原因: '', 目标总结UID: '', 尝试次数: 0 };
+    assert.equal(buildMeetupHandoffPatch(state, request()).code, 'meetup_summary_required');
+});
+
 test('meetup bridge persists before appending the host textarea draft and never sends it', async () => {
     const calls = [];
     const data = { stat_data: matchedState() };
@@ -103,3 +111,55 @@ test('meetup bridge persists before appending the host textarea draft and never 
     assert.equal('click' in textarea, false);
 });
 
+test('meetup bridge force-summarizes pending chat through MVU before it writes the host draft', async () => {
+    const calls = [];
+    const initial = matchedState();
+    initial.会话.chat_1.最近消息 = [{ 消息UID: 'm_1', 发送者: '玩家', 内容: '我们约周六在静安寺见。', 时间: '', 层数: 1 }];
+    initial.会话.chat_1.对话层数 = 1;
+    initial.会话.chat_1.总结 = { 已总结消息UID: '', 总结序号: 0, 记录: [], 状态: '空闲', 失败原因: '', 目标总结UID: '', 尝试次数: 0 };
+    const data = { stat_data: initial };
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'variable_update_ended' },
+        getMvuData(scope) { calls.push(['get', scope]); return data; },
+        async parseMessage(raw, oldData) {
+            calls.push(['parse', raw]);
+            const next = structuredClone(oldData);
+            const patch = JSON.parse(raw.match(/<JSONPatch>([\s\S]*?)<\/JSONPatch>/u)[1]);
+            for (const operation of patch) {
+                if (operation.op === 'add' && operation.path === '/会话/chat_1/总结') next.stat_data.会话.chat_1.总结 = operation.value;
+                if (operation.op === 'add' && operation.path.startsWith('/面基记录/')) next.stat_data.面基记录[operation.path.split('/').at(-1)] = operation.value;
+                if (operation.op === 'replace' && operation.path === '/系统/UID计数器/面基') next.stat_data.系统.UID计数器.面基 = operation.value;
+            }
+            return next;
+        },
+        async replaceMvuData(nextData, scope) { calls.push(['replace', scope]); data.stat_data = nextData.stat_data; },
+    };
+    const textarea = {
+        value: '', dispatched: 0, focused: 0,
+        dispatchEvent() { this.dispatched += 1; }, focus() { this.focused += 1; }, setSelectionRange() {},
+    };
+    const bridge = createActionBridge({
+        documentRef: { querySelector: (selector) => selector === '#send_textarea' ? textarea : null },
+        mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: {
+            getChatSummarySettings() { return { enabled: false, interval: 2, retryLimit: 0 }; },
+            resolveFunction(key) {
+                assert.equal(key, 'chat_summary');
+                return { connectionPreset: { id: 'summary', url: 'https://example.test/v1', model: 'summary' }, promptPreset: { enabled: true, content: '只记录已明确的内容。' } };
+            },
+        },
+        llmClient: { async chat() { return { text: '{"summary":"双方正在确认周六于静安寺见面的安排。"}' }; } },
+    });
+
+    const result = await bridge.runMeetupHandoff(request());
+
+    assert.equal(result.ok, true);
+    assert.equal(result.forcedSummaryCount, 1);
+    assert.equal(data.stat_data.会话.chat_1.总结.记录.length, 1);
+    assert.equal(data.stat_data.面基记录.meetup_5.状态, '待发送');
+    assert.match(textarea.value, /与艾娃角色约定面基/u);
+    assert.equal(textarea.dispatched, 1);
+    assert.equal(calls.filter(([name]) => name === 'parse').length, 2, '应先写入总结、再写入面基记录');
+    assert.equal('click' in textarea, false);
+});

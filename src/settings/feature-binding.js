@@ -19,6 +19,7 @@ const surfaces = [
     { id: 'match_soul', functionKey: 'soul_match' },
     { id: 'match_text', functionKey: 'text_match' },
     { id: 'messages_chat', functionKey: 'chat' },
+    { id: 'messages_summary', functionKey: 'chat_summary' },
     { id: 'groups_chat', functionKey: 'group_chat' },
     { id: 'groups_forum', functionKey: 'forum' },
     { id: 'character_ai_completion', functionKey: 'character_ai_completion' },

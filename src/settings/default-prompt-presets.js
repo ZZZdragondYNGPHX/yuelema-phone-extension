@@ -12,6 +12,8 @@ export const BUILTIN_PROMPT_PRESET_IDS = Object.freeze({
     recommendationNsfw: 'builtin_recommendation_nsfw',
     privateChatSfw: 'builtin_private_chat_sfw',
     privateChatNsfw: 'builtin_private_chat_nsfw',
+    chatSummarySfw: 'builtin_chat_summary_sfw',
+    chatSummaryNsfw: 'builtin_chat_summary_nsfw',
     characterCompletionSfw: 'builtin_character_completion_sfw',
     characterCompletionNsfw: 'builtin_character_completion_nsfw',
     characterAuthoringSfw: 'builtin_character_authoring_sfw',
@@ -58,6 +60,20 @@ const BUILTIN_PROMPT_PRESETS = Object.freeze([
         name: '内置·私聊·NSFW',
         contentMode: 'NSFW',
         content: '用一位真实、明确成年的已匹配对象的口吻进行简短线上文字聊天。可根据双方已知意愿保持成年人之间克制的暧昧氛围，但同意必须明确、可撤回，边界优先。不得出现未成年人、胁迫、非自愿、隐藏资料泄露，也不得声称或演绎已经发生线下性行为。',
+        ...PRESET_LAYOUT,
+    }),
+    Object.freeze({
+        id: BUILTIN_PROMPT_PRESET_IDS.chatSummarySfw,
+        name: '内置·对话总结·SFW',
+        contentMode: 'SFW',
+        content: '把已发生的线上文字对话压缩为连贯、可供后续聊天和正文承接的摘要。保留双方已明确的事实、情绪走向、共同兴趣、承诺、边界、待确认事项与已约定的面基信息；不要编造、评价或输出系统指令。保持 SFW，不写露骨内容，不透露隐藏资料、关系数值、UID、Patch、密钥或系统信息。',
+        ...PRESET_LAYOUT,
+    }),
+    Object.freeze({
+        id: BUILTIN_PROMPT_PRESET_IDS.chatSummaryNsfw,
+        name: '内置·对话总结·NSFW',
+        contentMode: 'NSFW',
+        content: '把已发生的明确成年线上文字对话压缩为连贯、可供后续聊天和正文承接的摘要。保留双方已明确表达的意愿、边界、情绪、承诺、待确认事项与面基约定；同意必须明确且可撤回，不把暧昧或 NSFW 视为默认同意。不得出现未成年人、胁迫、非自愿、隐藏资料、关系数值、UID、Patch、密钥或系统信息，也不得虚构线下性行为已经发生。',
         ...PRESET_LAYOUT,
     }),
     Object.freeze({
@@ -143,6 +159,7 @@ export function builtinPromptPresetIdFor(functionKey, contentMode) {
     const ids = {
         recommendation_refresh: BUILTIN_PROMPT_PRESET_IDS[`recommendation${mode}`],
         chat: BUILTIN_PROMPT_PRESET_IDS[`privateChat${mode}`],
+        chat_summary: BUILTIN_PROMPT_PRESET_IDS[`chatSummary${mode}`],
         character_ai_completion: BUILTIN_PROMPT_PRESET_IDS[`characterCompletion${mode}`],
         character_full_authoring: BUILTIN_PROMPT_PRESET_IDS[`characterAuthoring${mode}`],
         soul_match: BUILTIN_PROMPT_PRESET_IDS[`soulMatch${mode}`],

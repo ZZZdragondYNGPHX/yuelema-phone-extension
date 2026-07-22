@@ -87,6 +87,40 @@ test('private chat view exposes only public profile and session-visible transcri
     assert.doesNotMatch(serialized, /秘密|实际年龄|关系状态/);
 });
 
+test('private chat view projects bounded summary history and pending layer counts without exposing profile internals', () => {
+    const read = {
+        ok: true,
+        state: {
+            软件: { 内容模式: 'SFW' }, 推荐: { 当前队列: [], 临时候选池: {} },
+            角色池: { npc_a: { 成人验证: true, 公开资料: { 昵称: '公开名' }, 仅好友资料: { 关系状态: '隐藏' }, 隐藏资料: { 实际年龄: 29, 私人备注: '秘密' } } },
+            会话: {
+                chat_a: {
+                    对象UID: 'npc_a', 状态: '已匹配', 对话层数: 4,
+                    最近消息: [
+                        { 消息UID: 'm1', 发送者: '玩家', 内容: '第一层', 时间: '', 层数: 1 },
+                        { 消息UID: 'm2', 发送者: '角色', 内容: '第二层', 时间: '', 层数: 2 },
+                        { 消息UID: 'm3', 发送者: '玩家', 内容: '第三层', 时间: '', 层数: 3 },
+                        { 消息UID: 'm4', 发送者: '角色', 内容: '第四层', 时间: '', 层数: 4 },
+                    ],
+                    总结: {
+                        已总结消息UID: 'm2', 总结序号: 1,
+                        记录: [{ 总结UID: 'summary_1', 起始消息UID: 'm1', 结束消息UID: 'm2', 起始层数: 1, 结束层数: 2, 内容: '双方礼貌打招呼。', 时间: '' }],
+                        状态: '成功', 失败原因: '', 目标总结UID: '', 尝试次数: 1,
+                    },
+                },
+            },
+        },
+    };
+    const session = createPhoneView(read).messageSessions[0];
+    assert.deepEqual(session.summaryInfo, {
+        totalLayers: 4,
+        pendingMessageCount: 2,
+        records: [{ summaryUid: 'summary_1', startLayer: 1, endLayer: 2, content: '双方礼貌打招呼。', time: '' }],
+        status: '成功', failureReason: '', targetSummaryUid: '', attempts: 1,
+    });
+    assert.doesNotMatch(JSON.stringify(session.summaryInfo), /秘密|实际年龄|关系状态/u);
+});
+
 test('matched view exposes only public profile and a fixed public status', () => {
     const matched = profile();
     matched.与玩家关系 = { 状态: '已匹配', 全局账号表现: 88, NPC专属匹配度: 99 };
