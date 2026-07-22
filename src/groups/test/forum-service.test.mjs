@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildForumContext, generateForumPostDraft } from '../forum-service.js';
+import { buildForumContext, buildForumHomeRefreshContext, buildForumPostUpdateContext, generateForumHomeRefresh, generateForumPostConversationUpdate, generateForumPostDraft } from '../forum-service.js';
 
 function promptPreset(entries) {
     return { enabled: true, name: '论坛规则', content: JSON.stringify({ schema: 'yuelema.prompt-entries', schemaVersion: 1, entries }) };
@@ -85,4 +85,52 @@ test('forum omits unsafe prompt entries and does not call a model when binding i
     });
     assert.equal(missing.code, 'forum_connection_missing');
     assert.equal(called, false);
+});
+
+function localProfile(nickname, overrides = {}) {
+    return {
+        nickname, ageRange: '25-29', gender: '女', city: '杭州', mbti: 'ENFP', zodiac: '双鱼座', occupation: '插画师', interests: ['咖啡'], presence: '在线', matchRate: null,
+        ...overrides,
+    };
+}
+
+test('forum home refresh only consumes public community context and returns local posts with temporary adults', async () => {
+    let request;
+    const built = buildForumHomeRefreshContext({ state: state(), existingTitles: ['上周咖啡散步'] });
+    assert.equal(built.ok, true);
+    assert.doesNotMatch(JSON.stringify(built.context), /玩家隐藏资料|成员隐藏资料|不得进入论坛|group_coffee/u);
+    const result = await generateForumHomeRefresh({
+        state: state(), existingTitles: ['上周咖啡散步'], settingsStore: { resolveFunction: settings },
+        llmClient: { async chat(input) { request = input; return { text: JSON.stringify({
+            participants: [localProfile('苏晴', { city: '上海', mbti: 'ISFP', occupation: '花艺师', interests: ['花店'] })],
+            posts: [{ author: '苏晴', topic: '同城瞬间', title: '午后花店', body: '发现一家阳光很好的小花店，适合慢慢挑花。', tags: ['同城', '花店'] }],
+        }) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.update.posts[0].author, '苏晴');
+    assert.match(request.messages[0].content, /心动社区首页更新模型/u);
+    assert.doesNotMatch(JSON.stringify(request.messages), /玩家隐藏资料|成员隐藏资料|不得进入论坛/u);
+});
+
+test('opened forum posts use forum binding for local comment updates and reject non-adult participants', async () => {
+    let request;
+    const post = {
+        id: 'local_post_1', topic: '同城瞬间', title: '午后花店', body: '阳光很好，适合慢慢挑花。', tags: ['同城'],
+        author: localProfile('苏晴'), participants: [], messages: [], summaries: [],
+        summaryStatus: { status: 'idle', startFloor: 0, endFloor: 0, message: '' }, createdAt: '2026-07-22T04:00:00.000Z',
+    };
+    const history = { summaries: [], messages: [{ sender: 'user', speaker: '我', content: '这家店周末人多吗？' }] };
+    assert.equal(buildForumPostUpdateContext({ state: state(), post, history }).ok, true);
+    const result = await generateForumPostConversationUpdate({
+        state: state(), post, history, settingsStore: { resolveFunction: settings },
+        llmClient: { async chat(input) { request = input; return { text: JSON.stringify({ participants: [], messages: [{ speaker: '苏晴', text: '上午会比较安静，欢迎早点来。' }] }) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.match(request.messages[0].content, /论坛帖子讨论更新模型/u);
+
+    const rejected = await generateForumPostConversationUpdate({
+        state: state(), post, history, settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ participants: [localProfile('未成年人', { ageRange: '17岁' })], messages: [{ speaker: '未成年人', text: '不应显示。' }] }) }; } },
+    });
+    assert.equal(rejected.code, 'forum_update_response_invalid');
 });

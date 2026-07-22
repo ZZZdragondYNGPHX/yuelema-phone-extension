@@ -126,7 +126,7 @@ test('all routed child pages keep a top-left back button and settings views stay
         click(buttonByText('聊天群'));
         assert.ok(backButton(), '聊天群子页应有返回按钮');
         click(backButton());
-        click(buttonByText('论坛'));
+        click(buttonByText('心动社区'));
         assert.ok(backButton(), '论坛子页应有返回按钮');
         click(backButton());
 
@@ -248,7 +248,7 @@ test('feature option entries are scoped to each requested app surface', () => {
         assert.ok(miniDom.document.querySelector('[name="group_chat-quick-connection"]'));
         closeBinding();
         click(backButton());
-        click(buttonByText('论坛'));
+        click(buttonByText('心动社区'));
         click(pageOption());
         assert.ok(miniDom.document.querySelector('[name="forum-quick-connection"]'));
         closeBinding();
@@ -371,7 +371,7 @@ test('operation dialogs always close and dismissed AI generations never reopen o
     let next = deferred();
     const bridge = {
         emit() {}, isPending() { return false; },
-        generateGroupChatDraft() { return next.promise; },
+        runCandidateMatch() { return next.promise; },
     };
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-ai-dialog', actionBridge: bridge,
@@ -379,37 +379,35 @@ test('operation dialogs always close and dismissed AI generations never reopen o
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(buttonByPage('groups'));
-        click(buttonByText('聊天群'));
-        click(buttonByText('生成群聊草稿'));
+        const startMatch = () => { click(buttonByPage('matches')); click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配')); };
+        startMatch();
 
         const dialog = miniDom.document.querySelector('.yl-operation-dialog');
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.getAttribute('aria-busy'), 'true');
         assert.equal(dialog.dataset.visual, 'connecting', '通用 AI 调用应使用双心电波连接动画');
-        assert.match(dialog.textContent, /AI 调用中/u);
+        assert.match(dialog.textContent, /灵魂匹配/u);
         const loadingControls = assertOperationCloseControls(dialog, 'loading');
 
         click(loadingControls.bottomClose);
         assert.equal(dialog.hidden, true, 'loading 关闭只应隐藏提示窗口');
-        next.resolve({ ok: true, draft: { reply: '公开群聊草稿。' } });
+        next.resolve({ ok: true, matchOutcome: 'accepted', npcUid: 'npc_1', sessionUid: 'chat_new' });
         await flushUi();
         assert.equal(dialog.hidden, true, '已关闭 generation 的成功结果不得重新弹窗');
-        assert.match(miniDom.document.body.textContent, /公开群聊草稿/u, '关闭提示不得伪造取消或阻止真实请求结果落到内存草稿');
 
         next = deferred();
-        click(buttonByText('生成群聊草稿'));
-        next.resolve({ ok: true, draft: { reply: '第二份公开草稿。' } });
+        startMatch();
+        next.resolve({ ok: true, matchOutcome: 'accepted', npcUid: 'npc_1', sessionUid: 'chat_new' });
         await flushUi();
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.getAttribute('aria-busy'), 'false');
-        assert.match(dialog.textContent, /AI 调用成功/u);
+        assert.match(dialog.textContent, /心动连接成功/u);
         const successControls = assertOperationCloseControls(dialog, 'success');
         click(successControls.topClose);
         assert.equal(dialog.hidden, true);
 
         next = deferred();
-        click(buttonByText('生成群聊草稿'));
+        startMatch();
         assertOperationCloseControls(dialog, 'loading');
         pressKey('Escape');
         assert.equal(dialog.hidden, true, 'Escape 应关闭 loading 弹窗');
@@ -419,12 +417,12 @@ test('operation dialogs always close and dismissed AI generations never reopen o
         assert.doesNotMatch(miniDom.document.body.textContent, /Authorization|Bearer|sk-dismissed-secret/u);
 
         next = deferred();
-        click(buttonByText('生成群聊草稿'));
+        startMatch();
         next.reject(new Error('Authorization: Bearer sk-visible-secret-api-key'));
         await flushUi();
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.getAttribute('aria-busy'), 'false');
-        assert.match(dialog.textContent, /AI 调用失败/u);
+        assert.match(dialog.textContent, /灵魂匹配未完成/u);
         assertOperationCloseControls(dialog, 'failure');
         assert.doesNotMatch(dialog.textContent, /Authorization|Bearer|sk-visible-secret|api-key/u);
 
@@ -454,10 +452,10 @@ test('success and failure dialogs auto-close while preserving manual close contr
     };
     globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
 
-    let result = { ok: true, draft: { reply: '可自动收束的成功草稿。' } };
+    let result = { ok: true, matchOutcome: 'accepted', npcUid: 'npc_1', sessionUid: 'chat_new' };
     const bridge = {
         emit() {}, isPending() { return false; },
-        async generateGroupChatDraft() {
+        async runCandidateMatch() {
             if (result instanceof Error) throw result;
             return result;
         },
@@ -468,9 +466,8 @@ test('success and failure dialogs auto-close while preserving manual close contr
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(buttonByPage('groups'));
-        click(buttonByText('聊天群'));
-        click(buttonByText('生成群聊草稿'));
+        const startMatch = () => { click(buttonByPage('matches')); click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配')); };
+        startMatch();
         await flushUi();
 
         const dialog = miniDom.document.querySelector('.yl-operation-dialog');
@@ -482,7 +479,7 @@ test('success and failure dialogs auto-close while preserving manual close contr
         assert.equal(dialog.hidden, true);
 
         result = new Error('Authorization Bearer auto-close-secret');
-        click(buttonByText('生成群聊草稿'));
+        startMatch();
         await flushUi();
         assertOperationCloseControls(dialog, 'failure');
         assert.equal(dialog.dataset.visual, 'failure', '通用 AI 失败应切换为心碎动画');
@@ -502,7 +499,7 @@ test('page switches, phone close, and destroy invalidate pending operation dialo
     const requests = [];
     const bridge = {
         emit() {}, isPending() { return false; },
-        generateGroupChatDraft() {
+        runCandidateMatch() {
             const request = deferred();
             requests.push(request);
             return request.promise;
@@ -513,9 +510,8 @@ test('page switches, phone close, and destroy invalidate pending operation dialo
         settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
     });
     click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-    click(buttonByPage('groups'));
-    click(buttonByText('聊天群'));
-    click(buttonByText('生成群聊草稿'));
+    const startMatch = () => { click(buttonByPage('matches')); click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配')); };
+    startMatch();
     const dialog = miniDom.document.querySelector('.yl-operation-dialog');
     assert.equal(dialog.hidden, false);
 
@@ -525,9 +521,7 @@ test('page switches, phone close, and destroy invalidate pending operation dialo
     await flushUi();
     assert.equal(dialog.hidden, true, '页面切换后迟到结果不得重弹');
 
-    click(buttonByPage('groups'));
-    click(buttonByText('聊天群'));
-    click(buttonByText('生成群聊草稿'));
+    startMatch();
     click(miniDom.document.querySelector('.yl-phone-close'));
     assert.equal(dialog.hidden, true, '关闭小手机应清理操作弹窗');
     requests[1].resolve({ ok: true, draft: { reply: '小手机关闭后的迟到结果。' } });
@@ -535,9 +529,7 @@ test('page switches, phone close, and destroy invalidate pending operation dialo
     assert.equal(dialog.hidden, true, '小手机关闭后迟到结果不得重弹');
 
     click(miniDom.document.querySelector('.yl-phone-launcher'));
-    click(buttonByPage('groups'));
-    click(buttonByText('聊天群'));
-    click(buttonByText('生成群聊草稿'));
+    startMatch();
     mounted.destroy();
     assert.equal(miniDom.document.querySelector('#ylm-test-dialog-cleanup'), null);
     requests[2].resolve({ ok: true, draft: { reply: '销毁后的迟到结果。' } });

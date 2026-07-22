@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { YueLeMaLlmError } from '../../llm/openai-compatible-client.js';
-import { buildGroupChatContext, generateGroupChatReply } from '../group-chat-service.js';
+import { buildGroupChatContext, buildGroupChatUpdateContext, generateGroupChatReply, generateGroupChatUpdate } from '../group-chat-service.js';
 
 function promptPreset(entries) {
     return {
@@ -91,4 +91,53 @@ test('group chat omits unsafe preset entries and projects existing client errors
     });
     assert.doesNotMatch(JSON.stringify(request.messages), /api_key=never-send/);
     assert.deepEqual(result, { ok: false, code: 'HTTP_429', message: '模型服务繁忙，请稍后再试。', retryable: true });
+});
+
+function localProfile(nickname, overrides = {}) {
+    return {
+        nickname, ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '摄影师', interests: ['摄影'], presence: '在线', matchRate: null,
+        ...overrides,
+    };
+}
+
+test('group conversation update accepts only a compact local/public projection and returns temporary adults plus messages', async () => {
+    let request;
+    const group = {
+        scope: 'local', name: '同城周末搭子', description: '交流周末公开活动。', members: [localProfile('林澈')],
+    };
+    const history = {
+        summaries: [{ startFloor: 1, endFloor: 2, content: '玩家与林澈聊到周末看展。' }],
+        messages: [{ sender: 'user', speaker: '我', content: '周六下午有人想去看展吗？' }],
+    };
+    const built = buildGroupChatUpdateContext({ state: state(), group, history });
+    assert.equal(built.ok, true);
+    assert.doesNotMatch(JSON.stringify(built.context), /玩家私密信息|NPC 私密信息|会话秘密|UID/u);
+
+    const result = await generateGroupChatUpdate({
+        state: state(), group, history, trigger: 'user', settingsStore: { resolveFunction: resolved },
+        llmClient: { async chat(input) { request = input; return { text: JSON.stringify({
+            participants: [localProfile('周遥', { gender: '男', mbti: 'INTP', occupation: '设计师', interests: ['展览'] })],
+            messages: [{ speaker: '周遥', text: '我也想去，展后一起喝咖啡吧。' }],
+        }) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.update.participants[0].nickname, '周遥');
+    assert.equal(result.update.messages[0].speaker, '周遥');
+    assert.match(request.messages[1].content, /用户刚刚发言后的更新/u);
+    assert.doesNotMatch(JSON.stringify(request.messages), /玩家私密信息|NPC 私密信息|会话秘密|must-never-be-in-messages/u);
+});
+
+test('group conversation update rejects minor temporary people and arbitrary model write shapes', async () => {
+    const group = { scope: 'local', name: '同城周末搭子', description: '公开活动交流。', members: [localProfile('林澈')] };
+    const history = { summaries: [], messages: [{ sender: 'user', speaker: '我', content: '今天聊什么？' }] };
+    for (const payload of [
+        { participants: [localProfile('未成年人', { ageRange: '17岁' })], messages: [{ speaker: '未成年人', text: '不应进入群聊。' }] },
+        { participants: [], messages: [{ speaker: '林澈', text: '公开消息。', patch: [] }] },
+    ]) {
+        const result = await generateGroupChatUpdate({
+            state: state(), group, history, settingsStore: { resolveFunction: resolved },
+            llmClient: { async chat() { return { text: JSON.stringify(payload) }; } },
+        });
+        assert.equal(result.code, 'group_update_response_invalid');
+    }
 });

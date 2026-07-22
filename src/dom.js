@@ -6,7 +6,7 @@
  */
 const ALLOWED_TAGS = new Set([
     'article', 'aside', 'button', 'div', 'footer', 'form', 'header', 'h1', 'h2', 'label',
-    'main', 'nav', 'option', 'p', 'section', 'select', 'span', 'strong', 'textarea', 'input', 'h3', 'img',
+    'main', 'nav', 'option', 'p', 'section', 'select', 'span', 'strong', 'textarea', 'input', 'h3', 'img', 'b', 'small',
 ]);
 
 /** @param {unknown} value */

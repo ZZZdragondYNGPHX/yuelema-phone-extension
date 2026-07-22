@@ -4,6 +4,8 @@ import { installMiniDom } from '../../test-support/minidom.mjs';
 
 const miniDom = installMiniDom();
 const { mountPhoneApp } = await import('../../app-shell.js');
+const { createGroupForumStore } = await import('../../groups/group-forum-store.js');
+const { createMemoryStorage, createSettingsStore } = await import('../../settings/settings-store.js');
 
 test.after(() => miniDom.restore());
 
@@ -51,26 +53,31 @@ function click(node) {
     node.dispatchEvent(new Event('click'));
 }
 
-function deferred() {
-    let resolve;
-    let reject;
-    const promise = new Promise((resolvePromise, rejectPromise) => {
-        resolve = resolvePromise;
-        reject = rejectPromise;
+function pointer(type, clientY, pointerId = 1) {
+    const event = new Event(type, { cancelable: true });
+    Object.defineProperties(event, {
+        clientY: { value: clientY }, pointerId: { value: pointerId }, isPrimary: { value: true },
     });
-    return { promise, resolve, reject };
+    return event;
 }
 
-test('groups page renders public projections only and existing-chat entry only navigates', () => {
+test('chat group menu creates a browser-local room from private-chat public profiles and honors automatic-update mode', async () => {
     const events = [];
-    const writes = { parse: 0, replace: 0, event: 0 };
+    const writes = { parse: 0, replace: 0, event: 0, groupUpdates: 0 };
     const bridge = {
         emit(kind, payload) { events.push({ kind, payload }); },
         isPending() { return false; },
         runMvuAction() { writes.parse += 1; },
         runPrivateChat() { writes.replace += 1; },
         runMeetupHandoff() { writes.event += 1; },
+        async generateGroupConversationUpdate(request) {
+            writes.groupUpdates += 1;
+            assert.equal(request.group.scope, 'local');
+            return { ok: true, update: { participants: [], messages: [{ speaker: '公开发现对象', text: '我也想去，周六下午见。' }] } };
+        },
     };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
     const mounted = mountPhoneApp({
         documentRef: miniDom.document,
         rootId: 'ylm-test-groups',
@@ -78,41 +85,114 @@ test('groups page renders public projections only and existing-chat entry only n
         settingsStore: null,
         llmClient: null,
         characterLibrary: null,
+        groupForumStore,
         readState: readResult,
     });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        assert.match(miniDom.document.body.textContent, /聊天群/u);
+        assert.match(miniDom.document.body.textContent, /心动社区/u);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '聊天群创建与查找'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '创建'));
 
-    const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
-    assert.ok(launcher, 'launcher must exist');
-    click(launcher);
-    const groupNav = miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups');
-    assert.ok(groupNav, 'groups navigation button must exist');
-    click(groupNav);
+        const name = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '编辑群名');
+        name.value = '周末看展小队'; name.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '选择私聊角色'));
+        const picker = miniDom.document.querySelector('.yl-group-member-picker');
+        assert.equal(picker.hidden, false);
+        const member = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '选择公开发现对象');
+        member.checked = true; member.dispatchEvent(new Event('change'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确认添加'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确认创建'));
+        await flushUi();
 
-    const hubDom = miniDom.document.body.textContent;
-    assert.match(hubDom, /聊天群/u);
-    assert.match(hubDom, /论坛/u);
-    const chatGroupApp = miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群'));
-    assert.ok(chatGroupApp, 'groups navigation must open the mini-app hub');
-    click(chatGroupApp);
+        assert.match(miniDom.document.body.textContent, /周末看展小队/u);
+        assert.match(miniDom.document.body.textContent, /公开发现对象/u);
+        const firstInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入群消息');
+        firstInput.value = '周六下午有人想去看展吗？'; firstInput.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送群消息'));
+        await flushUi();
+        assert.equal(writes.groupUpdates, 1, '关闭自动更新时，玩家发言后应调用一次群聊 AI');
 
-    const groupDom = miniDom.document.body.textContent;
-    assert.match(groupDom, /城市夜谈/u);
-    assert.match(groupDom, /公开发现对象/u);
-    assert.match(groupDom, /进入已有私聊/u);
-    for (const forbidden of [
-        'friend-secret-must-not-render', 'friend-boundary-must-not-render', 'hidden-secret-must-not-render',
-        'internal-boundary-must-not-render', 'session-secret-must-not-render', 'session-summary-must-not-render',
-        '全局账号表现', 'NPC专属匹配度', '拒绝阈值', 'chat_group', 'npc_group',
-    ]) assert.equal(groupDom.includes(forbidden), false, `groups DOM must not render ${forbidden}`);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置聊天群自动更新'));
+        const enabled = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启聊天群自动更新');
+        const seconds = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '自动更新时间秒数');
+        enabled.checked = true; seconds.value = '5';
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确定'));
+        await flushUi();
+        const secondInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入群消息');
+        secondInput.value = '我已经到展馆附近了。'; secondInput.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送群消息'));
+        await flushUi();
+        assert.equal(writes.groupUpdates, 1, '开启自动更新后，玩家发言不应额外调用 AI');
 
-    const existingChat = miniDom.document.querySelectorAll('button').find((node) => node.textContent === '进入已有私聊');
-    assert.ok(existingChat, 'existing-chat entry must exist for the matched session');
-    click(existingChat);
+        const local = await groupForumStore.snapshot();
+        assert.equal(local.groups.length, 1);
+        assert.equal(local.threads[0].auto.enabled, true);
+        assert.equal(local.threads[0].auto.intervalSeconds, 5);
+        const dom = miniDom.document.body.textContent;
+        for (const forbidden of ['friend-secret-must-not-render', 'friend-boundary-must-not-render', 'hidden-secret-must-not-render', 'internal-boundary-must-not-render', 'session-secret-must-not-render', 'session-summary-must-not-render', '全局账号表现', 'NPC专属匹配度', '拒绝阈值', 'chat_group', 'npc_group']) {
+            assert.equal(dom.includes(forbidden), false, `groups DOM must not render ${forbidden}`);
+        }
+        assert.deepEqual(writes, { parse: 0, replace: 0, event: 0, groupUpdates: 1 });
+    } finally {
+        mounted.destroy();
+    }
+});
 
-    assert.deepEqual(events.map((entry) => entry.kind), ['navigate', 'navigate', 'navigate']);
-    assert.deepEqual(events.map((entry) => entry.payload.page), ['groups', 'group_chat', 'private_chat']);
-    assert.deepEqual(writes, { parse: 0, replace: 0, event: 0 });
-    mounted.destroy();
+test('enabled group auto-update invokes the selected group AI on its configured timer only while the room stays open', async () => {
+    const previousSetInterval = globalThis.setInterval;
+    const previousClearInterval = globalThis.clearInterval;
+    const timers = [];
+    globalThis.setInterval = (callback, delay) => {
+        const timer = { callback, delay, cleared: false };
+        timers.push(timer);
+        return timer;
+    };
+    globalThis.clearInterval = (timer) => { if (timer) timer.cleared = true; };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const member = { nickname: '林澈', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '摄影师', interests: ['摄影'], presence: '在线', matchRate: null };
+    await groupForumStore.createGroup({ name: '定时测试群', members: [member] });
+    const calls = [];
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-group-auto-timer',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async generateGroupConversationUpdate(request) {
+                calls.push(request);
+                return { ok: true, update: { participants: [], messages: [{ speaker: '林澈', text: '定时更新的群消息。' }] } };
+            },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开定时测试群'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置聊天群自动更新'));
+        const enabled = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启聊天群自动更新');
+        const seconds = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '自动更新时间秒数');
+        enabled.checked = true; seconds.value = '5';
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确定'));
+        await flushUi();
+        assert.equal(timers.length, 1);
+        assert.equal(timers[0].delay, 5_000);
+        timers[0].callback();
+        await flushUi();
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].trigger, 'auto');
+        assert.equal((await groupForumStore.snapshot()).threads[0].messages[0].content, '定时更新的群消息。');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '返回'));
+        assert.equal(timers[0].cleared, true, '离开聊天群时必须停止定时器');
+    } finally {
+        mounted.destroy();
+        globalThis.setInterval = previousSetInterval;
+        globalThis.clearInterval = previousClearInterval;
+    }
 });
 
 
@@ -189,7 +269,7 @@ test('about entry shows a version dialog and reveals the SFW/NSFW slider after f
             click(about());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /约了吗 0\.1\.24/u);
+            assert.match(dialog.textContent, /约了吗 0\.1\.25/u);
         }
         await flushUi();
 
@@ -235,85 +315,102 @@ test('personal profile safely calls the controlled public-profile bridge when th
     }
 });
 
-test('group and forum generators retain drafts in UI memory and never expose a publish or MVU-write path', async () => {
-    const calls = [];
-    const writes = { mvu: 0, private: 0, meetup: 0 };
-    const bridge = {
-        emit() {}, isPending() { return false; },
-        runMvuAction() { writes.mvu += 1; }, runPrivateChat() { writes.private += 1; }, runMeetupHandoff() { writes.meetup += 1; },
-        async generateGroupChatDraft(request) { calls.push({ kind: 'group', request }); return { ok: true, draft: { reply: '这是一条公开群聊草稿。' } }; },
-        async generateForumPostDraft(request) { calls.push({ kind: 'forum', request }); return { ok: true, draft: { title: '公开论坛草稿', body: '这是待审核的公开帖子草稿。' } }; },
-    };
+test('summary archive lists private chats, local chat groups, and forum posts while keeping local summaries outside MVU', async () => {
+    const settingsStore = createSettingsStore({ storage: createMemoryStorage() });
+    settingsStore.setChatSummarySettings({ enabled: true, interval: 2, retryLimit: 0 });
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const member = { nickname: '林澈', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '摄影师', interests: ['摄影'], presence: '在线', matchRate: null };
+    const group = await groupForumStore.createGroup({ name: '同城看展群', members: [member] });
+    await groupForumStore.appendGroupUserMessage({ key: group.id, title: group.name, content: '周末一起看展吗？' });
+    await groupForumStore.saveConversationSummary({ target: { kind: 'group', id: group.id }, startFloor: 1, endFloor: 1, content: '玩家在群内发出周末看展邀请。' });
+    const [post] = await groupForumStore.addForumRefresh({
+        communityProfiles: [],
+        update: {
+            participants: [{ ...member, nickname: '许青', city: '杭州', mbti: 'ENFP', occupation: '插画师', interests: ['书店'] }],
+            posts: [{ author: '许青', topic: '同城瞬间', title: '雨后的书店', body: '想找安静看书的小店。', tags: ['书店'] }],
+        },
+    });
+    await groupForumStore.appendForumUserComment({ postId: post.id, content: '周末会开放吗？' });
+    await groupForumStore.saveConversationSummary({ target: { kind: 'post', id: post.id }, startFloor: 1, endFloor: 1, content: '玩家询问书店周末是否开放。' });
+
     const mounted = mountPhoneApp({
-        documentRef: miniDom.document, rootId: 'ylm-test-group-drafts', actionBridge: bridge,
-        settingsStore: null, llmClient: null, characterLibrary: null, readState: readResult,
+        documentRef: miniDom.document, rootId: 'ylm-test-local-summary-history', actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
     });
     try {
-        const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
-        click(launcher);
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
-        const groupInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('placeholder') === '输入一条公开群聊消息…');
-        assert.ok(groupInput, 'group draft input must exist');
-        groupInput.value = '今晚聊电影吗？'; groupInput.dispatchEvent(new Event('input'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '生成群聊草稿'));
-        await flushUi();
-        assert.deepEqual(calls[0], { kind: 'group', request: { groupUid: 'group_city', playerMessage: '今晚聊电影吗？' } });
-        assert.match(miniDom.document.body.textContent, /这是一条公开群聊草稿/u);
-        assert.match(miniDom.document.body.textContent, /未发布，不会写入软件状态/u);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
-        assert.match(miniDom.document.querySelector('.yl-operation-console').textContent, /群聊草稿/u);
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('论坛')));
-        const forumInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('placeholder') === '输入一个公开发帖主题…');
-        assert.ok(forumInput, 'forum draft input must exist');
-        forumInput.value = '周末观影交流'; forumInput.dispatchEvent(new Event('input'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '生成帖子草稿'));
-        await flushUi();
-        assert.deepEqual(calls[1], { kind: 'forum', request: { groupUid: 'group_city', topic: '周末观影交流' } });
-        const dom = miniDom.document.body.textContent;
-        assert.match(dom, /公开论坛草稿/u);
-        assert.match(dom, /待审核草稿，未发布且不会写入软件状态/u);
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
-        assert.match(miniDom.document.querySelector('.yl-operation-console').textContent, /论坛帖子草稿/u);
-        assert.equal(/发布帖子|发布群聊|确认发布/u.test(dom), false, 'UI must not pretend a draft is persisted');
-        assert.deepEqual(writes, { mvu: 0, private: 0, meetup: 0 });
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('对话总结')));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('总结档案')));
+        const archive = miniDom.document.body.textContent;
+        assert.match(archive, /私聊总结/u);
+        assert.match(archive, /聊天群总结/u);
+        assert.match(archive, /论坛帖子总结/u);
+        assert.match(archive, /同城看展群/u);
+        assert.match(archive, /雨后的书店/u);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '查看同城看展群的总结档案'));
+        assert.match(miniDom.document.body.textContent, /玩家在群内发出周末看展邀请/u);
+        assert.doesNotMatch(JSON.stringify(await groupForumStore.snapshot()), /stat_data|对象UID|JSONPatch/u);
     } finally {
         mounted.destroy();
     }
 });
 
-test('closing a generic AI draft dialog does not reopen it when the result arrives', async () => {
-    const request = deferred();
+test('forum home only calls AI after an armed pull gesture, and opened posts update local discussion after a user reply', async () => {
+    let homeCalls = 0;
+    let postCalls = 0;
+    const temporaryProfile = {
+        nickname: '苏晴', ageRange: '25-29', gender: '女', city: '上海', mbti: 'ISFP', zodiac: '天秤座', occupation: '花艺师', interests: ['花店'], presence: '在线', matchRate: null,
+    };
     const bridge = {
         emit() {}, isPending() { return false; },
-        generateGroupChatDraft() { return request.promise; },
+        async generateForumHomeRefresh() {
+            homeCalls += 1;
+            return { ok: true, communityProfiles: [], update: { participants: [temporaryProfile], posts: [{ author: '苏晴', topic: '同城瞬间', title: '雨后的书店', body: '想找一间适合安静看书的小店。', tags: ['书店', '同城'] }] } };
+        },
+        async generateForumPostConversationUpdate(request) {
+            postCalls += 1;
+            assert.equal(request.post.title, '雨后的书店');
+            return { ok: true, update: { participants: [], messages: [{ speaker: '苏晴', text: '上午会比较安静，欢迎早点来。' }] } };
+        },
     };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
     const mounted = mountPhoneApp({
-        documentRef: miniDom.document, rootId: 'ylm-test-closed-group-draft-dialog', actionBridge: bridge,
-        settingsStore: null, llmClient: null, characterLibrary: null, readState: readResult,
+        documentRef: miniDom.document, rootId: 'ylm-test-group-drafts', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '生成群聊草稿'));
-        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
-        click(dialog.querySelector('.yl-dialog-close'));
-        request.resolve({ ok: true, draft: { reply: '关闭提示后生成的公开群聊草稿。' } });
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('心动社区')));
+        const surface = miniDom.document.querySelector('.yl-forum-home');
+        surface.dispatchEvent(pointer('pointerdown', 0));
+        surface.dispatchEvent(pointer('pointermove', 104));
+        surface.dispatchEvent(pointer('pointermove', 44));
+        surface.dispatchEvent(pointer('pointerup', 44));
         await flushUi();
+        assert.equal(homeCalls, 0, '上拉取消后不得调用论坛 AI');
 
-        assert.equal(dialog.hidden, true, '通用 AI 结果不得重新打开已关闭的弹窗');
-        assert.match(miniDom.document.body.textContent, /关闭提示后生成的公开群聊草稿/u);
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
-        const consoleText = miniDom.document.querySelector('.yl-operation-console').textContent;
-        assert.match(consoleText, /群聊草稿.*已完成.*公开群聊草稿已生成/u);
+        const armedSurface = miniDom.document.querySelector('.yl-forum-home');
+        armedSurface.dispatchEvent(pointer('pointerdown', 0, 2));
+        armedSurface.dispatchEvent(pointer('pointermove', 104, 2));
+        assert.equal(miniDom.document.querySelector('.yl-forum-pull-indicator').classList.contains('is-armed'), true);
+        armedSurface.dispatchEvent(pointer('pointerup', 104, 2));
+        await flushUi();
+        assert.equal(homeCalls, 1, '到达下拉阈值并松开后才调用论坛 AI');
+        assert.match(miniDom.document.body.textContent, /雨后的书店/u);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开帖子：雨后的书店'));
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入论坛评论');
+        input.value = '周末人会很多吗？'; input.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送论坛评论'));
+        await flushUi();
+        assert.equal(postCalls, 1);
+        const snapshot = await groupForumStore.snapshot();
+        assert.equal(snapshot.posts[0].messages.length, 2);
+        assert.doesNotMatch(JSON.stringify(snapshot), /session-secret|对象UID|stat_data/u);
     } finally {
         mounted.destroy();
     }

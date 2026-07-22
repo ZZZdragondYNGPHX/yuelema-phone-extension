@@ -10,6 +10,7 @@ import { createCharacterTemplateLibraryStore } from './src/characters/character-
 import { createPlayerAvatarStore } from './src/player-avatar-store.js';
 import { createImageLibraryStore } from './src/images/image-library-store.js';
 import { createImageMatchCoordinator } from './src/images/image-match-coordinator.js';
+import { createGroupForumStore } from './src/groups/group-forum-store.js';
 
 const EXTENSION_ROOT_ID = 'yuelema-phone-extension-root';
 const browserStorage = createBrowserSettingsStorage();
@@ -123,6 +124,15 @@ export async function onActivate() {
     // Resolve the host's localforage adapter at activation time because SillyTavern may publish libs after module import.
     const imageLibrary = createImageLibraryStore({ storage: globalThis.SillyTavern?.libs?.localforage });
     const imageMatchCoordinator = createImageMatchCoordinator({ imageLibrary, settingsStore, llmClient });
+    // Group/forum conversations and their summaries are intentionally separate
+    // from MVU. localforage keeps their bounded browser cache out of settings.json
+    // and out of the main narrative prompt; a blocked adapter degrades to memory.
+    let groupForumStore = createGroupForumStore({ storage: globalThis.SillyTavern?.libs?.localforage });
+    try { await groupForumStore.ready(); }
+    catch {
+        groupForumStore = createGroupForumStore();
+        await groupForumStore.ready();
+    }
     const actionBridge = createActionBridge({
         documentRef,
         mvu,
@@ -142,6 +152,7 @@ export async function onActivate() {
         playerAvatarStore,
         imageLibrary,
         imageMatchCoordinator,
+        groupForumStore,
         readState: () => readLatestState({ mvu: mvu() }),
     });
 

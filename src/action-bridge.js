@@ -6,8 +6,9 @@ import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummariz
 import { generateCandidateMatchDraft as generateCandidateMatchDraftService, generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
 import { materializeCandidateMatchDraft } from './recommendation/match-candidate-materializer.js';
 import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate } from './characters/character-authoring-service.js';
-import { generateGroupChatReply } from './groups/group-chat-service.js';
-import { generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
+import { generateGroupChatReply, generateGroupChatUpdate as generateGroupChatUpdateService } from './groups/group-chat-service.js';
+import { generateForumHomeRefresh as generateForumHomeRefreshService, generateForumPostConversationUpdate as generateForumPostConversationUpdateService, generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
+import { generateLocalConversationSummary as generateLocalConversationSummaryService } from './groups/local-conversation-summary-service.js';
 
 const PASSIVE_KINDS = new Set([
     'open_character_creator',
@@ -602,6 +603,70 @@ export function createActionBridge({
         }
     }
 
+    /** Reads MVU only for a public projection, then generates a browser-local group update. */
+    async function generateGroupConversationUpdate({ group, history, trigger = 'user', signal } = {}) {
+        const key = actionKey('group_chat_update', typeof group?.cacheKey === 'string' ? group.cacheKey : '');
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const read = readLatestState({ mvu: resolveMvu(mvu) });
+            if (!read.ok) return read;
+            return await generateGroupChatUpdateService({ state: read.state, group, history, trigger, settingsStore, llmClient, signal });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** The forum home is refreshed only by the UI's armed pull gesture; it remains local data. */
+    async function generateForumHomeRefresh({ existingTitles, signal } = {}) {
+        const key = actionKey('forum_home_refresh', '');
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const read = readLatestState({ mvu: resolveMvu(mvu) });
+            if (!read.ok) return read;
+            return await generateForumHomeRefreshService({ state: read.state, existingTitles, settingsStore, llmClient, signal });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Generates local-only comment updates for an opened forum post. */
+    async function generateForumPostConversationUpdate({ postId, post, history, signal } = {}) {
+        const key = actionKey('forum_post_update', postId);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const read = readLatestState({ mvu: resolveMvu(mvu) });
+            if (!read.ok) return read;
+            return await generateForumPostConversationUpdateService({ state: read.state, post, history, settingsStore, llmClient, signal });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Uses the shared chat_summary binding but never creates an MVU Patch for local group/forum history. */
+    async function generateLocalGroupForumSummary({ target, messages, signal } = {}) {
+        const targetKey = typeof target?.id === 'string' ? target.id : '';
+        const key = actionKey('local_conversation_summary', targetKey);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const read = readLatestState({ mvu: resolveMvu(mvu) });
+            if (!read.ok) return read;
+            return await generateLocalConversationSummaryService({
+                target: { kind: target?.kind, title: target?.title },
+                messages,
+                contentMode: read.state?.软件?.内容模式,
+                settingsStore,
+                llmClient,
+                signal,
+            });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
     /** Generates an AI completion from the editor's public projection only; this remains an in-memory draft. */
     async function generateCharacterCompletionDraft({ publicProfile, instruction, contentMode, signal } = {}) {
         const key = actionKey('character_completion_draft', '');
@@ -682,7 +747,7 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
 }
 
 

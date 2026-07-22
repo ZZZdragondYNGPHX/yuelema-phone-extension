@@ -9,17 +9,18 @@ import { createLauncherDragController } from './launcher-drag.js';
 import { createImageManagerPanel } from './images/image-manager-panel.js';
 import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
+import { DEFAULT_GROUP_AUTO_SETTINGS, externalGroupCacheKey, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 
-const UI_VERSION = '0.1.24';
+const UI_VERSION = '0.1.25';
 const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
 const PRIMARY_PAGE_FOR = Object.freeze({
-    group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
+    group_chat: 'groups', group_chat_room: 'groups', group_chat_create: 'groups', group_chat_summary: 'groups', group_forum: 'groups', forum_post: 'groups', forum_post_summary: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
     settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
 });
 const PAGE_PARENT_FOR = Object.freeze({
-    group_chat: 'groups', group_forum: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
+    group_chat: 'groups', group_chat_room: 'group_chat', group_chat_create: 'group_chat', group_chat_summary: 'group_chat_room', group_forum: 'groups', forum_post: 'group_forum', forum_post_summary: 'forum_post', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
     settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', settings_console: 'settings', settings_chat_summary: 'settings', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', candidate_detail: 'home', match_profile: 'matches',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
@@ -28,12 +29,14 @@ const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     messages: Object.freeze([{ key: 'chat', title: '私聊' }]),
     groups: Object.freeze([{ key: 'group_chat', title: '聊天群' }, { key: 'forum', title: '论坛' }]),
     group_chat: Object.freeze([{ key: 'group_chat', title: '聊天群' }]),
+    group_chat_room: Object.freeze([{ key: 'group_chat', title: '聊天群' }]),
     group_forum: Object.freeze([{ key: 'forum', title: '论坛' }]),
+    forum_post: Object.freeze([{ key: 'forum', title: '论坛' }]),
     character_creator: Object.freeze([{ key: 'character_ai_completion', title: 'AI 完善补全' }, { key: 'character_full_authoring', title: 'AI 完整创作' }]),
 });
 
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
-export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, imageLibrary = null, imageMatchCoordinator = null, readState = () => readLatestState() }) {
+export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, imageLibrary = null, imageMatchCoordinator = null, groupForumStore = null, readState = () => readLatestState() }) {
     const abortController = new AbortController();
     const root = documentRef.createElement('section');
     root.id = rootId;
@@ -62,10 +65,28 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let playerProfileDraft = null;
     const chatDrafts = new Map();
     const meetupDrafts = new Map();
-    const groupChatInputDrafts = new Map();
-    const groupChatGeneratedDrafts = new Map();
-    const forumTopicDrafts = new Map();
-    const forumGeneratedDrafts = new Map();
+    const groupMessageDrafts = new Map();
+    const forumCommentDrafts = new Map();
+    let activeGroupCacheKey = '';
+    let activeForumPostId = '';
+    let groupListMenuOpen = false;
+    let groupSearchOpen = false;
+    let groupSearchQuery = '';
+    let groupCreateName = '';
+    let groupCreateMembers = [];
+    let groupMemberPickerOpen = false;
+    let groupAutoDialogKey = '';
+    let groupAutoTimer = null;
+    let groupAutoTimerKey = '';
+    let groupAutoGeneration = 0;
+    let forumPullState = null;
+    let forumRefreshing = false;
+    let localSummaryTarget = null;
+    let localSummaryBusy = false;
+    let groupForumSnapshot = (() => {
+        try { return groupForumStore?.peek?.() ?? Object.freeze({ groups: [], threads: [], posts: [] }); }
+        catch { return Object.freeze({ groups: [], threads: [], posts: [] }); }
+    })();
     let currentView = createPhoneView(readState());
     let operationGeneration = 0;
     let activeOperation = null;
@@ -170,7 +191,29 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     const avatarLinkButton = element('button', { className: 'yl-settings-button', type: 'button', text: '保存图片链接' });
     const avatarRemoveButton = element('button', { className: 'yl-settings-button yl-avatar-remove', type: 'button', text: '移除头像' });
     append(avatarDialog, [avatarDialogTitlebar, avatarDialogSummary, avatarFileInput, avatarFileButton, avatarLinkField, avatarLinkButton, avatarRemoveButton]);
-    append(root, [launcher, panel, helpPopover, operationDialog, bindingDialog, avatarDialog]);
+    const groupMemberPickerDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-group-member-picker', hidden: true });
+    groupMemberPickerDialog.setAttribute('role', 'dialog');
+    groupMemberPickerDialog.setAttribute('aria-modal', 'false');
+    groupMemberPickerDialog.setAttribute('aria-label', '添加私聊角色');
+    const groupMemberPickerTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const groupMemberPickerTitle = element('h2', { text: '添加私聊角色' });
+    const groupMemberPickerClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭私聊角色选择' });
+    const groupMemberPickerContent = element('div', { className: 'yl-settings-panel yl-group-member-picker-content' });
+    append(groupMemberPickerTitlebar, [groupMemberPickerTitle, groupMemberPickerClose]);
+    append(groupMemberPickerDialog, [groupMemberPickerTitlebar, groupMemberPickerContent]);
+
+    const groupAutoDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-group-auto-dialog', hidden: true });
+    groupAutoDialog.setAttribute('role', 'dialog');
+    groupAutoDialog.setAttribute('aria-modal', 'false');
+    groupAutoDialog.setAttribute('aria-label', '聊天群自动更新');
+    const groupAutoTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const groupAutoTitle = element('h2', { text: '自动更新' });
+    const groupAutoClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭自动更新设置' });
+    const groupAutoContent = element('div', { className: 'yl-settings-panel yl-group-auto-content' });
+    append(groupAutoTitlebar, [groupAutoTitle, groupAutoClose]);
+    append(groupAutoDialog, [groupAutoTitlebar, groupAutoContent]);
+
+    append(root, [launcher, panel, helpPopover, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog]);
     documentRef.body.appendChild(root);
 
     const launcherDrag = createLauncherDragController({ launcher, documentRef, threshold: 8, edgeGap: 0 });
@@ -266,6 +309,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         launcher.setAttribute('aria-label', open ? '关闭约了吗小手机' : '打开约了吗小手机');
         if (open) refreshState();
         else {
+            stopGroupAutoTimer();
             privateChatRequestGeneration += 1;
             activeChatToolsSessionUid = '';
             activeMeetupSessionUid = '';
@@ -289,13 +333,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             clearSummaryToast();
         }
         if (!preserveOperation) hideOperationDialog();
+        if (activePage === 'group_chat_room' && pageId !== 'group_chat_room') stopGroupAutoTimer();
         activePage = pageId;
         actionBridge.emit('navigate', { page: pageId });
         renderPage();
+        syncGroupAutoTimer();
     }
     function refreshState() {
         currentView = createPhoneView(readState());
-        if (open) renderPage();
+        if (open) { renderPage(); syncGroupAutoTimer(); }
         return currentView;
     }
     function feedbackPresentation(message) {
@@ -633,6 +679,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (copy.help) row.appendChild(buildHelp(copy.help));
         const featureOptions = buildFeatureOptionsButton(pageId);
         if (featureOptions) row.appendChild(featureOptions);
+        const groupListAction = buildGroupListActionButton(pageId);
+        if (groupListAction) row.appendChild(groupListAction);
         return row;
     }
     function renderPage() {
@@ -654,7 +702,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'private_chat_summary') page.appendChild(buildPrivateChatSummaryPage());
         else if (activePage === 'groups') page.appendChild(buildGroupsPage());
         else if (activePage === 'group_chat') page.appendChild(buildGroupChatPage());
+        else if (activePage === 'group_chat_room') page.appendChild(buildGroupChatRoomPage());
+        else if (activePage === 'group_chat_create') page.appendChild(buildGroupChatCreatePage());
+        else if (activePage === 'group_chat_summary') page.appendChild(buildLocalConversationSummaryPage('group'));
         else if (activePage === 'group_forum') page.appendChild(buildForumPage());
+        else if (activePage === 'forum_post') page.appendChild(buildForumPostPage());
+        else if (activePage === 'forum_post_summary') page.appendChild(buildLocalConversationSummaryPage('post'));
         else if (activePage === 'profile') page.appendChild(buildProfileHub());
         else if (activePage === 'profile_editor') page.appendChild(buildProfileEditor());
         else if (activePage === 'character_creator') page.appendChild(buildCharacterCreator());
@@ -963,146 +1016,674 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function buildGroupsPage() { return buildGroupHub(); }
     function buildGroupHub() {
         const section = element('section', { className: 'yl-miniapp-grid' });
-        for (const [page, icon, title, note] of [['group_chat', '◌', '聊天群', '浏览公开群成员与话题。'], ['group_forum', '▤', '论坛', '浏览主题和公开讨论对象。']]) {
+        for (const [page, icon, title, note] of [['group_chat', '◌', '聊天群', '创建群聊、模拟群友更新与本地总结。'], ['group_forum', '▤', '心动社区', '下拉刷新首页，再进入帖子参与讨论。']]) {
             const button = element('button', { className: 'yl-miniapp-card', type: 'button', ariaLabel: title });
             append(button, [element('span', { className: 'yl-miniapp-icon', text: icon }), element('strong', { text: title }), element('span', { text: note })]);
             listen(button, button, 'click', () => setActivePage(page), abortController.signal); section.appendChild(button);
         }
         return section;
     }
-    function buildGroupChatComposer(group) {
-        const wrapper = element('section', { className: 'yl-chat-composer yl-group-draft-composer' });
-        const pending = actionBridge.isPending('group_chat_draft', group.UID);
-        const available = typeof actionBridge.generateGroupChatDraft === 'function';
-        const input = element('textarea', {
-            className: 'yl-settings-control yl-settings-textarea', rows: 2, maxLength: 480,
-            placeholder: '输入一条公开群聊消息…', value: groupChatInputDrafts.get(group.UID) ?? '', disabled: pending || !available,
-        });
-        listen(input, input, 'input', () => { groupChatInputDrafts.set(group.UID, input.value); }, abortController.signal);
-        const generate = element('button', { className: 'yl-settings-button', type: 'button', disabled: pending || !available, text: pending ? '生成中…' : '生成群聊草稿' });
-        listen(generate, generate, 'click', () => { void runGroupChatDraft(group); }, abortController.signal);
-        append(wrapper, [input, generate]);
-        if (!available) wrapper.appendChild(element('p', { className: 'yl-phone-placeholder', text: '群聊草稿服务尚未就绪。' }));
-        const draft = groupChatGeneratedDrafts.get(group.UID);
-        if (draft?.reply) {
-            const output = element('div', { className: 'yl-group-generated-draft' });
-            append(output, [element('strong', { text: '群聊回复草稿' }), element('p', { text: draft.reply }), element('span', { className: 'yl-group-draft-note', text: '未发布，不会写入软件状态。' })]);
-            wrapper.appendChild(output);
-        }
-        return wrapper;
+
+    function socialGroups() { return Array.isArray(groupForumSnapshot?.groups) ? groupForumSnapshot.groups : []; }
+    function socialThreads() { return Array.isArray(groupForumSnapshot?.threads) ? groupForumSnapshot.threads : []; }
+    function socialPosts() { return Array.isArray(groupForumSnapshot?.posts) ? groupForumSnapshot.posts : []; }
+    function socialThreadFor(key) { return socialThreads().find((thread) => thread.key === key) ?? null; }
+    function socialPostFor(id) { return socialPosts().find((post) => post.id === id) ?? null; }
+    function defaultLocalConversation() {
+        return { messages: [], summaries: [], summaryStatus: { status: 'idle', startFloor: 0, endFloor: 0, message: '' } };
     }
-    async function runGroupChatDraft(group) {
-        const playerMessage = String(groupChatInputDrafts.get(group.UID) ?? '').trim();
-        const activityHandle = operationActivity.start('群聊草稿', '正在生成公开群聊草稿……');
-        const operationToken = showAiLoading('正在生成群聊草稿，请稍候…');
-        setFeedback('正在生成群聊草稿…', operationToken); renderPage();
-        let result;
-        try { result = await actionBridge.generateGroupChatDraft({ groupUid: group.UID, playerMessage }); }
-        catch { result = { ok: false }; }
-        if (result?.ok && result.draft?.reply) {
-            groupChatGeneratedDrafts.set(group.UID, { reply: result.draft.reply });
-            operationActivity.succeed(activityHandle, '公开群聊草稿已生成。');
-            setFeedback('群聊草稿已生成，尚未发布。', operationToken);
-            showAiResult(true, '群聊草稿已生成，尚未发布。', operationToken);
+    function localSummaryInfo(conversation) {
+        const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
+        const summaries = Array.isArray(conversation?.summaries) ? conversation.summaries : [];
+        const completedFloor = summaries.reduce((floor, record) => Math.max(floor, Number(record.endFloor) || 0), 0);
+        const status = conversation?.summaryStatus ?? { status: 'idle', startFloor: 0, endFloor: 0, message: '' };
+        return {
+            totalFloors: messages.length,
+            completedFloor,
+            pendingFloorCount: Math.max(0, messages.length - completedFloor),
+            records: summaries,
+            status: status.status === 'failed' ? 'failed' : 'idle',
+            failureStartFloor: Number(status.startFloor) || 0,
+            failureEndFloor: Number(status.endFloor) || 0,
+            failureMessage: String(status.message ?? ''),
+        };
+    }
+    function safeLocalDisplayProfile(profile) {
+        try { return groupForumProfileForDisplay(profile); }
+        catch { return { 昵称: '未命名成年人', 年龄段: '未知', 性别: '未知', 城市: '', 简介: '', 兴趣标签: [], 性格标签: [], 生活方式标签: [], 沟通风格标签: [] }; }
+    }
+    function currentGroupCards() {
+        const cards = [];
+        const seen = new Set();
+        for (const group of Array.isArray(currentView.groups) ? currentView.groups : []) {
+            const members = [];
+            for (const person of Array.isArray(group.成员) ? group.成员 : []) {
+                try { members.push(publicProfileToGroupForumProfile(person.公开资料)); } catch { /* invalid public projection is hidden */ }
+            }
+            if (!group?.主题 || !group?.描述) continue;
+            let cacheKey;
+            try { cacheKey = externalGroupCacheKey(group); } catch { continue; }
+            if (seen.has(cacheKey)) continue;
+            seen.add(cacheKey);
+            cards.push(Object.freeze({
+                cacheKey, scope: 'mvu', sourceGroupUid: group.UID, name: group.主题, description: group.描述,
+                members: Object.freeze(members),
+            }));
+        }
+        for (const group of socialGroups()) {
+            if (seen.has(group.id)) continue;
+            seen.add(group.id);
+            cards.push(Object.freeze({
+                cacheKey: group.id, scope: 'local', name: group.name,
+                description: group.members.length ? `与 ${group.members.slice(0, 3).map((profile) => profile.nickname).join('、')} 的聊天群` : '本地聊天群',
+                members: Object.freeze([...group.members]),
+            }));
+        }
+        return cards;
+    }
+    function activeGroupCard() { return currentGroupCards().find((group) => group.cacheKey === activeGroupCacheKey) ?? null; }
+    function groupConversation(group) { return socialThreadFor(group?.cacheKey) ?? defaultLocalConversation(); }
+    function groupParticipants(group) {
+        const temporary = Array.isArray(groupConversation(group).temporaryMembers) ? groupConversation(group).temporaryMembers : [];
+        const seen = new Set();
+        const result = [];
+        for (const profile of [...(group?.members ?? []), ...temporary]) {
+            const name = String(profile?.nickname ?? '').normalize('NFKC').toLowerCase();
+            if (!name || seen.has(name)) continue;
+            seen.add(name); result.push(profile);
+        }
+        return result;
+    }
+    function localHistoryForModel(conversation) {
+        const info = localSummaryInfo(conversation);
+        const summaries = (conversation?.summaries ?? []).slice(-24).map((record) => ({ startFloor: record.startFloor, endFloor: record.endFloor, content: record.content }));
+        const messages = (conversation?.messages ?? []).filter((message) => Number(message.floor) > info.completedFloor).slice(-48).map((message) => ({
+            sender: message.sender,
+            speaker: message.sender === 'user' ? '我' : (message.author?.nickname || '群友'),
+            content: message.content,
+        }));
+        return { summaries, messages };
+    }
+    async function syncGroupForumSnapshot({ rerender = true } = {}) {
+        if (!groupForumStore || typeof groupForumStore.snapshot !== 'function') return groupForumSnapshot;
+        try { groupForumSnapshot = await groupForumStore.snapshot(); }
+        catch {
+            if (!isDestroyed && open) setFeedback('本地群组/论坛缓存暂时不可用。');
+        }
+        if (rerender && !isDestroyed && open) renderPage();
+        return groupForumSnapshot;
+    }
+    function privateChatMemberCandidates() {
+        const candidates = [];
+        const names = new Set();
+        for (const session of messageSessions()) {
+            try {
+                const profile = publicProfileToGroupForumProfile(session.profile);
+                const name = profile.nickname.normalize('NFKC').toLowerCase();
+                if (names.has(name)) continue;
+                names.add(name);
+                candidates.push(Object.freeze({ sessionUid: session.sessionUid, profile }));
+            } catch { /* incomplete or malformed public profiles cannot be added */ }
+        }
+        return candidates;
+    }
+    function closeGroupMemberPicker() {
+        groupMemberPickerOpen = false;
+        groupMemberPickerDialog.hidden = true;
+        groupMemberPickerContent.replaceChildren();
+    }
+    function openGroupMemberPicker() {
+        const candidates = privateChatMemberCandidates();
+        const selectedNames = new Set(groupCreateMembers.map((profile) => profile.nickname.normalize('NFKC').toLowerCase()));
+        groupMemberPickerContent.replaceChildren();
+        groupMemberPickerContent.appendChild(element('p', { className: 'yl-phone-page-description', text: '勾选已经建立私聊的成年人。这里只复制公开资料到本地群，不会改动私聊或 MVU。' }));
+        if (!candidates.length) {
+            groupMemberPickerContent.appendChild(buildEmptyPlaceholder('还没有可添加的私聊角色。请先在“消息”中建立至少一段私聊。', { icon: '✉' }));
         } else {
-            const message = result?.message || describeActionFailure(result);
-            operationActivity.fail(activityHandle, '群聊草稿未生成，请稍后再试。');
-            setFeedback(message, operationToken);
-            showAiResult(false, message || '群聊草稿未生成，请稍后重试。', operationToken);
+            const list = element('div', { className: 'yl-group-picker-list' });
+            const selectedSessionUids = new Set(candidates.filter((candidate) => selectedNames.has(candidate.profile.nickname.normalize('NFKC').toLowerCase())).map((candidate) => candidate.sessionUid));
+            for (const [index, candidate] of candidates.entries()) {
+                const row = element('label', { className: 'yl-group-picker-row', htmlFor: `yl-group-member-${index}` });
+                const checkbox = element('input', { type: 'checkbox', id: `yl-group-member-${index}`, checked: selectedSessionUids.has(candidate.sessionUid), ariaLabel: `选择${candidate.profile.nickname}` });
+                const copy = element('span', { className: 'yl-group-picker-copy' });
+                const display = safeLocalDisplayProfile(candidate.profile);
+                append(copy, [element('strong', { text: display.昵称 }), element('span', { text: [display.年龄段, display.性别, display.城市].filter(Boolean).join(' · ') })]);
+                row.appendChild(checkbox); row.appendChild(publicAvatar(display, { className: 'yl-group-member-avatar', imageEnabled: true, interactive: false })); row.appendChild(copy);
+                listen(checkbox, checkbox, 'change', () => {
+                    if (checkbox.checked) selectedSessionUids.add(candidate.sessionUid);
+                    else selectedSessionUids.delete(candidate.sessionUid);
+                }, abortController.signal);
+                list.appendChild(row);
+            }
+            groupMemberPickerContent.appendChild(list);
+            const actions = element('div', { className: 'yl-settings-actions' });
+            const cancel = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '取消' });
+            const confirm = element('button', { className: 'yl-settings-button', type: 'button', text: '确认添加' });
+            listen(cancel, cancel, 'click', closeGroupMemberPicker, abortController.signal);
+            listen(confirm, confirm, 'click', () => {
+                groupCreateMembers = candidates.filter((candidate) => selectedSessionUids.has(candidate.sessionUid)).map((candidate) => candidate.profile);
+                closeGroupMemberPicker(); renderPage();
+            }, abortController.signal);
+            append(actions, [cancel, confirm]); groupMemberPickerContent.appendChild(actions);
         }
-        renderPage();
+        groupMemberPickerOpen = true;
+        groupMemberPickerDialog.hidden = false;
     }
-    function buildForumComposer(group) {
-        const wrapper = element('section', { className: 'yl-chat-composer yl-group-draft-composer' });
-        const pending = actionBridge.isPending('forum_draft', group.UID);
-        const available = typeof actionBridge.generateForumPostDraft === 'function';
-        const input = element('textarea', {
-            className: 'yl-settings-control yl-settings-textarea', rows: 2, maxLength: 160,
-            placeholder: '输入一个公开发帖主题…', value: forumTopicDrafts.get(group.UID) ?? '', disabled: pending || !available,
-        });
-        listen(input, input, 'input', () => { forumTopicDrafts.set(group.UID, input.value); }, abortController.signal);
-        const generate = element('button', { className: 'yl-settings-button', type: 'button', disabled: pending || !available, text: pending ? '生成中…' : '生成帖子草稿' });
-        listen(generate, generate, 'click', () => { void runForumDraft(group); }, abortController.signal);
-        append(wrapper, [input, generate]);
-        if (!available) wrapper.appendChild(element('p', { className: 'yl-phone-placeholder', text: '论坛草稿服务尚未就绪。' }));
-        const draft = forumGeneratedDrafts.get(group.UID);
-        if (draft?.title && draft?.body) {
-            const output = element('div', { className: 'yl-group-generated-draft' });
-            append(output, [element('strong', { text: draft.title }), element('p', { text: draft.body }), element('span', { className: 'yl-group-draft-note', text: '待审核草稿，未发布且不会写入软件状态。' })]);
-            wrapper.appendChild(output);
-        }
-        return wrapper;
+    function closeGroupAutoDialog() {
+        groupAutoDialogKey = '';
+        groupAutoDialog.hidden = true;
+        groupAutoContent.replaceChildren();
     }
-    async function runForumDraft(group) {
-        const topic = String(forumTopicDrafts.get(group.UID) ?? '').trim();
-        const activityHandle = operationActivity.start('论坛帖子草稿', '正在生成公开论坛帖子草稿……');
-        const operationToken = showAiLoading('正在生成论坛帖子草稿，请稍候…');
-        setFeedback('正在生成论坛帖子草稿…', operationToken); renderPage();
+    function openGroupAutoDialog(group) {
+        const thread = groupConversation(group);
+        const current = thread.auto ?? DEFAULT_GROUP_AUTO_SETTINGS;
+        groupAutoDialogKey = group.cacheKey;
+        groupAutoTitle.textContent = `${group.name} · 自动更新`;
+        groupAutoContent.replaceChildren();
+        groupAutoContent.appendChild(element('p', { className: 'yl-phone-page-description', text: '开启后，只会每隔设定秒数调用当前“聊天群”AI 预设；玩家发言不会触发额外调用。关闭时则在玩家发言后更新。' }));
+        const enabledField = element('label', { className: 'yl-switch yl-group-auto-switch' });
+        const enabled = element('input', { type: 'checkbox', checked: current.enabled === true, ariaLabel: '开启聊天群自动更新' });
+        enabledField.appendChild(enabled);
+        const enabledLabel = element('label', { className: 'yl-settings-field' }); append(enabledLabel, [element('span', { text: '开启自动更新' }), enabledField]);
+        const interval = element('input', { className: 'yl-settings-control', type: 'number', min: 5, max: 3600, value: String(Number.isInteger(current.intervalSeconds) ? current.intervalSeconds : DEFAULT_GROUP_AUTO_SETTINGS.intervalSeconds), inputMode: 'numeric', ariaLabel: '自动更新时间秒数' });
+        const intervalField = element('label', { className: 'yl-settings-field' }); append(intervalField, [element('span', { text: '更新时间（s）' }), interval, element('span', { className: 'yl-settings-summary', text: '可设为 5–3600 秒。仅在当前聊天群界面打开时运行。' })]);
+        groupAutoContent.appendChild(enabledLabel); groupAutoContent.appendChild(intervalField);
+        const actions = element('div', { className: 'yl-settings-actions' });
+        const cancel = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '取消' });
+        const confirm = element('button', { className: 'yl-settings-button', type: 'button', text: '确定' });
+        listen(cancel, cancel, 'click', closeGroupAutoDialog, abortController.signal);
+        listen(confirm, confirm, 'click', () => {
+            const seconds = Number(interval.value);
+            if (!Number.isInteger(seconds) || seconds < 5 || seconds > 3600) { setFeedback('更新时间请填写 5–3600 秒之间的整数。'); return; }
+            if (!groupForumStore?.setGroupAuto) { setFeedback('本地聊天群缓存尚未就绪。'); return; }
+            void (async () => {
+                try {
+                    await groupForumStore.setGroupAuto({ key: group.cacheKey, title: group.name, settings: { enabled: Boolean(enabled.checked), intervalSeconds: seconds } });
+                    await syncGroupForumSnapshot({ rerender: false });
+                    closeGroupAutoDialog();
+                    setFeedback(enabled.checked ? `已开启自动更新：每 ${seconds}s。` : '已关闭自动更新；之后会在你发言后更新。');
+                    renderPage(); syncGroupAutoTimer();
+                } catch { setFeedback('自动更新设置没有保存，请稍后重试。'); }
+            })();
+        }, abortController.signal);
+        append(actions, [cancel, confirm]); groupAutoContent.appendChild(actions);
+        groupAutoDialog.hidden = false;
+    }
+    function stopGroupAutoTimer() {
+        if (groupAutoTimer !== null) clearInterval(groupAutoTimer);
+        groupAutoTimer = null; groupAutoTimerKey = ''; groupAutoGeneration += 1;
+    }
+    function syncGroupAutoTimer() {
+        const group = activeGroupCard();
+        const auto = group ? (groupConversation(group).auto ?? DEFAULT_GROUP_AUTO_SETTINGS) : DEFAULT_GROUP_AUTO_SETTINGS;
+        if (!open || activePage !== 'group_chat_room' || !group || auto.enabled !== true) { stopGroupAutoTimer(); return; }
+        if (groupAutoTimer !== null && groupAutoTimerKey === group.cacheKey) return;
+        stopGroupAutoTimer();
+        const generation = ++groupAutoGeneration;
+        groupAutoTimerKey = group.cacheKey;
+        groupAutoTimer = setInterval(() => { void runGroupAutoUpdate(group.cacheKey, generation); }, auto.intervalSeconds * 1000);
+    }
+    async function runGroupAutoUpdate(cacheKey, generation) {
+        if (isDestroyed || !open || activePage !== 'group_chat_room' || activeGroupCacheKey !== cacheKey || generation !== groupAutoGeneration) return;
+        const group = activeGroupCard();
+        if (!group || !actionBridge.generateGroupConversationUpdate || actionBridge.isPending?.('group_chat_update', cacheKey)) return;
+        const activity = operationActivity.start('聊天群自动更新', '正在按设定时间更新当前聊天群。');
         let result;
-        try { result = await actionBridge.generateForumPostDraft({ groupUid: group.UID, topic }); }
+        try { result = await actionBridge.generateGroupConversationUpdate({ group, history: localHistoryForModel(groupConversation(group)), trigger: 'auto' }); }
         catch { result = { ok: false }; }
-        if (result?.ok && result.draft?.title && result.draft?.body) {
-            forumGeneratedDrafts.set(group.UID, { title: result.draft.title, body: result.draft.body });
-            operationActivity.succeed(activityHandle, '公开论坛帖子草稿已生成。');
-            setFeedback('论坛帖子草稿已生成，尚未发布。', operationToken);
-            showAiResult(true, '论坛帖子草稿已生成，尚未发布。', operationToken);
-        } else {
-            const message = result?.message || describeActionFailure(result);
-            operationActivity.fail(activityHandle, '论坛帖子草稿未生成，请稍后再试。');
-            setFeedback(message, operationToken);
-            showAiResult(false, message || '论坛帖子草稿未生成，请稍后重试。', operationToken);
+        if (isDestroyed || generation !== groupAutoGeneration || activeGroupCacheKey !== cacheKey) {
+            operationActivity.dismiss(activity, '聊天群已离开，自动更新结果未展示。');
+            return;
         }
-        renderPage();
+        if (!result?.ok || !result.update) {
+            operationActivity.fail(activity, '聊天群自动更新未完成。');
+            return;
+        }
+        try {
+            await groupForumStore?.appendGroupModelUpdate?.({ key: group.cacheKey, title: group.name, update: result.update, members: group.members });
+            await syncGroupForumSnapshot({ rerender: false });
+            operationActivity.succeed(activity, '聊天群已按设定时间自动更新。');
+            if (open && activePage === 'group_chat_room' && activeGroupCacheKey === cacheKey) renderPage();
+            void maybeRunLocalAutomaticSummary({ kind: 'group', id: cacheKey, title: group.name });
+        } catch {
+            operationActivity.fail(activity, '聊天群自动更新未保存到本地缓存。');
+        }
     }
-    function groupCards({ forum = false } = {}) {
-        const groups = Array.isArray(currentView.groups) ? currentView.groups : [];
-        const section = element('section', { className: 'yl-phone-empty-actions yl-group-list' });
+    function buildGroupListActionButton(pageId) {
+        if (pageId !== 'group_chat') return null;
+        const button = element('button', { className: 'yl-group-more-button', type: 'button', text: '⋮', ariaLabel: '聊天群创建与查找' });
+        listen(button, button, 'click', () => { groupListMenuOpen = !groupListMenuOpen; renderPage(); }, abortController.signal);
+        return button;
+    }
+    function buildGroupChatPage() {
+        const section = element('section', { className: 'yl-group-list-page' });
+        if (groupListMenuOpen) {
+            const menu = element('div', { className: 'yl-group-list-menu', ariaLabel: '聊天群操作菜单' });
+            const create = element('button', { className: 'yl-settings-button', type: 'button', text: '创建' });
+            const search = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: groupSearchOpen ? '收起查找' : '查找' });
+            listen(create, create, 'click', () => { groupListMenuOpen = false; setActivePage('group_chat_create'); }, abortController.signal);
+            listen(search, search, 'click', () => { groupSearchOpen = !groupSearchOpen; groupListMenuOpen = false; renderPage(); }, abortController.signal);
+            append(menu, [create, search]); section.appendChild(menu);
+        }
+        if (groupSearchOpen) {
+            const input = element('input', { className: 'yl-settings-control yl-group-search-input', type: 'search', maxLength: 120, value: groupSearchQuery, placeholder: '查找群名或成员昵称', ariaLabel: '查找聊天群' });
+            listen(input, input, 'input', () => { groupSearchQuery = input.value; renderPage(); }, abortController.signal);
+            section.appendChild(input);
+        }
+        const query = groupSearchQuery.trim().toLocaleLowerCase('zh-CN');
+        const groups = currentGroupCards().filter((group) => !query || `${group.name} ${group.description} ${groupParticipants(group).map((profile) => profile.nickname).join(' ')}`.toLocaleLowerCase('zh-CN').includes(query));
         if (!groups.length) {
-            section.appendChild(buildEmptyPlaceholder(forum ? '暂无可浏览论坛主题。' : '暂无可浏览聊天群。', { tag: 'p', icon: forum ? '▤' : '◌' }));
+            section.appendChild(buildEmptyPlaceholder(query ? '没有找到匹配的聊天群。' : '还没有聊天群。点右上角 ⋮ 创建，或等待卡片提供公开群组。', { icon: '◌' }));
             return section;
         }
+        const list = element('div', { className: 'yl-group-room-list' });
         for (const group of groups) {
-            const card = element('article', { className: 'yl-chat-session yl-group-card' });
-            card.appendChild(element('h2', { text: group.主题 }));
-            if (group.描述) card.appendChild(element('p', { className: 'yl-phone-page-description', text: group.描述 }));
-            const members = Array.isArray(group.成员) ? group.成员 : [];
-            if (members.length) {
-                const memberList = element('div', { className: 'yl-group-member-list', ariaLabel: '群聊成员' });
-                for (const person of members) {
-                    const profile = person.公开资料 ?? {};
-                    const member = element('span', { className: 'yl-group-member' });
-                    member.appendChild(publicAvatar(profile, { className: 'yl-group-member-avatar', imageEnabled: true, interactive: false }));
-                    member.appendChild(element('span', { text: profile.昵称 || '未命名成年人' }));
-                    memberList.appendChild(member);
-                }
-                card.appendChild(memberList);
-            } else card.appendChild(element('p', { className: 'yl-phone-page-description', text: '成员资料暂不可见' }));
-            const discoverable = Array.isArray(group.可发现角色) ? group.可发现角色 : [];
-            if (forum) {
-                card.appendChild(element('span', { className: 'yl-group-forum-state', text: discoverable.length ? `可参与讨论对象 ${discoverable.length} 位` : '暂无公开讨论对象' }));
-                card.appendChild(buildForumComposer(group));
-            } else {
-                for (const person of discoverable) {
-                    const profile = person.公开资料 ?? {};
-                    const row = element('div', { className: 'yl-character-library-row yl-group-character-row' });
-                    row.appendChild(publicAvatar(profile, { className: 'yl-group-member-avatar', imageEnabled: true, interactive: false }));
-                    row.appendChild(element('strong', { text: profile.昵称 || '未命名成年人' }));
-                    const session = (currentView.messageSessions ?? []).find((item) => item.npcUid === person.UID);
-                    if (session) {
-                        const openChat = element('button', { className: 'yl-settings-button', type: 'button', text: '进入已有私聊' });
-                        listen(openChat, openChat, 'click', () => openPrivateChat(session.sessionUid), abortController.signal);
-                        row.appendChild(openChat);
-                    } else row.appendChild(element('span', { text: '尚无私聊' }));
-                    card.appendChild(row);
-                }
-                card.appendChild(buildGroupChatComposer(group));
+            const thread = groupConversation(group);
+            const last = thread.messages?.at?.(-1);
+            const card = element('button', { className: 'yl-group-room-card', type: 'button', ariaLabel: `打开${group.name}` });
+            const avatars = element('div', { className: 'yl-group-room-avatars' });
+            for (const profile of groupParticipants(group).slice(0, 4)) avatars.appendChild(publicAvatar(safeLocalDisplayProfile(profile), { className: 'yl-group-room-avatar', imageEnabled: true, interactive: false }));
+            const copy = element('span', { className: 'yl-group-room-copy' });
+            const auto = thread.auto?.enabled === true ? ` · 自动 ${thread.auto.intervalSeconds}s` : '';
+            append(copy, [element('strong', { text: group.name }), element('span', { text: last ? `${last.sender === 'user' ? '我' : (last.author?.nickname || '群友')}：${last.content}` : `${groupParticipants(group).length} 位成员${auto}` })]);
+            append(card, [avatars, copy, element('span', { className: 'yl-session-open-mark', text: '›' })]);
+            listen(card, card, 'click', () => { activeGroupCacheKey = group.cacheKey; setActivePage('group_chat_room'); }, abortController.signal);
+            list.appendChild(card);
+        }
+        section.appendChild(list);
+        return section;
+    }
+    function buildGroupChatCreatePage() {
+        const section = element('section', { className: 'yl-settings-panel yl-group-create-page' });
+        const name = element('input', { className: 'yl-settings-control', type: 'text', maxLength: 80, value: groupCreateName, placeholder: '例如：同城周末搭子', ariaLabel: '编辑群名' });
+        listen(name, name, 'input', () => { groupCreateName = name.value; }, abortController.signal);
+        const nameField = element('label', { className: 'yl-settings-field' }); append(nameField, [element('span', { text: '编辑群名' }), name]); section.appendChild(nameField);
+        const memberField = element('section', { className: 'yl-group-create-members' });
+        memberField.appendChild(element('strong', { text: '添加私聊角色' }));
+        memberField.appendChild(element('p', { className: 'yl-settings-summary', text: '只会复制角色公开资料到当前浏览器的本地群聊。' }));
+        const add = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '选择私聊角色' });
+        listen(add, add, 'click', openGroupMemberPicker, abortController.signal); memberField.appendChild(add);
+        if (!groupCreateMembers.length) memberField.appendChild(element('p', { className: 'yl-phone-page-description', text: '尚未选择角色。' }));
+        else {
+            const members = element('div', { className: 'yl-group-create-selected-list' });
+            for (const profile of groupCreateMembers) {
+                const row = element('div', { className: 'yl-group-create-selected' });
+                const display = safeLocalDisplayProfile(profile);
+                row.appendChild(publicAvatar(display, { className: 'yl-group-member-avatar', imageEnabled: true, interactive: false }));
+                row.appendChild(element('span', { text: display.昵称 }));
+                const remove = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: `移除${display.昵称}` });
+                listen(remove, remove, 'click', () => { groupCreateMembers = groupCreateMembers.filter((item) => item.nickname !== profile.nickname); renderPage(); }, abortController.signal);
+                row.appendChild(remove); members.appendChild(row);
             }
-            section.appendChild(card);
+            memberField.appendChild(members);
+        }
+        section.appendChild(memberField);
+        const actions = element('div', { className: 'yl-settings-actions' });
+        const cancel = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '取消' });
+        const confirm = element('button', { className: 'yl-settings-button', type: 'button', text: '确认创建' });
+        listen(cancel, cancel, 'click', () => { groupCreateName = ''; groupCreateMembers = []; setActivePage('group_chat'); }, abortController.signal);
+        listen(confirm, confirm, 'click', () => {
+            const title = groupCreateName.trim();
+            if (!title || !groupCreateMembers.length) { setFeedback('请填写群名，并至少添加一位私聊角色。'); return; }
+            if (!groupForumStore?.createGroup) { setFeedback('本地聊天群缓存尚未就绪。'); return; }
+            void (async () => {
+                try {
+                    const created = await groupForumStore.createGroup({ name: title, members: groupCreateMembers });
+                    await syncGroupForumSnapshot({ rerender: false });
+                    activeGroupCacheKey = created.id; groupCreateName = ''; groupCreateMembers = [];
+                    setFeedback('聊天群已创建，仅保存在当前浏览器。'); setActivePage('group_chat_room');
+                } catch { setFeedback('聊天群没有创建成功，请检查名称和成员后重试。'); }
+            })();
+        }, abortController.signal);
+        append(actions, [cancel, confirm]); section.appendChild(actions);
+        return section;
+    }
+    function localMessageBubble(message, { forum = false } = {}) {
+        const isUser = message.sender === 'user';
+        const bubble = element('article', { className: `yl-local-message ${isUser ? 'is-user' : 'is-member'}${forum ? ' is-forum' : ''}` });
+        if (!isUser) {
+            const profile = safeLocalDisplayProfile(message.author);
+            bubble.appendChild(publicAvatar(profile, { className: 'yl-local-message-avatar', imageEnabled: true, interactive: false }));
+            const copy = element('div', { className: 'yl-local-message-copy' });
+            copy.appendChild(element('strong', { text: profile.昵称 }));
+            copy.appendChild(element('p', { text: message.content }));
+            bubble.appendChild(copy);
+        } else {
+            const copy = element('div', { className: 'yl-local-message-copy' });
+            copy.appendChild(element('strong', { text: '我' })); copy.appendChild(element('p', { text: message.content })); bubble.appendChild(copy);
+        }
+        return bubble;
+    }
+    function buildParticipantMeta(profile) {
+        const meta = element('span', { className: 'yl-local-profile-meta' });
+        const parts = [profile.gender, profile.ageRange, profile.city, profile.mbti, profile.zodiac].filter(Boolean);
+        meta.textContent = parts.join(' · ');
+        return meta;
+    }
+    function buildGroupChatRoomPage() {
+        const group = activeGroupCard();
+        if (!group) return buildEmptyPlaceholder('当前聊天群已变化，请返回列表重新选择。', { icon: '◌' });
+        const conversation = groupConversation(group);
+        const section = element('section', { className: 'yl-local-conversation yl-group-chat-room' });
+        const hero = element('section', { className: 'yl-local-conversation-hero' });
+        const copy = element('div', { className: 'yl-local-conversation-hero-copy' });
+        append(copy, [element('h2', { text: group.name }), element('p', { text: group.description })]);
+        const actions = element('div', { className: 'yl-local-conversation-actions' });
+        const auto = conversation.auto ?? DEFAULT_GROUP_AUTO_SETTINGS;
+        const autoButton = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: auto.enabled ? `自动 ${auto.intervalSeconds}s` : '自动更新', ariaLabel: '设置聊天群自动更新' });
+        const summary = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '聊天总结', disabled: !chatSummaryEnabled(), ariaLabel: '查看聊天群总结' });
+        listen(autoButton, autoButton, 'click', () => openGroupAutoDialog(group), abortController.signal);
+        listen(summary, summary, 'click', () => { localSummaryTarget = { kind: 'group', id: group.cacheKey, title: group.name }; setActivePage('group_chat_summary'); }, abortController.signal);
+        append(actions, [autoButton, summary]); append(hero, [copy, actions]); section.appendChild(hero);
+        const participants = groupParticipants(group);
+        const people = element('div', { className: 'yl-local-participant-strip', ariaLabel: '群成员' });
+        for (const profile of participants.slice(0, 20)) {
+            const member = element('span', { className: 'yl-local-participant' });
+            member.appendChild(publicAvatar(safeLocalDisplayProfile(profile), { className: 'yl-group-member-avatar', imageEnabled: true, interactive: false }));
+            const memberCopy = element('span', { className: 'yl-local-participant-copy' });
+            memberCopy.appendChild(element('strong', { text: profile.nickname })); memberCopy.appendChild(buildParticipantMeta(profile));
+            member.appendChild(memberCopy); people.appendChild(member);
+        }
+        section.appendChild(people);
+        const transcript = element('div', { className: 'yl-local-transcript', ariaLabel: `${group.name}的聊天记录` });
+        if (!conversation.messages?.length) transcript.appendChild(buildEmptyPlaceholder('还没有群消息。说句话开始吧；关闭自动更新时，群友会在你发言后回应。', { icon: '◌' }));
+        else for (const message of conversation.messages) transcript.appendChild(localMessageBubble(message));
+        if (actionBridge.isPending?.('group_chat_update', group.cacheKey)) transcript.appendChild(element('div', { className: 'yl-chat-replying', text: '群友正在更新···' }));
+        section.appendChild(transcript);
+        const composer = element('section', { className: 'yl-chat-composer yl-local-composer' });
+        const pending = Boolean(actionBridge.isPending?.('group_chat_update', group.cacheKey));
+        const input = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 2, maxLength: 600, value: groupMessageDrafts.get(group.cacheKey) ?? '', placeholder: '说点什么…', ariaLabel: '输入群消息', disabled: pending });
+        const send = element('button', { className: 'yl-chat-send-button', type: 'button', text: pending ? '···' : '发送', disabled: pending, ariaLabel: pending ? '群聊正在更新' : '发送群消息' });
+        listen(input, input, 'input', () => { groupMessageDrafts.set(group.cacheKey, input.value); }, abortController.signal);
+        listen(input, input, 'keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault?.(); void sendGroupMessage(group); } }, abortController.signal);
+        listen(send, send, 'click', () => { void sendGroupMessage(group); }, abortController.signal);
+        append(composer, [input, send, element('span', { className: 'yl-chat-composer-hint', text: auto.enabled ? `自动更新已开启，每 ${auto.intervalSeconds}s 更新 · Shift+Enter 换行` : '发送后群友会更新 · Shift+Enter 换行' })]); section.appendChild(composer);
+        return section;
+    }
+    async function sendGroupMessage(group) {
+        const content = String(groupMessageDrafts.get(group.cacheKey) ?? '').trim();
+        if (!content) { setFeedback('请先输入群消息。'); return; }
+        if (!groupForumStore?.appendGroupUserMessage) { setFeedback('本地聊天群缓存尚未就绪。'); return; }
+        try {
+            await groupForumStore.appendGroupUserMessage({ key: group.cacheKey, title: group.name, content });
+            groupMessageDrafts.delete(group.cacheKey); await syncGroupForumSnapshot({ rerender: false }); renderPage();
+        } catch { setFeedback('群消息没有保存到本地缓存。'); return; }
+        const auto = groupConversation(group).auto ?? DEFAULT_GROUP_AUTO_SETTINGS;
+        if (auto.enabled) {
+            setFeedback(`消息已发送；自动更新将在 ${auto.intervalSeconds}s 后运行。`);
+            void maybeRunLocalAutomaticSummary({ kind: 'group', id: group.cacheKey, title: group.name });
+            return;
+        }
+        await runGroupConversationUpdate(group, 'user');
+    }
+    async function runGroupConversationUpdate(group, trigger) {
+        if (!actionBridge.generateGroupConversationUpdate || actionBridge.isPending?.('group_chat_update', group.cacheKey)) return;
+        const activity = operationActivity.start('聊天群更新', '正在生成群友的本地更新。');
+        renderPage();
+        let result;
+        try { result = await actionBridge.generateGroupConversationUpdate({ group, history: localHistoryForModel(groupConversation(group)), trigger }); }
+        catch { result = { ok: false }; }
+        if (isDestroyed || activeGroupCacheKey !== group.cacheKey) { operationActivity.dismiss(activity, '聊天群已离开，更新结果未展示。'); return; }
+        if (!result?.ok || !result.update) {
+            operationActivity.fail(activity, '聊天群更新未完成。'); setFeedback(result?.message || '聊天群更新未完成，请稍后重试。'); renderPage(); return;
+        }
+        try {
+            await groupForumStore?.appendGroupModelUpdate?.({ key: group.cacheKey, title: group.name, update: result.update, members: group.members });
+            await syncGroupForumSnapshot({ rerender: false });
+            operationActivity.succeed(activity, '聊天群已更新到本地缓存。'); renderPage();
+            void maybeRunLocalAutomaticSummary({ kind: 'group', id: group.cacheKey, title: group.name });
+        } catch { operationActivity.fail(activity, '聊天群更新没有保存到本地缓存。'); setFeedback('聊天群更新没有保存到本地缓存。'); }
+    }
+    function resetForumPullIndicator(indicator) {
+        if (!indicator) return;
+        indicator.classList.toggle('is-visible', false); indicator.classList.toggle('is-armed', false); indicator.classList.toggle('is-refreshing', false);
+        indicator.style?.setProperty?.('--yl-forum-pull-offset', '0px');
+    }
+    function updateForumPullIndicator(indicator, distance, armed) {
+        if (!indicator) return;
+        const offset = Math.min(160, Math.max(0, Math.round(distance * 0.55)));
+        indicator.style?.setProperty?.('--yl-forum-pull-offset', `${offset}px`);
+        indicator.classList.toggle('is-visible', distance > 0); indicator.classList.toggle('is-armed', armed);
+    }
+    function bindForumPullToRefresh(surface, indicator) {
+        const start = (event) => {
+            if (forumRefreshing || event?.isPrimary === false || (event?.pointerType === 'mouse' && Number(event.button) !== 0)) return;
+            if (Number(surface.scrollTop) > 0) return;
+            forumPullState = { pointerId: event?.pointerId, startY: Number(event?.clientY) || 0, peak: 0, cancelled: false, indicator };
+            surface.setPointerCapture?.(event?.pointerId);
+        };
+        const move = (event) => {
+            const state = forumPullState;
+            if (!state || (state.pointerId !== undefined && event?.pointerId !== undefined && state.pointerId !== event.pointerId)) return;
+            const distance = (Number(event?.clientY) || 0) - state.startY;
+            if (distance <= 0 || distance < state.peak - 4) {
+                if (state.peak > 0) state.cancelled = true;
+                resetForumPullIndicator(state.indicator); return;
+            }
+            state.peak = Math.max(state.peak, distance);
+            const armed = distance >= 88 && !state.cancelled;
+            updateForumPullIndicator(state.indicator, distance, armed);
+            if (distance > 0) event?.preventDefault?.();
+        };
+        const end = (event) => {
+            const state = forumPullState;
+            if (!state || (state.pointerId !== undefined && event?.pointerId !== undefined && state.pointerId !== event.pointerId)) return;
+            try { surface.releasePointerCapture?.(state.pointerId); } catch { /* Pointer capture may already be gone. */ }
+            forumPullState = null;
+            const shouldRefresh = !state.cancelled && state.peak >= 88;
+            resetForumPullIndicator(state.indicator);
+            if (shouldRefresh) void runForumHomeRefresh();
+        };
+        listen(surface, surface, 'pointerdown', start, abortController.signal);
+        listen(surface, surface, 'pointermove', move, abortController.signal);
+        listen(surface, surface, 'pointerup', end, abortController.signal);
+        listen(surface, surface, 'pointercancel', end, abortController.signal);
+    }
+    function buildForumPage() {
+        const section = element('section', { className: 'yl-forum-home' });
+        const pull = element('div', { className: forumRefreshing ? 'yl-forum-pull-indicator is-visible is-refreshing' : 'yl-forum-pull-indicator', text: forumRefreshing ? '正在刷新心动社区…' : '↻ 下拉刷新' });
+        section.appendChild(pull); bindForumPullToRefresh(section, pull);
+        const hero = element('section', { className: 'yl-forum-home-hero' });
+        append(hero, [element('h2', { text: '心动社区 ♥' }), element('p', { text: '分享生活 · 遇见心动的 TA' }), element('span', { className: 'yl-forum-pull-hint', text: '在顶部轻轻下拉，松开后刷新帖子' })]); section.appendChild(hero);
+        const channels = element('div', { className: 'yl-forum-channel-strip' });
+        for (const [icon, title, note] of [['＋', '今日心情', '记录此刻'], ['⌖', '附近的人', '同城心动'], ['◌', '同城瞬间', '热门动态'], ['☆', '兴趣同频', '寻找同好'], ['#', '话题广场', '一起聊聊']]) {
+            const card = element('span', { className: 'yl-forum-channel' }); append(card, [element('b', { text: icon }), element('strong', { text: title }), element('small', { text: note })]); channels.appendChild(card);
+        }
+        section.appendChild(channels);
+        const posts = socialPosts();
+        if (!posts.length) section.appendChild(buildEmptyPlaceholder('还没有本地帖子。请从论坛首页顶部向下拉到提示就位后松开，AI 才会刷新首页。', { icon: '↻' }));
+        else {
+            const feed = element('div', { className: 'yl-forum-feed' });
+            for (const post of posts) {
+                const card = element('button', { className: 'yl-forum-feed-card', type: 'button', ariaLabel: `打开帖子：${post.title}` });
+                const author = safeLocalDisplayProfile(post.author);
+                const authorRow = element('span', { className: 'yl-forum-feed-author' });
+                authorRow.appendChild(publicAvatar(author, { className: 'yl-group-member-avatar', imageEnabled: true, interactive: false }));
+                const authorCopy = element('span'); append(authorCopy, [element('strong', { text: author.昵称 }), element('small', { text: [post.topic, author.城市].filter(Boolean).join(' · ') || '心动社区' })]); authorRow.appendChild(authorCopy);
+                const preview = post.body.length > 160 ? `${post.body.slice(0, 160)}…` : post.body;
+                append(card, [authorRow, element('h3', { text: post.title }), element('p', { text: preview }), element('span', { className: 'yl-forum-feed-footer', text: `${post.messages.length} 条评论 · ${post.tags.map((tag) => '#' + tag).join(' ')}` })]);
+                listen(card, card, 'click', () => { activeForumPostId = post.id; setActivePage('forum_post'); }, abortController.signal);
+                feed.appendChild(card);
+            }
+            section.appendChild(feed);
         }
         return section;
     }
-    function buildGroupChatPage() { return groupCards(); }
-    function buildForumPage() { return groupCards({ forum: true }); }
+    async function runForumHomeRefresh() {
+        if (forumRefreshing || !actionBridge.generateForumHomeRefresh || actionBridge.isPending?.('forum_home_refresh', '')) return;
+        forumRefreshing = true; renderPage();
+        const activity = operationActivity.start('论坛首页刷新', '正在根据公开社区信息刷新首页帖子。');
+        let result;
+        try { result = await actionBridge.generateForumHomeRefresh({ existingTitles: socialPosts().slice(0, 24).map((post) => post.title) }); }
+        catch { result = { ok: false }; }
+        forumRefreshing = false;
+        if (isDestroyed || activePage !== 'group_forum') { operationActivity.dismiss(activity, '论坛首页已离开，刷新结果未展示。'); return; }
+        if (!result?.ok || !result.update) {
+            operationActivity.fail(activity, '论坛首页未刷新。'); setFeedback(result?.message || '论坛首页刷新未完成，请稍后重试。'); renderPage(); return;
+        }
+        try {
+            await groupForumStore?.addForumRefresh?.({ update: result.update, communityProfiles: result.communityProfiles ?? [] });
+            await syncGroupForumSnapshot({ rerender: false });
+            operationActivity.succeed(activity, '心动社区首页已刷新到本地缓存。'); renderPage();
+        } catch { operationActivity.fail(activity, '论坛首页更新没有保存到本地缓存。'); setFeedback('论坛首页更新没有保存到本地缓存。'); renderPage(); }
+    }
+    function buildForumPostPage() {
+        const post = socialPostFor(activeForumPostId);
+        if (!post) return buildEmptyPlaceholder('当前帖子已不可用，请返回论坛首页后刷新。', { icon: '▤' });
+        const section = element('section', { className: 'yl-forum-post-page' });
+        const layout = element('div', { className: 'yl-forum-post-layout' });
+        const main = element('article', { className: 'yl-forum-post-main' });
+        const author = safeLocalDisplayProfile(post.author);
+        const authorRow = element('div', { className: 'yl-forum-post-author' });
+        authorRow.appendChild(publicAvatar(author, { className: 'yl-forum-post-avatar', imageEnabled: true, interactive: false }));
+        const authorCopy = element('div'); append(authorCopy, [element('strong', { text: author.昵称 }), element('span', { text: [author.gender, author.ageRange, author.city].filter(Boolean).join(' · ') }), element('small', { text: '刚刚 · 心动社区' })]); authorRow.appendChild(authorCopy);
+        const actionRow = element('div', { className: 'yl-forum-post-actions' });
+        const summary = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '聊天总结', disabled: !chatSummaryEnabled(), ariaLabel: '查看帖子总结' });
+        listen(summary, summary, 'click', () => { localSummaryTarget = { kind: 'post', id: post.id, title: post.title }; setActivePage('forum_post_summary'); }, abortController.signal);
+        actionRow.appendChild(summary); append(main, [authorRow, actionRow, element('h2', { text: post.title }), element('p', { className: 'yl-forum-post-body', text: post.body })]);
+        const tags = element('div', { className: 'yl-tag-list yl-forum-post-tags' });
+        for (const tag of post.tags) tags.appendChild(element('span', { className: 'yl-tag-chip', text: '#' + tag }));
+        main.appendChild(tags);
+        main.appendChild(element('h3', { text: `评论（${post.messages.length}）` }));
+        const comments = element('div', { className: 'yl-forum-comment-list' });
+        if (!post.messages.length) comments.appendChild(buildEmptyPlaceholder('还没有评论。留下第一句公开想法吧。', { icon: '◌' }));
+        else for (const message of post.messages) comments.appendChild(localMessageBubble(message, { forum: true }));
+        if (actionBridge.isPending?.('forum_post_update', post.id)) comments.appendChild(element('div', { className: 'yl-chat-replying', text: '讨论正在更新···' }));
+        main.appendChild(comments); layout.appendChild(main);
+        const side = element('aside', { className: 'yl-forum-post-author-card' });
+        side.appendChild(publicAvatar(author, { className: 'yl-forum-post-avatar', imageEnabled: true, interactive: false })); side.appendChild(element('strong', { text: author.昵称 })); side.appendChild(buildParticipantMeta(post.author));
+        if (post.author.occupation) side.appendChild(element('span', { text: post.author.occupation }));
+        if (post.author.interests.length) side.appendChild(element('span', { text: post.author.interests.join(' / ') }));
+        layout.appendChild(side); section.appendChild(layout);
+        const pending = Boolean(actionBridge.isPending?.('forum_post_update', post.id));
+        const composer = element('section', { className: 'yl-chat-composer yl-local-composer yl-forum-comment-composer' });
+        const input = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 2, maxLength: 600, value: forumCommentDrafts.get(post.id) ?? '', placeholder: '说点什么…', ariaLabel: '输入论坛评论', disabled: pending });
+        const send = element('button', { className: 'yl-chat-send-button', type: 'button', text: pending ? '···' : '发送', disabled: pending, ariaLabel: pending ? '帖子正在更新' : '发送论坛评论' });
+        listen(input, input, 'input', () => { forumCommentDrafts.set(post.id, input.value); }, abortController.signal);
+        listen(input, input, 'keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault?.(); void sendForumComment(post); } }, abortController.signal);
+        listen(send, send, 'click', () => { void sendForumComment(post); }, abortController.signal);
+        append(composer, [input, send, element('span', { className: 'yl-chat-composer-hint', text: '发送后由论坛 AI 更新讨论 · Shift+Enter 换行' })]); section.appendChild(composer);
+        return section;
+    }
+    async function sendForumComment(post) {
+        const content = String(forumCommentDrafts.get(post.id) ?? '').trim();
+        if (!content) { setFeedback('请先输入评论。'); return; }
+        if (!groupForumStore?.appendForumUserComment) { setFeedback('本地论坛缓存尚未就绪。'); return; }
+        try {
+            await groupForumStore.appendForumUserComment({ postId: post.id, content }); forumCommentDrafts.delete(post.id);
+            await syncGroupForumSnapshot({ rerender: false }); renderPage();
+        } catch { setFeedback('评论没有保存到本地缓存。'); return; }
+        await runForumPostConversationUpdate(socialPostFor(post.id) ?? post);
+    }
+    async function runForumPostConversationUpdate(post) {
+        if (!actionBridge.generateForumPostConversationUpdate || actionBridge.isPending?.('forum_post_update', post.id)) return;
+        const activity = operationActivity.start('论坛帖子更新', '正在生成帖子下的本地讨论。'); renderPage();
+        let result;
+        try { result = await actionBridge.generateForumPostConversationUpdate({ postId: post.id, post, history: localHistoryForModel(post) }); }
+        catch { result = { ok: false }; }
+        if (isDestroyed || activeForumPostId !== post.id) { operationActivity.dismiss(activity, '帖子已离开，更新结果未展示。'); return; }
+        if (!result?.ok || !result.update) {
+            operationActivity.fail(activity, '论坛帖子更新未完成。'); setFeedback(result?.message || '论坛帖子更新未完成，请稍后重试。'); renderPage(); return;
+        }
+        try {
+            await groupForumStore?.appendForumModelUpdate?.({ postId: post.id, update: result.update });
+            await syncGroupForumSnapshot({ rerender: false }); operationActivity.succeed(activity, '论坛帖子已更新到本地缓存。'); renderPage();
+            void maybeRunLocalAutomaticSummary({ kind: 'post', id: post.id, title: post.title });
+        } catch { operationActivity.fail(activity, '论坛帖子更新没有保存到本地缓存。'); setFeedback('论坛帖子更新没有保存到本地缓存。'); }
+    }
+    function localConversationForTarget(target) {
+        if (!target) return null;
+        if (target.kind === 'group') return socialThreadFor(target.id) ?? defaultLocalConversation();
+        if (target.kind === 'post') return socialPostFor(target.id) ?? null;
+        return null;
+    }
+    function localSummarySource(conversation, summaryId = '') {
+        const info = localSummaryInfo(conversation);
+        const record = summaryId ? info.records.find((item) => item.id === summaryId) : null;
+        const startFloor = record ? record.startFloor : info.completedFloor + 1;
+        const endFloor = record ? record.endFloor : info.totalFloors;
+        const messages = (conversation?.messages ?? []).filter((message) => message.floor >= startFloor && message.floor <= endFloor).map((message) => ({
+            floor: message.floor,
+            sender: message.sender,
+            speaker: message.sender === 'user' ? '我' : (message.author?.nickname || '群友'),
+            content: message.content,
+        }));
+        return { startFloor, endFloor, messages };
+    }
+    async function maybeRunLocalAutomaticSummary(target) {
+        if (!chatSummaryEnabled() || localSummaryBusy) return;
+        const conversation = localConversationForTarget(target);
+        if (!conversation) return;
+        const info = localSummaryInfo(conversation);
+        if (info.pendingFloorCount < chatSummarySettings().interval) return;
+        await runLocalConversationSummary(target, { automatic: true });
+    }
+    async function runLocalConversationSummary(target, { summaryId = '', automatic = false } = {}) {
+        if (localSummaryBusy || !groupForumStore?.saveConversationSummary || typeof actionBridge.generateLocalGroupForumSummary !== 'function') return;
+        const conversation = localConversationForTarget(target);
+        const source = localSummarySource(conversation, summaryId);
+        if (!source.messages.length) { if (!automatic) setFeedback('当前没有可整理的群聊或帖子消息。'); return; }
+        localSummaryBusy = true;
+        const retryLimit = automatic ? chatSummarySettings().retryLimit : 0;
+        let result = null;
+        for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
+            try { result = await actionBridge.generateLocalGroupForumSummary({ target, messages: source.messages }); }
+            catch { result = { ok: false }; }
+            if (result?.ok && result.summary) break;
+        }
+        try {
+            if (result?.ok && result.summary) {
+                await groupForumStore.saveConversationSummary({ target: { kind: target.kind, id: target.id }, summaryId, startFloor: source.startFloor, endFloor: source.endFloor, content: result.summary });
+                await syncGroupForumSnapshot({ rerender: false });
+                if (!automatic) setFeedback('本地聊天总结已保存。');
+            } else {
+                const message = result?.message || '本次总结未完成，请稍后重试。';
+                await groupForumStore.failConversationSummary({ target: { kind: target.kind, id: target.id }, startFloor: source.startFloor, endFloor: source.endFloor, message });
+                await syncGroupForumSnapshot({ rerender: false });
+                if (!automatic) setFeedback(message);
+            }
+        } catch { if (!automatic) setFeedback('本地聊天总结没有保存。'); }
+        finally {
+            localSummaryBusy = false;
+            if (!isDestroyed && open && ((target.kind === 'group' && activeGroupCacheKey === target.id) || (target.kind === 'post' && activeForumPostId === target.id) || activePage === 'settings_chat_summary_history')) renderPage();
+        }
+        if (automatic && result?.ok) void maybeRunLocalAutomaticSummary(target);
+    }
+    function buildLocalConversationSummaryPage(kind) {
+        const fallback = kind === 'group' ? activeGroupCard() : socialPostFor(activeForumPostId);
+        const target = localSummaryTarget?.kind === kind ? localSummaryTarget : (fallback ? { kind, id: kind === 'group' ? fallback.cacheKey : fallback.id, title: kind === 'group' ? fallback.name : fallback.title } : null);
+        if (!target) return buildEmptyPlaceholder('当前对话暂不可查看总结。', { icon: '⌁' });
+        const conversation = localConversationForTarget(target) ?? defaultLocalConversation();
+        const info = localSummaryInfo(conversation);
+        const section = element('section', { className: 'yl-chat-summary-detail yl-local-summary-detail' });
+        const overview = element('section', { className: 'yl-chat-summary-overview' });
+        append(overview, [element('strong', { text: `${target.title} · 已对话 ${info.totalFloors} 楼` }), element('p', { text: info.status === 'failed' ? `上次总结未完成：${info.failureMessage}` : (info.pendingFloorCount ? `有 ${info.pendingFloorCount} 楼待整理。` : '暂时没有待整理的新消息。') })]);
+        const pending = localSummaryBusy || Boolean(actionBridge.isPending?.('local_conversation_summary', target.id));
+        if (chatSummaryEnabled() && info.pendingFloorCount > 0) {
+            const summarize = element('button', { className: 'yl-settings-button', type: 'button', text: pending ? '正在总结…' : '立即总结未整理消息', disabled: pending });
+            listen(summarize, summarize, 'click', () => { void runLocalConversationSummary(target); }, abortController.signal); overview.appendChild(summarize);
+        }
+        if (chatSummaryEnabled() && info.status === 'failed') {
+            const retry = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: pending ? '正在重新总结…' : '重新总结', disabled: pending });
+            listen(retry, retry, 'click', () => { void runLocalConversationSummary(target); }, abortController.signal); overview.appendChild(retry);
+        }
+        section.appendChild(overview);
+        if (!info.records.length) section.appendChild(buildEmptyPlaceholder(chatSummaryEnabled() ? '还没有完成的总结记录；达到设定楼数后会自动整理。' : '自动对话总结当前已关闭。请在设置中开启后再整理。', { icon: '⌁' }));
+        else {
+            const list = element('div', { className: 'yl-chat-summary-record-list' });
+            for (const record of [...info.records].reverse()) {
+                const card = element('article', { className: 'yl-chat-summary-record' });
+                append(card, [element('strong', { text: `第 ${record.startFloor}–${record.endFloor} 楼总结` }), element('p', { text: record.content })]);
+                if (chatSummaryEnabled()) {
+                    const retry = element('button', { className: 'yl-settings-button yl-settings-button-secondary yl-chat-summary-record-retry', type: 'button', text: pending ? '正在处理…' : '重新总结这一段', disabled: pending });
+                    listen(retry, retry, 'click', () => { void runLocalConversationSummary(target, { summaryId: record.id }); }, abortController.signal); card.appendChild(retry);
+                }
+                list.appendChild(card);
+            }
+            section.appendChild(list);
+        }
+        return section;
+    }
     function messageSessions() {
         return Array.isArray(currentView.messageSessions) ? currentView.messageSessions : [];
     }
@@ -1840,8 +2421,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         append(statusCopy, [
             element('strong', { text: settings.enabled ? '自动总结已开启' : '自动总结已关闭' }),
             element('p', { text: settings.enabled
-                ? `每 ${settings.interval} 条消息层自动整理一次，失败后最多重试 ${settings.retryLimit} 次。`
-                : '关闭时私聊会把当前已保存的完整聊天记录交给私聊模型；下方两个入口会保持不可操作。' }),
+                ? `每 ${settings.interval} 楼自动整理一次，失败后最多重试 ${settings.retryLimit} 次；群聊与帖子总结只保存在浏览器本地。`
+                : '关闭时私聊会把当前已保存的完整聊天记录交给私聊模型；群聊与帖子也不会自动整理。下方两个入口会保持不可操作。' }),
         ]);
         const switchLabel = element('label', { className: 'yl-switch yl-chat-summary-switch' });
         const toggle = element('input', { type: 'checkbox', checked: settings.enabled, ariaLabel: '自动对话总结开关' });
@@ -1864,13 +2445,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         section.appendChild(status);
         section.appendChild(summarySettingEntry(
             '总结方案',
-            settings.enabled ? '选择当前内容模式的连接与提示词预设，并设定消息层数和重试次数。' : '请先开启自动总结。',
+            settings.enabled ? '选择当前内容模式的连接与提示词预设，并设定私聊、聊天群和帖子共同使用的楼层间隔。' : '请先开启自动总结。',
             'settings_chat_summary_config',
             !settings.enabled,
         ));
         section.appendChild(summarySettingEntry(
             '总结档案',
-            settings.enabled ? '像消息列表一样按角色查看已保存的总结记录。' : '请先开启自动总结。',
+            settings.enabled ? '查看私聊、每个聊天群和每篇论坛帖子的总结记录。' : '请先开启自动总结。',
             'settings_chat_summary_history',
             !settings.enabled,
         ));
@@ -1907,7 +2488,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const retries = element('input', { className: 'yl-settings-control', type: 'number', min: 0, max: 5, value: String(settings.retryLimit), inputMode: 'numeric', ariaLabel: '总结失败重试次数' });
         const connectionField = element('label', { className: 'yl-settings-field' }); append(connectionField, [element('span', { text: '连接预设' }), connection]);
         const promptField = element('label', { className: 'yl-settings-field' }); append(promptField, [element('span', { text: '提示词预设' }), prompt]);
-        const intervalField = element('label', { className: 'yl-settings-field' }); append(intervalField, [element('span', { text: '每 X 条消息层自动总结' }), interval, element('span', { className: 'yl-settings-summary', text: '玩家与角色各发一条都算一层；例如 88 层可形成约 4 条 20 层总结。' })]);
+        const intervalField = element('label', { className: 'yl-settings-field' }); append(intervalField, [element('span', { text: '每 X 楼自动总结' }), interval, element('span', { className: 'yl-settings-summary', text: '私聊、聊天群和帖子评论都按一条发言计一楼；例如 88 楼可形成约 4 条 20 楼总结。群聊与帖子记录不会写入 MVU。' })]);
         const retryField = element('label', { className: 'yl-settings-field' }); append(retryField, [element('span', { text: '失败重试次数' }), retries, element('span', { className: 'yl-settings-summary', text: '失败后自动重试；最终失败会在聊天总结里保留原因和重新总结入口。' })]);
         append(fields, [connectionField, promptField, intervalField, retryField]);
         section.appendChild(fields);
@@ -1940,27 +2521,58 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function buildChatSummaryHistoryPage() {
         if (!chatSummaryEnabled()) return buildEmptyPlaceholder('自动对话总结当前已关闭。请返回上一页开启后再查看总结档案。', { icon: '◌' });
         const sessions = messageSessions();
-        if (!sessions.length) return buildEmptyPlaceholder('还没有可查看的私聊会话。', { icon: '✦' });
+        const groupHistory = socialThreads();
+        const postHistory = socialPosts();
+        if (!sessions.length && !groupHistory.length && !postHistory.length) return buildEmptyPlaceholder('还没有可查看的私聊、聊天群或论坛帖子记录。', { icon: '✦' });
         const section = element('section', { className: 'yl-chat-page yl-message-list-page yl-chat-summary-history' });
-        section.appendChild(element('p', { className: 'yl-phone-page-description', text: '选择一位角色，查看该会话的消息层数、自动总结记录与未总结内容。' }));
-        const list = element('div', { className: 'yl-chat-session-list' });
-        for (const session of sessions) {
-            const info = session.summaryInfo;
-            const button = element('button', { className: 'yl-chat-session yl-message-session', type: 'button', ariaLabel: `查看${chatNickname(session)}的总结档案` });
-            button.appendChild(chatAvatar(session));
-            const copy = element('span', { className: 'yl-session-copy' });
-            append(copy, [
-                element('span', { className: 'yl-session-name', text: chatNickname(session) }),
-                element('span', { className: 'yl-session-preview', text: `已对话 ${info.totalLayers} 层 · ${info.records.length} 条总结${info.pendingMessageCount ? ` · ${info.pendingMessageCount} 条待整理` : ''}` }),
-            ]);
-            append(button, [copy, element('span', { className: 'yl-session-open-mark', text: '›' })]);
-            listen(button, button, 'click', () => { summaryHistorySessionUid = session.sessionUid; setActivePage('settings_chat_summary_history_detail'); }, abortController.signal);
-            list.appendChild(button);
+        section.appendChild(element('p', { className: 'yl-phone-page-description', text: '私聊总结会写入当前 MVU 会话；聊天群与论坛帖子总结只存在当前浏览器的专用缓存，不影响酒馆正文。' }));
+        if (sessions.length) {
+            section.appendChild(element('h2', { text: '私聊总结' }));
+            const list = element('div', { className: 'yl-chat-session-list' });
+            for (const session of sessions) {
+                const info = session.summaryInfo;
+                const button = element('button', { className: 'yl-chat-session yl-message-session', type: 'button', ariaLabel: `查看${chatNickname(session)}的总结档案` });
+                button.appendChild(chatAvatar(session));
+                const copy = element('span', { className: 'yl-session-copy' });
+                append(copy, [
+                    element('span', { className: 'yl-session-name', text: chatNickname(session) }),
+                    element('span', { className: 'yl-session-preview', text: `已对话 ${info.totalLayers} 层 · ${info.records.length} 条总结${info.pendingMessageCount ? ` · ${info.pendingMessageCount} 条待整理` : ''}` }),
+                ]);
+                append(button, [copy, element('span', { className: 'yl-session-open-mark', text: '›' })]);
+                listen(button, button, 'click', () => { localSummaryTarget = null; summaryHistorySessionUid = session.sessionUid; setActivePage('settings_chat_summary_history_detail'); }, abortController.signal);
+                list.appendChild(button);
+            }
+            section.appendChild(list);
         }
-        section.appendChild(list);
+        function appendLocalHistory(title, items, kind) {
+            if (!items.length) return;
+            section.appendChild(element('h2', { text: title }));
+            const list = element('div', { className: 'yl-chat-session-list yl-local-summary-history-list' });
+            for (const item of items) {
+                const info = localSummaryInfo(item);
+                const button = element('button', { className: 'yl-chat-session yl-message-session', type: 'button', ariaLabel: `查看${item.title ?? item.name}的总结档案` });
+                const icon = element('span', { className: 'yl-session-avatar yl-local-summary-history-icon', text: kind === 'group' ? '◌' : '▤' });
+                const copy = element('span', { className: 'yl-session-copy' });
+                const titleText = kind === 'group' ? item.title : item.title;
+                append(copy, [
+                    element('span', { className: 'yl-session-name', text: titleText }),
+                    element('span', { className: 'yl-session-preview', text: `已对话 ${info.totalFloors} 楼 · ${info.records.length} 条总结${info.pendingFloorCount ? ` · ${info.pendingFloorCount} 楼待整理` : ''}` }),
+                ]);
+                append(button, [icon, copy, element('span', { className: 'yl-session-open-mark', text: '›' })]);
+                listen(button, button, 'click', () => {
+                    localSummaryTarget = { kind, id: kind === 'group' ? item.key : item.id, title: titleText };
+                    summaryHistorySessionUid = ''; setActivePage('settings_chat_summary_history_detail');
+                }, abortController.signal);
+                list.appendChild(button);
+            }
+            section.appendChild(list);
+        }
+        appendLocalHistory('聊天群总结', groupHistory, 'group');
+        appendLocalHistory('论坛帖子总结', postHistory, 'post');
         return section;
     }
     function buildChatSummaryHistoryDetailPage() {
+        if (localSummaryTarget) return buildLocalConversationSummaryPage(localSummaryTarget.kind);
         const session = messageSessionByUid(summaryHistorySessionUid);
         if (!session) return buildEmptyPlaceholder('这位角色的会话暂时不可见，请返回总结档案后重试。', { icon: '◌' });
         return buildConversationSummaryDetail(session, { actionsEnabled: true, historyMode: true });
@@ -1972,7 +2584,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             ['settings_prompts', '提示词预设', '只维护提示词条目与导入导出。'],
             ['settings_privacy', '隐私权限设置', '管理个性化内容推荐与当前设备偏好。'],
             ['settings_images', '图片管理', '上传或导入角色展示图，并编辑匹配关键词与权重。'],
-            ['settings_chat_summary', '对话总结', '按消息层数自动整理私聊，并把摘要写入当前 MVU 会话。'],
+            ['settings_chat_summary', '对话总结', '按楼层整理私聊、聊天群和帖子；后两者仅保存在浏览器本地。'],
             ['settings_console', '控制台', '查看本次会话中的安全运行进度，不显示技术密钥或原始数据。'],
             ['about', '关于软件', '点击查看版本；连续点击五次可显示内容模式开关。'],
         ];
@@ -2200,6 +2812,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(operationClose, operationClose, 'click', hideOperationDialog, abortController.signal);
     listen(bindingDialogClose, bindingDialogClose, 'click', closeFeatureBindingDialog, abortController.signal);
     listen(avatarDialogClose, avatarDialogClose, 'click', closeAvatarDialog, abortController.signal);
+    listen(groupMemberPickerClose, groupMemberPickerClose, 'click', closeGroupMemberPicker, abortController.signal);
+    listen(groupAutoClose, groupAutoClose, 'click', closeGroupAutoDialog, abortController.signal);
     listen(avatarFileButton, avatarFileButton, 'click', () => { avatarFileInput.click?.(); }, abortController.signal);
     listen(avatarFileInput, avatarFileInput, 'change', () => { void saveLocalAvatarFile(avatarFileInput.files?.[0]); }, abortController.signal);
     listen(avatarLinkButton, avatarLinkButton, 'click', saveLinkedAvatar, abortController.signal);
@@ -2213,6 +2827,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!operationDialog.hidden) hideOperationDialog();
         else if (!bindingDialog.hidden) closeFeatureBindingDialog();
         else if (!avatarDialog.hidden) closeAvatarDialog();
+        else if (!groupMemberPickerDialog.hidden) closeGroupMemberPicker();
+        else if (!groupAutoDialog.hidden) closeGroupAutoDialog();
         else if (imageManagerPanel?.handleEscape?.()) { /* image manager handled it */ }
         else if (chatMoreMenuSessionUid) closeChatMoreMenu();
         else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; }
@@ -2224,6 +2840,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     renderPage();
     return Object.freeze({
         refreshState,
-        destroy() { isDestroyed = true; clearSummaryToast(); hideOperationDialog(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { isDestroyed = true; stopGroupAutoTimer(); clearSummaryToast(); hideOperationDialog(); closeGroupMemberPicker(); closeGroupAutoDialog(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }
