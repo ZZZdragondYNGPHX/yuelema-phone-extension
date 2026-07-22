@@ -68,7 +68,7 @@ function syncDevicePersonalization(settingsStore, state, kind, npcUid) {
     const delta = PERSONALIZATION_DELTAS[kind];
     if (!delta || typeof settingsStore?.applyPersonalizationKeywordWeightDelta !== 'function') return false;
     try {
-        settingsStore.applyPersonalizationKeywordWeightDelta(publicCandidateTags(state, npcUid), delta);
+        settingsStore.applyPersonalizationKeywordWeightDelta(state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW', publicCandidateTags(state, npcUid), delta);
         return true;
     } catch {
         // A local cache failure must never invalidate an already committed MVU action.
@@ -76,10 +76,10 @@ function syncDevicePersonalization(settingsStore, state, kind, npcUid) {
     }
 }
 
-function seedGeneratedCandidateKeywords(settingsStore, candidate) {
+function seedGeneratedCandidateKeywords(settingsStore, state, candidate) {
     if (typeof settingsStore?.ensurePersonalizationKeywordWeights !== 'function') return false;
     try {
-        settingsStore.ensurePersonalizationKeywordWeights(publicProfileTags(candidate?.公开资料));
+        settingsStore.ensurePersonalizationKeywordWeights(state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW', publicProfileTags(candidate?.公开资料));
         return true;
     } catch {
         // A local cache failure must never invalidate an already committed MVU action.
@@ -204,7 +204,7 @@ export function createActionBridge({
             });
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
             const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
-            if (applied.ok) seedGeneratedCandidateKeywords(settingsStore, generated.candidate);
+            if (applied.ok) seedGeneratedCandidateKeywords(settingsStore, secondRead.state, generated.candidate);
             return applied;
         } finally {
             pending.delete(key);
@@ -238,7 +238,7 @@ export function createActionBridge({
             const built = buildRecommendationInitialCandidatePatch(secondRead.state, { candidate: generated.candidate });
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
             const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
-            if (applied.ok) seedGeneratedCandidateKeywords(settingsStore, generated.candidate);
+            if (applied.ok) seedGeneratedCandidateKeywords(settingsStore, secondRead.state, generated.candidate);
             return applied;
         } finally {
             pending.delete(key);
@@ -763,8 +763,4 @@ export function createActionBridge({
 
     return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
 }
-
-
-
-
 

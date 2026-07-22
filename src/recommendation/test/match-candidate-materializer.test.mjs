@@ -33,6 +33,10 @@ test('materialized match candidate ignores model score, derives local score, and
     assert.equal(result.candidate.隐藏资料.实际年龄, 25);
     assert.equal(result.candidate.与玩家关系.状态, '陌生');
     assert.equal(result.candidate.与玩家关系.NPC专属匹配度, 94);
+    assert.deepEqual(
+        { 友情值: result.candidate.与玩家关系.友情值, 心动值: result.candidate.与玩家关系.心动值, 欲望值: result.candidate.与玩家关系.欲望值 },
+        { 友情值: 0, 心动值: 0, 欲望值: 0 },
+    );
     assert.equal(result.matchScore, 94);
     assert.equal(result.cancellationThreshold, 75);
     assert.equal(result.meetsCancellationThreshold, true);
@@ -81,8 +85,8 @@ test('materialized match candidate preserves the shared SFW/NSFW public-tag cont
 
     const adultTermOutsideTags = draft();
     adultTermOutsideTags.profile.简介 = '偏好翘臀，也喜欢独立电影。';
-    assert.throws(
-        () => materializeCandidateMatchDraft(adultTermOutsideTags, { contentMode: 'NSFW' }),
-        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    assert.equal(
+        materializeCandidateMatchDraft(adultTermOutsideTags, { contentMode: 'NSFW' }).candidate.公开资料.简介,
+        '偏好翘臀，也喜欢独立电影。',
     );
 });

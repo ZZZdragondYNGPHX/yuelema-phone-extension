@@ -60,6 +60,9 @@ export function materializeCandidateMatchDraft(draft, {
             信任: 10,
             戒备: 15,
             面基意愿: 0,
+            友情值: 0,
+            心动值: 0,
+            欲望值: 0,
         },
     }, { requirePersonalName: true, contentMode });
     const cancellationThreshold = candidate.取消匹配阈值;

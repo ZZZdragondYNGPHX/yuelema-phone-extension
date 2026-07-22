@@ -73,7 +73,7 @@ const CANDIDATE_MATCH_OUTPUT_CONTRACT = Object.freeze([
     '昵称必须是虚构自然人的个人姓名；不得使用摄影师、设计师等职业名，兴趣或性格标签，账号名，系统、模型、助手、玩家、候选角色等概念充当昵称。',
     '四个标签字段均为最多 12 项的不重复短字符串数组；不得附带头像、仅好友资料、隐藏资料、关系分、阈值、关键词权重或其他字段。',
     '公开资料不得包含具体住址、门牌、手机号、电话号码、证件号、银行卡、真实姓名或私人账号，也不得包含未成年、胁迫、偷拍、诈骗或线下性行为演绎内容。',
-    'SFW 模式不得使用成人取向或成人偏好词；NSFW 模式只允许把合规的成人取向或偏好写成四个标签字段中的短标签，不得写入简介等文本字段，也不会放宽隐私、成年与同意边界。',
+    'SFW 模式不得使用成人取向或成人偏好词；NSFW 模式可在简介、寻找意图和四个标签字段按字段语义直接写明合规的成年人成人取向或偏好，也不会放宽隐私、成年与同意边界。',
     'explanation 必须是 1–500 字公开匹配说明。它只能解释公开资料与关键词方向，不得声称或夹带最终分数。',
 ]);
 const VOICE_KEYWORD_OUTPUT_CONTRACT = Object.freeze([
@@ -166,14 +166,15 @@ function normalizeKeywordWeightEntries(kind, value, { minItems = 0, maxItems = M
     return freezeKeywordWeights(entries);
 }
 
-function readSavedLocalKeywordWeights(settingsStore) {
+function readSavedLocalKeywordWeights(settingsStore, contentMode) {
     if (!settingsStore || typeof settingsStore.snapshot !== 'function') {
         return { ok: false, code: 'candidate_match_local_preferences_unavailable' };
     }
     try {
         const snapshot = settingsStore.snapshot();
         const personalization = ownData(snapshot, 'personalization');
-        const keywordWeights = ownData(personalization, 'keywordWeights');
+        const keywordWeightsByMode = ownData(personalization, 'keywordWeightsByMode');
+        const keywordWeights = ownData(keywordWeightsByMode, contentMode === 'NSFW' ? 'NSFW' : 'SFW');
         return { ok: true, keywordWeights: normalizeKeywordWeightEntries('candidate', keywordWeights) };
     } catch {
         return { ok: false, code: 'candidate_match_local_preferences_invalid' };
@@ -202,10 +203,11 @@ export function buildSoulTextMatchContext(state) {
     const publicProfile = ownData(player, '公开资料');
     const recommendation = ownData(player, '推荐偏好');
     const tagWeights = ownData(recommendation, '标签权重');
+    const contentMode = ownData(software, '内容模式') === 'NSFW' ? 'NSFW' : 'SFW';
     return Object.freeze({
-        contentMode: ownData(software, '内容模式') === 'NSFW' ? 'NSFW' : 'SFW',
+        contentMode,
         playerPublicProfile: projectPublicProfile(publicProfile),
-        tagWeights: projectTagWeights(tagWeights),
+        tagWeights: projectTagWeights(ownData(tagWeights, contentMode)),
     });
 }
 
@@ -661,7 +663,7 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
     if (!ownPlainRecord(state)) return candidateFailure('candidate_match_state_invalid');
     if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return candidateFailure('candidate_match_settings_unavailable');
     if (!llmClient || typeof llmClient.chat !== 'function') return candidateFailure('candidate_match_llm_unavailable');
-    const local = readSavedLocalKeywordWeights(settingsStore);
+    const local = readSavedLocalKeywordWeights(settingsStore, state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW');
     if (!local.ok) return candidateFailure(local.code);
     const normalizedVoiceText = normalizedMode === 'voice' ? cleanVoiceText(voiceText) : null;
     if (normalizedMode === 'voice' && !normalizedVoiceText) return candidateFailure('candidate_match_voice_text_invalid');
@@ -706,4 +708,3 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
         return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
     }
 }
-

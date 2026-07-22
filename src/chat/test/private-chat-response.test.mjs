@@ -37,6 +37,7 @@ test('accepts preferred replies and returns an independent canonical clone with 
         replies: ['今晚方便聊聊吗？', '我刚好有空。'],
         reply: '今晚方便聊聊吗？ 我刚好有空。',
         relationship: raw.relationship,
+        bondAssessment: { kind: 'none', intensity: 0 },
         sessionSummary: raw.sessionSummary,
     });
     assert.notStrictEqual(normalized, raw);
@@ -60,6 +61,25 @@ test('normalizes legacy reply to one canonical bubble and permits only an equiva
     expectCode(
         () => normalizePrivateChatResponse(response({ reply: '模型试图制造歧义' })),
         'private_chat_response_reply_invalid',
+    );
+});
+
+test('accepts only the assessment categories allowed by the current content mode', () => {
+    assert.deepEqual(
+        normalizePrivateChatResponse(response({ bondAssessment: { kind: 'romantic_flirt', intensity: 2 } }), { contentMode: 'SFW' }).bondAssessment,
+        { kind: 'romantic_flirt', intensity: 2 },
+    );
+    expectCode(
+        () => normalizePrivateChatResponse(response({ bondAssessment: { kind: 'sexual_desire', intensity: 2 } }), { contentMode: 'SFW' }),
+        'private_chat_response_relationship_invalid',
+    );
+    assert.deepEqual(
+        normalizePrivateChatResponse(response({ bondAssessment: { kind: 'sexual_desire', intensity: 3 } }), { contentMode: 'NSFW' }).bondAssessment,
+        { kind: 'sexual_desire', intensity: 3 },
+    );
+    expectCode(
+        () => normalizePrivateChatResponse(response({ bondAssessment: { kind: 'friendly', intensity: 1 } }), { contentMode: 'NSFW' }),
+        'private_chat_response_relationship_invalid',
     );
 });
 

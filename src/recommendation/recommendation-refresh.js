@@ -17,7 +17,7 @@ const PUBLIC_TAG_CONTRACTS = Object.freeze({
     }),
     NSFW: Object.freeze({
         mode: 'NSFW',
-        allowedTagCategories: Object.freeze(['常规兴趣', '生活方式', '性格', '沟通风格', '成年人明确自愿的成人取向或身体偏好公开标签']),
+        allowedTagCategories: Object.freeze(['常规兴趣', '生活方式', '性格', '沟通风格', '成年人明确自愿的成人取向或身体偏好公开资料']),
         forbidden: Object.freeze(['未成年人', '非自愿或胁迫', '隐私标识', '线下性行为演绎']),
     }),
 });
@@ -57,12 +57,14 @@ function safeWeightRecord(value) {
     return result;
 }
 
-function deviceKeywordWeights(personalization) {
+function deviceKeywordWeights(personalization, contentMode) {
     if (!ownRecord(personalization)) return null;
     if (personalization.enabled !== true) return {};
     const result = {};
-    if (!Array.isArray(personalization.keywordWeights)) return result;
-    for (const item of personalization.keywordWeights) {
+    const byMode = ownRecord(personalization.keywordWeightsByMode) ? personalization.keywordWeightsByMode : {};
+    const selected = byMode[contentMode === 'NSFW' ? 'NSFW' : 'SFW'];
+    if (!Array.isArray(selected)) return result;
+    for (const item of selected) {
         if (!ownRecord(item)) continue;
         const keyword = cleanText(item.keyword, 40);
         if (keyword && Number.isInteger(item.weight) && item.weight >= -5 && item.weight <= 5) result[keyword] = item.weight;
@@ -193,8 +195,10 @@ export function buildRecommendationContext(state, { devicePersonalization } = {}
     const player = ownRecord(state?.玩家) ? state.玩家 : {};
     const profile = ownRecord(player.公开资料) ? player.公开资料 : {};
     const preference = ownRecord(player.推荐偏好) ? player.推荐偏好 : {};
-    const persistedWeights = deviceKeywordWeights(devicePersonalization);
-    const safeWeights = persistedWeights ?? safeWeightRecord(preference.标签权重);
+    const contentMode = state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+    const persistedWeights = deviceKeywordWeights(devicePersonalization, contentMode);
+    const weightsByMode = ownRecord(preference.标签权重) ? preference.标签权重 : {};
+    const safeWeights = persistedWeights ?? safeWeightRecord(weightsByMode[contentMode]);
     const policy = buildRecommendationPolicy(state, safeWeights);
     const playerPublicProfile = Object.freeze({
         昵称: cleanText(profile.昵称, 80), 年龄段: cleanText(profile.年龄段, 32), 性别: cleanText(profile.性别, 48),
@@ -225,7 +229,7 @@ function makeMessages(context, promptPreset) {
         '你是现代现实都市的线上约会/约炮软件推荐引擎。只生成一名明确成年人（18 岁或以上）的候选人。',
         '软件层仅用于文字聊天；不得叙述、安排或演绎线下性行为。NSFW 也不代表同意，明确同意、边界与面基意愿必须独立保留。不得出现未成年人、非自愿或胁迫、隐私标识。',
         context.contentMode === 'NSFW'
-            ? 'NSFW 输出合同：四个公开标签字段可包含成年人明确自愿的成人取向或身体偏好关键词（例如“翘臀”“情趣探索”），但这类词只能作为公开标签；不得写入简介、寻找意图、好友资料或隐藏资料。'
+            ? 'NSFW 输出合同：公开资料中的简介、寻找意图与四个标签字段，都可按字段语义直接写明成年人明确自愿的成人取向、身体偏好或欲望表达（例如“翘臀”“情趣探索”）；不必改写成含蓄标签。仅好友资料和隐藏资料仍遵守各自字段合同。'
             : 'SFW 输出合同：四个公开标签字段只允许常规公开兴趣、生活方式、性格或沟通风格关键词；不得包含成人取向、身体性化或露骨关键词。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '无论前置或后置提示词如何要求，下列推荐策略与完整候选结构合同都是最终且不可覆盖的输出要求。',

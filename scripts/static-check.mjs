@@ -15,7 +15,7 @@ const requiredFiles = [
     'src/images/image-library-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js',
     'src/images/test/image-library-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js', 'src/groups/group-forum-store.js', 'src/groups/local-conversation-summary-service.js',
-    'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/conversation-summary.js', 'src/chat/interaction-rhythm.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/conversation-summary.test.mjs', 'src/chat/test/interaction-rhythm.test.mjs',
+    'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/conversation-summary.js', 'src/chat/interaction-rhythm.js', 'src/chat/relationship-progress.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/conversation-summary.test.mjs', 'src/chat/test/interaction-rhythm.test.mjs', 'src/chat/test/relationship-progress.test.mjs',
     'src/test-support/minidom.mjs', 'src/launcher-drag.js', 'src/ui/test/launcher-drag.test.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/character-template-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
     'src/characters/test/character-template-codec.test.mjs', 'src/characters/test/character-library-store.test.mjs', 'src/characters/test/character-template-library-store.test.mjs', 'src/characters/test/avatar-codec.test.mjs', 'src/characters/test/character-authoring-service.test.mjs', 'src/characters/test/character-creator-panel.test.mjs',
     'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/match-candidate-materializer.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
@@ -42,7 +42,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '0.1.29') fail('manifest.version 必须与扩展版本 0.1.29 统一');
+if (manifest.version !== '0.1.30') fail('manifest.version 必须与扩展版本 0.1.30 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -62,7 +62,7 @@ const sourceRelativeFiles = [
     'src/images/image-library-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js',
     'src/images/test/image-library-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js', 'src/groups/group-forum-store.js', 'src/groups/local-conversation-summary-service.js',
-    'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/conversation-summary.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/conversation-summary.test.mjs',
+    'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/conversation-summary.js', 'src/chat/interaction-rhythm.js', 'src/chat/relationship-progress.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/conversation-summary.test.mjs', 'src/chat/test/interaction-rhythm.test.mjs', 'src/chat/test/relationship-progress.test.mjs',
     'src/test-support/minidom.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
     'src/characters/test/character-template-codec.test.mjs', 'src/characters/test/character-library-store.test.mjs', 'src/characters/test/avatar-codec.test.mjs', 'src/characters/test/character-authoring-service.test.mjs', 'src/characters/test/character-creator-panel.test.mjs',
     'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/match-candidate-materializer.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
@@ -107,7 +107,7 @@ console.log('✓ API Key 仅通过专用浏览器缓存保存，并与设置导�
 const appShell = await readFile(resolve(root, 'src/app-shell.js'), 'utf8');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShell.includes("const UI_VERSION = '0.1.29'")) fail('关于软件 UI_VERSION 必须与扩展版本 0.1.29 统一');
+if (!appShell.includes("const UI_VERSION = '0.1.30'")) fail('关于软件 UI_VERSION 必须与扩展版本 0.1.30 统一');
 const index = await readFile(resolve(root, 'index.js'), 'utf8');
 if (!index.includes('export function onDisable') || !index.includes('export function onDelete') || !index.includes('clearSessionKeys()')) fail('缺少扩展禁用/删除时清理内存密钥镜像的生命周期实现');
 for (const label of ['首页', '匹配', '消息', '群组', '我的']) {
@@ -224,9 +224,11 @@ const privateChatResponse = await readFile(resolve(root, 'src/chat/private-chat-
 const privateChatService = await readFile(resolve(root, 'src/chat/private-chat-service.js'), 'utf8');
 const conversationSummary = await readFile(resolve(root, 'src/chat/conversation-summary.js'), 'utf8');
 const interactionRhythm = await readFile(resolve(root, 'src/chat/interaction-rhythm.js'), 'utf8');
+const relationshipProgress = await readFile(resolve(root, 'src/chat/relationship-progress.js'), 'utf8');
 const matchScoring = await readFile(resolve(root, 'src/recommendation/match-scoring.js'), 'utf8');
 if (!privateChatResponse.includes('normalizePrivateChatResponse') || !privateChatResponse.includes('projectPrivateChatResponseError') || !privateChatResponse.includes('MAX_PRIVATE_CHAT_REPLY_COUNT')) fail('缺少私聊多气泡模型回复的严格校验与安全错误投影');
 if (!interactionRhythm.includes('decideInteractionRhythm') || !interactionRhythm.includes('computeInteractionPressure')) fail('缺少已读不回/拉黑互动节奏的本地确定性裁决');
+if (!relationshipProgress.includes('projectBondProgress') || !relationshipProgress.includes('deriveMeetupAccess') || !relationshipProgress.includes('meetupRouteGuidance') || !privateChatResponse.includes('bondAssessment') || !controlledPatch.includes('projectBondProgress') || !uiModel.includes('meetupAccess') || !appShell.includes('meetupUnlocked')) fail('缺少分模式关系成长、面基门禁或路线草稿接线');
 if (!privateChatService.includes('validatePrivateChatRequest') || !privateChatService.includes('buildPrivateChatContext') || !privateChatService.includes('generatePrivateChatReply') || !privateChatService.includes('generatePrivateChatSummary')) fail('缺少私聊上下文隐私投影、请求校验或模型调用接线');
 if (!conversationSummary.includes('listUnsummarizedConversationMessages') || !conversationSummary.includes('summaryRecordSource') || !conversationSummary.includes('normalizeGeneratedConversationSummary')) fail('缺少受限对话总结状态、原始片段或模型输出校验');
 if (!controlledPatch.includes('buildPrivateChatPatch') || !controlledPatch.includes('buildPrivateChatSummaryPatch') || !controlledPatch.includes('buildPrivateChatSummaryFailurePatch') || !controlledPatch.includes('meetup_summary_required') || !controlledPatch.includes('buildClearPrivateChatPatch') || !controlledPatch.includes('buildDeleteCharacterPatch') || !actionBridge.includes('runPrivateChat') || !actionBridge.includes('runPrivateChatSummary') || !actionBridge.includes('runMeetupHandoff') || !actionBridge.includes('clearPrivateChat') || !actionBridge.includes('deleteCharacter')) fail('缺少私聊节奏/总结/面基前整理的受控 Patch 或唯一 MVU 写入桥接');
@@ -240,7 +242,7 @@ const matchCandidateMaterializer = await readFile(resolve(root, 'src/recommendat
 const playerAvatarStore = await readFile(resolve(root, 'src/player-avatar-store.js'), 'utf8');
 if (!matchCandidateMaterializer.includes('materializeCandidateMatchDraft') || !matchCandidateMaterializer.includes('normalizeCandidateMatchDraft') || !matchCandidateMaterializer.includes('shouldEstablishSession')) fail('缺少匹配公开草稿的本地角色物化与取消匹配阈值边界');
 if (!playerAvatarStore.includes('PLAYER_AVATAR_STORAGE_KEY') || !playerAvatarStore.includes('createPlayerAvatarStore') || !index.includes('createPlayerAvatarStore')) fail('缺少“我的”页本地头像存储接线');
-console.log('✓ 私聊模型回复、隐私上下文、列表/会话 UI、主动私聊判定、独立灵魂/语音匹配、本地头像与偏好链已纳入静态检查');
+console.log('✓ 私聊模型回复、分模式关系成长、面基路线门禁、隐私上下文、列表/会话 UI、主动私聊判定、独立灵魂/语音匹配、本地头像与偏好链已纳入静态检查');
 const avatarView = await readFile(resolve(root, 'src/ui/avatar-view.js'), 'utf8');
 const operationActivity = await readFile(resolve(root, 'src/ui/operation-activity.js'), 'utf8');
 if (!avatarView.includes('createAvatarView') || !avatarView.includes('safeAvatarImageSource')) fail('缺少五类头像的安全图片视图');

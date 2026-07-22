@@ -12,14 +12,14 @@ function candidate({ threshold = 60 } = {}) {
         仅好友资料: { 关系状态: '单身', 边界与偏好: '尊重拒绝。' },
         隐藏资料: { 实际年龄: 28, 私人备注: '不可见。' },
         偏好与边界: '确认边界。', 拒绝阈值: threshold, 已读不回阈值: 55, 取消匹配阈值: 75, 拉黑阈值: 90,
-        与玩家关系: { 状态: '陌生', 全局账号表现: 60, NPC专属匹配度: 0, 好感: 0, 信任: 0, 戒备: 20, 面基意愿: 0 },
+        与玩家关系: { 状态: '陌生', 全局账号表现: 60, NPC专属匹配度: 0, 好感: 0, 信任: 0, 戒备: 20, 面基意愿: 0, 友情值: 0, 心动值: 0, 欲望值: 0 },
     };
 }
 
 function state({ threshold = 60 } = {}) {
     return {
         系统: { UID计数器: { 角色: 1, 会话: 5, 面基: 0 } }, 软件: { 内容模式: 'SFW', 关于软件点击数: 0 },
-        玩家: { 成人验证: true, 公开资料: { 城市: '上海', 寻找意图: '聊天约会', 兴趣标签: ['电影', '展览'], 生活方式标签: ['夜猫子'], 性格标签: ['直接'], 沟通风格标签: ['慢热'] }, 推荐偏好: { 标签权重: {} } },
+        玩家: { 成人验证: true, 公开资料: { 城市: '上海', 寻找意图: '聊天约会', 兴趣标签: ['电影', '展览'], 生活方式标签: ['夜猫子'], 性格标签: ['直接'], 沟通风格标签: ['慢热'] }, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
         角色池: {}, 会话: {},
         推荐: { 当前队列: ['npc_case'], 临时候选池: { npc_case: candidate({ threshold }) }, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
     };
@@ -32,10 +32,10 @@ test('homepage like only records recommendation feedback and never creates a mat
     assert.deepEqual(result.value.map((operation) => [operation.op, operation.path]), [
         ['add', '/推荐/冷却角色UID/-'],
         ['remove', '/推荐/当前队列/0'],
-        ['add', '/玩家/推荐偏好/标签权重/电影'],
-        ['add', '/玩家/推荐偏好/标签权重/夜猫子'],
-        ['add', '/玩家/推荐偏好/标签权重/直接'],
-        ['add', '/玩家/推荐偏好/标签权重/慢热'],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/电影'],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/夜猫子'],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/直接'],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/慢热'],
     ]);
     assert.equal(result.value.some((operation) => operation.path.startsWith('/角色池/')), false);
     assert.equal(result.value.some((operation) => operation.path.startsWith('/会话/')), false);
@@ -73,7 +73,7 @@ test('a saved favourite is no longer a homepage like target but can still be dis
     assert.equal(disliked.ok, true);
     assert.equal(disliked.value.some((operation) => operation.path === '/推荐/收藏角色UID/0' && operation.op === 'remove'), true);
     assert.equal(disliked.value.some((operation) => operation.path.startsWith('/推荐/当前队列/')), false);
-    assert.equal(disliked.value.some((operation) => operation.path === '/玩家/推荐偏好/标签权重/电影' && operation.value === -3), true);
+    assert.equal(disliked.value.some((operation) => operation.path === '/玩家/推荐偏好/标签权重/SFW/电影' && operation.value === -3), true);
     assert.equal(validateControlledPatchAgainstState(dislikedState, disliked.value).ok, true);
 });
 
@@ -187,36 +187,36 @@ test('forged mutual-match session or relationship operation is rejected before t
 
 test('like, favorite and dislike derive public tag preference weights locally and clamp them', () => {
     const likedState = state();
-    likedState.玩家.推荐偏好.标签权重 = { 电影: 4, 夜猫子: -4 };
+    likedState.玩家.推荐偏好.标签权重.SFW = { 电影: 4, 夜猫子: -4 };
     const liked = buildControlledPatch(likedState, { kind: 'like', npcUid: 'npc_case' });
     assert.equal(liked.ok, true);
     assert.deepEqual(liked.value.slice(-4).map(({ op, path, value }) => [op, path, value]), [
-        ['replace', '/玩家/推荐偏好/标签权重/电影', 5],
-        ['replace', '/玩家/推荐偏好/标签权重/夜猫子', -1],
-        ['add', '/玩家/推荐偏好/标签权重/直接', 3],
-        ['add', '/玩家/推荐偏好/标签权重/慢热', 3],
+        ['replace', '/玩家/推荐偏好/标签权重/SFW/电影', 5],
+        ['replace', '/玩家/推荐偏好/标签权重/SFW/夜猫子', -1],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/直接', 3],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/慢热', 3],
     ]);
     assert.equal(validateControlledPatchAgainstState(likedState, liked.value).ok, true);
 
     const favoriteState = state();
-    favoriteState.玩家.推荐偏好.标签权重 = { 电影: 5 };
+    favoriteState.玩家.推荐偏好.标签权重.SFW = { 电影: 5 };
     const favorite = buildControlledPatch(favoriteState, { kind: 'favorite', npcUid: 'npc_case' });
     assert.equal(favorite.ok, true);
     assert.deepEqual(favorite.value.slice(-3).map(({ op, path, value }) => [op, path, value]), [
-        ['add', '/玩家/推荐偏好/标签权重/夜猫子', 1],
-        ['add', '/玩家/推荐偏好/标签权重/直接', 1],
-        ['add', '/玩家/推荐偏好/标签权重/慢热', 1],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/夜猫子', 1],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/直接', 1],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/慢热', 1],
     ]);
 
     const dislikeState = state();
-    dislikeState.玩家.推荐偏好.标签权重 = { 电影: -4 };
+    dislikeState.玩家.推荐偏好.标签权重.SFW = { 电影: -4 };
     const dislike = buildControlledPatch(dislikeState, { kind: 'dislike', npcUid: 'npc_case' });
     assert.equal(dislike.ok, true);
     assert.deepEqual(dislike.value.slice(-4).map(({ op, path, value }) => [op, path, value]), [
-        ['replace', '/玩家/推荐偏好/标签权重/电影', -5],
-        ['add', '/玩家/推荐偏好/标签权重/夜猫子', -3],
-        ['add', '/玩家/推荐偏好/标签权重/直接', -3],
-        ['add', '/玩家/推荐偏好/标签权重/慢热', -3],
+        ['replace', '/玩家/推荐偏好/标签权重/SFW/电影', -5],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/夜猫子', -3],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/直接', -3],
+        ['add', '/玩家/推荐偏好/标签权重/SFW/慢热', -3],
     ]);
     assert.equal(validateControlledPatchAgainstState(dislikeState, dislike.value).ok, true);
 });

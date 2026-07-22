@@ -7,7 +7,7 @@ function matchedState() {
     return {
         系统: { UID计数器: { 角色: 1, 会话: 1, 面基: 4 } },
         软件: { 内容模式: 'SFW', 关于软件点击数: 0 },
-        玩家: { 成人验证: true, 公开资料: { 昵称: '玩家' }, 推荐偏好: { 标签权重: {} } },
+        玩家: { 成人验证: true, 公开资料: { 昵称: '玩家' }, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
         角色池: {
             npc_ava: {
                 成人验证: true,
@@ -15,7 +15,7 @@ function matchedState() {
                 仅好友资料: { 关系状态: '单身', 边界与偏好: '不对外发送' },
                 隐藏资料: { 实际年龄: 26, 私人备注: '隐藏备注' },
                 偏好与边界: '内部边界', 拒绝阈值: 30, 已读不回阈值: 55, 取消匹配阈值: 70, 拉黑阈值: 90,
-                与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 35, 信任: 35, 戒备: 10, 面基意愿: 60 },
+                与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 35, 信任: 35, 戒备: 10, 面基意愿: 60, 友情值: 60, 心动值: 0, 欲望值: 0 },
             },
         },
         推荐: { 当前队列: [], 临时候选池: {}, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
@@ -42,11 +42,30 @@ test('matched adults create one exact pending-send meetup record and a draft wit
         ['replace', '/系统/UID计数器/面基'],
     ]);
     assert.equal(result.value.patch[0].value.状态, '待发送');
+    assert.equal(result.value.patch[0].value.关系路线, '友情');
     assert.match(result.value.draft, /现实面基行动草稿/u);
     assert.match(result.value.draft, /静安寺/u);
     assert.doesNotMatch(result.value.draft, /隐藏备注|内部边界|不对外发送|26/u);
     assert.equal(validateControlledPatchAgainstState(state, result.value.patch).ok, true);
     assert.deepEqual(state, matchedState());
+});
+
+test('meetup gate ignores legacy willingness and selects only a route allowed by the active mode', () => {
+    const locked = matchedState();
+    locked.角色池.npc_ava.与玩家关系.友情值 = 59;
+    locked.角色池.npc_ava.与玩家关系.心动值 = 0;
+    locked.角色池.npc_ava.与玩家关系.欲望值 = 100;
+    assert.equal(buildMeetupHandoffPatch(locked, request()).code, 'meetup_relationship_threshold_not_met');
+
+    const nsfw = matchedState();
+    nsfw.软件.内容模式 = 'NSFW';
+    nsfw.角色池.npc_ava.与玩家关系.友情值 = 0;
+    nsfw.角色池.npc_ava.与玩家关系.心动值 = 0;
+    nsfw.角色池.npc_ava.与玩家关系.欲望值 = 60;
+    const built = buildMeetupHandoffPatch(nsfw, request());
+    assert.equal(built.ok, true);
+    assert.equal(built.value.patch[0].value.关系路线, '欲望');
+    assert.match(built.value.draft, /按欲望路线推进/u);
 });
 
 test('meetup handoff refuses missing confirmed boundaries and forged record content before MVU parsing', () => {

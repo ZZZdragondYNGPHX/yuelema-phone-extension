@@ -748,6 +748,7 @@
 @keyframes yl-chat-tool-in { from { opacity: 0; transform: translateY(5px) scale(.97); } }
 .yl-chat-tool-button { min-height: 38px; padding: 8px 11px; border: 0; border-radius: 10px; color: var(--yl-text, #f8f4fb); background: rgb(255 255 255 / 7%); cursor: pointer; font: inherit; font-size: .75rem; font-weight: 750; text-align: left; transition: background var(--yl-t-fast) var(--yl-ease), color var(--yl-t-fast) var(--yl-ease); }
 .yl-chat-tool-button:hover { color: #fff; background: rgb(255 78 142 / 18%); }
+.yl-chat-tool-button:disabled, .yl-chat-tool-button:disabled:hover { color: var(--yl-faint, #8d7f9b); background: rgb(255 255 255 / 4%); cursor: not-allowed; }
 .yl-chat-composer-hint { grid-column: 1 / -1; padding: 0 4px; color: var(--yl-faint, #8d7f9b); font-size: .61rem; }
 
 /* --- 面基约定 --- */

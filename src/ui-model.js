@@ -1,5 +1,6 @@
 import { buildGroupBrowseModel } from './groups/group-discovery-service.js';
 import { listConversationSummaryRecords, listUnsummarizedConversationMessages, normalizeConversationSummaryState } from './chat/conversation-summary.js';
+import { deriveMeetupAccess } from './chat/relationship-progress.js';
 
 export const NAV_ITEMS = Object.freeze([
     { id: 'home', label: '首页', icon: '⌂' },
@@ -189,8 +190,13 @@ export function projectPrivateChatView(state) {
         }));
         const totalLayers = Number.isInteger(session.对话层数) && session.对话层数 >= messages.length
             ? session.对话层数 : messages.length;
+        const meetupAccess = deriveMeetupAccess({
+            contentMode: state.软件?.内容模式,
+            relationship: state.角色池[npcUid]?.与玩家关系,
+        });
         sessions.push(Object.freeze({
             sessionUid, npcUid, status: session.状态, profile, messages: Object.freeze(messages),
+            meetupAccess,
             summary: safeText(session.长期摘要, 500),
             summaryInfo: Object.freeze({
                 totalLayers,

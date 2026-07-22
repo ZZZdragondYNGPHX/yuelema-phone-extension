@@ -249,6 +249,8 @@ test('a successful private-chat reply starts background summary work and shows o
 test('right-clicking the paper plane opens the meetup tool and reuses the existing handoff bridge', async () => {
     const meetupCalls = [];
     let privateChatCalls = 0;
+    const result = readResult();
+    result.state.角色池.npc_lin.与玩家关系.友情值 = 60;
     const bridge = {
         emit() {},
         isPending() { return false; },
@@ -257,7 +259,7 @@ test('right-clicking the paper plane opens the meetup tool and reuses the existi
     };
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-private-chat-tools', actionBridge: bridge,
-        settingsStore: null, llmClient: null, characterLibrary: null, readState: readResult,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result,
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
@@ -271,13 +273,13 @@ test('right-clicking the paper plane opens the meetup tool and reuses the existi
         const toolMenu = miniDom.document.querySelector('.yl-chat-tool-menu');
         assert.ok(toolMenu, '右键纸飞机应打开小型工具栏');
         assert.equal(toolMenu.getAttribute('role'), 'menu');
-        assert.match(toolMenu.textContent, /^约定面基$/u);
+        assert.match(toolMenu.textContent, /^约定面基 · 友情路线$/u);
         sendButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息');
         assert.equal(sendButton.getAttribute('aria-expanded'), 'true');
         assert.equal(privateChatCalls, 0, '打开工具栏不得发送私聊');
         assert.equal(meetupCalls.length, 0, '打开工具栏不得提前提交面基');
 
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约定面基'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约定面基，友情路线'));
         assert.equal(miniDom.document.querySelector('.yl-chat-tool-menu'), null, '选择工具后应收起右键菜单');
         assert.ok(miniDom.document.querySelector('.yl-meetup-panel'), '约定面基工具应打开原有面基表单');
 
@@ -305,6 +307,36 @@ test('right-clicking the paper plane opens the meetup tool and reuses the existi
         }], '工具栏入口必须复用 runMeetupHandoff，不得另造写入路径');
         assert.equal(privateChatCalls, 0, '约定面基不得触发私聊发送');
         assert.equal(miniDom.document.querySelector('.yl-meetup-panel'), null, '成功填入后应收起面基表单');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('meetup tool stays visibly disabled and cannot invoke the bridge before a route unlocks', () => {
+    const meetupCalls = [];
+    const bridge = {
+        emit() {},
+        isPending() { return false; },
+        runPrivateChat() { return { ok: true }; },
+        runMeetupHandoff(request) { meetupCalls.push(request); return { ok: true, draftApplied: true }; },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-private-chat-locked-meetup', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        rightClick(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息'));
+
+        const lockedTool = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关系未达面基条件');
+        assert.ok(lockedTool, '未达路线门槛时仍保留灰色面基入口');
+        assert.equal(lockedTool.disabled, true);
+        assert.equal(lockedTool.getAttribute('aria-disabled'), 'true');
+        click(lockedTool);
+        assert.equal(meetupCalls.length, 0);
+        assert.equal(miniDom.document.querySelector('.yl-meetup-panel'), null);
     } finally {
         mounted.destroy();
     }

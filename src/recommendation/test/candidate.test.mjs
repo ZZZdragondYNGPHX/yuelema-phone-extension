@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeGeneratedCandidate } from '../candidate.js';
+import { COMPLETE_CANDIDATE_OUTPUT_CONTRACT, normalizeGeneratedCandidate } from '../candidate.js';
 
 function completeAdultCandidate() {
     return {
@@ -41,6 +41,9 @@ function completeAdultCandidate() {
             信任: 0,
             戒备: 20,
             面基意愿: 0,
+            友情值: 0,
+            心动值: 0,
+            欲望值: 0,
         },
     };
 }
@@ -154,7 +157,7 @@ test('SFW rejects adult-oriented public tags instead of silently normalizing the
     );
 });
 
-test('NSFW permits adult-oriented tags only while retaining adult, consent, privacy, and software-layer boundaries', () => {
+test('NSFW permits adult-oriented public profile text while retaining adult, consent, privacy, and software-layer boundaries', () => {
     const candidate = completeAdultCandidate();
     candidate.公开资料.生活方式标签 = ['翘臀', '情趣探索'];
     const normalized = normalizeGeneratedCandidate(candidate, { contentMode: 'NSFW' });
@@ -166,10 +169,7 @@ test('NSFW permits adult-oriented tags only while retaining adult, consent, priv
 
     const adultTermOutsideTags = completeAdultCandidate();
     adultTermOutsideTags.公开资料.简介 = '偏好翘臀。';
-    assert.throws(
-        () => normalizeGeneratedCandidate(adultTermOutsideTags, { contentMode: 'NSFW' }),
-        error => error instanceof TypeError && error.code === '公开资料.简介:adult_keyword_must_be_tag',
-    );
+    assert.equal(normalizeGeneratedCandidate(adultTermOutsideTags, { contentMode: 'NSFW' }).公开资料.简介, '偏好翘臀。');
 
     const coerciveTag = completeAdultCandidate();
     coerciveTag.公开资料.兴趣标签 = ['非自愿'];
@@ -184,4 +184,40 @@ test('NSFW permits adult-oriented tags only while retaining adult, consent, priv
         () => normalizeGeneratedCandidate(privateIdentifier, { contentMode: 'NSFW' }),
         error => error instanceof TypeError && error.code === '公开资料.简介:prohibited_public_content',
     );
+});
+
+
+test('generation contract requires all three bond fields with zero defaults', () => {
+    const contract = COMPLETE_CANDIDATE_OUTPUT_CONTRACT.join('\n');
+    assert.match(contract, /友情值、心动值、欲望值/u);
+    assert.match(contract, /必须填写为 0/u);
+});
+
+test('legacy seven-key relationship input is upgraded with zeroed bond fields', () => {
+    const legacy = completeAdultCandidate();
+    delete legacy.与玩家关系.友情值;
+    delete legacy.与玩家关系.心动值;
+    delete legacy.与玩家关系.欲望值;
+
+    const normalized = normalizeGeneratedCandidate(legacy);
+    assert.deepEqual(normalized.与玩家关系, {
+        ...legacy.与玩家关系,
+        友情值: 0,
+        心动值: 0,
+        欲望值: 0,
+    });
+});
+
+test('relationship compatibility rejects partial, pre-grown, and unrelated unknown fields', () => {
+    const preGrown = completeAdultCandidate();
+    preGrown.与玩家关系.友情值 = 1;
+    expectRejected(preGrown, '与玩家关系.友情值:not_zero_for_new_candidate');
+
+    const partial = completeAdultCandidate();
+    delete partial.与玩家关系.欲望值;
+    expectRejected(partial, '与玩家关系:incomplete_or_unknown_fields');
+
+    const unknown = completeAdultCandidate();
+    unknown.与玩家关系.关系备注 = '不得静默保留';
+    expectRejected(unknown, '与玩家关系:unknown_field');
 });

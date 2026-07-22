@@ -8,7 +8,7 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 7;
+export const SETTINGS_SCHEMA_VERSION = 8;
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -34,7 +34,7 @@ const SECRET_FIELD_NAMES = new Set([
 ]);
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
-const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 5, 6]);
+const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 5, 6, 7]);
 
 export class YueLeMaSettingsError extends Error {
     constructor(code, message) {
@@ -129,7 +129,10 @@ function makeDefaultDocument() {
         chatSummary: { ...DEFAULT_CHAT_SUMMARY_SETTINGS },
         personalization: {
             enabled: true,
-            keywordWeights: [],
+            keywordWeightsByMode: {
+                SFW: [],
+                NSFW: [],
+            },
         },
     };
 }
@@ -297,20 +300,57 @@ function normalizeKeywordWeights(input) {
     });
 }
 
-function normalizePersonalization(input) {
+function emptyKeywordWeightsByMode() {
+    return { SFW: [], NSFW: [] };
+}
+
+function normalizeKeywordWeightsByMode(input) {
+    const candidate = safeClone(input);
+    if (!isPlainObject(candidate)) {
+        fail('INVALID_PERSONALIZATION', '分模式关键词权重必须是对象。');
+    }
+    const keys = Object.keys(candidate);
+    if (keys.length !== CONTENT_MODES.length || CONTENT_MODES.some((contentMode) => !Object.hasOwn(candidate, contentMode))) {
+        fail('INVALID_PERSONALIZATION', '分模式关键词权重必须且只能包含 SFW 与 NSFW。');
+    }
+    return Object.fromEntries(CONTENT_MODES.map((contentMode) => [
+        contentMode,
+        normalizeKeywordWeights(candidate[contentMode]),
+    ]));
+}
+
+function normalizePersonalization(input, schemaVersion) {
     if (input === undefined || input === null) {
-        return { enabled: true, keywordWeights: [] };
+        return { enabled: true, keywordWeightsByMode: emptyKeywordWeightsByMode() };
     }
     const candidate = safeClone(input);
-    if (!isPlainObject(candidate) || Object.keys(candidate).some((key) => !['enabled', 'keywordWeights'].includes(key))) {
-        fail('INVALID_PERSONALIZATION', '个性化内容推荐设置包含不支持的字段。');
+    if (!isPlainObject(candidate)) {
+        fail('INVALID_PERSONALIZATION', '个性化内容推荐设置必须是对象。');
     }
     if (typeof candidate.enabled !== 'boolean') {
         fail('INVALID_PERSONALIZATION', '个性化内容推荐开关必须为布尔值。');
     }
+
+    if (schemaVersion <= 7) {
+        if (Object.keys(candidate).some((key) => !['enabled', 'keywordWeights'].includes(key))) {
+            fail('INVALID_PERSONALIZATION', '旧版个性化内容推荐设置包含不支持的字段。');
+        }
+        return {
+            enabled: candidate.enabled,
+            keywordWeightsByMode: {
+                SFW: normalizeKeywordWeights(candidate.keywordWeights ?? []),
+                NSFW: [],
+            },
+        };
+    }
+
+    if (Object.keys(candidate).some((key) => !['enabled', 'keywordWeightsByMode'].includes(key))
+        || !Object.hasOwn(candidate, 'keywordWeightsByMode')) {
+        fail('INVALID_PERSONALIZATION', '个性化内容推荐设置包含不支持或缺失的字段。');
+    }
     return {
         enabled: candidate.enabled,
-        keywordWeights: normalizeKeywordWeights(candidate.keywordWeights ?? []),
+        keywordWeightsByMode: normalizeKeywordWeightsByMode(candidate.keywordWeightsByMode),
     };
 }
 
@@ -407,7 +447,7 @@ export function normalizeSettingsDocument(input) {
     ), candidate.schemaVersion, promptById);
 
     const chatSummary = normalizeChatSummary(candidate.chatSummary);
-    const personalization = normalizePersonalization(candidate.personalization);
+    const personalization = normalizePersonalization(candidate.personalization, candidate.schemaVersion);
     const normalized = {
         schema: SETTINGS_SCHEMA_ID,
         schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -504,7 +544,7 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         } catch {
             fail('INVALID_IMPORT_JSON', '设置 JSON 无法解析。');
         }
-        // Re-save a normalized legacy document so v1–v5 users receive the
+        // Re-save a normalized legacy document so v1–v7 users receive the
         // editable built-ins and mode bindings exactly once in local storage.
         return persist(parsed);
     }
@@ -683,29 +723,33 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         return persist(next);
     }
 
-    function setPersonalizationKeywordWeights(keywordWeights) {
+    function setPersonalizationKeywordWeights(contentMode, keywordWeights) {
+        const selectedContentMode = cleanContentMode(contentMode);
         const next = cloneDocument(current());
-        next.personalization.keywordWeights = normalizeKeywordWeights(keywordWeights);
+        next.personalization.keywordWeightsByMode[selectedContentMode] = normalizeKeywordWeights(keywordWeights);
         return persist(next);
     }
 
     /**
-     * Adds newly observed public candidate tags to the device-local learning
-     * library at the neutral 0 weight. Existing manual or learned weights are
-     * never overwritten; a disabled personalization feature remains untouched.
+     * Adds newly observed public candidate tags to one mode-specific device-local
+     * learning library at the neutral 0 weight. Existing manual or learned
+     * weights are never overwritten; a disabled personalization feature remains
+     * untouched.
      */
-    function ensurePersonalizationKeywordWeights(keywords) {
+    function ensurePersonalizationKeywordWeights(contentMode, keywords) {
+        const selectedContentMode = cleanContentMode(contentMode);
         if (!Array.isArray(keywords)) fail('INVALID_PERSONALIZATION', '关键词列表必须是数组。');
         const normalizedKeywords = normalizeKeywordWeights(keywords.map((keyword) => ({ keyword, weight: 0 })))
             .map((item) => item.keyword);
         const next = cloneDocument(current());
         if (!next.personalization.enabled || normalizedKeywords.length === 0) return cloneDocument(next);
 
-        const knownKeywords = new Set(next.personalization.keywordWeights.map((item) => item.keyword.toLowerCase()));
+        const modeWeights = next.personalization.keywordWeightsByMode[selectedContentMode];
+        const knownKeywords = new Set(modeWeights.map((item) => item.keyword.toLowerCase()));
         let changed = false;
         for (const keyword of normalizedKeywords) {
-            if (knownKeywords.has(keyword.toLowerCase()) || next.personalization.keywordWeights.length >= MAX_PERSONALIZATION_KEYWORDS) continue;
-            next.personalization.keywordWeights.push({ keyword, weight: 0 });
+            if (knownKeywords.has(keyword.toLowerCase()) || modeWeights.length >= MAX_PERSONALIZATION_KEYWORDS) continue;
+            modeWeights.push({ keyword, weight: 0 });
             knownKeywords.add(keyword.toLowerCase());
             changed = true;
         }
@@ -713,11 +757,13 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
     }
 
     /**
-     * Applies one locally derived public-tag preference delta after a successful
-     * controlled recommendation action. It deliberately touches only this
-     * browser's personalization cache, never connection settings or MVU data.
+     * Applies one locally derived public-tag preference delta to exactly one
+     * content mode after a successful controlled recommendation action. It
+     * deliberately touches only this browser's personalization cache, never
+     * connection settings or MVU data.
      */
-    function applyPersonalizationKeywordWeightDelta(keywords, delta) {
+    function applyPersonalizationKeywordWeightDelta(contentMode, keywords, delta) {
+        const selectedContentMode = cleanContentMode(contentMode);
         if (!Number.isInteger(delta) || delta < -5 || delta > 5 || delta === 0) {
             fail('INVALID_PERSONALIZATION', '关键词权重增量必须是 -5–5 范围内的非零整数。');
         }
@@ -727,15 +773,16 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         const next = cloneDocument(current());
         if (!next.personalization.enabled || normalizedKeywords.length === 0) return cloneDocument(next);
 
-        const indexByKeyword = new Map(next.personalization.keywordWeights.map((item, index) => [item.keyword.toLowerCase(), index]));
+        const modeWeights = next.personalization.keywordWeightsByMode[selectedContentMode];
+        const indexByKeyword = new Map(modeWeights.map((item, index) => [item.keyword.toLowerCase(), index]));
         for (const keyword of normalizedKeywords) {
             const index = indexByKeyword.get(keyword.toLowerCase());
             if (index === undefined) {
-                next.personalization.keywordWeights.push({ keyword, weight: Math.max(-5, Math.min(5, delta)) });
-                indexByKeyword.set(keyword.toLowerCase(), next.personalization.keywordWeights.length - 1);
+                modeWeights.push({ keyword, weight: Math.max(-5, Math.min(5, delta)) });
+                indexByKeyword.set(keyword.toLowerCase(), modeWeights.length - 1);
             } else {
-                const currentWeight = next.personalization.keywordWeights[index].weight;
-                next.personalization.keywordWeights[index].weight = Math.max(-5, Math.min(5, currentWeight + delta));
+                const currentWeight = modeWeights[index].weight;
+                modeWeights[index].weight = Math.max(-5, Math.min(5, currentWeight + delta));
             }
         }
         return persist(next);

@@ -3,6 +3,7 @@ import { normalizeGeneratedCandidate } from '../recommendation/candidate.js';
 import { normalizePrivateChatResponse } from '../chat/private-chat-response.js';
 import { validatePrivateChatRequest } from '../chat/private-chat-service.js';
 import { decideInteractionRhythm } from '../chat/interaction-rhythm.js';
+import { allowedAssessmentKinds, deriveMeetupAccess, meetupRouteGuidance, projectBondProgress } from '../chat/relationship-progress.js';
 import {
     MAX_CHAT_HISTORY_MESSAGES,
     MAX_CHAT_SUMMARY_RECORDS,
@@ -26,6 +27,7 @@ const CHAT_SESSION_UID_PATTERN = /^chat_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const MEETUP_UID_PATTERN = /^meetup_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const GROUP_UID_PATTERN = /^group_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const RELATIONSHIP_VALUE_FIELDS = Object.freeze(['好感', '信任', '戒备', '面基意愿']);
+const BOND_VALUE_FIELDS = Object.freeze(['友情值', '心动值', '欲望值']);
 const MAX_CHAT_MESSAGE_LENGTH = 600;
 const READ_WITHOUT_REPLY_NOTICE = '对方已读，但暂时没有回复。';
 const BLOCKED_CHAT_NOTICE = '对方已将你拉黑，当前会话无法继续发送消息。';
@@ -162,7 +164,8 @@ function addUidOnce(state, listName, uid, operations) {
 /** Applies only user-confirmed, public tag target weights from a validated soul-match draft. */
 export function buildSoulMatchPreferencePatch(state, { draft } = {}) {
     if (!ownRecord(state)) return fail('soul_match_preference_state_invalid');
-    const weights = ownRecord(ownRecord(state.玩家)?.推荐偏好)?.标签权重;
+    const mode = currentContentMode(state);
+    const weights = currentPreferenceWeights(state);
     if (!ownRecord(weights)) return fail('soul_match_preference_state_invalid');
     let normalized;
     try { normalized = normalizeSoulMatchDraft(draft); }
@@ -174,7 +177,7 @@ export function buildSoulMatchPreferencePatch(state, { draft } = {}) {
         if (!Number.isInteger(current) || current < -5 || current > 5) return fail('soul_match_preference_state_invalid');
         if (current !== weight) operations.push({
             op: exists ? 'replace' : 'add',
-            path: encodeJsonPointer(['玩家', '推荐偏好', '标签权重', tag]), value: weight,
+            path: encodeJsonPointer(['玩家', '推荐偏好', '标签权重', mode, tag]), value: weight,
         });
     }
     return operations.length ? success(operations) : fail('soul_match_preference_no_change');
@@ -305,7 +308,7 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
     if (!isChatSessionUid(sessionUid)) return fail('private_chat_invalid_target');
 
     let normalizedResponse;
-    try { normalizedResponse = normalizePrivateChatResponse(response); }
+    try { normalizedResponse = normalizePrivateChatResponse(response, { contentMode: ownRecord(state.软件)?.内容模式 }); }
     catch { return fail('private_chat_response_invalid'); }
 
     const { session, npc, relationship, playerMessage: normalizedMessage } = request.value;
@@ -313,6 +316,11 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
     if (!recentMessages || recentMessages.length > MAX_CHAT_HISTORY_MESSAGES) return fail('private_chat_session_messages_invalid');
     for (const field of RELATIONSHIP_VALUE_FIELDS) {
         if (!Number.isInteger(relationship[field]) || relationship[field] < 0 || relationship[field] > 100) return fail('private_chat_relationship_state_invalid');
+    }
+    for (const field of BOND_VALUE_FIELDS) {
+        if (relationship[field] !== undefined && (!Number.isInteger(relationship[field]) || relationship[field] < 0 || relationship[field] > 100)) {
+            return fail('private_chat_relationship_state_invalid');
+        }
     }
     const rhythm = decideInteractionRhythm({ relationship, responseRelationship: normalizedResponse.relationship, readWithoutReplyThreshold: npc.已读不回阈值, blockThreshold: npc.拉黑阈值 });
     if (!rhythm) return fail('private_chat_rhythm_state_invalid');
@@ -369,6 +377,19 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
     for (const field of RELATIONSHIP_VALUE_FIELDS) {
         const next = rhythm.projectedRelationship[field];
         if (next !== relationship[field]) operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', field]), value: next });
+    }
+    const bondProgress = projectBondProgress({
+        contentMode: ownRecord(state.软件)?.内容模式,
+        relationship,
+        assessment: normalizedResponse.bondAssessment,
+        replied: rhythm.outcome === 'replied',
+    });
+    if (bondProgress.delta > 0 && BOND_VALUE_FIELDS.includes(bondProgress.field)) {
+        operations.push({
+            op: Object.hasOwn(relationship, bondProgress.field) ? 'replace' : 'add',
+            path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', bondProgress.field]),
+            value: bondProgress.nextValue,
+        });
     }
     operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '对话层数']), value: nextLayer });
     return success(operations);
@@ -653,11 +674,13 @@ function normalizeMeetupText(value, maxLength, required) {
     return normalized;
 }
 
-function meetupDraft({ nickname, time, place, mutualIntent, confirmedBoundaries, pendingItems, riskNotice }) {
+function meetupDraft({ nickname, route, time, place, mutualIntent, confirmedBoundaries, pendingItems, riskNotice }) {
     const subject = normalizeMeetupText(nickname, 80, false) || '该匹配对象';
     const details = [
         `与${subject}角色约定面基（必须查询并且遵循该角色的公开资料、已确认边界与会话总结；不得推断或泄露非公开资料）。`,
         `对象：${subject}`,
+        `关系路线：${route}`,
+        meetupRouteGuidance(route),
         `时间：${time}`,
         `地点：${place}`,
         `双方意图：${mutualIntent}`,
@@ -688,6 +711,8 @@ export function buildMeetupHandoffPatch(state, request = {}) {
         || !Number.isInteger(meetupCounter) || meetupCounter < 0 || meetupCounter >= 999999) {
         return fail('meetup_preconditions_not_met');
     }
+    const meetupAccess = deriveMeetupAccess({ contentMode: ownRecord(state.软件)?.内容模式, relationship });
+    if (!meetupAccess.unlocked) return fail('meetup_relationship_threshold_not_met');
     if (listUnsummarizedConversationMessages(session).length > 0) {
         return fail('meetup_summary_required');
     }
@@ -701,6 +726,7 @@ export function buildMeetupHandoffPatch(state, request = {}) {
     if (!isMeetupUid(meetupUid) || ownRecord(state.面基记录)?.[meetupUid]) return fail('meetup_uid_conflict');
     const record = {
         对象UID: npcUid,
+        关系路线: meetupAccess.route,
         时间: values.时间,
         地点: values.地点,
         双方意图: values.双方意图,
@@ -717,7 +743,8 @@ export function buildMeetupHandoffPatch(state, request = {}) {
             { op: 'add', path: encodeJsonPointer(['面基记录', meetupUid]), value: record },
             { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '面基']), value: meetupCounter + 1 },
         ],
-        draft: meetupDraft({ nickname, time: values.时间, place: values.地点, mutualIntent: values.双方意图, confirmedBoundaries: values.已确认边界, pendingItems: values.待确认事项, riskNotice: values.风险提示 }),
+        route: meetupAccess.route,
+        draft: meetupDraft({ nickname, route: meetupAccess.route, time: values.时间, place: values.地点, mutualIntent: values.双方意图, confirmedBoundaries: values.已确认边界, pendingItems: values.待确认事项, riskNotice: values.风险提示 }),
     });
 }
 
@@ -818,9 +845,19 @@ function publicTagsForPreference(profile) {
     return tags;
 }
 
+function currentContentMode(state) {
+    return ownRecord(state.软件)?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+}
+
+function currentPreferenceWeights(state) {
+    const byMode = ownRecord(ownRecord(ownRecord(state.玩家)?.推荐偏好)?.标签权重);
+    return ownRecord(byMode?.[currentContentMode(state)]);
+}
+
 /** Adds only locally derived public-tag preference writes to an existing Patch. */
 function appendPreferenceWeightOperations(state, profile, delta, operations) {
-    const weights = ownRecord(ownRecord(state.玩家)?.推荐偏好)?.标签权重;
+    const mode = currentContentMode(state);
+    const weights = currentPreferenceWeights(state);
     const tags = publicTagsForPreference(profile);
     if (!ownRecord(weights) || !tags || !Number.isInteger(delta)) return fail('preference_weight_state_invalid');
     for (const tag of tags) {
@@ -831,7 +868,7 @@ function appendPreferenceWeightOperations(state, profile, delta, operations) {
         if (next === current) continue;
         operations.push({
             op: exists ? 'replace' : 'add',
-            path: encodeJsonPointer(['玩家', '推荐偏好', '标签权重', tag]),
+            path: encodeJsonPointer(['玩家', '推荐偏好', '标签权重', mode, tag]),
             value: next,
         });
     }
@@ -874,7 +911,7 @@ export function buildFavoritePrivateChatPatch(state, { npcUid } = {}) {
     const favorites = arrayAt(state, '收藏角色UID');
     const relationship = ownRecord(adult.value.profile.与玩家关系);
     const playerPublic = ownRecord(ownRecord(state.玩家)?.公开资料);
-    const weights = ownRecord(ownRecord(state.玩家)?.推荐偏好)?.标签权重;
+    const weights = currentPreferenceWeights(state);
     const npcPublic = ownRecord(adult.value.profile.公开资料);
     const refusalThreshold = adult.value.profile.拒绝阈值;
     const sessionCounter = ownRecord(state.系统)?.UID计数器?.会话;
@@ -1114,14 +1151,15 @@ export function validateControlledPatchWhitelist(patch) {
         const sessionStatus = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/状态$/u.exec(path);
         if (operation.op === 'replace' && sessionStatus && isChatSessionUid(sessionStatus[1]) && ['已取消', '已拉黑'].includes(operation.value)) continue;
 
-        const chatRelationship = /^\/角色池\/(npc_[A-Za-z0-9_-]{1,64})\/与玩家关系\/(好感|信任|戒备|面基意愿)$/u.exec(path);
-        if (operation.op === 'replace' && chatRelationship && isNpcUid(chatRelationship[1]) && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 100) continue;
+        const chatRelationship = /^\/角色池\/(npc_[A-Za-z0-9_-]{1,64})\/与玩家关系\/(好感|信任|戒备|面基意愿|友情值|心动值|欲望值)$/u.exec(path);
+        if ((operation.op === 'add' || operation.op === 'replace') && chatRelationship && isNpcUid(chatRelationship[1]) && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 100) continue;
         const chatSummary = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/长期摘要$/u.exec(path);
         if (operation.op === 'replace' && chatSummary && isChatSessionUid(chatSummary[1]) && typeof operation.value === 'string' && operation.value.length > 0 && operation.value.length <= 500) continue;
         const meetupRecord = /^\/面基记录\/(meetup_[A-Za-z0-9_-]{1,64})$/u.exec(path);
         if (operation.op === 'remove' && meetupRecord && isMeetupUid(meetupRecord[1])) continue;
         if (operation.op === 'add' && meetupRecord && isMeetupUid(meetupRecord[1]) && ownRecord(operation.value)
-            && isNpcUid(operation.value.对象UID) && typeof operation.value.时间 === 'string' && operation.value.时间.length > 0 && operation.value.时间.length <= 160
+            && isNpcUid(operation.value.对象UID) && ['友情', '恋爱', '欲望'].includes(operation.value.关系路线)
+            && typeof operation.value.时间 === 'string' && operation.value.时间.length > 0 && operation.value.时间.length <= 160
             && typeof operation.value.地点 === 'string' && operation.value.地点.length > 0 && operation.value.地点.length <= 160
             && typeof operation.value.双方意图 === 'string' && operation.value.双方意图.length > 0 && operation.value.双方意图.length <= 500
             && typeof operation.value.已确认边界 === 'string' && operation.value.已确认边界.length > 0 && operation.value.已确认边界.length <= 1200
@@ -1130,7 +1168,7 @@ export function validateControlledPatchWhitelist(patch) {
             && operation.value.状态 === '待发送' && operation.value.正文结果摘要 === '') continue;
         const groupList = /^\/群组\/(group_[A-Za-z0-9_-]{1,64})\/(成员UID|可发现角色UID)$/u.exec(path);
         if (operation.op === 'replace' && groupList && isGroupUid(groupList[1]) && validUidList(operation.value)) continue;
-        const preferenceWeight = /^\/玩家\/推荐偏好\/标签权重\/([^/]+)$/u.exec(path);
+        const preferenceWeight = /^\/玩家\/推荐偏好\/标签权重\/(SFW|NSFW)\/([^/]+)$/u.exec(path);
         if ((operation.op === 'add' || operation.op === 'replace') && preferenceWeight && Number.isInteger(operation.value) && operation.value >= -5 && operation.value <= 5) continue;
 
         return fail('patch_path_not_whitelisted', path);
@@ -1309,14 +1347,27 @@ export function validateControlledPatchAgainstState(state, patch) {
                     response.relationship[field] = change.value - relationship[field];
                 } else response.relationship[field] = 0;
             }
-            const expected = validResponse ? buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage: playerOperation.value?.内容, response }) : fail('private_chat_relationship_state_invalid');
-            if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+            if (validResponse) {
+                const mode = currentContentMode(state);
+                const assessments = [{ kind: 'none', intensity: 0 }];
+                for (const kind of allowedAssessmentKinds(mode)) {
+                    if (kind === 'none') continue;
+                    for (let intensity = 1; intensity <= 3; intensity += 1) assessments.push({ kind, intensity });
+                }
+                for (const bondAssessment of assessments) {
+                    const expected = buildPrivateChatPatch(state, {
+                        sessionUid, npcUid, playerMessage: playerOperation.value?.内容,
+                        response: { ...response, bondAssessment },
+                    });
+                    if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+                }
+            }
         }
     }
 
     const standalonePreferenceOperations = patch.filter((operation) => operation?.op === 'add' || operation?.op === 'replace');
     if (patch.length >= 1 && patch.length <= 12 && standalonePreferenceOperations.length === patch.length
-        && patch.every((operation) => /^\/玩家\/推荐偏好\/标签权重\/[^/]+$/u.test(operation.path))) {
+        && patch.every((operation) => new RegExp('^/玩家/推荐偏好/标签权重/' + currentContentMode(state) + '/[^/]+$', 'u').test(operation.path))) {
         const tagWeightDraft = patch.map((operation) => ({ tag: decodeJsonPointer(operation.path).at(-1), weight: operation.value }));
         const expected = buildSoulMatchPreferencePatch(state, { draft: { tagWeightDraft, explanation: '已由玩家确认采用。' } });
         if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);

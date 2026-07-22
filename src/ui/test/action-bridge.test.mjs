@@ -16,7 +16,7 @@ function adultCandidate() {
 function state() {
     return {
         软件: { 内容模式: 'SFW', 关于软件点击数: 0 },
-        玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: {} } },
+        玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
         角色池: {},
         推荐: {
             当前队列: ['npc_ava'],
@@ -43,7 +43,7 @@ function recommendationState() {
         公开资料: { 昵称: '玩家', 年龄段: '成年人', 性别: '男', 性取向: '异性恋', 城市: '上海', 距离范围: '不限', 寻找意图: '聊天', 简介: '公开简介', 兴趣标签: ['电影'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [] },
         隐藏资料: { 私人备注: '不得发送给快速模型' },
         仅好友资料: { 关系状态: '不得发送给快速模型' },
-        推荐偏好: { 标签权重: { 电影: 2 } },
+        推荐偏好: { 标签权重: { SFW: { 电影: 2 }, NSFW: {} } },
     };
     return current;
 }
@@ -136,21 +136,21 @@ test('喜欢和不喜欢只在 MVU 写入成功后同步公开标签到本地个
         mvu,
         eventEmit: async () => {},
         settingsStore: {
-            applyPersonalizationKeywordWeightDelta(tags, delta) {
-                deltas.push([tags, delta]);
+            applyPersonalizationKeywordWeightDelta(contentMode, tags, delta) {
+                deltas.push([contentMode, tags, delta]);
             },
         },
     });
 
     const liked = await bridge.runMvuAction('like', 'npc_ava');
     assert.equal(liked.ok, true);
-    assert.deepEqual(deltas, [[['电影', '摄影', '夜猫子', '直接', '慢热'], 3]]);
+    assert.deepEqual(deltas, [['SFW', ['电影', '摄影', '夜猫子', '直接', '慢热'], 3]]);
 
     const disliked = await bridge.runMvuAction('dislike', 'npc_ava');
     assert.equal(disliked.ok, true);
     assert.deepEqual(deltas, [
-        [['电影', '摄影', '夜猫子', '直接', '慢热'], 3],
-        [['电影', '摄影', '夜猫子', '直接', '慢热'], -3],
+        ['SFW', ['电影', '摄影', '夜猫子', '直接', '慢热'], 3],
+        ['SFW', ['电影', '摄影', '夜猫子', '直接', '慢热'], -3],
     ]);
 });
 
@@ -220,7 +220,7 @@ test('invalid generated candidate performs no MVU write and leaves recommendatio
         eventEmit: async (...args) => { emitted.push(args); },
         settingsStore: {
             ...settingsStore,
-            ensurePersonalizationKeywordWeights(tags) { seededKeywords.push(tags); },
+            ensurePersonalizationKeywordWeights(contentMode, tags) { seededKeywords.push([contentMode, tags]); },
         },
         llmClient: { async chat() { return { text: JSON.stringify(underage) }; } },
     });
@@ -246,7 +246,7 @@ test('successful generated recommendation starts public-only image matching with
         eventEmit: async (...args) => { calls.push(['event', ...args]); },
         settingsStore: {
             ...settingsStore,
-            ensurePersonalizationKeywordWeights(tags) { seededKeywords.push(tags); },
+            ensurePersonalizationKeywordWeights(contentMode, tags) { seededKeywords.push([contentMode, tags]); },
         },
         llmClient: { async chat() { return { text: JSON.stringify(adultCandidate()) }; } },
         imageMatchCoordinator: {
@@ -266,7 +266,7 @@ test('successful generated recommendation starts public-only image matching with
     assert.match(wrappedPatch, /^<UpdateVariable><JSONPatch>/u);
     assert.match(wrappedPatch, /npc_llm_13/u);
     assert.match(wrappedPatch, /冷却角色UID/u);
-    assert.deepEqual(seededKeywords, [['电影', '夜猫子', '直接', '慢热']], '仅在官方写回成功后才以 0 权重收录新公开标签。');
+    assert.deepEqual(seededKeywords, [['SFW', ['电影', '夜猫子', '直接', '慢热']]], '仅在官方写回成功后才以 0 权重收录新公开标签。');
     assert.equal(imageMatches.length, 1, '图片匹配 Promise 未完成也不得阻塞推荐写回。');
     assert.deepEqual(imageMatches[0][0], adultCandidate().公开资料);
     assert.equal(Object.hasOwn(imageMatches[0][0], '隐藏资料'), false);
@@ -526,7 +526,7 @@ test('initial fast-model candidate also starts image matching after public-profi
         eventEmit: async (...args) => { calls.push(['event', ...args]); },
         settingsStore: {
             ...settingsStore,
-            ensurePersonalizationKeywordWeights(tags) { seededKeywords.push(tags); },
+            ensurePersonalizationKeywordWeights(contentMode, tags) { seededKeywords.push([contentMode, tags]); },
         },
         llmClient: { async chat() { return { text: JSON.stringify(adultCandidate()) }; } },
         imageMatchCoordinator: {
@@ -545,7 +545,7 @@ test('initial fast-model candidate also starts image matching after public-profi
     const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
     assert.match(wrappedPatch, /npc_llm_13/u);
     assert.doesNotMatch(wrappedPatch, /冷却角色UID/u);
-    assert.deepEqual(seededKeywords, [['电影', '夜猫子', '直接', '慢热']]);
+    assert.deepEqual(seededKeywords, [['NSFW', ['电影', '夜猫子', '直接', '慢热']]]);
     assert.equal(imageMatches.length, 1);
     assert.deepEqual(imageMatches[0][0], adultCandidate().公开资料);
     assert.deepEqual(imageMatches[0][1], { contentMode: 'NSFW', signal });
@@ -672,7 +672,7 @@ test('candidate match draft reads through MVU but never commits a patch or event
     const { mvu, calls } = createMvu({ initialState });
     const requests = [];
     const candidateSettingsStore = {
-        snapshot() { return { personalization: { keywordWeights: [{ keyword: '电影', weight: 3 }] } }; },
+        snapshot() { return { personalization: { keywordWeightsByMode: { SFW: [{ keyword: '电影', weight: 3 }], NSFW: [] } } }; },
         resolveFunction(key) {
             assert.equal(key, 'soul_match');
             return { connectionPreset, promptPreset: { enabled: true, content: '仅生成成年人公开资料。' } };
@@ -711,7 +711,7 @@ test('soul match creates an independent npc_match session and never promotes a f
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); },
         settingsStore: {
-            snapshot() { return { personalization: { keywordWeights: [{ keyword: '电影', weight: 3 }] } }; },
+            snapshot() { return { personalization: { keywordWeightsByMode: { SFW: [{ keyword: '电影', weight: 3 }], NSFW: [] } } }; },
             resolveFunction(key) { assert.equal(key, 'soul_match'); return { connectionPreset, promptPreset: { enabled: true, content: '' } }; },
         },
         llmClient: { async chat() {
@@ -757,7 +757,7 @@ test('voice match first resolves transient voice keywords and then commits the s
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); },
         settingsStore: {
-            snapshot() { return { personalization: { keywordWeights: [{ keyword: '电影', weight: 1 }] } }; },
+            snapshot() { return { personalization: { keywordWeightsByMode: { SFW: [{ keyword: '电影', weight: 1 }], NSFW: [] } } }; },
             resolveFunction(key) { assert.equal(key, 'text_match'); return { connectionPreset, promptPreset: { enabled: true, content: '' } }; },
         },
         llmClient: { async chat() {
@@ -799,7 +799,7 @@ test('candidate match records a local-score decline without creating or incremen
         documentRef: { querySelector: () => null }, mvu,
         eventEmit: async (...args) => { calls.push(['event', ...args]); },
         settingsStore: {
-            snapshot() { return { personalization: { keywordWeights: [{ keyword: '电影', weight: 5 }] } }; },
+            snapshot() { return { personalization: { keywordWeightsByMode: { SFW: [{ keyword: '电影', weight: 5 }], NSFW: [] } } }; },
             resolveFunction(key) { assert.equal(key, 'soul_match'); return { connectionPreset, promptPreset: { enabled: true, content: '' } }; },
         },
         llmClient: { async chat() {

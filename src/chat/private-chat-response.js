@@ -18,6 +18,10 @@ const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/u;
 const ARRAY_INDEX_PATTERN = /^(?:0|[1-9]\d*)$/u;
 const ERROR_PREFIX = 'private_chat_response_validation_failed:';
 const RELATIONSHIP_FIELDS = Object.freeze(['好感', '信任', '戒备', '面基意愿']);
+const BOND_ASSESSMENT_KINDS = Object.freeze({
+    SFW: new Set(['none', 'friendly', 'romantic_flirt']),
+    NSFW: new Set(['none', 'romantic_desire', 'sexual_desire']),
+});
 const USER_MESSAGES = Object.freeze({
     private_chat_response_required: '私聊回复必须是 JSON 对象。',
     private_chat_response_unsafe_prototype: '私聊回复包含不安全的数据结构。',
@@ -153,6 +157,23 @@ function normalizeRelationship(value) {
     }
 }
 
+function normalizeBondAssessment(value, contentMode) {
+    try {
+        assertExactRecord(value, ['kind', 'intensity']);
+        const kind = ownEnumerableData(value, 'kind');
+        const intensity = ownEnumerableData(value, 'intensity');
+        const mode = contentMode === 'NSFW' ? 'NSFW' : 'SFW';
+        if (typeof kind !== 'string' || !BOND_ASSESSMENT_KINDS[mode].has(kind)) fail('private_chat_response_relationship_invalid');
+        if (!Number.isInteger(intensity) || intensity < 0 || intensity > 3 || (kind === 'none' && intensity !== 0) || (kind !== 'none' && intensity === 0)) {
+            fail('private_chat_response_relationship_invalid');
+        }
+        return { kind, intensity };
+    } catch (error) {
+        if (isCodecError(error) && ['private_chat_response_unknown_field', 'private_chat_response_dangerous_key', 'private_chat_response_sensitive_key', 'private_chat_response_accessor_or_hidden_field', 'private_chat_response_unsafe_prototype'].includes(error.code)) throw error;
+        fail('private_chat_response_relationship_invalid');
+    }
+}
+
 /**
  * Validates a parsed model response and returns a fresh, safe data-only clone.
  * Preferred input: { replies: [1..6 short strings], relationship, sessionSummary? }.
@@ -162,9 +183,9 @@ function normalizeRelationship(value) {
  * compatibility fallback so existing single-message consumers keep working
  * until their write/render boundary is upgraded to consume `replies`.
  */
-export function normalizePrivateChatResponse(raw) {
+export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
     try {
-        assertExactRecord(raw, ['relationship'], ['replies', 'reply', 'sessionSummary']);
+        assertExactRecord(raw, ['relationship'], ['replies', 'reply', 'sessionSummary', 'bondAssessment']);
         const hasReplies = Object.hasOwn(raw, 'replies');
         const hasReply = Object.hasOwn(raw, 'reply');
         if (!hasReplies && !hasReply) fail('private_chat_response_missing_field');
@@ -195,6 +216,9 @@ export function normalizePrivateChatResponse(raw) {
             replies,
             reply: compatibilityReply,
             relationship: normalizeRelationship(ownEnumerableData(raw, 'relationship')),
+            bondAssessment: Object.hasOwn(raw, 'bondAssessment')
+                ? normalizeBondAssessment(ownEnumerableData(raw, 'bondAssessment'), contentMode)
+                : { kind: 'none', intensity: 0 },
         };
         if (Object.hasOwn(raw, 'sessionSummary')) {
             normalized.sessionSummary = normalizeShortText(

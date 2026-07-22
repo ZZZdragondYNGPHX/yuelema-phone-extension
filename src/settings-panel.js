@@ -791,14 +791,15 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
     }
     function buildPersonalizationSection(snapshot, { openPreferences }) {
         const section = element('section', { className: 'yl-settings-section' });
-        const personalization = snapshot.personalization ?? { enabled: true, keywordWeights: [] };
+        const personalization = snapshot.personalization ?? { enabled: true, keywordWeightsByMode: { SFW: [], NSFW: [] } };
+        const selectedContentMode = activeContentMode;
 
         if (!openPreferences) {
             append(section, [
                 sectionHeading('✦', '个性化内容推荐管理'),
                 element('p', {
                     className: 'yl-phone-page-description',
-                    text: '此处保存当前设备的开放关键词学习库。首页刷新会接收全部关键词及权重，并在成功生成后把新公开标签以权重 0 自动补入；不会改变模型连接、提示词或其他聊天/MVU 数据。',
+                    text: '此处保存当前设备的分模式关键词学习库。SFW 与 NSFW 各自独立学习、独立保存，切换模式后只会读取对应词库；不会改变模型连接、提示词或其他聊天/MVU 数据。',
                 }),
             ]);
             const enabled = element('input', {
@@ -863,7 +864,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             sectionHeading('✦', '个性化内容偏好'),
             element('p', {
                 className: 'yl-phone-page-description',
-                text: '在此编辑当前设备的关键词权重；正权重会提高相关标签自然出现的概率，负权重会降低概率，0 表示尚未学习。AI 可自由生成新标签，成功后会自动以 0 收录。',
+                text: '当前只编辑 ' + CONTENT_MODE_LABELS[selectedContentMode] + ' 模式的独立关键词词库；另一模式的关键词与权重不会显示或被改写。正权重会提高相关标签自然出现的概率，负权重会降低概率，0 表示尚未学习。AI 可自由生成新标签，成功后会自动以 0 收录。',
             }),
         ]);
         if (!personalization.enabled) {
@@ -876,7 +877,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
 
         const preferenceEditor = element('section', { className: 'yl-settings-binding' });
         preferenceEditor.setAttribute('aria-label', '个性化内容偏好编辑器');
-        let keywordWeights = personalization.keywordWeights.map((item) => ({ ...item }));
+        let keywordWeights = personalization.keywordWeightsByMode[selectedContentMode].map((item) => ({ ...item }));
         let editingIndex = -1;
         const list = element('div', { className: 'yl-settings-list' });
         const keyword = element('input', {
@@ -949,8 +950,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             }
         }, signal, { name: 'personalization-keyword-upsert' }));
         preferenceActions.appendChild(actionButton('保存个性化内容偏好', async () => updateSettings(
-            () => settingsStore.setPersonalizationKeywordWeights(keywordWeights),
-            '个性化内容偏好已保存到当前设备；后续首页刷新会间隔性参考这些权重。',
+            () => settingsStore.setPersonalizationKeywordWeights(selectedContentMode, keywordWeights),
+            CONTENT_MODE_LABELS[selectedContentMode] + ' 模式的个性化内容偏好已保存；另一模式词库未改变。',
         ), signal, { name: 'personalization-preference-save' }));
         preferenceEditor.appendChild(preferenceActions);
         section.appendChild(preferenceEditor);

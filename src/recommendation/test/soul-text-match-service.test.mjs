@@ -26,7 +26,12 @@ function state() {
                 寻找意图: '先聊天再约会', 简介: '喜欢电影和夜跑。', 兴趣标签: ['电影', '旅行'], 生活方式标签: ['夜猫子'],
                 性格标签: ['直接'], 沟通风格标签: ['慢热'],
             },
-            推荐偏好: { 标签权重: { 电影: 3, 旅行: 1, 夜猫子: -2 } },
+            推荐偏好: {
+                标签权重: {
+                    SFW: { 电影: 3, 旅行: 1, 夜猫子: -2 },
+                    NSFW: { 情趣探索: 4, 露骨文爱: 1 },
+                },
+            },
             隐藏资料: { 实际年龄: 28, 私人备注: 'hidden-secret-must-not-reach-model' },
             仅好友资料: { 关系状态: '已婚', 边界与偏好: 'friend-secret-must-not-reach-model' },
             候选NPC: { uid: 'npc_secret', 公开资料: { 昵称: 'candidate-secret-must-not-reach-model' } },
@@ -71,8 +76,12 @@ test('match-draft context projects only public player data, tag weights, and con
     ]) assert.equal(serialized.includes(secret), false);
     assert.equal(context.contentMode, 'NSFW');
     assert.equal(context.playerPublicProfile.昵称, '玩家');
-    assert.deepEqual(context.tagWeights, { 电影: 3, 旅行: 1, 夜猫子: -2 });
+    assert.deepEqual(context.tagWeights, { 情趣探索: 4, 露骨文爱: 1 });
     assert.equal(Object.isFrozen(context), true);
+
+    const sfwState = state();
+    sfwState.软件.内容模式 = 'SFW';
+    assert.deepEqual(buildSoulTextMatchContext(sfwState).tagWeights, { 电影: 3, 旅行: 1, 夜猫子: -2 });
 });
 
 test('soul match calls only the soul_match binding and returns a strict public weight draft', async () => {
@@ -166,7 +175,16 @@ function candidateSettingsStore(expectedFunction, keywordWeights = [
     { keyword: '电影', weight: 1 }, { keyword: '咖啡', weight: 2 },
 ], promptPreset = { enabled: true, content: '只生成现代都市公开角色资料。' }) {
     return {
-        snapshot() { return { personalization: { keywordWeights } }; },
+        snapshot() {
+            return {
+                personalization: {
+                    keywordWeightsByMode: {
+                        SFW: [],
+                        NSFW: keywordWeights,
+                    },
+                },
+            };
+        },
         resolveFunction(functionKey) {
             assert.equal(functionKey, expectedFunction);
             return { connectionPreset, promptPreset };
@@ -208,7 +226,7 @@ test('candidate soul matching reads saved local keywords and returns only a publ
     assert.match(system, /昵称必须是虚构自然人的个人姓名/u);
     assert.match(system, /不得使用摄影师、设计师等职业名/u);
     assert.match(system, /公开资料不得包含具体住址、门牌、手机号/u);
-    assert.match(system, /NSFW 模式只允许.*四个标签字段/u);
+    assert.match(system, /NSFW 模式可在简介、寻找意图和四个标签字段/u);
 });
 
 test('candidate generation accepts the new public-only model contract and ignores any legacy self-reported score', async () => {
@@ -310,7 +328,7 @@ test('existing text mode is a transition alias for voice candidate matching', as
     const result = await generateCandidateMatchDraft({
         mode: 'text', voiceText: '想找周末一起徒步的人。', state: state(),
         settingsStore: {
-            snapshot: () => ({ personalization: { keywordWeights: [] } }),
+            snapshot: () => ({ personalization: { keywordWeightsByMode: { SFW: [], NSFW: [] } } }),
             resolveFunction(key) { resolvedFunction = key; return { connectionPreset, promptPreset: null }; },
         },
         llmClient: { async chat() { calls += 1; return { text: JSON.stringify(calls === 1 ? voiceKeywordRaw() : candidateRaw()) }; } },
@@ -364,9 +382,9 @@ test('candidate draft and materialization contract reject occupational names, pr
 
     const adultTermOutsideTags = candidateRaw();
     adultTermOutsideTags.profile.简介 = '偏好翘臀，也喜欢一起看电影。';
-    assert.throws(
-        () => normalizeCandidateMatchDraft(adultTermOutsideTags, { contentMode: 'NSFW' }),
-        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    assert.equal(
+        normalizeCandidateMatchDraft(adultTermOutsideTags, { contentMode: 'NSFW' }).profile.简介,
+        '偏好翘臀，也喜欢一起看电影。',
     );
 });
 

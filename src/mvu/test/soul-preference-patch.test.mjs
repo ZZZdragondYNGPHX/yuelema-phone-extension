@@ -6,7 +6,7 @@ function state() {
     return {
         系统: { UID计数器: { 角色: 1, 会话: 0, 面基: 0 } },
         软件: { 内容模式: 'SFW', 关于软件点击数: 0 },
-        玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: { 电影: 1, 夜猫子: -2 } } },
+        玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: { SFW: { 电影: 1, 夜猫子: -2 }, NSFW: {} } } },
         角色池: {}, 推荐: { 当前队列: [], 临时候选池: {}, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] }, 会话: {}, 面基记录: {},
     };
 }
@@ -21,8 +21,8 @@ test('only a user-confirmed valid soul draft can produce exact public preference
     const result = buildSoulMatchPreferencePatch(before, { draft });
     assert.equal(result.ok, true);
     assert.deepEqual(result.value, [
-        { op: 'replace', path: '/玩家/推荐偏好/标签权重/电影', value: 4 },
-        { op: 'add', path: '/玩家/推荐偏好/标签权重/徒步', value: 2 },
+        { op: 'replace', path: '/玩家/推荐偏好/标签权重/SFW/电影', value: 4 },
+        { op: 'add', path: '/玩家/推荐偏好/标签权重/SFW/徒步', value: 2 },
     ]);
     assert.equal(validateControlledPatchAgainstState(before, result.value).ok, true);
     assert.deepEqual(before, state());

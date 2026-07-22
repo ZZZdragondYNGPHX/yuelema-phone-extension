@@ -11,7 +11,7 @@ import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
 import { DEFAULT_FORUM_AUTO_SETTINGS, DEFAULT_GROUP_AUTO_SETTINGS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 
-const UI_VERSION = '0.1.29';
+const UI_VERSION = '0.1.30';
 const PANEL_DRAG_THRESHOLD = 8;
 const FORUM_PULL_THRESHOLD = 88;
 const FORUM_WHEEL_RELEASE_DELAY = 180;
@@ -2583,11 +2583,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const sendGlyph = element('span', { className: pending ? 'yl-chat-send-pending' : 'yl-chat-send-icon', text: pending ? '···' : '' });
         sendGlyph.setAttribute('aria-hidden', 'true');
         send.appendChild(sendGlyph);
-        const meetupAvailable = typeof actionBridge.runMeetupHandoff === 'function';
+        const meetupSupported = typeof actionBridge.runMeetupHandoff === 'function';
+        const meetupUnlocked = meetupSupported && session.meetupAccess?.unlocked === true;
+        const meetupAvailable = meetupSupported;
         const toolsOpen = meetupAvailable && activeChatToolsSessionUid === session.sessionUid;
         send.setAttribute('aria-haspopup', meetupAvailable ? 'menu' : 'false');
         send.setAttribute('aria-expanded', String(toolsOpen));
-        send.setAttribute('title', meetupAvailable ? '左键发送，右键打开工具栏' : '发送消息');
+        send.setAttribute('title', meetupSupported ? '左键发送，右键打开工具栏' : '发送消息');
         const updateSendState = () => {
             const empty = !String(input.value ?? '').trim();
             send.disabled = pending;
@@ -2603,7 +2605,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             void runPrivateChat(session);
         }, abortController.signal);
         listen(send, send, 'click', () => { activeChatToolsSessionUid = ''; void runPrivateChat(session); }, abortController.signal);
-        if (meetupAvailable) listen(send, send, 'contextmenu', (event) => {
+        if (meetupSupported) listen(send, send, 'contextmenu', (event) => {
             event.preventDefault?.();
             if (pending) return;
             activeChatToolsSessionUid = toolsOpen ? '' : session.sessionUid;
@@ -2614,9 +2616,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (toolsOpen) {
             const toolMenu = element('div', { className: 'yl-chat-tool-menu', ariaLabel: '私聊发送工具栏' });
             toolMenu.setAttribute('role', 'menu');
-            const meetupTool = element('button', { className: 'yl-chat-tool-button', type: 'button', text: '约定面基', ariaLabel: '打开约定面基' });
+            const meetupTool = element('button', {
+                className: 'yl-chat-tool-button', type: 'button', disabled: !meetupUnlocked,
+                text: meetupUnlocked ? `约定面基 · ${session.meetupAccess.route}路线` : '关系未达面基条件',
+                ariaLabel: meetupUnlocked ? `打开约定面基，${session.meetupAccess.route}路线` : '关系未达面基条件',
+            });
+            meetupTool.setAttribute('aria-disabled', String(!meetupUnlocked));
             meetupTool.setAttribute('role', 'menuitem');
             listen(meetupTool, meetupTool, 'click', () => {
+                if (!meetupUnlocked) return;
                 activeChatToolsSessionUid = '';
                 activeMeetupSessionUid = session.sessionUid;
                 renderPage();
@@ -2624,9 +2632,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             toolMenu.appendChild(meetupTool);
             controls.appendChild(toolMenu);
         }
-        append(composer, [input, controls, element('span', { className: 'yl-chat-composer-hint', text: meetupAvailable ? '左键发送 · 右键工具栏 · Shift+Enter 换行' : 'Enter 发送 · Shift+Enter 换行' })]);
+        append(composer, [input, controls, element('span', { className: 'yl-chat-composer-hint', text: meetupSupported ? '左键发送 · 右键工具栏 · Shift+Enter 换行' : 'Enter 发送 · Shift+Enter 换行' })]);
         panel.appendChild(composer);
-        if (meetupAvailable && activeMeetupSessionUid === session.sessionUid) panel.appendChild(buildMeetupHandoffPanel(session));
+        if (meetupUnlocked && activeMeetupSessionUid === session.sessionUid) panel.appendChild(buildMeetupHandoffPanel(session));
         return panel;
     }
     async function runPrivateChat(session) {
