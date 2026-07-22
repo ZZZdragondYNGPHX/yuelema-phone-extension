@@ -951,5 +951,135 @@ test('home feedback actions save before generating next candidate while refresh 
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '不喜欢')); await flushUi();
         assert.deepEqual(calls.splice(0), [['save', 'dislike', 'npc_1'], ['next']]);
         assert.match(miniDom.document.body.textContent, /不喜欢反馈已保存.*下一位候选人生成失败/u);
+        click(buttonByPage('profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        assert.match(miniDom.document.querySelector('.yl-operation-console').textContent, /首页推荐/u);
+        assert.doesNotMatch(miniDom.document.querySelector('.yl-operation-console').textContent, /npc_1|Patch|stat_data|UID/u);
     } finally { mounted.destroy(); }
+});
+
+test('initial home candidate generation is visible in the safe operation console', async () => {
+    const calls = [];
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        async runRecommendationInitialCandidate() { calls.push('initial'); return { ok: true }; },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-home-initial-console', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: emptyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '刷新'));
+        await flushUi();
+        assert.deepEqual(calls, ['initial']);
+        click(buttonByPage('profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        const consoleText = miniDom.document.querySelector('.yl-operation-console').textContent;
+        assert.match(consoleText, /首页推荐|首位候选人已通过/u);
+        assert.doesNotMatch(consoleText, /UID|Patch|stat_data|npc_/u);
+    } finally { mounted.destroy(); }
+});
+
+test('closed match and favourite result dialogs never reopen when async results arrive', async () => {
+    const matchRequest = deferred();
+    const favoriteRequest = deferred();
+    const matchRead = readyReadResult();
+    const matchMounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-closed-match-result', actionBridge: {
+            emit() {}, isPending() { return false; }, runCandidateMatch() { return matchRequest.promise; },
+        }, settingsStore: createSettingsStore({ storage: createMemoryStorage() }), llmClient: null, characterLibrary: null, readState: () => matchRead,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('matches'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配'));
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+        click(dialog.querySelector('.yl-dialog-close'));
+        matchRequest.resolve({ ok: true, matchOutcome: 'declined', npcUid: 'npc_declined', sessionUid: '' });
+        await flushUi();
+        assert.equal(dialog.hidden, true, '关闭匹配弹窗后婉拒结果不得重弹');
+    } finally { matchMounted.destroy(); }
+
+    const favoriteRead = readyReadResult();
+    delete favoriteRead.state.推荐.临时候选池.npc_1;
+    favoriteRead.state.推荐.当前队列 = [];
+    favoriteRead.state.推荐.收藏角色UID = ['npc_1'];
+    const favoriteMounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-closed-favourite-result', actionBridge: {
+            emit() {}, isPending() { return false; }, runMvuAction() { return favoriteRequest.promise; },
+        }, settingsStore: null, llmClient: null, characterLibrary: null, readState: () => favoriteRead,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        click(buttonByText('收藏夹'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发起私聊'));
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+        click(dialog.querySelector('.yl-dialog-close'));
+        favoriteRequest.resolve({ ok: true, invitationOutcome: 'declined', sessionUid: '' });
+        await flushUi();
+        assert.equal(dialog.hidden, true, '关闭收藏私聊弹窗后婉拒结果不得重弹');
+    } finally { favoriteMounted.destroy(); }
+});
+
+test('closing a pending romance dialog or phone prevents an accepted result from navigating later', async () => {
+    const matchRequest = deferred();
+    const matchMounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-closed-match-navigation', actionBridge: {
+            emit() {}, isPending() { return false; }, runCandidateMatch() { return matchRequest.promise; },
+        }, settingsStore: createSettingsStore({ storage: createMemoryStorage() }), llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('matches'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配'));
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+        click(miniDom.document.querySelector('.yl-phone-close'));
+        matchRequest.resolve({ ok: true, matchOutcome: 'accepted', npcUid: 'npc_1', sessionUid: 'chat_1' });
+        await flushUi();
+
+        assert.equal(dialog.hidden, true, '收起小手机后接受结果不得重弹');
+        click(miniDom.document.querySelector('.yl-phone-launcher'));
+        assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null, '收起小手机后接受结果不得强制打开私聊');
+        assert.equal(buttonByPage('matches').getAttribute('aria-current'), 'page');
+        click(buttonByPage('profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        const consoleText = miniDom.document.querySelector('.yl-operation-console').textContent;
+        assert.match(consoleText, /灵魂匹配.*已关闭.*提示已关闭，结果未展示/u);
+        assert.doesNotMatch(consoleText, /进行中/u);
+    } finally { matchMounted.destroy(); }
+
+    const favoriteRequest = deferred();
+    const favoriteRead = readyReadResult();
+    delete favoriteRead.state.推荐.临时候选池.npc_1;
+    favoriteRead.state.推荐.当前队列 = [];
+    favoriteRead.state.推荐.收藏角色UID = ['npc_1'];
+    const favoriteMounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-closed-favourite-navigation', actionBridge: {
+            emit() {}, isPending() { return false; }, runMvuAction() { return favoriteRequest.promise; },
+        }, settingsStore: createSettingsStore({ storage: createMemoryStorage() }), llmClient: null, characterLibrary: null, readState: () => favoriteRead,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        click(buttonByText('收藏夹'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发起私聊'));
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+        click(dialog.querySelector('.yl-dialog-close'));
+        favoriteRequest.resolve({ ok: true, invitationOutcome: 'accepted', sessionUid: 'chat_1' });
+        await flushUi();
+
+        assert.equal(dialog.hidden, true, '关闭收藏私聊弹窗后接受结果不得重弹');
+        assert.ok(miniDom.document.querySelector('.yl-favorite-card'), '关闭提示后接受结果不得强制离开收藏夹');
+        click(buttonByPage('profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        const consoleText = miniDom.document.querySelector('.yl-operation-console').textContent;
+        assert.match(consoleText, /收藏主动私聊.*已关闭.*提示已关闭，结果未展示/u);
+        assert.doesNotMatch(consoleText, /进行中/u);
+    } finally { favoriteMounted.destroy(); }
 });

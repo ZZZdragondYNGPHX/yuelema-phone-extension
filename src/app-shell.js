@@ -10,7 +10,7 @@ import { createImageManagerPanel } from './images/image-manager-panel.js';
 import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
 
-const UI_VERSION = '0.1.22';
+const UI_VERSION = '0.1.23';
 const PANEL_DRAG_THRESHOLD = 8;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
@@ -269,7 +269,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             hideOperationDialog();
         }
     }
-    function setActivePage(pageId) {
+    function setActivePage(pageId, { preserveOperation = false } = {}) {
         if (pageId === 'about') { showAboutSoftware(); return; }
         if (!PAGE_COPY[pageId]) return;
         if (activePage === 'private_chat' && pageId !== 'private_chat') {
@@ -282,7 +282,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             destructiveChatSessionUid = '';
             destructiveChatKind = '';
         }
-        hideOperationDialog();
+        if (!preserveOperation) hideOperationDialog();
         activePage = pageId;
         actionBridge.emit('navigate', { page: pageId });
         renderPage();
@@ -427,6 +427,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return renderOperationDialog(presentation, token);
     }
     function hideOperationDialog() {
+        interactionGeneration += 1;
         clearOperationAutoClose();
         activeOperation = null;
         operationDialog.hidden = true;
@@ -437,8 +438,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!text || text.length > 320 || /(?:api[_ -]?key|authorization|bearer|stat_data|jsonpatch|prompt|stack|http(?:s)?:\/\/|\buid\b|原始响应|技术错误|\b(?:npc|chat|meetup|group)_[a-z0-9_-]+\b)/iu.test(text)) return fallback;
         return text;
     }
-    function showAiLoading(message) {
-        return beginOperationDialog({ state: 'loading', visual: 'connecting', title: 'AI 调用中', message: visibleOperationMessage(message, 'AI 正在为你寻找合适的回应……') });
+    function showAiLoading(message, operationToken = null) {
+        const presentation = { state: 'loading', visual: 'connecting', title: 'AI 调用中', message: visibleOperationMessage(message, 'AI 正在为你寻找合适的回应……') };
+        if (operationToken !== null) {
+            updateOperationDialog(operationToken, presentation);
+            return operationToken;
+        }
+        return beginOperationDialog(presentation);
     }
     function showAiResult(ok, message, operationToken = null) {
         const presentation = {
@@ -885,7 +891,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         let result;
         try { result = await actionBridge.runCandidateMatch(mode, { voiceText: voiceMatchText }); }
         catch { result = { ok: false }; }
-        if (isDestroyed || requestId !== interactionGeneration) return;
+        if (isDestroyed || requestId !== interactionGeneration) {
+            operationActivity.dismiss(activityHandle, '提示已关闭，结果未展示。');
+            return;
+        }
         if (!result?.ok) {
             const message = result?.message || describeActionFailure(result) || modeLabel + '未生成可用结果，请稍后再试。';
             operationActivity.fail(activityHandle, modeLabel + '未完成，请稍后再试。');
@@ -895,26 +904,26 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         if (result.matchOutcome === 'declined') {
             refreshState();
-            if (activePage === pageAtStart) setActivePage('matches');
+            if (activePage === pageAtStart) setActivePage('matches', { preserveOperation: true });
             const message = '这次没有达到彼此的互动节奏，对方已婉拒，先把心意留在这里吧。';
             operationActivity.fail(activityHandle, modeLabel + '未匹配成功。');
-            showRomanceResult({ declined: true, title: '这次暂未牵手', message });
+            showRomanceResult({ declined: true, title: '这次暂未牵手', message }, operationToken);
             return;
         }
         const accepted = result.matchOutcome === 'accepted'
             || (!result.matchOutcome && Boolean(result.npcUid && result.sessionUid));
         if (!accepted || !result.npcUid || !result.sessionUid) {
             refreshState();
-            if (activePage === pageAtStart) setActivePage('matches');
+            if (activePage === pageAtStart) setActivePage('matches', { preserveOperation: true });
             operationActivity.fail(activityHandle, modeLabel + '结果缺少可用会话。');
-            showRomanceResult({ title: modeLabel + '未完成', message: '匹配结果缺少可用会话，本次没有进入消息。' });
+            showRomanceResult({ title: modeLabel + '未完成', message: '匹配结果缺少可用会话，本次没有进入消息。' }, operationToken);
             return;
         }
         refreshState();
-        if (activePage === pageAtStart) openPrivateChat(result.sessionUid);
+        if (activePage === pageAtStart) openPrivateChat(result.sessionUid, { preserveOperation: true });
         const successMessage = modeLabel + '成功，两颗心已经靠近。';
         operationActivity.succeed(activityHandle, modeLabel + '成功，已打开私聊。');
-        showRomanceResult({ accepted: true, title: '心动连接成功', message: successMessage });
+        showRomanceResult({ accepted: true, title: '心动连接成功', message: successMessage }, operationToken);
     }
     function buildMatchProfilePage() {
         const profile = matchedProfileDraft?.profile;
@@ -973,6 +982,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     async function runGroupChatDraft(group) {
         const playerMessage = String(groupChatInputDrafts.get(group.UID) ?? '').trim();
+        const activityHandle = operationActivity.start('群聊草稿', '正在生成公开群聊草稿……');
         const operationToken = showAiLoading('正在生成群聊草稿，请稍候…');
         setFeedback('正在生成群聊草稿…', operationToken); renderPage();
         let result;
@@ -980,10 +990,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         catch { result = { ok: false }; }
         if (result?.ok && result.draft?.reply) {
             groupChatGeneratedDrafts.set(group.UID, { reply: result.draft.reply });
+            operationActivity.succeed(activityHandle, '公开群聊草稿已生成。');
             setFeedback('群聊草稿已生成，尚未发布。', operationToken);
             showAiResult(true, '群聊草稿已生成，尚未发布。', operationToken);
         } else {
             const message = result?.message || describeActionFailure(result);
+            operationActivity.fail(activityHandle, '群聊草稿未生成，请稍后再试。');
             setFeedback(message, operationToken);
             showAiResult(false, message || '群聊草稿未生成，请稍后重试。', operationToken);
         }
@@ -1012,6 +1024,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     async function runForumDraft(group) {
         const topic = String(forumTopicDrafts.get(group.UID) ?? '').trim();
+        const activityHandle = operationActivity.start('论坛帖子草稿', '正在生成公开论坛帖子草稿……');
         const operationToken = showAiLoading('正在生成论坛帖子草稿，请稍候…');
         setFeedback('正在生成论坛帖子草稿…', operationToken); renderPage();
         let result;
@@ -1019,10 +1032,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         catch { result = { ok: false }; }
         if (result?.ok && result.draft?.title && result.draft?.body) {
             forumGeneratedDrafts.set(group.UID, { title: result.draft.title, body: result.draft.body });
+            operationActivity.succeed(activityHandle, '公开论坛帖子草稿已生成。');
             setFeedback('论坛帖子草稿已生成，尚未发布。', operationToken);
             showAiResult(true, '论坛帖子草稿已生成，尚未发布。', operationToken);
         } else {
             const message = result?.message || describeActionFailure(result);
+            operationActivity.fail(activityHandle, '论坛帖子草稿未生成，请稍后再试。');
             setFeedback(message, operationToken);
             showAiResult(false, message || '论坛帖子草稿未生成，请稍后重试。', operationToken);
         }
@@ -1094,11 +1109,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             interactive,
         });
     }
-    function openPrivateChat(sessionUid) {
+    function openPrivateChat(sessionUid, { preserveOperation = false } = {}) {
         const session = messageSessionByUid(sessionUid);
         if (!session) {
             activeMessageSessionUid = '';
-            setActivePage('messages');
+            setActivePage('messages', { preserveOperation });
             return;
         }
         if (activeMessageSessionUid !== session.sessionUid) {
@@ -1107,7 +1122,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             activeMeetupSessionUid = '';
         }
         activeMessageSessionUid = session.sessionUid;
-        setActivePage('private_chat');
+        setActivePage('private_chat', { preserveOperation });
     }
     function buildMessagesPage() {
         const sessions = messageSessions();
@@ -1679,7 +1694,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             return section;
         }
         const list = element('div', { className: 'yl-operation-console-list' });
-        const labels = { running: '进行中', success: '已完成', failure: '未完成' };
+        const labels = { running: '进行中', success: '已完成', failure: '未完成', dismissed: '已关闭' };
         for (const entry of snapshot.entries) {
             const card = element('article', { className: 'yl-operation-console-entry' });
             card.dataset.status = entry.status;
@@ -1756,6 +1771,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     async function runInitialRecommendationCandidate() {
         if (typeof actionBridge.runRecommendationInitialCandidate !== 'function') { setFeedback('随机创建尚未就绪。'); renderPage(); return; }
         refreshing = true;
+        const activityHandle = operationActivity.start('首页推荐', '正在生成首位候选人……');
         const operationToken = showAiLoading('正在生成首位候选人，请稍候…');
         setFeedback('正在生成下一位候选人…', operationToken); renderPage();
         let result;
@@ -1763,6 +1779,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         catch { result = { ok: false }; }
         refreshing = false;
         const message = result?.ok ? '已通过成年人校验，首位候选人已加入队列。' : (result?.message || describeActionFailure(result));
+        if (result?.ok) operationActivity.succeed(activityHandle, '首位候选人已通过成年人校验并加入队列。');
+        else operationActivity.fail(activityHandle, '首位候选人未生成，请稍后再试。');
         setFeedback(message, operationToken);
         showAiResult(Boolean(result?.ok), message || '候选人未生成，请稍后重试。', operationToken);
         refreshState();
@@ -1771,6 +1789,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const isRefresh = kind === 'refresh';
         const advancesCandidate = kind === 'like' || kind === 'favorite' || kind === 'dislike';
         refreshing = isRefresh || advancesCandidate;
+        const refreshActivityHandle = isRefresh ? operationActivity.start('首页推荐', '正在生成下一位候选人……') : null;
         const operationToken = isRefresh ? showAiLoading('正在生成下一位候选人，请稍候…') : setFeedback('正在保存操作…');
         setFeedback(isRefresh ? '正在生成下一位候选人…' : '正在保存操作…', operationToken); renderPage();
         let result;
@@ -1781,6 +1800,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!result?.ok) {
             refreshing = false;
             const message = result?.message || describeActionFailure(result);
+            if (refreshActivityHandle) operationActivity.fail(refreshActivityHandle, '下一位候选人未生成，请稍后再试。');
             setFeedback(message, operationToken);
             if (isRefresh) showAiResult(false, message || '候选人未生成，请稍后重试。', operationToken);
             refreshState();
@@ -1789,6 +1809,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!advancesCandidate) {
             refreshing = false;
             const message = isRefresh ? '下一位候选人已生成。' : '已取消收藏。';
+            if (refreshActivityHandle) operationActivity.succeed(refreshActivityHandle, '下一位候选人已生成。');
             setFeedback(message, operationToken);
             if (isRefresh) showAiResult(true, message, operationToken);
             refreshState();
@@ -1801,13 +1822,24 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             refreshState();
             return;
         }
+        const nextActivityHandle = operationActivity.start('首页推荐', '正在生成下一位候选人……');
+        showAiLoading('正在生成下一位候选人，请稍候…', operationToken);
+        setFeedback('正在生成下一位候选人…', operationToken); renderPage();
         let nextResult;
         try { nextResult = await actionBridge.runRecommendationInitialCandidate(); } catch { nextResult = { ok: false }; }
         refreshing = false;
         if (!nextResult?.ok) {
             const reason = nextResult?.message || describeActionFailure(nextResult) || '未知错误';
-            setFeedback(`${savedLabel}，但下一位候选人生成失败：${reason}`, operationToken);
-        } else setFeedback(`${savedLabel}，下一位候选人已生成。`, operationToken);
+            operationActivity.fail(nextActivityHandle, '下一位候选人未生成，请稍后再试。');
+            const message = `${savedLabel}，但下一位候选人生成失败：${reason}`;
+            setFeedback(message, operationToken);
+            showAiResult(false, message, operationToken);
+        } else {
+            operationActivity.succeed(nextActivityHandle, '下一位候选人已生成。');
+            const message = `${savedLabel}，下一位候选人已生成。`;
+            setFeedback(message, operationToken);
+            showAiResult(true, message, operationToken);
+        }
         refreshState();
     }
     async function startFavoritePrivateChat(candidate) {
@@ -1820,7 +1852,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         let result;
         try { result = await actionBridge.runMvuAction('start_private_chat', candidate.uid); }
         catch { result = { ok: false }; }
-        if (isDestroyed || requestId !== interactionGeneration) return;
+        if (isDestroyed || requestId !== interactionGeneration) {
+            operationActivity.dismiss(activityHandle, '提示已关闭，结果未展示。');
+            return;
+        }
         if (!result?.ok) {
             const message = result?.message || describeActionFailure(result) || '私聊邀请未完成，请稍后再试。';
             operationActivity.fail(activityHandle, '私聊邀请未完成，请稍后再试。');
@@ -1830,18 +1865,18 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         refreshState();
         if (result.invitationOutcome === 'declined') {
-            if (activePage === pageAtStart) setActivePage('favorites');
+            if (activePage === pageAtStart) setActivePage('favorites', { preserveOperation: true });
             operationActivity.fail(activityHandle, '对方暂未接受私聊邀请。');
-            showRomanceResult({ declined: true, title: '这次暂未靠近', message: 'TA 暂时没有接受这次私聊邀请。' });
+            showRomanceResult({ declined: true, title: '这次暂未靠近', message: 'TA 暂时没有接受这次私聊邀请。' }, operationToken);
             return;
         }
         const sessionUid = result.sessionUid || (currentView.messageSessions ?? []).find((session) => session.npcUid === candidate.uid)?.sessionUid;
         if (activePage === pageAtStart) {
-            if (sessionUid) openPrivateChat(sessionUid);
-            else setActivePage('messages');
+            if (sessionUid) openPrivateChat(sessionUid, { preserveOperation: true });
+            else setActivePage('messages', { preserveOperation: true });
         }
         operationActivity.succeed(activityHandle, '私聊邀请已接受，已打开消息。');
-        showRomanceResult({ accepted: true, title: '心意被接住了', message: '私聊已建立，去打个招呼吧。' });
+        showRomanceResult({ accepted: true, title: '心意被接住了', message: '私聊已建立，去打个招呼吧。' }, operationToken);
     }
 
 
@@ -1882,6 +1917,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     renderPage();
     return Object.freeze({
         refreshState,
-        destroy() { isDestroyed = true; interactionGeneration += 1; hideOperationDialog(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { isDestroyed = true; hideOperationDialog(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }

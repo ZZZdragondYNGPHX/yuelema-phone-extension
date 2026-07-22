@@ -135,6 +135,10 @@ export function createOperationActivity({ maxEntries, now = Date.now } = {}) {
             return update(handle, 'failure', message);
         },
 
+        dismiss(handle, message) {
+            return update(handle, 'dismissed', message);
+        },
+
         clear() {
             if (entries.length === 0) return false;
             entries.length = 0;

@@ -51,6 +51,16 @@ function click(node) {
     node.dispatchEvent(new Event('click'));
 }
 
+function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+}
+
 test('groups page renders public projections only and existing-chat entry only navigates', () => {
     const events = [];
     const writes = { parse: 0, replace: 0, event: 0 };
@@ -179,7 +189,7 @@ test('about entry shows a version dialog and reveals the SFW/NSFW slider after f
             click(about());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-        assert.match(dialog.textContent, /约了吗 0\.1\.22/u);
+            assert.match(dialog.textContent, /约了吗 0\.1\.23/u);
         }
         await flushUi();
 
@@ -251,7 +261,10 @@ test('group and forum generators retain drafts in UI memory and never expose a p
         assert.deepEqual(calls[0], { kind: 'group', request: { groupUid: 'group_city', playerMessage: '今晚聊电影吗？' } });
         assert.match(miniDom.document.body.textContent, /这是一条公开群聊草稿/u);
         assert.match(miniDom.document.body.textContent, /未发布，不会写入软件状态/u);
-
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        assert.match(miniDom.document.querySelector('.yl-operation-console').textContent, /群聊草稿/u);
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('论坛')));
         const forumInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('placeholder') === '输入一个公开发帖主题…');
@@ -263,8 +276,44 @@ test('group and forum generators retain drafts in UI memory and never expose a p
         const dom = miniDom.document.body.textContent;
         assert.match(dom, /公开论坛草稿/u);
         assert.match(dom, /待审核草稿，未发布且不会写入软件状态/u);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        assert.match(miniDom.document.querySelector('.yl-operation-console').textContent, /论坛帖子草稿/u);
         assert.equal(/发布帖子|发布群聊|确认发布/u.test(dom), false, 'UI must not pretend a draft is persisted');
         assert.deepEqual(writes, { mvu: 0, private: 0, meetup: 0 });
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('closing a generic AI draft dialog does not reopen it when the result arrives', async () => {
+    const request = deferred();
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        generateGroupChatDraft() { return request.promise; },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-closed-group-draft-dialog', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '生成群聊草稿'));
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+        click(dialog.querySelector('.yl-dialog-close'));
+        request.resolve({ ok: true, draft: { reply: '关闭提示后生成的公开群聊草稿。' } });
+        await flushUi();
+
+        assert.equal(dialog.hidden, true, '通用 AI 结果不得重新打开已关闭的弹窗');
+        assert.match(miniDom.document.body.textContent, /关闭提示后生成的公开群聊草稿/u);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        const consoleText = miniDom.document.querySelector('.yl-operation-console').textContent;
+        assert.match(consoleText, /群聊草稿.*已完成.*公开群聊草稿已生成/u);
     } finally {
         mounted.destroy();
     }

@@ -99,6 +99,17 @@ test('updates require the original running handle and cannot rewrite completed e
     assert.equal(activity.snapshot().entries[0].message, '灵魂匹配成功。');
 });
 
+test('dismissed operations settle without being reported as failures', () => {
+    const activity = createOperationActivity({ now: () => 0 });
+    const handle = activity.start('灵魂匹配', '灵魂匹配中……');
+
+    assert.equal(activity.dismiss(handle, '提示已关闭，结果未展示。'), true);
+    assert.deepEqual(activity.snapshot().current, []);
+    assert.equal(activity.snapshot().entries[0].status, 'dismissed');
+    assert.equal(activity.snapshot().entries[0].message, '提示已关闭，结果未展示。');
+    assert.equal(activity.succeed(handle, '不应覆盖已关闭的提示。'), false);
+});
+
 test('unsafe raw details and non-display values are rejected without entering snapshots', () => {
     const activity = createOperationActivity({ now: () => 0 });
     const rejected = [
