@@ -220,6 +220,7 @@ test('feature option entries are scoped to each requested app surface', () => {
     });
     const pageOption = () => miniDom.document.querySelector('.yl-feature-options');
     const closeBinding = () => click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关闭功能预设选项'));
+    const closeForumSettings = () => click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关闭心动社区设置'));
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         assert.ok(pageOption(), '首页应有独立选项入口');
@@ -250,8 +251,10 @@ test('feature option entries are scoped to each requested app surface', () => {
         click(backButton());
         click(buttonByText('心动社区'));
         click(pageOption());
-        assert.ok(miniDom.document.querySelector('[name="forum-quick-connection"]'));
-        closeBinding();
+        assert.ok(miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启心动社区自动更新'));
+        assert.ok(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '配置心动社区内容提示词预设'));
+        assert.equal(miniDom.document.querySelector('[name="forum-quick-connection"]'), null);
+        closeForumSettings();
 
         click(buttonByPage('profile'));
         click(buttonByText('创建角色'));

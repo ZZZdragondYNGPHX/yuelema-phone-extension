@@ -2110,6 +2110,11 @@ body.reduced-motion .yl-phone-extension *, body.reduced-motion .yl-phone-extensi
 .yl-group-auto-content { display: grid; gap: 12px; }
 .yl-group-auto-content > p { margin: 0; color: var(--yl-muted, #b9acc6); font-size: .75rem; line-height: 1.5; }
 .yl-group-auto-switch { justify-self: start; }
+.yl-forum-settings-dialog { width: min(350px, calc(100vw - 32px)); }
+.yl-forum-settings-content { display: grid; gap: 12px; }
+.yl-forum-settings-content > p { margin: 0; color: var(--yl-muted, #b9acc6); font-size: .75rem; line-height: 1.5; }
+.yl-group-room-more-menu .is-danger { color: #ffd5de; }
+.yl-group-room-more-menu .is-danger:hover, .yl-group-room-more-menu .is-danger:focus-visible { color: #fff; background: rgb(255 92 116 / 16%); }
 .yl-local-conversation-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 13px; border: 1px solid rgb(255 120 170 / 28%); border-radius: 18px; background: radial-gradient(circle at 100% 0%, rgb(255 78 142 / 23%), transparent 45%), rgb(255 255 255 / 4%); }
 .yl-local-conversation-hero-copy { display: grid; min-width: 0; gap: 4px; }
 .yl-local-conversation-hero-copy h2 { margin: 0; font-size: 1.05rem; }

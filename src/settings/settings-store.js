@@ -8,7 +8,7 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 6;
+export const SETTINGS_SCHEMA_VERSION = 7;
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -34,7 +34,7 @@ const SECRET_FIELD_NAMES = new Set([
 ]);
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
-const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 5]);
+const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 5, 6]);
 
 export class YueLeMaSettingsError extends Error {
     constructor(code, message) {
@@ -262,6 +262,20 @@ function normalizeFunctionModeBindings(input, functionBindings, defaults, connec
     return functionModeBindings;
 }
 
+/** v0.1.27 had no dedicated group/forum content presets. Seed only blank v6 mode bindings. */
+function seedGroupForumPromptBindingsFromV6(functionModeBindings, sourceVersion, promptById) {
+    if (sourceVersion !== 6) return functionModeBindings;
+    for (const functionKey of ['group_chat', 'forum']) {
+        for (const contentMode of CONTENT_MODES) {
+            const current = functionModeBindings[functionKey][contentMode];
+            if (current.promptPresetId !== null) continue;
+            const fallback = modeBindingForDefault(functionKey, contentMode, promptById);
+            functionModeBindings[functionKey][contentMode] = { ...current, promptPresetId: fallback.promptPresetId };
+        }
+    }
+    return functionModeBindings;
+}
+
 function normalizeKeywordWeights(input) {
     if (!Array.isArray(input) || input.length > MAX_PERSONALIZATION_KEYWORDS) {
         fail('INVALID_PERSONALIZATION', '个性化内容偏好数量无效。');
@@ -383,14 +397,14 @@ export function normalizeSettingsDocument(input) {
         functionBindings.character_full_authoring = { ...legacyCharacterBinding };
     }
 
-    const functionModeBindings = normalizeFunctionModeBindings(
+    const functionModeBindings = seedGroupForumPromptBindingsFromV6(normalizeFunctionModeBindings(
         candidate.functionModeBindings,
         functionBindings,
         defaults,
         connectionIds,
         promptById,
         { migrateModeMismatch: isLegacySchema },
-    );
+    ), candidate.schemaVersion, promptById);
 
     const chatSummary = normalizeChatSummary(candidate.chatSummary);
     const personalization = normalizePersonalization(candidate.personalization);

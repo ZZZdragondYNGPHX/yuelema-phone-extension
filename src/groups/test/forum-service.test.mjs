@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildForumContext, buildForumHomeRefreshContext, buildForumPostUpdateContext, generateForumHomeRefresh, generateForumPostConversationUpdate, generateForumPostDraft } from '../forum-service.js';
+import { buildForumContext, buildForumExistingPostsUpdateContext, buildForumHomeRefreshContext, buildForumPostUpdateContext, generateForumExistingPostsUpdate, generateForumHomeRefresh, generateForumPostConversationUpdate, generateForumPostDraft } from '../forum-service.js';
 
 function promptPreset(entries) {
     return { enabled: true, name: '论坛规则', content: JSON.stringify({ schema: 'yuelema.prompt-entries', schemaVersion: 1, entries }) };
@@ -138,6 +138,39 @@ test('forum home refresh rejects a model batch that omits or duplicates a fixed 
         llmClient: { async chat() { return { text: JSON.stringify({ participants: [], posts: duplicated }) }; } },
     });
     assert.equal(repeated.code, 'forum_update_response_invalid');
+});
+
+test('forum automatic update receives only numbered public post slots, updates every existing post, and keeps its frame after the preset', async () => {
+    const posts = forumRefreshPosts('许青').map((post, index) => ({
+        id: `local_post_${index + 1}`,
+        ...post,
+        author: localProfile('许青'), participants: [], messages: [], summaries: [],
+        summaryStatus: { status: 'idle', startFloor: 0, endFloor: 0, message: '' }, createdAt: '2026-07-22T04:00:00.000Z',
+    }));
+    let request;
+    const built = buildForumExistingPostsUpdateContext({ state: state(), posts });
+    assert.equal(built.ok, true);
+    assert.doesNotMatch(JSON.stringify(built.context), /local_post_|玩家隐藏资料|成员隐藏资料|不得进入论坛/u);
+    const result = await generateForumExistingPostsUpdate({
+        state: state(), posts, settingsStore: { resolveFunction: settings },
+        llmClient: { async chat(input) {
+            request = input;
+            return { text: JSON.stringify({ updates: posts.map((post, index) => ({ slot: index + 1, title: `更新后的${post.title}`, body: `第${index + 1}篇已有帖子持续有新的线上动态。`, tags: ['更新'] })) }) };
+        } },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.update.updates.length, 5);
+    assert.equal(result.update.updates[0].slot, 1);
+    const system = request.messages[0].content;
+    assert.match(system, /既有帖子自动更新模型/u);
+    assert.ok(system.indexOf('只提供可审核草稿') < system.indexOf('严格形状'), '预设只能影响内容，固定 JSON 合同必须后置且优先');
+    assert.doesNotMatch(JSON.stringify(request.messages), /local_post_|玩家隐藏资料|成员隐藏资料|不得进入论坛/u);
+
+    const rejected = await generateForumExistingPostsUpdate({
+        state: state(), posts, settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ updates: [{ slot: 1, title: '少了一篇', body: '不应写入。', tags: [] }] }) }; } },
+    });
+    assert.equal(rejected.code, 'forum_update_response_invalid');
 });
 
 test('opened forum posts use forum binding for local comment updates and reject non-adult participants', async () => {

@@ -7,7 +7,7 @@ import { generateCandidateMatchDraft as generateCandidateMatchDraftService, gene
 import { materializeCandidateMatchDraft } from './recommendation/match-candidate-materializer.js';
 import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate } from './characters/character-authoring-service.js';
 import { generateGroupChatReply, generateGroupChatUpdate as generateGroupChatUpdateService } from './groups/group-chat-service.js';
-import { generateForumHomeRefresh as generateForumHomeRefreshService, generateForumPostConversationUpdate as generateForumPostConversationUpdateService, generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
+import { generateForumExistingPostsUpdate as generateForumExistingPostsUpdateService, generateForumHomeRefresh as generateForumHomeRefreshService, generateForumPostConversationUpdate as generateForumPostConversationUpdateService, generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
 import { generateLocalConversationSummary as generateLocalConversationSummaryService } from './groups/local-conversation-summary-service.js';
 
 const PASSIVE_KINDS = new Set([
@@ -631,6 +631,20 @@ export function createActionBridge({
         }
     }
 
+    /** Updates the current browser-local forum posts without creating new ones. */
+    async function generateForumExistingPostsUpdate({ posts, signal } = {}) {
+        const key = actionKey('forum_existing_update', '');
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const read = readLatestState({ mvu: resolveMvu(mvu) });
+            if (!read.ok) return read;
+            return await generateForumExistingPostsUpdateService({ state: read.state, posts, settingsStore, llmClient, signal });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
     /** Generates local-only comment updates for an opened forum post. */
     async function generateForumPostConversationUpdate({ postId, post, history, signal } = {}) {
         const key = actionKey('forum_post_update', postId);
@@ -747,7 +761,7 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
 }
 
 

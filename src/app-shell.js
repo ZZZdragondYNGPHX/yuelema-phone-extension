@@ -9,9 +9,9 @@ import { createLauncherDragController } from './launcher-drag.js';
 import { createImageManagerPanel } from './images/image-manager-panel.js';
 import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
-import { DEFAULT_GROUP_AUTO_SETTINGS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
+import { DEFAULT_FORUM_AUTO_SETTINGS, DEFAULT_GROUP_AUTO_SETTINGS, FORUM_AUTO_UPDATE_INTERVAL_SECONDS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 
-const UI_VERSION = '0.1.27';
+const UI_VERSION = '0.1.28';
 const PANEL_DRAG_THRESHOLD = 8;
 const FORUM_PULL_THRESHOLD = 88;
 const FORUM_WHEEL_RELEASE_DELAY = 180;
@@ -74,6 +74,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let activeForumPostId = '';
     let activeForumChannelId = '';
     let groupListMenuOpen = false;
+    let groupRoomMenuOpen = false;
+    let groupRoomConfirmation = '';
+    let groupRoomConfirmationKey = '';
+    let groupRoomDestructiveKey = '';
     let groupSearchOpen = false;
     let groupSearchQuery = '';
     let groupCreateName = '';
@@ -87,6 +91,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let forumWheelPullState = null;
     let forumInteractionAbortController = null;
     let forumRefreshing = false;
+    let forumAutoTimer = null;
+    let forumAutoGeneration = 0;
     let localSummaryTarget = null;
     let localSummaryBusy = false;
     let groupForumSnapshot = (() => {
@@ -223,7 +229,18 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     append(groupAutoTitlebar, [groupAutoTitle, groupAutoClose]);
     append(groupAutoDialog, [groupAutoTitlebar, groupAutoContent]);
 
-    append(root, [launcher, panel, helpPopover, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog]);
+    const forumSettingsDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-forum-settings-dialog', hidden: true });
+    forumSettingsDialog.setAttribute('role', 'dialog');
+    forumSettingsDialog.setAttribute('aria-modal', 'false');
+    forumSettingsDialog.setAttribute('aria-label', '心动社区设置');
+    const forumSettingsTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const forumSettingsTitle = element('h2', { text: '心动社区设置' });
+    const forumSettingsClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭心动社区设置' });
+    const forumSettingsContent = element('div', { className: 'yl-settings-panel yl-forum-settings-content' });
+    append(forumSettingsTitlebar, [forumSettingsTitle, forumSettingsClose]);
+    append(forumSettingsDialog, [forumSettingsTitlebar, forumSettingsContent]);
+
+    append(root, [launcher, panel, helpPopover, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog, forumSettingsDialog]);
     documentRef.body.appendChild(root);
 
     const launcherDrag = createLauncherDragController({ launcher, documentRef, threshold: 8, edgeGap: 0 });
@@ -320,7 +337,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (open) refreshState();
         else {
             stopGroupAutoTimer();
+            stopForumAutoTimer();
             cancelForumPullInteractions();
+            closeGroupAutoDialog();
+            resetGroupRoomMenu();
+            closeForumSettingsDialog();
             privateChatRequestGeneration += 1;
             activeChatToolsSessionUid = '';
             activeMeetupSessionUid = '';
@@ -344,16 +365,17 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             clearSummaryToast();
         }
         if (!preserveOperation) hideOperationDialog();
-        if (activePage === 'group_chat_room' && pageId !== 'group_chat_room') stopGroupAutoTimer();
-        if (activePage === 'group_forum' && pageId !== 'group_forum') cancelForumPullInteractions();
+        if (activePage === 'group_chat_room' && pageId !== 'group_chat_room') { stopGroupAutoTimer(); closeGroupAutoDialog(); resetGroupRoomMenu(); }
+        if (activePage === 'group_forum' && pageId !== 'group_forum') { cancelForumPullInteractions(); stopForumAutoTimer(); closeForumSettingsDialog(); }
         activePage = pageId;
         actionBridge.emit('navigate', { page: pageId });
         renderPage();
         syncGroupAutoTimer();
+        syncForumAutoTimer();
     }
     function refreshState() {
         currentView = createPhoneView(readState());
-        if (open) { renderPage(); syncGroupAutoTimer(); }
+        if (open) { renderPage(); syncGroupAutoTimer(); syncForumAutoTimer(); }
         return currentView;
     }
     function feedbackPresentation(message) {
@@ -676,8 +698,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function buildFeatureOptionsButton(pageId) {
         const features = FEATURE_BINDING_FOR_PAGE[pageId];
         if (!features) return null;
-        const button = element('button', { className: 'yl-feature-options', type: 'button', text: '设置', ariaLabel: '配置' + (PAGE_COPY[pageId]?.title || '此功能') + '预设' });
-        listen(button, button, 'click', () => openFeatureBinding(features, (PAGE_COPY[pageId]?.title || '功能') + '选项'), abortController.signal);
+        const isForumHome = pageId === 'group_forum';
+        const button = element('button', { className: 'yl-feature-options', type: 'button', text: '设置', ariaLabel: isForumHome ? '打开心动社区设置' : ('配置' + (PAGE_COPY[pageId]?.title || '此功能') + '预设') });
+        listen(button, button, 'click', () => {
+            if (isForumHome) openForumSettingsDialog();
+            else openFeatureBinding(features, (PAGE_COPY[pageId]?.title || '功能') + '选项');
+        }, abortController.signal);
         return button;
     }
     function buildPageHeading(copy, pageId) {
@@ -693,6 +719,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (featureOptions) row.appendChild(featureOptions);
         const groupListAction = buildGroupListActionButton(pageId);
         if (groupListAction) row.appendChild(groupListAction);
+        const groupRoomAction = buildGroupRoomActionButton(pageId);
+        if (groupRoomAction) row.appendChild(groupRoomAction);
         return row;
     }
     function renderPage() {
@@ -1058,6 +1086,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function defaultLocalConversation() {
         return { messages: [], summaries: [], summaryStatus: { status: 'idle', startFloor: 0, endFloor: 0, message: '' } };
     }
+    function forumAutoSettings() {
+        const saved = groupForumSnapshot?.forumAuto;
+        return saved && typeof saved === 'object' && saved.enabled === true
+            ? { enabled: true }
+            : { ...DEFAULT_FORUM_AUTO_SETTINGS };
+    }
     function localSummaryInfo(conversation) {
         const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
         const summaries = Array.isArray(conversation?.summaries) ? conversation.summaries : [];
@@ -1081,6 +1115,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function currentGroupCards() {
         const cards = [];
         const seen = new Set();
+        const exitedExternalGroups = new Set(Array.isArray(groupForumSnapshot?.exitedExternalGroupKeys) ? groupForumSnapshot.exitedExternalGroupKeys : []);
         for (const group of Array.isArray(currentView.groups) ? currentView.groups : []) {
             const members = [];
             for (const person of Array.isArray(group.成员) ? group.成员 : []) {
@@ -1089,6 +1124,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             if (!group?.主题 || !group?.描述) continue;
             let cacheKey;
             try { cacheKey = externalGroupCacheKey(group); } catch { continue; }
+            if (exitedExternalGroups.has(cacheKey)) continue;
             if (seen.has(cacheKey)) continue;
             seen.add(cacheKey);
             cards.push(Object.freeze({
@@ -1275,11 +1311,131 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             operationActivity.fail(activity, '聊天群自动更新未保存到本地缓存。');
         }
     }
+    function closeForumSettingsDialog() {
+        forumSettingsDialog.hidden = true;
+        forumSettingsContent.replaceChildren();
+    }
+    function openForumSettingsDialog() {
+        const current = forumAutoSettings();
+        forumSettingsTitle.textContent = '心动社区设置';
+        forumSettingsContent.replaceChildren();
+        forumSettingsContent.appendChild(element('p', {
+            className: 'yl-phone-page-description',
+            text: `自动更新开启后，仅在心动社区首页打开期间每 ${FORUM_AUTO_UPDATE_INTERVAL_SECONDS}s 改写所有已存在的本地帖子；不会生成新帖子。新帖子只能通过顶部下拉/向上滚轮刷新生成。`,
+        }));
+        const enabledField = element('label', { className: 'yl-switch yl-group-auto-switch' });
+        const enabled = element('input', { type: 'checkbox', checked: current.enabled === true, ariaLabel: '开启心动社区自动更新' });
+        enabledField.appendChild(enabled);
+        const enabledLabel = element('label', { className: 'yl-settings-field' }); append(enabledLabel, [element('span', { text: '开启自动更新' }), enabledField]);
+        forumSettingsContent.appendChild(enabledLabel);
+        const contentPreset = element('button', {
+            className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: `内容提示词预设（${currentView.mode === 'NSFW' ? 'NSFW' : 'SFW'}）`,
+            ariaLabel: '配置心动社区内容提示词预设', disabled: !settingsStore || typeof settingsStore.snapshot !== 'function',
+        });
+        const presetNote = element('p', { className: 'yl-settings-summary', text: '提示词预设只能影响帖子和评论的内容风格；频道、现有帖子槽位、角色资料和 JSON 结构均固定在代码中。' });
+        listen(contentPreset, contentPreset, 'click', () => {
+            closeForumSettingsDialog();
+            openFeatureBinding([{ key: 'forum', title: '心动社区内容' }], '心动社区内容预设');
+        }, abortController.signal);
+        forumSettingsContent.appendChild(contentPreset); forumSettingsContent.appendChild(presetNote);
+        const actions = element('div', { className: 'yl-settings-actions' });
+        const cancel = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '取消' });
+        const save = element('button', { className: 'yl-settings-button', type: 'button', text: '确定' });
+        listen(cancel, cancel, 'click', closeForumSettingsDialog, abortController.signal);
+        listen(save, save, 'click', () => {
+            if (!groupForumStore?.setForumAuto) { setFeedback('心动社区自动更新设置暂不可用。'); return; }
+            void (async () => {
+                try {
+                    await groupForumStore.setForumAuto({ settings: { enabled: Boolean(enabled.checked) } });
+                    await syncGroupForumSnapshot({ rerender: false });
+                    closeForumSettingsDialog();
+                    setFeedback(enabled.checked ? `心动社区自动更新已开启：每 ${FORUM_AUTO_UPDATE_INTERVAL_SECONDS}s 更新已有帖子。` : '心动社区自动更新已关闭；下拉刷新仍可生成新帖子。');
+                    renderPage(); syncForumAutoTimer();
+                } catch { setFeedback('心动社区自动更新设置没有保存，请稍后重试。'); }
+            })();
+        }, abortController.signal);
+        append(actions, [cancel, save]); forumSettingsContent.appendChild(actions);
+        forumSettingsDialog.hidden = false;
+    }
+    function stopForumAutoTimer() {
+        if (forumAutoTimer !== null) clearInterval(forumAutoTimer);
+        forumAutoTimer = null;
+        forumAutoGeneration += 1;
+    }
+    function syncForumAutoTimer() {
+        const auto = forumAutoSettings();
+        if (!open || activePage !== 'group_forum' || auto.enabled !== true || !socialPosts().length) { stopForumAutoTimer(); return; }
+        if (forumAutoTimer !== null) return;
+        const generation = ++forumAutoGeneration;
+        forumAutoTimer = setInterval(() => { void runForumExistingPostsAutoUpdate(generation); }, FORUM_AUTO_UPDATE_INTERVAL_SECONDS * 1000);
+    }
+    async function runForumExistingPostsAutoUpdate(generation) {
+        if (isDestroyed || !open || activePage !== 'group_forum' || generation !== forumAutoGeneration || forumAutoSettings().enabled !== true) return;
+        const posts = socialPosts();
+        if (!posts.length || !actionBridge.generateForumExistingPostsUpdate || actionBridge.isPending?.('forum_existing_update', '')) return;
+        const activity = operationActivity.start('心动社区自动更新', '正在更新所有已存在的本地帖子，不会生成新帖子。');
+        let result;
+        try { result = await actionBridge.generateForumExistingPostsUpdate({ posts }); }
+        catch { result = { ok: false }; }
+        if (isDestroyed || generation !== forumAutoGeneration || activePage !== 'group_forum') {
+            operationActivity.dismiss(activity, '心动社区已离开，自动更新结果未展示。');
+            return;
+        }
+        if (!result?.ok || !result.update) {
+            operationActivity.fail(activity, '心动社区自动更新未完成。');
+            return;
+        }
+        try {
+            await groupForumStore?.updateExistingForumPosts?.({ update: result.update });
+            await syncGroupForumSnapshot({ rerender: false });
+            operationActivity.succeed(activity, '已更新所有现有本地帖子；没有生成新帖子。');
+            if (open && activePage === 'group_forum' && generation === forumAutoGeneration) renderPage();
+        } catch {
+            operationActivity.fail(activity, '心动社区自动更新没有保存到本地缓存。');
+        }
+    }
     function buildGroupListActionButton(pageId) {
         if (pageId !== 'group_chat') return null;
         const button = element('button', { className: 'yl-group-more-button', type: 'button', text: '⋮', ariaLabel: '聊天群创建与查找' });
         listen(button, button, 'click', () => { groupListMenuOpen = !groupListMenuOpen; renderPage(); }, abortController.signal);
         return button;
+    }
+    function resetGroupRoomMenu() {
+        groupRoomMenuOpen = false;
+        groupRoomConfirmation = '';
+        groupRoomConfirmationKey = '';
+    }
+    function buildGroupRoomActionButton(pageId) {
+        if (pageId !== 'group_chat_room') return null;
+        const group = activeGroupCard();
+        if (!group) return null;
+        const wrapper = element('div', { className: 'yl-private-chat-more-wrap yl-group-room-more-wrap' });
+        const expanded = groupRoomMenuOpen && activeGroupCacheKey === group.cacheKey;
+        const more = element('button', {
+            className: 'yl-private-chat-more yl-group-room-more', type: 'button', text: '…',
+            ariaLabel: `打开${group.name}的更多操作`, disabled: groupRoomDestructiveKey === group.cacheKey,
+        });
+        more.setAttribute('aria-haspopup', 'menu');
+        more.setAttribute('aria-expanded', String(expanded));
+        listen(more, more, 'click', () => {
+            groupRoomMenuOpen = !expanded;
+            if (!groupRoomMenuOpen) { groupRoomConfirmation = ''; groupRoomConfirmationKey = ''; }
+            renderPage();
+        }, abortController.signal);
+        wrapper.appendChild(more);
+        if (expanded) {
+            const menu = element('div', { className: 'yl-private-chat-more-menu yl-group-room-more-menu', ariaLabel: `${group.name}更多操作` });
+            menu.setAttribute('role', 'menu');
+            const exit = element('button', { className: 'yl-private-chat-menu-item is-danger', type: 'button', text: '退出群聊', ariaLabel: '退出群聊并删除本地群数据' });
+            const clear = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '清空群历史', ariaLabel: '仅清空当前聊天群历史' });
+            const auto = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '自动更新设置', ariaLabel: '设置聊天群自动更新' });
+            for (const item of [exit, clear, auto]) item.setAttribute('role', 'menuitem');
+            listen(exit, exit, 'click', () => { groupRoomMenuOpen = false; groupRoomConfirmation = 'exit'; groupRoomConfirmationKey = group.cacheKey; renderPage(); }, abortController.signal);
+            listen(clear, clear, 'click', () => { groupRoomMenuOpen = false; groupRoomConfirmation = 'clear'; groupRoomConfirmationKey = group.cacheKey; renderPage(); }, abortController.signal);
+            listen(auto, auto, 'click', () => { groupRoomMenuOpen = false; openGroupAutoDialog(group); }, abortController.signal);
+            append(menu, [exit, clear, auto]); wrapper.appendChild(menu);
+        }
+        return wrapper;
     }
     function buildGroupChatPage() {
         const section = element('section', { className: 'yl-group-list-page' });
@@ -1386,6 +1542,57 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         meta.textContent = parts.join(' · ');
         return meta;
     }
+    function buildGroupRoomConfirmation(group) {
+        if (groupRoomConfirmationKey !== group.cacheKey || !['exit', 'clear'].includes(groupRoomConfirmation)) return null;
+        const exiting = groupRoomConfirmation === 'exit';
+        const pending = groupRoomDestructiveKey === group.cacheKey;
+        const confirmation = element('section', { className: exiting ? 'yl-chat-delete-confirmation yl-group-room-confirmation is-group-exit' : 'yl-chat-clear-confirmation yl-group-room-confirmation is-group-clear' });
+        if (exiting) {
+            append(confirmation, [
+                element('strong', { text: `退出${group.name}？` }),
+                element('p', { text: group.scope === 'local' ? '这会删除该本地群、聊天历史、自动更新设置、临时群友和群聊总结，无法在此界面恢复。' : '这只会删除本小手机中该群的本地缓存并从本地列表隐藏，不会修改 MVU 群组或酒馆正文。' }),
+            ]);
+        } else {
+            append(confirmation, [
+                element('strong', { text: '清空当前群历史？' }),
+                element('p', { text: '只会删除聊天消息、临时群友和群聊总结；群名、原成员与该群独立的自动更新设置会保留。' }),
+            ]);
+        }
+        const actions = element('div', { className: 'yl-chat-delete-actions' });
+        const cancel = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '取消', disabled: pending });
+        const confirm = element('button', { className: exiting ? 'yl-settings-button yl-chat-delete-confirm' : 'yl-settings-button yl-chat-clear-confirm', type: 'button', text: pending ? '正在处理…' : (exiting ? '确认退出' : '确认清空'), disabled: pending, ariaLabel: exiting ? '确认退出群聊' : '确认清空群历史' });
+        listen(cancel, cancel, 'click', () => { resetGroupRoomMenu(); renderPage(); }, abortController.signal);
+        listen(confirm, confirm, 'click', () => { void runGroupRoomDataAction(group, groupRoomConfirmation); }, abortController.signal);
+        append(actions, [cancel, confirm]); confirmation.appendChild(actions);
+        return confirmation;
+    }
+    async function runGroupRoomDataAction(group, kind) {
+        if (!group || groupRoomDestructiveKey || !['exit', 'clear'].includes(kind)) return;
+        const action = kind === 'exit' ? groupForumStore?.exitGroup : groupForumStore?.clearGroupHistory;
+        if (typeof action !== 'function') { setFeedback(kind === 'exit' ? '退出群聊功能暂不可用。' : '清空群历史功能暂不可用。'); return; }
+        groupRoomDestructiveKey = group.cacheKey;
+        stopGroupAutoTimer();
+        renderPage();
+        try {
+            if (kind === 'exit') await action({ key: group.cacheKey });
+            else await action({ key: group.cacheKey, title: group.name });
+            await syncGroupForumSnapshot({ rerender: false });
+            groupRoomDestructiveKey = '';
+            resetGroupRoomMenu();
+            if (kind === 'exit') {
+                activeGroupCacheKey = '';
+                setFeedback('已退出群聊并删除本地群数据。');
+                setActivePage('group_chat');
+            } else {
+                setFeedback('群历史已清空；该群自动更新设置已保留。');
+                renderPage(); syncGroupAutoTimer();
+            }
+        } catch {
+            groupRoomDestructiveKey = '';
+            setFeedback(kind === 'exit' ? '退出群聊未完成，请稍后重试。' : '群历史没有清空，请稍后重试。');
+            renderPage(); syncGroupAutoTimer();
+        }
+    }
     function buildGroupChatRoomPage() {
         const group = activeGroupCard();
         if (!group) return buildEmptyPlaceholder('当前聊天群已变化，请返回列表重新选择。', { icon: '◌' });
@@ -1394,13 +1601,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const hero = element('section', { className: 'yl-local-conversation-hero' });
         const copy = element('div', { className: 'yl-local-conversation-hero-copy' });
         append(copy, [element('h2', { text: group.name }), element('p', { text: group.description })]);
-        const actions = element('div', { className: 'yl-local-conversation-actions' });
         const auto = conversation.auto ?? DEFAULT_GROUP_AUTO_SETTINGS;
-        const autoButton = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: auto.enabled ? `自动 ${auto.intervalSeconds}s` : '自动更新', ariaLabel: '设置聊天群自动更新' });
+        const actions = element('div', { className: 'yl-local-conversation-actions' });
         const summary = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '聊天总结', disabled: !chatSummaryEnabled(), ariaLabel: '查看聊天群总结' });
-        listen(autoButton, autoButton, 'click', () => openGroupAutoDialog(group), abortController.signal);
         listen(summary, summary, 'click', () => { localSummaryTarget = { kind: 'group', id: group.cacheKey, title: group.name }; setActivePage('group_chat_summary'); }, abortController.signal);
-        append(actions, [autoButton, summary]); append(hero, [copy, actions]); section.appendChild(hero);
+        append(actions, [summary]); append(hero, [copy, actions]); section.appendChild(hero);
+        const confirmation = buildGroupRoomConfirmation(group);
+        if (confirmation) section.appendChild(confirmation);
         const participants = groupParticipants(group);
         const people = element('div', { className: 'yl-local-participant-strip', ariaLabel: '群成员' });
         for (const profile of participants.slice(0, 20)) {
@@ -1576,13 +1783,17 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const section = element('section', { className: 'yl-forum-home' });
         const pull = element('div', { className: forumRefreshing ? 'yl-forum-pull-indicator is-visible is-refreshing' : 'yl-forum-pull-indicator', text: forumRefreshing ? '正在刷新心动社区…' : '↻ 下拉刷新' });
         const selectedChannel = activeForumChannel();
+        const auto = forumAutoSettings();
         section.appendChild(pull); bindForumPullToRefresh(section, pull);
         const hero = element('section', { className: 'yl-forum-home-hero' });
         const heroTitle = selectedChannel ? `${selectedChannel.title} · 子区` : '心动社区 ♥';
         const heroDescription = selectedChannel ? `${selectedChannel.note} · 只显示该频道的本地帖子` : '分享生活 · 遇见心动的 TA';
+        const autoHint = auto.enabled
+            ? `自动更新已开启：每 ${FORUM_AUTO_UPDATE_INTERVAL_SECONDS}s 仅更新已有帖子。`
+            : '自动更新已关闭。';
         const pullHint = selectedChannel
-            ? `当前：${selectedChannel.title}；再点高亮频道返回全部动态。顶部可刷新全部五个频道。`
-            : '顶部：手机下拉松开；电脑向上滚动后停滚刷新全部频道。';
+            ? `当前：${selectedChannel.title}；再点高亮频道返回全部动态。顶部刷新才会新增五个频道帖子。${autoHint}`
+            : `顶部：手机下拉松开；电脑向上滚动后停滚才会新增五个频道帖子。${autoHint}`;
         append(hero, [element('h2', { text: heroTitle }), element('p', { text: heroDescription }), element('span', { className: 'yl-forum-pull-hint', text: pullHint })]); section.appendChild(hero);
         const channels = element('div', { className: 'yl-forum-channel-strip' });
         for (const channel of FORUM_CHANNELS) {
@@ -1597,7 +1808,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const posts = forumPostsForActiveChannel();
         if (!posts.length) {
             const channelName = selectedChannel?.title ?? '心动社区';
-            section.appendChild(buildEmptyPlaceholder(`${channelName}还没有本地帖子。请在顶部手机下拉松开，或电脑向上滚动后停滚；AI 会同时刷新五个频道。`, { icon: '↻' }));
+            section.appendChild(buildEmptyPlaceholder(`${channelName}还没有本地帖子。请在顶部手机下拉松开，或电脑向上滚动后停滚；这会新增五个频道各一篇帖子。`, { icon: '↻' }));
         }
         else {
             const feed = element('div', { className: 'yl-forum-feed' });
@@ -1632,7 +1843,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         try {
             await groupForumStore?.addForumRefresh?.({ update: result.update, communityProfiles: result.communityProfiles ?? [] });
             await syncGroupForumSnapshot({ rerender: false });
-            operationActivity.succeed(activity, '心动社区首页已刷新到本地缓存。'); renderPage();
+            operationActivity.succeed(activity, '心动社区首页已刷新到本地缓存。'); renderPage(); syncForumAutoTimer();
         } catch { operationActivity.fail(activity, '论坛首页更新没有保存到本地缓存。'); setFeedback('论坛首页更新没有保存到本地缓存。'); renderPage(); }
     }
     function buildForumPostPage() {
@@ -2922,6 +3133,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(avatarDialogClose, avatarDialogClose, 'click', closeAvatarDialog, abortController.signal);
     listen(groupMemberPickerClose, groupMemberPickerClose, 'click', closeGroupMemberPicker, abortController.signal);
     listen(groupAutoClose, groupAutoClose, 'click', closeGroupAutoDialog, abortController.signal);
+    listen(forumSettingsClose, forumSettingsClose, 'click', closeForumSettingsDialog, abortController.signal);
     listen(avatarFileButton, avatarFileButton, 'click', () => { avatarFileInput.click?.(); }, abortController.signal);
     listen(avatarFileInput, avatarFileInput, 'change', () => { void saveLocalAvatarFile(avatarFileInput.files?.[0]); }, abortController.signal);
     listen(avatarLinkButton, avatarLinkButton, 'click', saveLinkedAvatar, abortController.signal);
@@ -2937,8 +3149,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (!avatarDialog.hidden) closeAvatarDialog();
         else if (!groupMemberPickerDialog.hidden) closeGroupMemberPicker();
         else if (!groupAutoDialog.hidden) closeGroupAutoDialog();
+        else if (!forumSettingsDialog.hidden) closeForumSettingsDialog();
         else if (imageManagerPanel?.handleEscape?.()) { /* image manager handled it */ }
         else if (chatMoreMenuSessionUid) closeChatMoreMenu();
+        else if (groupRoomMenuOpen) { resetGroupRoomMenu(); renderPage(); }
         else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; }
         else if (open) setOpen(false);
     }, abortController.signal);
@@ -2948,6 +3162,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     renderPage();
     return Object.freeze({
         refreshState,
-        destroy() { isDestroyed = true; stopGroupAutoTimer(); cancelForumPullInteractions(); clearSummaryToast(); hideOperationDialog(); closeGroupMemberPicker(); closeGroupAutoDialog(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { isDestroyed = true; stopGroupAutoTimer(); stopForumAutoTimer(); cancelForumPullInteractions(); clearSummaryToast(); hideOperationDialog(); closeGroupMemberPicker(); closeGroupAutoDialog(); closeForumSettingsDialog(); resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }

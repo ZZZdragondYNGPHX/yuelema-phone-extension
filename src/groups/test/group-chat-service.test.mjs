@@ -124,6 +124,7 @@ test('group conversation update accepts only a compact local/public projection a
     assert.equal(result.update.participants[0].nickname, '周遥');
     assert.equal(result.update.messages[0].speaker, '周遥');
     assert.match(request.messages[1].content, /用户刚刚发言后的更新/u);
+    assert.ok(request.messages[0].content.indexOf('只写线上群聊') < request.messages[0].content.indexOf('严格形状'), '提示词预设只能影响内容，固定群聊合同必须后置');
     assert.doesNotMatch(JSON.stringify(request.messages), /玩家私密信息|NPC 私密信息|会话秘密|must-never-be-in-messages/u);
 });
 

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    GROUP_FORUM_SCHEMA_VERSION,
     GROUP_FORUM_STORAGE_KEY,
     GroupForumStoreError,
     createGroupForumStore,
@@ -79,6 +80,7 @@ test('browser-local group/forum store persists groups, temporary people, convers
     assert.equal(snapshot.threads[0].temporaryMembers[0].nickname, '周遥');
     assert.equal(snapshot.threads[0].messages.length, 2);
     assert.equal(snapshot.posts.length, 5);
+    assert.equal(snapshot.forumAuto.enabled, false);
     const savedPost = snapshot.posts.find((item) => item.title === '雨后的书店');
     assert.equal(savedPost?.messages.length, 2);
     assert.equal(savedPost?.summaries.length, 1);
@@ -91,6 +93,56 @@ test('browser-local group/forum store persists groups, temporary people, convers
     const serialized = await storage.getItem(GROUP_FORUM_STORAGE_KEY);
     assert.equal(typeof serialized, 'string');
     assert.doesNotMatch(serialized, /stat_data|对象UID|session-secret|UpdateVariable|JSONPatch/u);
+});
+
+test('group history can be cleared independently, leaving deletes browser-local group data, and forum auto settings migrate in place', async () => {
+    const storage = createMemoryGroupForumStorage();
+    await storage.setItem(GROUP_FORUM_STORAGE_KEY, JSON.stringify({
+        schema: 'yuelema.group-forum', schemaVersion: 1, nextId: 1, groups: [], threads: [], posts: [],
+    }));
+    const store = createGroupForumStore({ storage, now: CLOCK });
+    const migrated = await store.ready();
+    assert.equal(migrated.schemaVersion, GROUP_FORUM_SCHEMA_VERSION);
+    assert.deepEqual(migrated.forumAuto, { enabled: false });
+
+    const group = await store.createGroup({ name: '清理测试群', members: [profile('林澈')] });
+    await store.appendGroupUserMessage({ key: group.id, title: group.name, content: '这条消息会被清空。' });
+    await store.setGroupAuto({ key: group.id, title: group.name, settings: { enabled: true, intervalSeconds: 45 } });
+    await store.clearGroupHistory({ key: group.id, title: group.name });
+    let snapshot = await store.snapshot();
+    assert.equal(snapshot.groups.length, 1);
+    assert.equal(snapshot.threads[0].messages.length, 0);
+    assert.equal(snapshot.threads[0].auto.intervalSeconds, 45);
+
+    await store.setForumAuto({ settings: { enabled: true } });
+    assert.deepEqual((await store.snapshot()).forumAuto, { enabled: true });
+    await store.exitGroup({ key: group.id });
+    snapshot = await store.snapshot();
+    assert.equal(snapshot.groups.length, 0);
+    assert.equal(snapshot.threads.length, 0);
+
+    await store.exitGroup({ key: 'ext_1234abcd' });
+    assert.deepEqual((await store.snapshot()).exitedExternalGroupKeys, ['ext_1234abcd']);
+});
+
+test('forum automatic update replaces every existing post copy without creating a post or touching conversations', async () => {
+    const store = createGroupForumStore({ now: CLOCK });
+    await store.ready();
+    await store.addForumRefresh({ communityProfiles: [profile('林澈')], update: { participants: [], posts: forumRefreshPosts('林澈') } });
+    const before = await store.snapshot();
+    const target = before.posts.find((post) => post.title === '雨后的书店');
+    await store.appendForumUserComment({ postId: target.id, content: '评论会被保留。' });
+    await store.updateExistingForumPosts({ update: {
+        updates: before.posts.map((post, index) => ({ slot: index + 1, title: `自动更新 ${index + 1}`, body: `这是第 ${index + 1} 篇已经存在帖子的新文案。`, tags: ['自动更新'] })),
+    } });
+    const after = await store.snapshot();
+    assert.equal(after.posts.length, before.posts.length);
+    assert.equal(after.posts[0].title, '自动更新 1');
+    assert.equal(after.posts.find((post) => post.id === target.id)?.messages.length, 1);
+    await assert.rejects(
+        store.updateExistingForumPosts({ update: { updates: [{ slot: 1, title: '不完整', body: '不应写入。', tags: [] }] } }),
+        (error) => error instanceof GroupForumStoreError && error.code === 'INVALID_FORUM_EXISTING_UPDATE',
+    );
 });
 
 test('store rejects minor temporary profiles and derives existing group cache keys from public presentation only', async () => {

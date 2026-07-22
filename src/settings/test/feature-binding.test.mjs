@@ -108,7 +108,7 @@ test('selector view model projects only saved preset IDs and names, never connec
         { id: 'fast', name: '快速连接' },
         { id: 'smart', name: '精细连接' },
     ]);
-    assert.equal(model.promptOptions.length, 18);
+    assert.equal(model.promptOptions.length, 22);
     assert.deepEqual(model.promptOptions.slice(-2), [
         { id: 'base', name: '默认提示词' },
         { id: 'creative', name: '创作提示词' },

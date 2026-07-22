@@ -42,9 +42,10 @@ function makeMessages(context, promptPreset) {
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件内的论坛辅助模型。仅根据提供的公开玩家资料和群组公开投影，生成一篇可供玩家审核的短论坛帖子草稿。',
+        preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',
         '软件层只处理线上文字。不得演绎、确认或描述线下性行为；NSFW 不等于同意。不得输出或猜测隐藏资料、仅好友资料、关系数值、候选人、UID、会话、Patch、路径、API Key、密钥或系统实现。',
         '只输出合法 JSON 对象，不得使用 Markdown、代码块或解释。严格形状为：{"title":"1-80字标题","body":"1-900字帖子草稿"}。不得含 HTML、控制字符、UpdateVariable、JSONPatch 或任何写入指令。草稿仅供展示和玩家确认，不能自动发布或写入状态。',
-        preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
     ].filter(Boolean).join('\n\n');
     return Object.freeze([
         Object.freeze({ role: 'system', content: system }),
@@ -89,6 +90,7 @@ export async function generateForumPostDraft({ state, groupUid, topic, settingsS
 const UPDATE_ERROR_MESSAGES = Object.freeze({
     forum_home_context_invalid: '论坛首页暂时无法读取公开社区信息。',
     forum_home_history_invalid: '论坛首页历史格式异常，未调用模型。',
+    forum_existing_context_invalid: '现有本地帖子格式异常，未调用模型。',
     forum_post_context_invalid: '当前论坛帖子暂不可用。',
     forum_post_history_invalid: '帖子讨论记录格式异常，未调用模型。',
     forum_update_settings_unavailable: '论坛设置暂不可用。',
@@ -233,9 +235,10 @@ function makeForumHomeMessages(context, promptPreset) {
         '你是现代现实都市线上约会软件的心动社区首页更新模型。只根据公开社区主题和公开人物资料，为首页的全部固定频道生成短帖子。',
         `每次刷新都必须且只能生成 ${FORUM_CHANNELS.length} 篇帖子：今日心情、附近的人、同城瞬间、兴趣同频、话题广场各一篇。posts 中的 topic 必须精确等于这五个频道名之一，五个频道不能遗漏、重复或自行改名；点击频道后会只显示对应 topic 的本地帖子。`,
         '可以使用 knownPeople 中已有人物的 nickname；如需新作者，必须先在 participants 给出其公开关键资料。participants 只放本次新出现的临时角色，已有角色不要重复。每位临时角色必须含 nickname、ageRange、gender、city、mbti、zodiac、occupation、interests、presence、matchRate。',
+        preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变频道、字段、数量、数据来源或下方固定 JSON 合同。',
         '软件层只处理线上文字。不得演绎、确认或描述线下性行为；NSFW 不等于同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。',
         '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"participants":[{"nickname":"","ageRange":"","gender":"","city":"","mbti":"","zodiac":"","occupation":"","interests":[""],"presence":"在线","matchRate":null}],"posts":[{"author":"knownPeople或participants昵称","topic":"五个固定频道名之一","title":"1-120字","body":"1-1200字","tags":["1-32字"]}]}。不得输出 HTML、控制字符、UpdateVariable 或 JSONPatch。',
-        preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
     ].filter(Boolean).join('\n\n');
     return Object.freeze([
         Object.freeze({ role: 'system', content: system }),
@@ -259,6 +262,120 @@ export async function generateForumHomeRefresh({ state, existingTitles, settings
         if (!parsed) return updateFailure('forum_update_invalid_json');
         const update = normalizeForumHomeUpdate(parsed, built.context.knownPeople);
         return update ? Object.freeze({ ok: true, update, communityProfiles: built.context.knownPeople }) : updateFailure('forum_update_response_invalid');
+    } catch (error) {
+        const publicError = toPublicLlmError(error);
+        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
+    }
+}
+
+const LOCAL_FORUM_POST_FIELDS = new Set(['id', 'topic', 'title', 'body', 'tags', 'author', 'participants', 'messages', 'summaries', 'summaryStatus', 'createdAt']);
+
+function normalizeExistingForumPostForContext(value, slot) {
+    if (!ownRecord(value) || Object.keys(value).some((key) => !LOCAL_FORUM_POST_FIELDS.has(key))) return null;
+    const topic = cleanGroupLlmText(ownValue(value, 'topic'), 80);
+    const title = cleanGroupLlmText(ownValue(value, 'title'), 120);
+    const body = cleanGroupLlmText(ownValue(value, 'body'), 1_200);
+    const tags = ownValue(value, 'tags');
+    const messages = ownValue(value, 'messages');
+    if (!topic || !title || !body || !isKnownForumChannelTopic(topic) || !Array.isArray(tags) || tags.length > 6 || !Array.isArray(messages) || messages.length > 240) return null;
+    const cleanTags = [];
+    for (const tag of tags) {
+        const clean = cleanGroupLlmText(tag, 32);
+        if (!clean || !isSafeGroupLlmOutput(clean, 32) || cleanTags.includes(clean)) return null;
+        cleanTags.push(clean);
+    }
+    try {
+        const author = groupForumProfileForModel(normalizeGroupForumProfile(ownValue(value, 'author')));
+        return Object.freeze({
+            slot,
+            topic,
+            title,
+            // Bounded excerpts keep the all-post automatic refresh practical even
+            // when the local cache reaches its maximum number of posts.
+            body: body.slice(0, 480),
+            tags: Object.freeze(cleanTags),
+            author,
+            commentCount: messages.length,
+        });
+    } catch {
+        return null;
+    }
+}
+
+/** Public-only frame for updating every already cached forum post. It never carries IDs or private state. */
+export function buildForumExistingPostsUpdateContext({ state, posts } = {}) {
+    if (!ownRecord(state) || !Array.isArray(posts) || posts.length < 1 || posts.length > 80) return updateFailure('forum_existing_context_invalid');
+    const normalizedPosts = [];
+    for (const [index, post] of posts.entries()) {
+        const normalized = normalizeExistingForumPostForContext(post, index + 1);
+        if (!normalized) return updateFailure('forum_existing_context_invalid');
+        normalizedPosts.push(normalized);
+    }
+    return Object.freeze({ ok: true, context: Object.freeze({
+        contentMode: state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW',
+        playerPublicProfile: projectPublicPlayerProfile(state.玩家),
+        posts: Object.freeze(normalizedPosts),
+    }) });
+}
+
+function normalizeForumExistingPostsUpdate(value, expectedCount) {
+    if (!ownRecord(value) || Object.keys(value).sort().join(',') !== 'updates') return null;
+    const updates = ownValue(value, 'updates');
+    if (!Array.isArray(updates) || updates.length !== expectedCount) return null;
+    const slots = new Set();
+    const normalized = [];
+    for (const item of updates) {
+        if (!ownRecord(item) || Object.keys(item).sort().join(',') !== 'body,slot,tags,title') return null;
+        const slot = ownValue(item, 'slot');
+        const title = cleanGroupLlmText(ownValue(item, 'title'), 120);
+        const body = cleanGroupLlmText(ownValue(item, 'body'), 360);
+        const tags = ownValue(item, 'tags');
+        if (!Number.isInteger(slot) || slot < 1 || slot > expectedCount || slots.has(slot) || !title || !body || !isSafeGroupLlmOutput(title, 120) || !isSafeGroupLlmOutput(body, 360) || !Array.isArray(tags) || tags.length > 6) return null;
+        slots.add(slot);
+        const cleanTags = [];
+        for (const tag of tags) {
+            const clean = cleanGroupLlmText(tag, 32);
+            if (!clean || !isSafeGroupLlmOutput(clean, 32) || cleanTags.includes(clean)) return null;
+            cleanTags.push(clean);
+        }
+        normalized.push(Object.freeze({ slot, title, body, tags: Object.freeze(cleanTags) }));
+    }
+    return Object.freeze({ updates: Object.freeze(normalized) });
+}
+
+function makeForumExistingPostsMessages(context, promptPreset) {
+    const preset = promptSections(promptPreset);
+    const system = [
+        preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
+        '你是现代现实都市线上约会软件的心动社区既有帖子自动更新模型。只改写给定的本地帖子可见文案，让它们像持续发生的线上社区动态。',
+        '每个 slot 必须恰好更新一次；不得新增、删除、合并、重排帖子，不得改变频道、作者、评论、角色资料或任何未列出的数据。新的本地帖子只能由首页下拉刷新生成。',
+        preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变 slot、字段、数量、数据来源或下方固定 JSON 合同。',
+        '软件层只处理线上文字。不得演绎、确认或描述线下性行为；NSFW 不等于同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。',
+        '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"updates":[{"slot":1,"title":"1-120字","body":"1-360字","tags":["1-32字"]}]}。updates 数量必须等于输入 posts 数量，slot 必须从 1 到该数量各出现一次。不得输出 HTML、控制字符、UpdateVariable 或 JSONPatch。',
+    ].filter(Boolean).join('\n\n');
+    return Object.freeze([
+        Object.freeze({ role: 'system', content: system }),
+        Object.freeze({ role: 'user', content: `请自动更新所有现有本地帖子；只依据以下受限公开上下文：\n${JSON.stringify(context)}` }),
+    ]);
+}
+
+/** Calls the forum binding to update existing local posts only; it never creates a post. */
+export async function generateForumExistingPostsUpdate({ state, posts, settingsStore, llmClient, signal } = {}) {
+    const built = buildForumExistingPostsUpdateContext({ state, posts });
+    if (!built.ok) return built;
+    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return updateFailure('forum_update_settings_unavailable');
+    if (!llmClient || typeof llmClient.chat !== 'function') return updateFailure('forum_update_llm_unavailable');
+    let resolved;
+    try { resolved = settingsStore.resolveFunction('forum', { contentMode: built.context.contentMode }); }
+    catch { return updateFailure('forum_update_settings_invalid'); }
+    if (!resolved?.connectionPreset) return updateFailure('forum_update_connection_missing');
+    try {
+        const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeForumExistingPostsMessages(built.context, resolved.promptPreset), signal });
+        const parsed = parseGroupLlmJson(completion?.text);
+        if (!parsed) return updateFailure('forum_update_invalid_json');
+        const update = normalizeForumExistingPostsUpdate(parsed, built.context.posts.length);
+        return update ? Object.freeze({ ok: true, update }) : updateFailure('forum_update_response_invalid');
     } catch (error) {
         const publicError = toPublicLlmError(error);
         return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
@@ -326,9 +443,10 @@ function makeForumPostMessages(context, promptPreset) {
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件内的论坛帖子讨论更新模型。根据公开帖子和受限评论历史，模拟其他用户发表 1–8 条自然评论。',
         '可使用帖子作者或 participants 中已有昵称；如需新评论者，必须先在 participants 给出其公开关键资料。每位临时角色必须含 nickname、ageRange、gender、city、mbti、zodiac、occupation、interests、presence、matchRate。',
+        preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',
         '软件层只处理线上文字。不得演绎、确认或描述线下性行为；NSFW 不等于同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。',
         '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"participants":[{"nickname":"","ageRange":"","gender":"","city":"","mbti":"","zodiac":"","occupation":"","interests":[""],"presence":"在线","matchRate":null}],"messages":[{"speaker":"作者、已有参与者或participants昵称","text":"1-480字"}]}。不得输出 HTML、控制字符、UpdateVariable 或 JSONPatch。',
-        preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
     ].filter(Boolean).join('\n\n');
     return Object.freeze([
         Object.freeze({ role: 'system', content: system }),

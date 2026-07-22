@@ -9,7 +9,8 @@
  */
 
 export const GROUP_FORUM_SCHEMA_ID = 'yuelema.group-forum';
-export const GROUP_FORUM_SCHEMA_VERSION = 1;
+export const GROUP_FORUM_SCHEMA_VERSION = 2;
+// Keep the established key so schema v1 browser caches can be migrated in place.
 export const GROUP_FORUM_STORAGE_KEY = 'yuelema.group-forum.v1';
 export const MAX_LOCAL_GROUPS = 24;
 export const MAX_GROUP_MESSAGES = 240;
@@ -18,6 +19,10 @@ export const MAX_POST_MESSAGES = 240;
 export const MAX_CONVERSATION_SUMMARIES = 64;
 export const MAX_GROUP_FORUM_SERIALIZED_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_GROUP_AUTO_SETTINGS = Object.freeze({ enabled: false, intervalSeconds: 30 });
+export const DEFAULT_FORUM_AUTO_SETTINGS = Object.freeze({ enabled: false });
+// Forum automatic updates deliberately use one bounded, code-owned cadence.
+// The UI exposes only its on/off setting; new posts remain pull-to-refresh only.
+export const FORUM_AUTO_UPDATE_INTERVAL_SECONDS = 30;
 /** Fixed homepage sections. A complete AI refresh must update each one once. */
 export const FORUM_CHANNELS = Object.freeze([
     Object.freeze({ id: 'daily_mood', icon: '＋', title: '今日心情', note: '记录此刻' }),
@@ -247,6 +252,12 @@ export function normalizeGroupAutoSettings(value) {
     return { enabled: value.enabled, intervalSeconds: safeInteger(value.intervalSeconds, 5, 3600, 'INVALID_AUTO_SETTINGS') };
 }
 
+export function normalizeForumAutoSettings(value) {
+    assertExactObject(value, new Set(['enabled']), new Set(['enabled']), 'INVALID_FORUM_AUTO_SETTINGS');
+    if (typeof value.enabled !== 'boolean') fail('INVALID_FORUM_AUTO_SETTINGS');
+    return { enabled: value.enabled };
+}
+
 function normalizeTargetKey(value) {
     if (typeof value !== 'string' || !(LOCAL_GROUP_ID_PATTERN.test(value) || EXTERNAL_GROUP_KEY_PATTERN.test(value))) fail('INVALID_TARGET');
     return value;
@@ -413,13 +424,21 @@ function makeDefaultDocument() {
         groups: [],
         threads: [],
         posts: [],
+        forumAuto: { ...DEFAULT_FORUM_AUTO_SETTINGS },
+        exitedExternalGroupKeys: [],
     };
 }
 
 function normalizeDocument(value) {
-    assertExactObject(value, new Set(['schema', 'schemaVersion', 'nextId', 'groups', 'threads', 'posts']), new Set(['schema', 'schemaVersion', 'nextId', 'groups', 'threads', 'posts']), 'INVALID_DOCUMENT');
+    if (!isPlainRecord(value)) fail('INVALID_DOCUMENT');
+    const schemaVersion = ownData(value, 'schemaVersion', 'INVALID_DOCUMENT');
+    if (schemaVersion !== 1 && schemaVersion !== GROUP_FORUM_SCHEMA_VERSION) fail('UNSUPPORTED_VERSION');
+    const isLegacy = schemaVersion === 1;
+    const documentFields = isLegacy
+        ? new Set(['schema', 'schemaVersion', 'nextId', 'groups', 'threads', 'posts'])
+        : new Set(['schema', 'schemaVersion', 'nextId', 'groups', 'threads', 'posts', 'forumAuto', 'exitedExternalGroupKeys']);
+    assertExactObject(value, documentFields, documentFields, 'INVALID_DOCUMENT');
     if (ownData(value, 'schema', 'INVALID_DOCUMENT') !== GROUP_FORUM_SCHEMA_ID) fail('INVALID_DOCUMENT');
-    if (ownData(value, 'schemaVersion', 'INVALID_DOCUMENT') !== GROUP_FORUM_SCHEMA_VERSION) fail('UNSUPPORTED_VERSION');
     const groups = ownData(value, 'groups', 'INVALID_DOCUMENT');
     const threads = ownData(value, 'threads', 'INVALID_DOCUMENT');
     const posts = ownData(value, 'posts', 'INVALID_DOCUMENT');
@@ -443,6 +462,16 @@ function normalizeDocument(value) {
         if (postIds.has(post.id)) fail('INVALID_DOCUMENT');
         postIds.add(post.id);
     }
+    const exitedExternalGroupKeys = isLegacy ? [] : (() => {
+        const input = ownData(value, 'exitedExternalGroupKeys', 'INVALID_DOCUMENT');
+        if (!Array.isArray(input) || input.length > MAX_LOCAL_GROUPS * 3) fail('INVALID_DOCUMENT');
+        const seen = new Set();
+        return input.map((item) => {
+            if (typeof item !== 'string' || !EXTERNAL_GROUP_KEY_PATTERN.test(item) || seen.has(item)) fail('INVALID_DOCUMENT');
+            seen.add(item);
+            return item;
+        });
+    })();
     return {
         schema: GROUP_FORUM_SCHEMA_ID,
         schemaVersion: GROUP_FORUM_SCHEMA_VERSION,
@@ -450,6 +479,8 @@ function normalizeDocument(value) {
         groups: normalizedGroups,
         threads: normalizedThreads,
         posts: normalizedPosts,
+        forumAuto: isLegacy ? { ...DEFAULT_FORUM_AUTO_SETTINGS } : normalizeForumAutoSettings(ownData(value, 'forumAuto', 'INVALID_DOCUMENT')),
+        exitedExternalGroupKeys,
     };
 }
 
@@ -526,6 +557,31 @@ function normalizeForumRefresh(value) {
         };
     });
     return { participants: normalizedParticipants, posts: normalizedPosts };
+}
+
+/**
+ * The model never receives local post IDs and never creates a frame here.
+ * It can only replace the visible copy of every existing post by its numbered
+ * code-owned slot; authors, channels, comments, summaries and timestamps stay
+ * in the browser cache unchanged.
+ */
+function normalizeExistingForumPostsUpdate(value, expectedCount) {
+    assertExactObject(value, new Set(['updates']), new Set(['updates']), 'INVALID_FORUM_EXISTING_UPDATE');
+    const updates = ownData(value, 'updates', 'INVALID_FORUM_EXISTING_UPDATE');
+    if (!Array.isArray(updates) || expectedCount < 1 || updates.length !== expectedCount) fail('INVALID_FORUM_EXISTING_UPDATE');
+    const slots = new Set();
+    return updates.map((item) => {
+        assertExactObject(item, new Set(['slot', 'title', 'body', 'tags']), new Set(['slot', 'title', 'body', 'tags']), 'INVALID_FORUM_EXISTING_UPDATE');
+        const slot = safeInteger(ownData(item, 'slot', 'INVALID_FORUM_EXISTING_UPDATE'), 1, expectedCount, 'INVALID_FORUM_EXISTING_UPDATE');
+        if (slots.has(slot)) fail('INVALID_FORUM_EXISTING_UPDATE');
+        slots.add(slot);
+        return {
+            slot,
+            title: safeText(ownData(item, 'title', 'INVALID_FORUM_EXISTING_UPDATE'), 120),
+            body: safeText(ownData(item, 'body', 'INVALID_FORUM_EXISTING_UPDATE'), 1_200),
+            tags: normalizeTags(ownData(item, 'tags', 'INVALID_FORUM_EXISTING_UPDATE'), 6),
+        };
+    });
 }
 
 function nextLocalId(document, type) {
@@ -728,6 +784,53 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
         });
     }
 
+    /** Deletes only browser-local group transcript-derived data, keeping the group and its per-group automatic setting. */
+    async function clearGroupHistory({ key, title } = {}) {
+        return enqueue(async () => {
+            await ensureLoaded();
+            const next = clone(document);
+            const thread = threadFor(next, key, title);
+            thread.temporaryMembers = [];
+            thread.messages = [];
+            thread.summaries = [];
+            thread.summaryStatus = { status: 'idle', startFloor: 0, endFloor: 0, message: '' };
+            await commit(next);
+            return project(thread);
+        });
+    }
+
+    /**
+     * Leaves a browser-local group or hides an MVU-projected group locally.
+     * No MVU group is ever deleted: this only removes this mini-app's cache.
+     */
+    async function exitGroup({ key } = {}) {
+        return enqueue(async () => {
+            await ensureLoaded();
+            const normalizedKey = normalizeTargetKey(key);
+            const next = clone(document);
+            if (LOCAL_GROUP_ID_PATTERN.test(normalizedKey)) {
+                const before = next.groups.length;
+                next.groups = next.groups.filter((group) => group.id !== normalizedKey);
+                if (next.groups.length === before) fail('GROUP_NOT_FOUND');
+            } else if (!next.exitedExternalGroupKeys.includes(normalizedKey)) {
+                next.exitedExternalGroupKeys.push(normalizedKey);
+            }
+            next.threads = next.threads.filter((thread) => thread.key !== normalizedKey);
+            await commit(next);
+            return Object.freeze({ key: normalizedKey });
+        });
+    }
+
+    async function setForumAuto({ settings } = {}) {
+        return enqueue(async () => {
+            await ensureLoaded();
+            const next = clone(document);
+            next.forumAuto = normalizeForumAutoSettings(settings);
+            await commit(next);
+            return project(next.forumAuto);
+        });
+    }
+
     async function appendGroupUserMessage({ key, title, content } = {}) {
         return enqueue(async () => {
             await ensureLoaded();
@@ -779,6 +882,23 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
             }
             await commit(next);
             return project(created);
+        });
+    }
+
+    /** Replaces visible copy for every existing local forum post without creating any new post. */
+    async function updateExistingForumPosts({ update } = {}) {
+        return enqueue(async () => {
+            await ensureLoaded();
+            const next = clone(document);
+            const normalized = normalizeExistingForumPostsUpdate(update, next.posts.length);
+            for (const item of normalized) {
+                const post = next.posts[item.slot - 1];
+                post.title = item.title;
+                post.body = item.body;
+                post.tags = item.tags;
+            }
+            await commit(next);
+            return project(next.posts);
         });
     }
 
@@ -872,9 +992,13 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
         snapshot,
         createGroup,
         setGroupAuto,
+        clearGroupHistory,
+        exitGroup,
+        setForumAuto,
         appendGroupUserMessage,
         appendGroupModelUpdate,
         addForumRefresh,
+        updateExistingForumPosts,
         appendForumUserComment,
         appendForumModelUpdate,
         getConversation,
