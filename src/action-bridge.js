@@ -9,6 +9,8 @@ import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandida
 import { generateGroupChatReply, generateGroupChatUpdate as generateGroupChatUpdateService } from './groups/group-chat-service.js';
 import { generateForumExistingPostsUpdate as generateForumExistingPostsUpdateService, generateForumHomeRefresh as generateForumHomeRefreshService, generateForumPostConversationUpdate as generateForumPostConversationUpdateService, generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
 import { generateLocalConversationSummary as generateLocalConversationSummaryService } from './groups/local-conversation-summary-service.js';
+import { composeImagePrompt } from './images/image-directive.js';
+import { toPublicImageGenerationError } from './llm/image-generation-client.js';
 
 const PASSIVE_KINDS = new Set([
     'open_character_creator',
@@ -19,6 +21,7 @@ const PASSIVE_KINDS = new Set([
 const MVU_KINDS = new Set(['like', 'favorite', 'dislike', 'refresh', 'unfavorite', 'start_private_chat', 'advance_content_mode_gate', 'toggle_content_mode']);
 const PERSONALIZATION_DELTAS = Object.freeze({ like: 3, favorite: 1, dislike: -3 });
 const PERSONALIZATION_PUBLIC_TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
+const IMAGE_CONVERSATION_KINDS = new Set(['private', 'group', 'forum']);
 
 function makePassiveCommand(kind, payload) {
     const safePayload = {};
@@ -91,7 +94,7 @@ function seedGeneratedCandidateKeywords(settingsStore, state, candidate) {
  * The sole UI-to-MVU write boundary. Browser UI can express only named actions;
  * it cannot provide a JSON Pointer, patch, state object, or arbitrary value.
  *
- * @param {{ documentRef: Document, mvu?: unknown, eventEmit?: unknown, getContext?: (() => unknown)|undefined, settingsStore?: unknown, llmClient?: unknown, imageMatchCoordinator?: unknown, onControlledAction?: (command: Readonly<{kind:string, payload:Readonly<Record<string,string>>}>) => void }} options
+ * @param {{ documentRef: Document, mvu?: unknown, eventEmit?: unknown, getContext?: (() => unknown)|undefined, settingsStore?: unknown, llmClient?: unknown, imageGenerationClient?: unknown, imageMatchCoordinator?: unknown, onControlledAction?: (command: Readonly<{kind:string, payload:Readonly<Record<string,string>>}>) => void }} options
  */
 export function createActionBridge({
     documentRef,
@@ -100,6 +103,7 @@ export function createActionBridge({
     getContext = globalThis.SillyTavern?.getContext?.bind(globalThis.SillyTavern),
     settingsStore = null,
     llmClient = null,
+    imageGenerationClient = null,
     imageMatchCoordinator = null,
     onControlledAction = () => {},
 }) {
@@ -276,12 +280,21 @@ export function createActionBridge({
                     && operation.path === '/会话/' + sessionUid + '/最近消息/-' && operation.value?.发送者 === '角色')
                     ? 'replied'
                     : 'read_without_reply';
+            const replyMessageUids = built.value.filter((operation) => operation?.op === 'add'
+                && operation.path === '/会话/' + sessionUid + '/最近消息/-'
+                && operation.value?.发送者 === '角色')
+                .map((operation) => operation.value.消息UID);
+            const imageDirectives = (generated.response.imageDirectives ?? []).flatMap((item) => {
+                const messageUid = replyMessageUids[item.replyIndex];
+                return messageUid ? [{ messageUid, directive: item.directive }] : [];
+            });
             const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
             const summarySettings = chatSummarySettings();
             return applied.ok ? {
                 ...applied,
                 interactionOutcome,
                 summaryCheckRequested: interactionOutcome === 'replied' && summarySettings.enabled,
+                imageDirectives,
             } : applied;
         } finally {
             pending.delete(key);
@@ -768,6 +781,65 @@ export function createActionBridge({
         }
     }
 
+    /**
+     * Generates a local conversation image without touching MVU state. The only
+     * character data used is the adult role's drawing DNA; private layers and
+     * relationship values never enter the prompt. Group/forum scene snapshots
+     * may omit a character UID, but person-focused directives require one.
+     */
+    async function generateConversationImage({ kind, conversationId, messageId, characterUid = '', directive, signal } = {}) {
+        if (!IMAGE_CONVERSATION_KINDS.has(kind) || typeof conversationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(conversationId)
+            || typeof messageId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(messageId)) {
+            return { ok: false, status: 'rejected', code: 'image_conversation_invalid', message: '当前对话无法生成图片。' };
+        }
+        const key = actionKey('conversation_image', `${kind}:${conversationId}:${messageId}`);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending', message: '图片正在生成，请稍候。' };
+        pending.add(key);
+        try {
+            const settings = settingsStore?.getImageGenerationSettings?.();
+            if (!settings?.enabled) return { ok: false, status: 'rejected', code: 'image_generation_disabled', message: '请先在设置中启用生图接口。' };
+            if (typeof imageGenerationClient?.generate !== 'function') return { ok: false, status: 'rejected', code: 'image_generation_unavailable', message: '生图服务当前不可用。' };
+
+            let coreDna = '';
+            let outfitDna = '';
+            const uid = typeof characterUid === 'string' ? characterUid : '';
+            if (uid) {
+                const read = readLatestState({ mvu: resolveMvu(mvu) });
+                if (!read.ok) return read;
+                const character = read.state?.角色池?.[uid];
+                if (!character || character.成人验证 !== true || Number(character.隐藏资料?.实际年龄) < 18) {
+                    return { ok: false, status: 'rejected', code: 'image_character_unavailable', message: '只能为已确认的成年角色生成图片。' };
+                }
+                coreDna = typeof character.绘图?.core_dna === 'string' ? character.绘图.core_dna : '';
+                outfitDna = typeof character.绘图?.outfit_dna === 'string' ? character.绘图.outfit_dna : '';
+            }
+
+            const prompt = composeImagePrompt({
+                positivePrefix: settings.positivePrefix,
+                coreDna,
+                outfitDna,
+                directive,
+                positiveSuffix: settings.positiveSuffix,
+                negativePrompt: settings.negativePrompt,
+            });
+            if (!uid && prompt.directive.kind !== 'scene_snapshot') {
+                return { ok: false, status: 'rejected', code: 'image_character_required', message: '人物图片需要关联一位已确认的成年角色。' };
+            }
+            const generated = await imageGenerationClient.generate({
+                settings, positivePrompt: prompt.positivePrompt, negativePrompt: prompt.negativePrompt, signal,
+            });
+            return {
+                ok: true, status: 'generated', directive: prompt.directive,
+                image: Object.freeze({ src: generated.src, dataUrl: generated.kind === 'data_url' ? generated.src : '', mimeType: generated.mimeType ?? '', kind: generated.kind }),
+            };
+        } catch (error) {
+            const publicError = toPublicImageGenerationError(error);
+            return { ok: false, status: 'failed', ...publicError };
+        } finally {
+            pending.delete(key);
+        }
+    }
+
     function isPending(kind, npcUid) {
         return pending.has(actionKey(kind, npcUid));
     }
@@ -791,6 +863,6 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, generateConversationImage, isPending, appendMeetupDraft });
 }
 

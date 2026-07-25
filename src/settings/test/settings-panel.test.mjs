@@ -406,3 +406,29 @@ test('preference 子视图只查看并保存当前 contentMode 的独立关键�
     assert.match(reopenedNsfw.textContent, /成年人话题 · 权重 2/u);
     assert.equal(reopenedNsfw.textContent.includes('电影 · 权重 4'), false);
 });
+
+test('生图设置只保存非机密配置，API Key 清空后留在独立浏览器缓存', async () => {
+    const keyStorage = createMemoryStorage();
+    configurePersistentKeyStorage(keyStorage);
+    const { panel, store, feedback } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { section: 'image_generation' });
+    assert.match(panel.textContent, /前置提示词 → core_dna → outfit_dna → AI 场景结构 → 后置提示词/u);
+
+    byAria(panel, '启用生图接口').checked = true;
+    byName(panel, 'image-generation-preset-id').value = 'image_preset';
+    byAria(panel, '生图 API Key').value = 'image-browser-cache-secret';
+    await click(button(panel, '保存 API Key'));
+    assert.equal(byAria(panel, '生图 API Key').value, '');
+    assert.equal(requireSessionKey('image_preset'), 'image-browser-cache-secret');
+
+    byAria(panel, '前置正面提示词').value = 'masterpiece';
+    byAria(panel, '后置正面提示词').value = 'cinematic light';
+    byAria(panel, '固定负面提示词').value = 'lowres';
+    await click(button(panel, '保存生图设置'));
+
+    assert.equal(store.snapshot().imageGeneration.enabled, true);
+    assert.equal(store.snapshot().imageGeneration.presetId, 'image_preset');
+    assert.equal(store.snapshot().imageGeneration.positivePrefix, 'masterpiece');
+    assert.equal(store.snapshot().imageGeneration.positiveSuffix, 'cinematic light');
+    assert.equal(store.exportJson().includes('image-browser-cache-secret'), false);
+    assert.ok(feedback.some((message) => message.includes('生图 API Key 已保存到当前浏览器')));
+});

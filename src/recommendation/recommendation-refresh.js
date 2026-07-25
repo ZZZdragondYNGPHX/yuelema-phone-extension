@@ -1,3 +1,4 @@
+import { DRAWING_DNA_RULES } from './drawing-dna-rules.js';
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
 import { COMPLETE_CANDIDATE_OUTPUT_CONTRACT, normalizeGeneratedCandidate } from './candidate.js';
@@ -237,6 +238,7 @@ function makeMessages(context, promptPreset) {
         '候选人的“昵称”必须是自然人的个人姓名。使用自然中文姓名或自然外文姓名；不得把玩家、用户、AI、系统、模型、智能体、组织、职业、功能名或概念词当作姓名。',
         ...policyInstructions(context.recommendationPolicy),
         ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
+        DRAWING_DNA_RULES,
         '只输出一个合法 JSON 对象：不得用 Markdown、代码块或解释文字。对象不得带 uid。',
         '所有文本字段请写成一句简短文字，每个标签数组最多放两个短标签；必须先完整闭合 JSON 对象，再停止输出。',
     ].filter(Boolean).join('\n\n');

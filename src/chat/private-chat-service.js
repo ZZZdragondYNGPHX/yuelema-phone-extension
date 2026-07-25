@@ -145,8 +145,9 @@ function makeMessages(context, promptPreset) {
         context.contentMode === 'NSFW'
             ? '当前为 NSFW：允许明确成年角色在自愿、边界清楚的前提下直白调情、讨论欲望并进行露骨线上文爱；这仍不能伪造成现实线下身体行为已经发生，也不能替代面基和现实行动的明确同意。已匹配和成人验证不是无限授权，但当玩家的成人话题尊重已知边界，或先明确征询并获得持续同意时，直白或露骨本身不是冒犯：应自然继续线上成人聊天，不得仅因内容成人化降低好感或信任、提高戒备，或推动已读不回/拉黑。只有明确的拒绝或撤回同意、已知边界冲突、胁迫、非自愿、隐私侵犯等具体安全问题才能给出负向关系变化；同意或边界不清时应先用线上文字澄清，关系变化保持为零。'
             : '当前为 SFW：保持非露骨、非色情的线上聊天；可以自然亲近或甜蜜调情，但不得描写性行为或露骨身体细节。',
-        '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"bondAssessment":{"kind":"模式允许的分类","intensity":0..3整数}}。',
+        '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"bondAssessment":{"kind":"模式允许的分类","intensity":0..3整数},"imageDirectives":[{"replyIndex":0,"directive":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。imageDirectives 可省略。',
         'replies 必须是 1-6 条自然、简短、可分别显示为聊天气泡的字符串；每条内部禁止换行，全部消息用单个空格连接后的总长度不得超过 600 字。优先拆成符合真实即时聊天节奏的多条短消息，不要输出旧版 reply 字段。',
+        '仅当本次内容确实值得以照片分享，且角色性格有分享欲、当前关系与边界允许时，才输出对应 replyIndex 的 imageDirectives。私照必须更严格判断亲密度、信任与自愿边界；不得机械地为每轮或每条回复生图。不需要时省略该字段。scene 只能是描述画面的英文标签，不得包含角色 UID、URL、JSONPatch、完整正负提示词、core_dna、outfit_dna 或凭据。',
         'relationship 仅用于既有互动节奏建议。bondAssessment 必须同时判断玩家本轮消息与角色实际回复：SFW 只允许 none/friendly/romantic_flirt；NSFW 只允许 none/romantic_desire/sexual_desire。none 的 intensity 必须为 0，其余为 1-3。模型不得给友情值、心动值、欲望值的绝对值或增量，也不得给 UID、状态、阈值、Patch、JSON Pointer 或写入路径。',
         '不得输出、猜测或泄露任何隐藏资料；不要声称已发生线下见面或性行为。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',

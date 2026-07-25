@@ -47,6 +47,7 @@ export function materializeCandidateMatchDraft(draft, {
             边界与偏好: '尊重意愿与边界；重要安排需要在聊天中明确确认。',
         },
         隐藏资料: { 实际年龄: inferredAdultAge(publicProfile.年龄段), 私人备注: '' },
+        绘图: normalized.drawing,
         偏好与边界: '尊重隐私、意愿与清晰沟通。',
         拒绝阈值: 50,
         已读不回阈值: 55,

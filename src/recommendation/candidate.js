@@ -1,3 +1,4 @@
+import { DEFAULT_DRAWING_DNA } from './drawing-dna-rules.js';
 /**
  * Strictly validates one LLM-generated recommendation candidate before it can
  * enter MVU state. This module deliberately does not assign a UID: the caller
@@ -36,9 +37,9 @@ const NON_PERSONAL_NAME_PATTERN = /(?:玩家|用户|使用者|系统|模型|人�
 // being responsible for (or able to weaken) model-output structure.
 export const COMPLETE_CANDIDATE_OUTPUT_CONTRACT = Object.freeze([
     '完整候选 JSON 结构合同（以下是字段说明，不是可照抄的候选内容；所有键名必须逐字保留，不得新增、删除、改名或包一层 candidate）：',
-    '根对象必须且仅能含：成人验证、公开资料、仅好友资料、隐藏资料、偏好与边界、拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值、与玩家关系。成人验证必须是布尔值 true。',
+    '根对象必须且仅能含：成人验证、公开资料、仅好友资料、隐藏资料、绘图、偏好与边界、拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值、与玩家关系。成人验证必须是布尔值 true。',
     '公开资料必须且仅能含：昵称、头像引用、年龄段、性别、性取向、城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签、沟通风格标签。前九项是字符串（头像引用可为空字符串，其余不得为空）；后四项都是字符串数组，每个数组放 0–2 个短标签。年龄段必须明确为成年人，不能出现任何小于 18 的年龄。',
-    '仅好友资料必须且仅能含：关系状态、边界与偏好；两项都是非空字符串。隐藏资料必须且仅能含：实际年龄、私人备注；实际年龄是 18–120 的整数，私人备注是可为空的字符串。',
+    '仅好友资料必须且仅能含：关系状态、边界与偏好；两项都是非空字符串。隐藏资料必须且仅能含：实际年龄、私人备注；实际年龄是 18–120 的整数，私人备注是可为空的字符串。绘图必须且仅能含 core_dna、outfit_dna，两项都是英文绘图标签字符串；core_dna 首次生成后永久锁定，outfit_dna 仅随明确换装更新。',
     '偏好与边界是可为空的字符串。拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值都必须是 0–100 的整数。',
     '与玩家关系必须且仅能含：状态、全局账号表现、NPC专属匹配度、好感、信任、戒备、面基意愿、友情值、心动值、欲望值。状态固定为“陌生”；其余九项都必须是 0–100 的整数；友情值、心动值、欲望值必须填写为 0。',
     '只在对应层级填写这些内部资料：公开资料不得夹带仅好友资料、隐藏资料或关系数值；内部资料不会直接展示给玩家。',
@@ -219,6 +220,15 @@ function normalizeHiddenProfile(value) {
     };
 }
 
+export function normalizeDrawingDna(value, { allowMissing = false } = {}) {
+    if ((value === undefined || value === null) && allowMissing) return { ...DEFAULT_DRAWING_DNA };
+    assertRecord(value, ['core_dna', 'outfit_dna'], '绘图');
+    return {
+        core_dna: normalizeText(ownData(value, 'core_dna', '绘图'), '绘图.core_dna', 12000, { allowEmpty: true }),
+        outfit_dna: normalizeText(ownData(value, 'outfit_dna', '绘图'), '绘图.outfit_dna', 12000, { allowEmpty: true }),
+    };
+}
+
 function normalizeRelationship(value) {
     const hasAnyBondField = value !== null
         && typeof value === 'object'
@@ -257,7 +267,8 @@ export function normalizeGeneratedCandidate(input, options) {
             '成人验证', '公开资料', '仅好友资料', '隐藏资料', '偏好与边界',
             '拒绝阈值', '已读不回阈值', '取消匹配阈值', '拉黑阈值', '与玩家关系',
         ];
-        assertRecord(input, rootKeys, '候选人');
+        const hasDrawing = input !== null && typeof input === 'object' && Object.hasOwn(input, '绘图');
+        assertRecord(input, hasDrawing ? [...rootKeys, '绘图'] : rootKeys, '候选人');
         if (ownData(input, '成人验证', '候选人') !== true) fail('成人验证:not_verified');
 
         const candidate = {
@@ -265,6 +276,7 @@ export function normalizeGeneratedCandidate(input, options) {
             公开资料: normalizeGeneratedPublicProfile(ownData(input, '公开资料', '候选人'), { contentMode, requirePersonalName }),
             仅好友资料: normalizeFriendProfile(ownData(input, '仅好友资料', '候选人')),
             隐藏资料: normalizeHiddenProfile(ownData(input, '隐藏资料', '候选人')),
+            绘图: normalizeDrawingDna(hasDrawing ? ownData(input, '绘图', '候选人') : undefined, { allowMissing: true }),
             偏好与边界: normalizeText(ownData(input, '偏好与边界', '候选人'), '偏好与边界', 1200, { allowEmpty: true }),
             拒绝阈值: normalizeInteger(ownData(input, '拒绝阈值', '候选人'), '拒绝阈值', 0, 100),
             已读不回阈值: normalizeInteger(ownData(input, '已读不回阈值', '候选人'), '已读不回阈值', 0, 100),

@@ -1,3 +1,4 @@
+import { normalizeImageDirective } from '../images/image-directive.js';
 /**
  * Browser-local state for the group-chat and forum mini-apps.
  *
@@ -9,7 +10,7 @@
  */
 
 export const GROUP_FORUM_SCHEMA_ID = 'yuelema.group-forum';
-export const GROUP_FORUM_SCHEMA_VERSION = 3;
+export const GROUP_FORUM_SCHEMA_VERSION = 4;
 // Keep the established key so schema v1 browser caches can be migrated in place.
 export const GROUP_FORUM_STORAGE_KEY = 'yuelema.group-forum.v1';
 export const MAX_LOCAL_GROUPS = 24;
@@ -321,7 +322,7 @@ function normalizeTargetKey(value) {
 }
 
 function normalizeMessage(value) {
-    assertExactObject(value, new Set(['id', 'floor', 'sender', 'author', 'content', 'createdAt']), new Set(['id', 'floor', 'sender', 'author', 'content', 'createdAt']), 'INVALID_MESSAGE');
+    assertExactObject(value, new Set(['id', 'floor', 'sender', 'author', 'content', 'createdAt', 'imageDirective']), new Set(['id', 'floor', 'sender', 'author', 'content', 'createdAt']), 'INVALID_MESSAGE');
     const sender = ownData(value, 'sender', 'INVALID_MESSAGE');
     if (sender !== 'user' && sender !== 'member') fail('INVALID_MESSAGE');
     const author = ownData(value, 'author', 'INVALID_MESSAGE');
@@ -338,6 +339,7 @@ function normalizeMessage(value) {
         author: sender === 'member' ? normalizeGroupForumProfile(author) : null,
         content: safeText(ownData(value, 'content', 'INVALID_MESSAGE'), 600),
         createdAt: normalizeTimestamp(ownData(value, 'createdAt', 'INVALID_MESSAGE')),
+        ...(Object.hasOwn(value, 'imageDirective') ? { imageDirective: normalizeImageDirective(ownData(value, 'imageDirective', 'INVALID_MESSAGE')) } : {}),
     };
 }
 
@@ -493,7 +495,7 @@ function makeDefaultDocument() {
 function normalizeDocument(value) {
     if (!isPlainRecord(value)) fail('INVALID_DOCUMENT');
     const schemaVersion = ownData(value, 'schemaVersion', 'INVALID_DOCUMENT');
-    if (![1, 2, GROUP_FORUM_SCHEMA_VERSION].includes(schemaVersion)) fail('UNSUPPORTED_VERSION');
+    if (![1, 2, 3, GROUP_FORUM_SCHEMA_VERSION].includes(schemaVersion)) fail('UNSUPPORTED_VERSION');
     const isV1 = schemaVersion === 1;
     const isLegacy = schemaVersion !== GROUP_FORUM_SCHEMA_VERSION;
     const documentFields = isV1
@@ -582,10 +584,11 @@ function normalizeIncomingUpdate(value) {
         return normalized;
     });
     const normalizedMessages = messages.map((message) => {
-        assertExactObject(message, new Set(['speaker', 'text']), new Set(['speaker', 'text']), 'INVALID_MODEL_UPDATE');
+        assertExactObject(message, new Set(['speaker', 'text', 'imageDirective']), new Set(['speaker', 'text']), 'INVALID_MODEL_UPDATE');
         return {
             speaker: safeText(ownData(message, 'speaker', 'INVALID_MODEL_UPDATE'), 80),
             text: safeText(ownData(message, 'text', 'INVALID_MODEL_UPDATE'), 480),
+            ...(Object.hasOwn(message, 'imageDirective') ? { imageDirective: normalizeImageDirective(ownData(message, 'imageDirective', 'INVALID_MODEL_UPDATE')) } : {}),
         };
     });
     return { participants: normalizedParticipants, messages: normalizedMessages };
@@ -799,6 +802,7 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
             conversation.messages.push({
                 id: nextLocalId(next, 'message'), floor: conversation.messages.length + 1,
                 sender: 'member', author, content: item.text, createdAt: nowTimestamp(now),
+                ...(item.imageDirective ? { imageDirective: item.imageDirective } : {}),
             });
         }
         const max = Object.hasOwn(conversation, 'key') ? MAX_GROUP_MESSAGES : MAX_POST_MESSAGES;

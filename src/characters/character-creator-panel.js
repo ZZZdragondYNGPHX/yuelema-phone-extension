@@ -19,6 +19,7 @@ function baseCandidate() {
         },
         仅好友资料: { 关系状态: '未说明', 边界与偏好: '沟通后再确认。' },
         隐藏资料: { 实际年龄: 18, 私人备注: '' },
+        绘图: { core_dna: '', outfit_dna: '' },
         偏好与边界: '',
         拒绝阈值: 40, 已读不回阈值: 55, 取消匹配阈值: 70, 拉黑阈值: 85,
         与玩家关系: { 状态: '陌生', 全局账号表现: 50, NPC专属匹配度: 50, 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0, 友情值: 0, 心动值: 0, 欲望值: 0 },
@@ -72,6 +73,8 @@ function candidateFromForm(form, avatar) {
     for (const key of FRIEND_TEXT_KEYS) candidate.仅好友资料[key] = cleanText(readNamed(form, `friend-${key}`));
     candidate.隐藏资料.实际年龄 = Number(readNamed(form, 'hidden-age'));
     candidate.隐藏资料.私人备注 = cleanText(readNamed(form, 'hidden-note'));
+    candidate.绘图.core_dna = cleanText(readNamed(form, 'drawing-core-dna'));
+    candidate.绘图.outfit_dna = cleanText(readNamed(form, 'drawing-outfit-dna'));
     candidate.偏好与边界 = cleanText(readNamed(form, 'boundary'));
     for (const key of THRESHOLD_KEYS) candidate[key] = Number(readNamed(form, `threshold-${key}`));
     return candidate;
@@ -107,6 +110,8 @@ function candidateToForm(form, template) {
     }
     form.querySelector('[name="hidden-age"]').value = String(candidate.隐藏资料.实际年龄);
     form.querySelector('[name="hidden-note"]').value = candidate.隐藏资料.私人备注 ?? '';
+    form.querySelector('[name="drawing-core-dna"]').value = candidate.绘图?.core_dna ?? '';
+    form.querySelector('[name="drawing-outfit-dna"]').value = candidate.绘图?.outfit_dna ?? '';
     form.querySelector('[name="boundary"]').value = candidate.偏好与边界 ?? '';
     for (const key of THRESHOLD_KEYS) form.querySelector(`[name="threshold-${key}"]`).value = String(candidate[key]);
     const avatarKind = form.querySelector('[name="avatar-kind"]');
@@ -214,7 +219,10 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     avatarUpload.appendChild(avatarFile);
     avatarLayout.appendChild(avatarUpload);
     const avatarNote = element('p', { className: 'yl-phone-page-description yl-character-avatar-note', text: '本地头像会压缩为最长边不超过 1024px 的 WebP；导出模板时可自行选择是否包含头像。' });
-    append(avatarSection, [avatarLayout, avatarNote]);
+    const drawingGroup = fieldGroup(avatarSection, '生图身份锚点', '英文绘图标签会在生成图片时固定人物外观和当前穿搭；它们不会进入推荐评分、关系判断或普通名片。', 'yl-character-field-grid yl-character-field-grid-two');
+    textField(drawingGroup, 'core_dna（固定外观）', { name: 'drawing-core-dna', rows: 3, placeholder: '例如：adult woman, short black bob, warm brown eyes, beauty mark', hint: '首次确定后尽量稳定；只写外观锚点。' });
+    textField(drawingGroup, 'outfit_dna（当前穿搭）', { name: 'drawing-outfit-dna', rows: 3, placeholder: '例如：cream knit cardigan, dark denim skirt, ankle boots', hint: '明确换装时再更新；只写服装与配饰。' });
+    append(avatarSection, [avatarLayout, avatarNote, drawingGroup]);
 
     const aiSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-ai' });
     sectionHeading(aiSection, {

@@ -28,6 +28,10 @@ function completeAdultCandidate() {
             实际年龄: 28,
             私人备注: '对临时失约很敏感。',
         },
+        绘图: {
+            core_dna: 'adult woman, short black hair, warm brown eyes',
+            outfit_dna: 'cream cardigan, dark denim skirt',
+        },
         偏好与边界: '偏好坦诚交流，不接受骚扰或胁迫。',
         拒绝阈值: 35,
         已读不回阈值: 55,
@@ -64,11 +68,14 @@ test('normalizes one complete adult candidate into a clean deep copy', () => {
     assert.notStrictEqual(result.公开资料, input.公开资料);
     assert.notStrictEqual(result.公开资料.兴趣标签, input.公开资料.兴趣标签);
     assert.notStrictEqual(result.与玩家关系, input.与玩家关系);
+    assert.notStrictEqual(result.绘图, input.绘图);
 
     input.公开资料.兴趣标签.push('篡改');
     input.隐藏资料.私人备注 = '篡改';
+    input.绘图.core_dna = 'tampered';
     assert.deepEqual(result.公开资料.兴趣标签, ['电影', '夜跑']);
     assert.equal(result.隐藏资料.私人备注, '对临时失约很敏感。');
+    assert.equal(result.绘图.core_dna, 'adult woman, short black hair, warm brown eyes');
 });
 
 test('rejects system labels and role concepts where a generated personal name is required', () => {

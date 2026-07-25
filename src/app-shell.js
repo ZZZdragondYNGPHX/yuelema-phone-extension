@@ -7,11 +7,12 @@ import { avatarAcceptAttribute, compressLocalAvatar, projectAvatarError } from '
 import { avatarImageSource } from './player-avatar-store.js';
 import { createLauncherDragController } from './launcher-drag.js';
 import { createImageManagerPanel } from './images/image-manager-panel.js';
+import { formatImageDirective } from './images/image-directive.js';
 import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
 import { DEFAULT_FORUM_AUTO_SETTINGS, DEFAULT_GROUP_AUTO_SETTINGS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 
-const UI_VERSION = '0.1.33';
+const UI_VERSION = '0.1.34';
 const PANEL_DRAG_THRESHOLD = 8;
 const FORUM_PULL_THRESHOLD = 88;
 const FORUM_WHEEL_RELEASE_DELAY = 180;
@@ -19,13 +20,17 @@ const FORUM_WHEEL_MAX_DISTANCE = 288;
 const CHAT_TOOL_LONG_PRESS_MS = 460;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
+const LOCAL_PAGE_COPY = Object.freeze({
+    settings_image_generation: Object.freeze({ title: '生图设置', description: '配置生图接口、固定提示词与浏览器独立 API Key。' }),
+});
+function pageCopy(pageId) { return PAGE_COPY[pageId] ?? LOCAL_PAGE_COPY[pageId] ?? null; }
 const PRIMARY_PAGE_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'groups', group_chat_create: 'groups', group_chat_summary: 'groups', group_forum: 'groups', forum_post: 'groups', forum_post_summary: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
 });
 const PAGE_PARENT_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'group_chat', group_chat_create: 'group_chat', group_chat_summary: 'group_chat_room', group_forum: 'groups', forum_post: 'group_forum', forum_post_summary: 'forum_post', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', settings_console: 'settings', settings_chat_summary: 'settings', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', settings_image_generation: 'settings', settings_console: 'settings', settings_chat_summary: 'settings', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', candidate_detail: 'home', match_profile: 'matches',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
@@ -114,6 +119,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let imageManagerPanel = null;
     const matchedImageByProfile = new Map();
     const imageMatchPending = new Map();
+    const privateImageDirectives = new Map();
+    const conversationImageStates = new Map();
+    const imageDirectiveLongPressTimers = new Set();
     const operationActivity = createOperationActivity();
     let unsubscribeOperationActivity = null;
     let interactionGeneration = 0;
@@ -243,7 +251,180 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     append(forumSettingsTitlebar, [forumSettingsTitle, forumSettingsClose]);
     append(forumSettingsDialog, [forumSettingsTitlebar, forumSettingsContent]);
 
-    append(root, [launcher, panel, helpPopover, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog, forumSettingsDialog]);
+    const imageDirectiveDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-image-directive-dialog', hidden: true });
+    imageDirectiveDialog.setAttribute('role', 'dialog');
+    imageDirectiveDialog.setAttribute('aria-modal', 'false');
+    imageDirectiveDialog.setAttribute('aria-label', '生图结构化语句');
+    const imageDirectiveTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const imageDirectiveClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭生图结构化语句' });
+    append(imageDirectiveTitlebar, [element('h2', { text: '生图结构化语句' }), imageDirectiveClose]);
+    const imageDirectiveDialogText = element('textarea', { className: 'yl-settings-control yl-settings-textarea yl-image-directive-dialog-text', rows: 8, ariaLabel: '当前图片结构化语句' });
+    imageDirectiveDialogText.readOnly = true;
+    append(imageDirectiveDialog, [imageDirectiveTitlebar, element('p', { className: 'yl-settings-summary', text: '这里只展示 AI 本次返回的场景结构，不包含角色绘图 DNA、固定提示词或 API Key。' }), imageDirectiveDialogText]);
+
+    append(root, [launcher, panel, helpPopover, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog, forumSettingsDialog, imageDirectiveDialog]);
+
+    function formatDirectiveForDisplay(directive) {
+        try { return formatImageDirective(directive); }
+        catch { return ''; }
+    }
+    function closeImageDirectiveDialog() {
+        imageDirectiveDialog.hidden = true;
+        imageDirectiveDialogText.value = '';
+    }
+    function openImageDirectiveDialog(directive) {
+        imageDirectiveDialogText.value = formatDirectiveForDisplay(directive) || '结构化语句当前不可用。';
+        imageDirectiveDialog.hidden = false;
+    }
+    function clearImageDirectiveLongPressTimers() {
+        for (const timer of imageDirectiveLongPressTimers) clearTimeout(timer);
+        imageDirectiveLongPressTimers.clear();
+    }
+    function safeConversationImageSource(value) {
+        const source = typeof value === 'string' ? value : '';
+        if (/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/iu.test(source)) return source;
+        return '';
+    }
+    function imageDirectiveStateKey(kind, conversationId, messageId) {
+        return String(kind) + ':' + String(conversationId) + ':' + String(messageId);
+    }
+    function imageDirectiveKindLabel(kind) {
+        return ({ share_photo: '分享照片', selfie: '自拍', scene_snapshot: '场景快照', private_photo: '私照' })[kind] || '图片';
+    }
+    function conversationImageSettings(kind, conversationId) {
+        try {
+            return settingsStore?.getConversationImageGenerationSettings?.(kind, conversationId) ?? { autoGenerate: false };
+        } catch {
+            return { autoGenerate: false };
+        }
+    }
+    function imageGenerationEnabled() {
+        try { return settingsStore?.getImageGenerationSettings?.().enabled === true; }
+        catch { return false; }
+    }
+    function buildConversationImageControls({ kind, conversationId }) {
+        const controls = element('div', { className: 'yl-conversation-image-controls' });
+        const settingsButton = element('button', { className: 'yl-settings-button yl-settings-button-secondary yl-conversation-image-settings-button', type: 'button', text: '生图', ariaLabel: '打开生图设置' });
+        listen(settingsButton, settingsButton, 'click', () => setActivePage('settings_image_generation'), abortController.signal);
+        const available = Boolean(settingsStore
+            && typeof settingsStore.getConversationImageGenerationSettings === 'function'
+            && typeof settingsStore.setConversationImageGenerationSettings === 'function');
+        const toggleLabel = element('label', { className: 'yl-conversation-image-toggle' });
+        toggleLabel.appendChild(element('span', { text: '自动生图' }));
+        const switchWrap = element('span', { className: 'yl-switch' });
+        const toggle = element('input', { type: 'checkbox', checked: conversationImageSettings(kind, conversationId).autoGenerate, disabled: !available, ariaLabel: kind === 'private' ? '私聊自动生图' : kind === 'group' ? '群聊自动生图' : '论坛自动生图' });
+        switchWrap.appendChild(toggle);
+        toggleLabel.appendChild(switchWrap);
+        listen(toggle, toggle, 'change', () => {
+            if (!available) return;
+            try {
+                settingsStore.setConversationImageGenerationSettings(kind, conversationId, { autoGenerate: Boolean(toggle.checked) });
+                setFeedback(toggle.checked ? '当前会话已开启自动生图。' : '当前会话已关闭自动生图。');
+            } catch {
+                toggle.checked = !toggle.checked;
+                setFeedback('当前会话的自动生图设置未保存。');
+            }
+        }, abortController.signal);
+        append(controls, [settingsButton, toggleLabel]);
+        return controls;
+    }
+    function attachImageDirectiveLongPress(image, directive) {
+        let timer = null;
+        const cancel = () => {
+            if (timer === null) return;
+            clearTimeout(timer);
+            imageDirectiveLongPressTimers.delete(timer);
+            timer = null;
+        };
+        const start = () => {
+            cancel();
+            timer = setTimeout(() => {
+                imageDirectiveLongPressTimers.delete(timer);
+                timer = null;
+                openImageDirectiveDialog(directive);
+            }, 560);
+            imageDirectiveLongPressTimers.add(timer);
+        };
+        listen(image, image, 'pointerdown', start, abortController.signal);
+        listen(image, image, 'pointerup', cancel, abortController.signal);
+        listen(image, image, 'pointercancel', cancel, abortController.signal);
+        listen(image, image, 'pointerleave', cancel, abortController.signal);
+        listen(image, image, 'touchstart', start, abortController.signal);
+        listen(image, image, 'touchend', cancel, abortController.signal);
+        listen(image, image, 'touchcancel', cancel, abortController.signal);
+        listen(image, image, 'contextmenu', (event) => { event.preventDefault?.(); cancel(); openImageDirectiveDialog(directive); }, abortController.signal);
+    }
+    function localProfileCharacterUid(profile) {
+        const nickname = String(profile?.nickname ?? profile?.昵称 ?? '').trim();
+        if (!nickname) return '';
+        return messageSessions().find((session) => chatNickname(session) === nickname)?.npcUid ?? '';
+    }
+    function publicImageFailureMessage(result) {
+        if (result?.code === 'image_generation_disabled') return '请先在生图设置中启用接口。';
+        if (result?.code === 'image_character_required' || result?.code === 'image_character_unavailable') return '这张人物图片暂时没有可用的成年角色绘图资料。';
+        if (result?.code === 'ui_action_pending') return '当前会话已有图片正在生成，请稍候。';
+        return '图片未生成，请稍后重试或检查生图设置。';
+    }
+    async function generateConversationImage({ kind, conversationId, messageId, characterUid = '', directive, automatic = false }) {
+        const key = imageDirectiveStateKey(kind, conversationId, messageId);
+        if (typeof actionBridge.generateConversationImage !== 'function') {
+            conversationImageStates.set(key, { status: 'failed', directive, message: '生图服务当前未接入。' });
+            if (!automatic) setFeedback('生图服务当前未接入。');
+            renderPage();
+            return;
+        }
+        conversationImageStates.set(key, { status: 'pending', directive, message: automatic ? '检测到生图结构，正在自动生成…' : '正在生成图片…' });
+        renderPage();
+        let result;
+        try { result = await actionBridge.generateConversationImage({ kind, conversationId, messageId, characterUid, directive, signal: abortController.signal }); }
+        catch { result = { ok: false }; }
+        if (isDestroyed) return;
+        const source = safeConversationImageSource(result?.image?.src ?? result?.image?.dataUrl ?? result?.dataUrl);
+        if (result?.ok && source) {
+            conversationImageStates.set(key, { status: 'ready', directive, imageSource: source, message: '' });
+        } else {
+            const message = publicImageFailureMessage(result);
+            conversationImageStates.set(key, { status: 'failed', directive, message });
+            if (!automatic) setFeedback(message);
+        }
+        renderPage();
+    }
+    function buildImageDirectiveCard({ kind, conversationId, messageId, characterUid = '', directive }) {
+        const formatted = formatDirectiveForDisplay(directive);
+        if (!formatted || !messageId || !conversationId) return null;
+        const key = imageDirectiveStateKey(kind, conversationId, messageId);
+        let state = conversationImageStates.get(key) ?? null;
+        if (!state && imageGenerationEnabled() && conversationImageSettings(kind, conversationId).autoGenerate) {
+            state = { status: 'queued', directive, message: '已识别生图结构，等待自动生成…' };
+            conversationImageStates.set(key, state);
+            queueMicrotask(() => {
+                if (isDestroyed || conversationImageStates.get(key)?.status !== 'queued') return;
+                void generateConversationImage({ kind, conversationId, messageId, characterUid, directive, automatic: true });
+            });
+        }
+        const card = element('section', { className: 'yl-image-directive-card' });
+        card.dataset.status = state?.status ?? 'idle';
+        const headerRow = element('div', { className: 'yl-image-directive-header' });
+        const toggle = element('button', { className: 'yl-image-directive-toggle', type: 'button', text: '本次生图结构 · ' + imageDirectiveKindLabel(directive.kind), ariaLabel: '展开或收起本次生图结构' });
+        const preview = element('div', { className: 'yl-image-directive-preview', hidden: !state });
+        toggle.setAttribute('aria-expanded', String(!preview.hidden));
+        listen(toggle, toggle, 'click', () => { preview.hidden = !preview.hidden; toggle.setAttribute('aria-expanded', String(!preview.hidden)); }, abortController.signal);
+        const action = element('button', { className: 'yl-settings-button yl-image-directive-action', type: 'button', text: state?.status === 'ready' || state?.status === 'failed' ? '重新生成' : state?.status === 'pending' ? '生成中…' : state?.status === 'queued' ? '等待自动生图…' : '生图', disabled: state?.status === 'pending' || state?.status === 'queued', ariaLabel: state?.status === 'ready' || state?.status === 'failed' ? '重新生成图片' : '生成图片' });
+        listen(action, action, 'click', () => { void generateConversationImage({ kind, conversationId, messageId, characterUid, directive }); }, abortController.signal);
+        append(headerRow, [toggle, action]);
+        card.appendChild(headerRow);
+        if (state?.status === 'ready') {
+            const image = element('img', { className: 'yl-image-directive-image', src: state.imageSource, alt: 'AI 根据本次结构生成的图片', loading: 'lazy', referrerPolicy: 'no-referrer' });
+            attachImageDirectiveLongPress(image, directive);
+            preview.appendChild(image);
+            preview.appendChild(element('p', { className: 'yl-image-directive-hint', text: '长按图片可查看本次结构化语句。' }));
+        } else {
+            if (state?.message) preview.appendChild(element('p', { className: 'yl-image-directive-status', text: state.message }));
+            preview.appendChild(element('p', { className: 'yl-image-directive-structure', text: formatted }));
+        }
+        card.appendChild(preview);
+        return card;
+    }
     documentRef.body.appendChild(root);
 
     const launcherDrag = createLauncherDragController({ launcher, documentRef, threshold: 8, edgeGap: 0 });
@@ -354,7 +535,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function setActivePage(pageId, { preserveOperation = false } = {}) {
         if (pageId === 'about') { showAboutSoftware(); return; }
-        if (!PAGE_COPY[pageId]) return;
+        if (!pageCopy(pageId)) return;
         const privateChatRoute = (page) => page === 'private_chat' || page === 'private_chat_summary';
         if (privateChatRoute(activePage) && !privateChatRoute(pageId)) {
             privateChatRequestGeneration += 1;
@@ -709,10 +890,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const features = FEATURE_BINDING_FOR_PAGE[pageId];
         if (!features) return null;
         const isForumHome = pageId === 'group_forum';
-        const button = element('button', { className: 'yl-feature-options', type: 'button', text: '设置', ariaLabel: isForumHome ? '打开心动社区设置' : ('配置' + (PAGE_COPY[pageId]?.title || '此功能') + '预设') });
+        const button = element('button', { className: 'yl-feature-options', type: 'button', text: '设置', ariaLabel: isForumHome ? '打开心动社区设置' : ('配置' + (pageCopy(pageId)?.title || '此功能') + '预设') });
         listen(button, button, 'click', () => {
             if (isForumHome) openForumSettingsDialog();
-            else openFeatureBinding(features, (PAGE_COPY[pageId]?.title || '功能') + '选项');
+            else openFeatureBinding(features, (pageCopy(pageId)?.title || '功能') + '选项');
         }, abortController.signal);
         return button;
     }
@@ -738,7 +919,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         cancelForumPullInteractions();
         imageManagerPanel?.dispose?.();
         imageManagerPanel = null;
-        const copy = PAGE_COPY[activePage];
+        const copy = pageCopy(activePage);
         statusLine.textContent = currentView.status === 'ready' ? '已连接' : 'MVU 未就绪';
         content.replaceChildren();
         const page = element('article', { className: `yl-phone-page yl-page-${activePage}` });
@@ -764,7 +945,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'character_creator') page.appendChild(buildCharacterCreator());
         else if (activePage === 'favorites') page.appendChild(buildFavoritesPage());
         else if (activePage === 'settings') page.appendChild(buildSettingsHome());
-        else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images'].includes(activePage)) page.appendChild(buildSettingsDetail());
+        else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images', 'settings_image_generation'].includes(activePage)) page.appendChild(buildSettingsDetail());
         else if (activePage === 'settings_console') page.appendChild(buildOperationConsole());
         else if (activePage === 'settings_chat_summary') page.appendChild(buildChatSummarySettingsHome());
         else if (activePage === 'settings_chat_summary_config') page.appendChild(buildChatSummaryConfigPage());
@@ -1617,7 +1798,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         append(actions, [cancel, confirm]); section.appendChild(actions);
         return section;
     }
-    function localMessageBubble(message, { forum = false } = {}) {
+    function localMessageBubble(message, { forum = false, kind = forum ? 'forum' : 'group', conversationId = '' } = {}) {
         const isUser = message.sender === 'user';
         const bubble = element('article', { className: `yl-local-message ${isUser ? 'is-user' : 'is-member'}${forum ? ' is-forum' : ''}` });
         if (!isUser) {
@@ -1626,6 +1807,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const copy = element('div', { className: 'yl-local-message-copy' });
             copy.appendChild(element('strong', { text: profile.昵称 }));
             copy.appendChild(element('p', { text: message.content }));
+            if (message.imageDirective) {
+                const imageCard = buildImageDirectiveCard({
+                    kind, conversationId, messageId: message.id, characterUid: localProfileCharacterUid(message.author), directive: message.imageDirective,
+                });
+                if (imageCard) copy.appendChild(imageCard);
+            }
             bubble.appendChild(copy);
         } else {
             const copy = element('div', { className: 'yl-local-message-copy' });
@@ -1702,7 +1889,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const actions = element('div', { className: 'yl-local-conversation-actions' });
         const summary = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '聊天总结', disabled: !chatSummaryEnabled(), ariaLabel: '查看聊天群总结' });
         listen(summary, summary, 'click', () => { localSummaryTarget = { kind: 'group', id: group.cacheKey, title: group.name }; setActivePage('group_chat_summary'); }, abortController.signal);
-        append(actions, [summary]); append(hero, [copy, actions]); section.appendChild(hero);
+        append(actions, [summary, buildConversationImageControls({ kind: 'group', conversationId: group.cacheKey })]); append(hero, [copy, actions]); section.appendChild(hero);
         const confirmation = buildGroupRoomConfirmation(group);
         if (confirmation) section.appendChild(confirmation);
         const participants = groupParticipants(group);
@@ -1717,7 +1904,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         section.appendChild(people);
         const transcript = element('div', { className: 'yl-local-transcript', ariaLabel: `${group.name}的聊天记录` });
         if (!conversation.messages?.length) transcript.appendChild(buildEmptyPlaceholder('还没有群消息。说句话开始吧；关闭自动更新时，群友会在你发言后回应。', { icon: '◌' }));
-        else for (const message of conversation.messages) transcript.appendChild(localMessageBubble(message));
+        else for (const message of conversation.messages) transcript.appendChild(localMessageBubble(message, { kind: 'group', conversationId: group.cacheKey }));
         if (actionBridge.isPending?.('group_chat_update', group.cacheKey)) transcript.appendChild(element('div', { className: 'yl-chat-replying', text: '群友正在更新···' }));
         section.appendChild(transcript);
         const composer = element('section', { className: 'yl-chat-composer yl-local-composer' });
@@ -2034,14 +2221,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const actionRow = element('div', { className: 'yl-forum-post-actions' });
         const summary = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '聊天总结', disabled: !chatSummaryEnabled(), ariaLabel: '查看帖子总结' });
         listen(summary, summary, 'click', () => { localSummaryTarget = { kind: 'post', id: post.id, title: post.title }; setActivePage('forum_post_summary'); }, abortController.signal);
-        actionRow.appendChild(summary); append(main, [authorRow, actionRow, element('h2', { text: post.title }), element('p', { className: 'yl-forum-post-body', text: post.body })]);
+        append(actionRow, [summary, buildConversationImageControls({ kind: 'forum', conversationId: post.id })]); append(main, [authorRow, actionRow, element('h2', { text: post.title }), element('p', { className: 'yl-forum-post-body', text: post.body })]);
         const tags = element('div', { className: 'yl-tag-list yl-forum-post-tags' });
         for (const tag of post.tags) tags.appendChild(element('span', { className: 'yl-tag-chip', text: '#' + tag }));
         main.appendChild(tags);
         main.appendChild(element('h3', { text: `评论（${post.messages.length}）` }));
         const comments = element('div', { className: 'yl-forum-comment-list' });
         if (!post.messages.length) comments.appendChild(buildEmptyPlaceholder('还没有评论。留下第一句公开想法吧。', { icon: '◌' }));
-        else for (const message of post.messages) comments.appendChild(localMessageBubble(message, { forum: true }));
+        else for (const message of post.messages) comments.appendChild(localMessageBubble(message, { forum: true, kind: 'forum', conversationId: post.id }));
         if (actionBridge.isPending?.('forum_post_update', post.id)) comments.appendChild(element('div', { className: 'yl-chat-replying', text: '讨论正在更新···' }));
         main.appendChild(comments); layout.appendChild(main);
         const side = element('aside', { className: 'yl-forum-post-author-card' });
@@ -2320,6 +2507,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             chatMoreMenuSessionUid = moreOpen ? '' : session.sessionUid;
             renderPage();
         }, abortController.signal);
+        actions.appendChild(buildConversationImageControls({ kind: 'private', conversationId: session.sessionUid }));
         actions.appendChild(more);
         if (moreOpen) {
             const menu = element('div', { className: 'yl-private-chat-more-menu', ariaLabel: '私聊更多操作' });
@@ -2442,6 +2630,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const label = isPlayer ? '我' : chatNickname(session);
         bubbleContent.appendChild(element('strong', { text: label }));
         bubbleContent.appendChild(element('p', { text: message.content }));
+        if (!isPlayer) {
+            const directive = privateImageDirectives.get(message.messageUid);
+            const imageCard = directive ? buildImageDirectiveCard({
+                kind: 'private', conversationId: session.sessionUid, messageId: message.messageUid, characterUid: session.npcUid, directive,
+            }) : null;
+            if (imageCard) bubbleContent.appendChild(imageCard);
+        }
         if (message.time) bubbleContent.appendChild(element('span', { className: 'yl-bubble-time', text: message.time }));
         row.appendChild(bubbleContent);
         if (isPlayer) {
@@ -2750,8 +2945,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         let result;
         try { result = await request; }
         catch { result = { ok: false }; }
-        if (result?.ok) chatDrafts.delete(session.sessionUid);
-        else if (isStillVisible()) {
+        if (result?.ok) {
+            chatDrafts.delete(session.sessionUid);
+            for (const item of Array.isArray(result.imageDirectives) ? result.imageDirectives : []) {
+                if (typeof item?.messageUid === 'string' && item.messageUid && formatDirectiveForDisplay(item.directive)) {
+                    privateImageDirectives.set(item.messageUid, item.directive);
+                }
+            }
+        } else if (isStillVisible()) {
             const message = result?.message || describeActionFailure(result);
             setFeedback(message || '私聊回复未生成，请稍后重试。');
         }
@@ -3150,6 +3351,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             ['settings_prompts', '提示词预设', '只维护提示词条目与导入导出。'],
             ['settings_privacy', '隐私权限设置', '管理个性化内容推荐与当前设备偏好。'],
             ['settings_images', '图片管理', '上传或导入角色展示图，并编辑匹配关键词与权重。'],
+            ['settings_image_generation', '生图设置', '配置 NovelAI 或 OpenAI-compatible 生图接口与固定提示词。'],
             ['settings_chat_summary', '对话总结', '按楼层整理私聊、聊天群和帖子；后两者仅保存在浏览器本地。'],
             ['settings_console', '控制台', '查看本次会话中的安全运行进度，不显示技术密钥或原始数据。'],
             ['about', '关于软件', '点击查看版本；连续点击五次可显示内容模式开关。'],
@@ -3222,7 +3424,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!settingsStore) return element('div', { className: 'yl-phone-placeholder', text: '本地设置尚未就绪。' });
         const view = activePage === 'settings_connections' ? 'connection'
             : activePage === 'settings_prompts' ? 'prompt'
-                : activePage === 'settings_personalization_preference' ? 'preference' : 'personalization';
+                : activePage === 'settings_image_generation' ? 'image_generation'
+                    : activePage === 'settings_personalization_preference' ? 'preference' : 'personalization';
         const section = element('section', { className: 'yl-settings-detail' });
         section.appendChild(buildSettingsPanel({
             settingsStore, llmClient, signal: abortController.signal, view,
@@ -3382,6 +3585,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(groupMemberPickerClose, groupMemberPickerClose, 'click', closeGroupMemberPicker, abortController.signal);
     listen(groupAutoClose, groupAutoClose, 'click', closeGroupAutoDialog, abortController.signal);
     listen(forumSettingsClose, forumSettingsClose, 'click', closeForumSettingsDialog, abortController.signal);
+    listen(imageDirectiveClose, imageDirectiveClose, 'click', closeImageDirectiveDialog, abortController.signal);
     listen(avatarFileButton, avatarFileButton, 'click', () => { avatarFileInput.click?.(); }, abortController.signal);
     listen(avatarFileInput, avatarFileInput, 'change', () => { void saveLocalAvatarFile(avatarFileInput.files?.[0]); }, abortController.signal);
     listen(avatarLinkButton, avatarLinkButton, 'click', saveLinkedAvatar, abortController.signal);
@@ -3398,6 +3602,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (!groupMemberPickerDialog.hidden) closeGroupMemberPicker();
         else if (!groupAutoDialog.hidden) closeGroupAutoDialog();
         else if (!forumSettingsDialog.hidden) closeForumSettingsDialog();
+        else if (!imageDirectiveDialog.hidden) closeImageDirectiveDialog();
         else if (imageManagerPanel?.handleEscape?.()) { /* image manager handled it */ }
         else if (chatMoreMenuSessionUid) closeChatMoreMenu();
         else if (groupRoomMenuOpen) { resetGroupRoomMenu(); renderPage(); }
@@ -3410,6 +3615,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     renderPage();
     return Object.freeze({
         refreshState,
-        destroy() { cancelChatToolLongPress(); clearChatToolClickSuppression(); isDestroyed = true; stopGroupAutoTimer(); stopForumAutoTimer(); cancelForumPullInteractions(); clearSummaryToast(); hideOperationDialog(); closeGroupMemberPicker(); closeGroupAutoDialog(); closeForumSettingsDialog(); resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { cancelChatToolLongPress(); clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; stopGroupAutoTimer(); stopForumAutoTimer(); cancelForumPullInteractions(); clearSummaryToast(); hideOperationDialog(); closeGroupMemberPicker(); closeGroupAutoDialog(); closeForumSettingsDialog(); resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }

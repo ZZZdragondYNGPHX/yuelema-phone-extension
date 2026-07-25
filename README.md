@@ -1,4 +1,4 @@
-# 约了吗小手机 v0.1.33（阶段 55 移动端私聊、NSFW 互动合同与触摸社区刷新）
+# 约了吗小手机 v0.1.34（阶段 56 对话生图接口、绘图 DNA 与窄屏 UI）
 
 这是现代现实都市「约了吗」MVU 角色卡的配套 SillyTavern UI 扩展。软件层承担推荐、线上短文本私聊、匹配、群组浏览、角色创作与面基约定；现实见面、约会及复杂长文本剧情仍由酒馆正文推进。
 
@@ -80,7 +80,7 @@ readLatestState → build…Patch → validateControlledPatchAgainstState
 1. 在 SillyTavern 的扩展管理页选择“安装扩展”，输入 Git URL：`https://github.com/ZZZdragondYNGPHX/yuelema-phone-extension.git`。
 2. 安装完成后重载 SillyTavern，确认“约了吗小手机”已启用。此扩展声明最低版本为 **SillyTavern v1.18.0**，以使用已核对的 `activate / disable / delete` lifecycle hooks。
 3. 后续版本从同一 Git 仓库更新，不再把本地工作树手工同步到 SillyTavern 安装副本。
-4. 在角色管理页面导入 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v0.1.33.json`，并为这张卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。
+4. 在角色管理页面导入 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v0.1.34.json`，并为这张卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。
 5. 首次使用时在“我的 → 设置”配置 OpenAI-compatible 连接预设、提示词预设和功能绑定；输入 API Key 后点击“保存连接预设”会将它保存到当前浏览器并立即可用，不必再额外点模型拉取按钮。禁用、删除或页面卸载只清理内存镜像；下次打开会按同一连接预设自动恢复。Key 不会进入设置导出、MVU、角色卡、提示词、日志或错误面板；需要移除时点击“删除当前已保存 API Key”。
 
 ## 本地验证（2026-07-25）
@@ -92,7 +92,7 @@ node --test
 node --input-type=module -e "await import('./index.js'); console.log('production import graph resolves')"
 ```
 
-实际结果（阶段 55）：`npm run check` 通过；全量 `node --test` **410 / 410 通过，0 failed**；关键源码 `node --check`、生产 ESM import 图与 `git diff --check` 通过；角色卡构建器已生成 `约了吗_MVU_v0.1.33.json`（41580 bytes，`character_version=0.1.33`）。新增回归覆盖：电脑端右键与手机端长按纸飞机、私聊面基桥接的会话 UID 防伪造、收藏不推进候选、合意 NSFW 成人聊天合同与旧 WebView 的触摸下拉刷新。上述本地结果不等同于 SillyTavern 真机通过。
+历史结果（阶段 55）：`npm run check` 通过；全量 `node --test` **410 / 410 通过，0 failed**；关键源码 `node --check`、生产 ESM import 图与 `git diff --check` 通过；角色卡构建器已生成 `约了吗_MVU_v0.1.33.json`（41580 bytes，`character_version=0.1.33`）。新增回归覆盖：电脑端右键与手机端长按纸飞机、私聊面基桥接的会话 UID 防伪造、收藏不推进候选、合意 NSFW 成人聊天合同与旧 WebView 的触摸下拉刷新。上述本地结果不等同于 SillyTavern 真机通过。
 
 定向 DOM 回归还确认：搜索只消费公开私聊投影；清空聊天不会删除角色，删除角色会清理受控 MVU 中全部关联引用；阈值、关系分、UID、Patch 与 `stat_data` 不进入普通 DOM或控制台；匹配婉拒不会打开空会话；手动关闭提示、页面切换、关闭小手机或销毁后，迟到结果不会重开弹窗或强制导航。上述本地结果不等同于 SillyTavern 真机通过。
 
@@ -103,6 +103,14 @@ node --input-type=module -e "await import('./index.js'); console.log('production
 - 首页收藏只写入收藏夹，不再自动请求下一位角色；喜欢和不喜欢仍在反馈写入成功后生成下一位，刷新和取消收藏的原有单一语义保持不变。
 - 心动社区保留桌面 Pointer/滚轮路径，并补齐旧内嵌 WebView 的 `touchstart / touchmove / touchend / touchcancel` 手势：仅内容顶部向下拉到阈值并松开才刷新，反向、未到阈值或非顶部不会请求模型；Pointer 和 Touch 兼容事件不会为同一次手势重复计时。
 - 真机仍需从 Git URL 更新至 `0.1.33`、导入 `约了吗_MVU_v0.1.33.json` 并新开聊天，分别验证：移动端长按不误发、面基仅填草稿、触摸下拉刷新、以及合意 NSFW 成人聊天不会仅因露骨而触发负向裁决。初始压力已接近阈值时仍可能合理进入已读不回/拉黑，需记录输入状态、模型 delta 和本地裁决再判断。
+## 阶段 56（v0.1.34）
+
+- 设置新增“生图设置”子页：仅保存 NovelAI / OpenAI-compatible 生图接口的非机密参数、前置/后置正面提示词与固定负面提示词；API Key 仍只通过按预设 ID 隔离的浏览器缓存保存、删除和内存清理，不进入设置导出、MVU、提示词、日志或错误反馈。正面提示词顺序固定为 `前置 → core_dna → outfit_dna → AI 场景结构 → 后置`，负面提示词保持独立。
+- 私聊、群聊与论坛均有“生图”设置入口及各会话独立的自动生图开关。快速回复合同可附带严格的 `imageDirective` / `imageDirectives`（仅图片类型与场景结构）；结构折叠在对应对话泡下。开启自动生图时仅对新、有效的结构调用受控 bridge 一次；关闭时由用户点击“生图”。成功后以图片替换结构内容但始终保留“重新生成”，失败状态不会在重渲染后无限重试；右键或长按图片会显示本次结构化语句。
+- 角色卡、角色创建、AI 补全/完整创作、推荐刷新、灵魂/语音匹配及角色资料均增加 `绘图.core_dna` / `绘图.outfit_dna`。人物图只允许读取明确成年且可用的关联角色绘图 DNA；没有角色时仅可生成场景快照。图片生成不写入 MVU，保留为会话 UI 内存态。
+- 生图客户端只接受通过 PNG/JPEG/WebP 魔数校验的 base64、直接二进制或受控 ZIP 图片；即使接口 JSON 返回远程 `url` 也会拒绝，避免 UI 通过 `<img src>` 绕过注入式 transport 发网。真实 Response 优先按流读取，并对声明长度、累计响应和 ZIP 解压结果施加 24 MiB 图片上限；OpenAI-compatible 接口需实际支持 `b64_json` 或直接图片响应。
+- 本阶段本地验证已完成：`npm run check` 通过；全量 Node 回归 **425 / 425 通过，0 failed**；生产 ESM import 图、关键文件语法检查和 `git diff --check` 通过。角色卡构建生成 `角色卡源/dist/约了吗_MVU_v0.1.34.json`，大小 **43303 bytes**，SHA-256 `E2A40D317E37986B127E84831948F93FAEE2402A67060A0A35033E50552292F4`，读取确认 `data.character_version=0.1.34`。这些结果不等于 SillyTavern 真机验收。
+- v0.1.34 将通过 GitHub `main` 发布；真机仍需从 Git URL 更新扩展、导入 `约了吗_MVU_v0.1.34.json` 并新开聊天，检查真实 NovelAI / OpenAI-compatible CORS 与响应、成人角色门禁、私聊/群聊/论坛消息映射、同会话多结构自动生成、手动/重新生成、长按冲突、窄屏布局、浏览器 Key 缓存与切页/销毁后的无重复请求。
 ## 阶段 54（v0.1.32）
 
 - 十个内置 NSFW 提示词均改为明确成年人、双方自愿前提下的主动成人向线上表达：推荐人物不再默认普通社交，私聊、群聊、社区、角色创作、匹配关键词、图片匹配和总结都会保留或优先成人主题；未成年人、胁迫、非自愿、隐私泄露、伪造线下发生与自动现实行动仍被拒绝。

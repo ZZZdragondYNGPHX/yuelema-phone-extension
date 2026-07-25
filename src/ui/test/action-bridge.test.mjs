@@ -686,7 +686,7 @@ test('candidate match draft reads through MVU but never commits a patch or event
                 profile: {
                     昵称: '林夏', 年龄段: '25-29', 性别: '女', 性取向: '双性恋', 城市: '上海', 距离范围: '10 km',
                     寻找意图: '先聊天再认真约会', 简介: '喜欢电影和夜跑。', 兴趣标签: ['电影'], 生活方式标签: ['夜猫子'], 性格标签: ['慢热'], 沟通风格标签: ['及时回应'],
-                }, explanation: '公开兴趣接近。', matchScore: 88,
+                }, drawing: { core_dna: 'adult woman, black hair, brown eyes', outfit_dna: 'cream cardigan, dark skirt' }, explanation: '公开兴趣接近。', matchScore: 88,
             }) };
         } },
     });
@@ -719,7 +719,7 @@ test('soul match creates an independent npc_match session and never promotes a f
                 profile: {
                     昵称: '林夏', 年龄段: '25-29', 性别: '女', 性取向: '双性恋', 城市: '上海', 距离范围: '10 km',
                     寻找意图: '先聊天再认真约会', 简介: '喜欢电影和夜跑。', 兴趣标签: ['电影'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
-                }, explanation: '公开兴趣接近。', matchScore: 1,
+                }, drawing: { core_dna: 'adult woman, black hair, brown eyes', outfit_dna: 'cream cardigan, dark skirt' }, explanation: '公开兴趣接近。', matchScore: 1,
             }) };
         } },
         imageMatchCoordinator: {
@@ -767,7 +767,7 @@ test('voice match first resolves transient voice keywords and then commits the s
                 profile: {
                     昵称: '顾言', 年龄段: '26-31', 性别: '女', 性取向: '双性恋', 城市: '上海', 距离范围: '15 km',
                     寻找意图: '聊天', 简介: '周末喜欢看展和散步。', 兴趣标签: ['逛展'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
-                }, explanation: '本次语音关键词优先。', matchScore: 1,
+                }, drawing: { core_dna: 'adult woman, black hair, brown eyes', outfit_dna: 'cream cardigan, dark skirt' }, explanation: '本次语音关键词优先。', matchScore: 1,
             }) };
         } },
         imageMatchCoordinator: {
@@ -807,7 +807,7 @@ test('candidate match records a local-score decline without creating or incremen
                 profile: {
                     昵称: '周衡', 年龄段: '25-29', 性别: '男', 性取向: '异性恋', 城市: '上海', 距离范围: '10 km',
                     寻找意图: '聊天', 简介: '模型声称高分，但公开取向不相容。', 兴趣标签: ['电影'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
-                }, explanation: '本地兼容结果优先。', matchScore: 100,
+                }, drawing: { core_dna: 'adult woman, black hair, brown eyes', outfit_dna: 'cream cardigan, dark skirt' }, explanation: '本地兼容结果优先。', matchScore: 100,
             }) };
         } },
     });
@@ -826,4 +826,95 @@ test('candidate match records a local-score decline without creating or incremen
     assert.equal(patch.some((operation) => operation.path === '/系统/UID计数器/会话'), false);
     assert.equal(patch.find((operation) => operation.path === '/角色池/npc_match_9').value.与玩家关系.状态, '已取消');
     assert.equal(patch.find((operation) => operation.path === '/系统/UID计数器/角色').value, 9);
+});
+
+test('conversation image bridge composes immutable drawing prompts and never writes MVU', async () => {
+    const initialState = state();
+    initialState.角色池.npc_ava = {
+        ...adultCandidate(),
+        绘图: { core_dna: 'adult woman, short black hair', outfit_dna: 'cream cardigan, street fashion' },
+    };
+    const { mvu, calls } = createMvu({ initialState });
+    const imageRequests = [];
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null },
+        mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: {
+            getImageGenerationSettings() {
+                return {
+                    enabled: true, presetId: 'image_default', apiMode: 'novelai', baseUrl: 'https://image.example.invalid', endpointPath: '/generate',
+                    model: 'model', sampler: 'sampler', noiseSchedule: 'schedule', guidance: 7, guidanceRescale: 0,
+                    width: 1024, height: 1024, steps: 28, seed: 0, qualityToggle: true, variety: false,
+                    positivePrefix: 'masterpiece', positiveSuffix: 'soft lighting', negativePrompt: 'lowres', conversationSettings: { private: {}, group: {}, forum: {} },
+                };
+            },
+        },
+        imageGenerationClient: {
+            async generate(request) {
+                imageRequests.push(request);
+                return { kind: 'data_url', mimeType: 'image/png', src: 'data:image/png;base64,iVBORw0KGgo=' };
+            },
+        },
+    });
+
+    const result = await bridge.generateConversationImage({
+        kind: 'private', conversationId: 'chat_ava', messageId: 'message_ava_1', characterUid: 'npc_ava',
+        directive: { kind: 'selfie', scene: 'smiling at a cafe table' },
+    });
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.image.dataUrl, 'data:image/png;base64,iVBORw0KGgo=');
+    assert.equal(imageRequests.length, 1);
+    assert.equal(imageRequests[0].positivePrompt, 'masterpiece, adult woman, short black hair, cream cardigan, street fashion, smiling at a cafe table, soft lighting');
+    assert.equal(imageRequests[0].negativePrompt, 'lowres');
+    assert.deepEqual(calls.map(([name]) => name), ['get']);
+});
+
+test('conversation image bridge blocks disabled requests and never exposes unexpected client errors', async () => {
+    const { mvu, calls } = createMvu({ initialState: state() });
+    let enabled = false;
+    let imageCalls = 0;
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        settingsStore: { getImageGenerationSettings() { return { enabled }; } },
+        imageGenerationClient: { async generate() { imageCalls += 1; throw new Error('api-key-secret'); } },
+    });
+    const request = { kind: 'group', conversationId: 'group_city', messageId: 'message_city_1', directive: { kind: 'scene_snapshot', scene: 'city park at dusk' } };
+    const disabled = await bridge.generateConversationImage(request);
+    assert.equal(disabled.code, 'image_generation_disabled');
+    assert.equal(imageCalls, 0);
+
+    enabled = true;
+    const failed = await bridge.generateConversationImage(request);
+    assert.equal(failed.code, 'IMAGE_UNKNOWN_ERROR');
+    assert.doesNotMatch(JSON.stringify(failed), /api-key-secret|secret/iu);
+    assert.equal(imageCalls, 1);
+    assert.deepEqual(calls, []);
+});
+
+
+test('conversation image pending scope is per message and rejects malformed message IDs', async () => {
+    const { mvu, calls } = createMvu({ initialState: state() });
+    const resolvers = [];
+    const imageRequests = [];
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        settingsStore: { getImageGenerationSettings() { return { enabled: true, positivePrefix: '', positiveSuffix: '', negativePrompt: '' }; } },
+        imageGenerationClient: { generate(request) { imageRequests.push(request); return new Promise((resolve) => resolvers.push(resolve)); } },
+    });
+    const base = { kind: 'group', conversationId: 'group_city', directive: { kind: 'scene_snapshot', scene: 'city park at dusk' } };
+    const first = bridge.generateConversationImage({ ...base, messageId: 'message_city_1' });
+    const second = bridge.generateConversationImage({ ...base, messageId: 'message_city_2' });
+    await Promise.resolve();
+    assert.equal(imageRequests.length, 2, '同一会话的不同结构指令必须各自开始生成');
+    const duplicate = await bridge.generateConversationImage({ ...base, messageId: 'message_city_1' });
+    assert.equal(duplicate.code, 'ui_action_pending', '同一条结构指令仍应防止重复请求');
+    const invalid = await bridge.generateConversationImage({ ...base, messageId: 'bad message id' });
+    assert.equal(invalid.code, 'image_conversation_invalid');
+    resolvers[0]({ kind: 'data_url', mimeType: 'image/png', src: 'data:image/png;base64,iVBORw0KGgo=' });
+    resolvers[1]({ kind: 'data_url', mimeType: 'image/png', src: 'data:image/png;base64,iVBORw0KGgo=' });
+    assert.equal((await first).ok, true);
+    assert.equal((await second).ok, true);
+    assert.deepEqual(calls, [], '对话生图不得写入 MVU');
 });

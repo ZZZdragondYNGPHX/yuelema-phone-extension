@@ -9,6 +9,10 @@ function draft() {
             寻找意图: '认真约会', 简介: '喜欢雨夜散步和独立电影。',
             兴趣标签: ['独立电影'], 生活方式标签: ['夜行散步'], 性格标签: ['温和'], 沟通风格标签: ['深度对话'],
         },
+        drawing: {
+            core_dna: 'hair color{dark brown hair}; eye color{brown eyes}; facial features{gentle oval face}; body type{slender adult woman}',
+            outfit_dna: 'outerwear{beige trench coat}; footwear{black ankle boots}; accessories{silver earrings}',
+        },
         explanation: '公开标签与本次偏好有较高重合。',
         matchScore: 91,
     };
@@ -31,6 +35,7 @@ test('materialized match candidate ignores model score, derives local score, and
     assert.equal(result.candidate.公开资料.昵称, '林舒');
     assert.equal(result.candidate.公开资料.头像引用, '');
     assert.equal(result.candidate.隐藏资料.实际年龄, 25);
+    assert.deepEqual(result.candidate.绘图, draft().drawing);
     assert.equal(result.candidate.与玩家关系.状态, '陌生');
     assert.equal(result.candidate.与玩家关系.NPC专属匹配度, 94);
     assert.deepEqual(

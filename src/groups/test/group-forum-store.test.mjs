@@ -138,7 +138,7 @@ test('group history can be cleared independently, leaving deletes browser-local 
     assert.deepEqual((await store.snapshot()).exitedExternalGroupKeys, ['ext_1234abcd']);
 });
 
-test('v0.1.28 local cache migrates old forum and group settings to independent bindings', async () => {
+test('legacy local cache migrates forum/group settings and image-capable messages to the current schema', async () => {
     const storage = createMemoryGroupForumStorage();
     await storage.setItem(GROUP_FORUM_STORAGE_KEY, JSON.stringify({
         schema: 'yuelema.group-forum', schemaVersion: 2, nextId: 1,
@@ -146,7 +146,7 @@ test('v0.1.28 local cache migrates old forum and group settings to independent b
     }));
     const store = createGroupForumStore({ storage, now: CLOCK });
     const migrated = await store.ready();
-    assert.equal(migrated.schemaVersion, 3);
+    assert.equal(migrated.schemaVersion, 4);
     assert.deepEqual(migrated.forumAuto, {
         enabled: true, intervalSeconds: 30,
         channelBindings: { SFW: { connectionPresetId: null, promptPresetId: null }, NSFW: { connectionPresetId: null, promptPresetId: null } },

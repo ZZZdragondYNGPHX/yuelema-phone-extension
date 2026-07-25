@@ -1,3 +1,4 @@
+import { normalizeImageDirective } from '../images/image-directive.js';
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
 import { buildPublicGroupLlmContext, cleanGroupLlmText, groupContentModeInstruction, isSafeGroupLlmData, isSafeGroupLlmOutput, normalizeGroupContentMode, parseGroupLlmJson, projectPublicPlayerProfile } from './group-llm-safety.js';
@@ -215,7 +216,7 @@ function makeGroupUpdateMessages(context, promptPreset, trigger) {
         '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',
         groupContentModeInstruction(context.contentMode),
         '软件层只处理线上文字。任何模式都不得涉及未成年人、胁迫或非自愿内容；不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。',
-        '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"participants":[{"nickname":"","ageRange":"","gender":"","city":"","mbti":"","zodiac":"","occupation":"","interests":[""],"presence":"在线","matchRate":null}],"messages":[{"speaker":"已有成员或participants昵称","text":"1-480字"}]}。participants 最多 3 个，messages 为 1–8 个。不得输出 HTML、控制字符、UpdateVariable 或 JSONPatch。',
+        '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"participants":[{"nickname":"","ageRange":"","gender":"","city":"","mbti":"","zodiac":"","occupation":"","interests":[""],"presence":"在线","matchRate":null}],"messages":[{"speaker":"已有成员或participants昵称","text":"1-480字","imageDirective":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。imageDirective 可省略，仅在该发言确实值得分享照片、角色有分享欲且关系边界允许时使用；私照要更严格，不得机械生图。不得输出 UID、URL、完整提示词、绘图 DNA、凭据、HTML、控制字符、UpdateVariable 或 JSONPatch。',
     ].filter(Boolean).join('\n\n');
     return Object.freeze([
         Object.freeze({ role: 'system', content: system }),
@@ -242,11 +243,13 @@ function normalizeGroupUpdate(value, existingMembers, contentMode) {
     }
     const normalizedMessages = [];
     for (const message of messages) {
-        if (!ownRecord(message) || Object.keys(message).sort().join(',') !== 'speaker,text') return null;
+        if (!ownRecord(message) || Object.keys(message).some((key) => !['speaker', 'text', 'imageDirective'].includes(key)) || !Object.hasOwn(message, 'speaker') || !Object.hasOwn(message, 'text')) return null;
         const speaker = cleanGroupLlmText(ownValue(message, 'speaker'), 80);
         const text = cleanGroupLlmText(ownValue(message, 'text'), 480);
         if (!speaker || !text || !isSafeGroupLlmOutput(text, 480, { contentMode }) || !names.has(speaker.normalize('NFKC').toLowerCase())) return null;
-        normalizedMessages.push(Object.freeze({ speaker, text }));
+        let imageDirective;
+        if (Object.hasOwn(message, 'imageDirective')) { try { imageDirective = normalizeImageDirective(ownValue(message, 'imageDirective')); } catch { return null; } }
+        normalizedMessages.push(Object.freeze(imageDirective ? { speaker, text, imageDirective } : { speaker, text }));
     }
     return Object.freeze({ participants: Object.freeze(normalizedParticipants), messages: Object.freeze(normalizedMessages) });
 }

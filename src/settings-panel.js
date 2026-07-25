@@ -42,6 +42,7 @@ function normalizeSettingsView(value) {
         ['connection', 'connection'], ['connections', 'connection'], ['settings_connections', 'connection'],
         ['prompt', 'prompt'], ['prompts', 'prompt'], ['settings_prompts', 'prompt'],
         ['personalization', 'personalization'], ['privacy', 'personalization'], ['settings_personalization', 'personalization'],
+        ['image_generation', 'image_generation'], ['images_generation', 'image_generation'], ['settings_image_generation', 'image_generation'],
         ['preference', 'preference'], ['preferences', 'preference'], ['personalization_preference', 'preference'],
         ['all', 'all'],
     ]);
@@ -94,6 +95,8 @@ function selectWithOptions(options, value, ariaLabel, name) {
         if (option.value === value) item.selected = true;
         select.appendChild(item);
     }
+    // Set the control value explicitly for native and older embedded WebViews.
+    select.value = value;
     return select;
 }
 
@@ -296,6 +299,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         panel.appendChild(buildConnectionSection(settings));
     } else if (activeView === 'prompt') {
         append(panel, [buildPromptSection(settings), buildPromptTransferSection(settings)]);
+    } else if (activeView === 'image_generation') {
+        panel.appendChild(buildImageGenerationSection(settings));
     } else {
         panel.appendChild(buildPersonalizationSection(settings, {
             openPreferences: activeView === 'preference',
@@ -789,6 +794,108 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         section.appendChild(controls);
         return section;
     }
+
+    function buildImageGenerationSection(snapshot) {
+        const section = element('section', { className: 'yl-settings-section yl-image-generation-settings' });
+        const image = snapshot.imageGeneration ?? settingsStore.getImageGenerationSettings();
+        append(section, [
+            sectionHeading('◈', '生图设置'),
+            element('p', {
+                className: 'yl-phone-page-description',
+                text: '生图只读取本页的非机密配置与独立浏览器 Key。角色绘图 DNA、AI 返回的场景结构与固定提示词会在生图边界按既定顺序组合；API Key 不会写入设置、MVU、提示词或导出文件。',
+            }),
+        ]);
+
+        const enabled = element('input', { className: 'yl-settings-checkbox', type: 'checkbox', checked: image.enabled, name: 'image-generation-enabled', ariaLabel: '启用生图接口' });
+        section.appendChild(field('启用生图接口', switchShell(enabled)));
+        const apiMode = selectWithOptions([
+            { label: 'NovelAI', value: 'novelai' },
+            { label: 'OpenAI-compatible', value: 'openai_compatible' },
+        ], image.apiMode, '生图接口模式', 'image-generation-api-mode');
+        const presetId = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-preset-id', value: image.presetId, maxLength: 96, ariaLabel: '生图密钥预设 ID' });
+        const apiKey = element('input', { className: 'yl-settings-control', type: 'password', name: 'image-generation-api-key', autocomplete: 'off', maxLength: 4096, placeholder: '输入后仅保存到当前浏览器', ariaLabel: '生图 API Key' });
+        const keyStatus = element('p', { className: 'yl-image-generation-key-status' });
+        const baseUrl = element('input', { className: 'yl-settings-control', type: 'url', name: 'image-generation-base-url', value: image.baseUrl, maxLength: 512, ariaLabel: '生图站点' });
+        const endpointPath = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-endpoint-path', value: image.endpointPath, maxLength: 256, ariaLabel: '生图接口路径' });
+        const model = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-model', value: image.model, maxLength: 160, ariaLabel: '生图模型' });
+        const sampler = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-sampler', value: image.sampler, maxLength: 80, ariaLabel: '采样器' });
+        const noiseSchedule = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-noise-schedule', value: image.noiseSchedule, maxLength: 80, ariaLabel: '噪点表' });
+        const guidance = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-guidance', value: String(image.guidance), min: 0, max: 30, ariaLabel: 'Guidance' });
+        const guidanceRescale = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-guidance-rescale', value: String(image.guidanceRescale), min: 0, max: 1, ariaLabel: 'Guidance Rescale' });
+        const width = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-width', value: String(image.width), min: 256, max: 2048, ariaLabel: '图片宽度' });
+        const height = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-height', value: String(image.height), min: 256, max: 2048, ariaLabel: '图片高度' });
+        const steps = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-steps', value: String(image.steps), min: 1, max: 100, ariaLabel: '步数' });
+        const seed = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-seed', value: String(image.seed), min: 0, max: 4294967295, ariaLabel: '种子' });
+        const qualityToggle = element('input', { className: 'yl-settings-checkbox', type: 'checkbox', checked: image.qualityToggle, name: 'image-generation-quality-toggle', ariaLabel: '质量标签' });
+        const variety = element('input', { className: 'yl-settings-checkbox', type: 'checkbox', checked: image.variety, name: 'image-generation-variety', ariaLabel: '随机性' });
+        const positivePrefix = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-positive-prefix', value: image.positivePrefix, maxLength: 4000, ariaLabel: '前置正面提示词' });
+        const positiveSuffix = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-positive-suffix', value: image.positiveSuffix, maxLength: 4000, ariaLabel: '后置正面提示词' });
+        const negativePrompt = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-negative-prompt', value: image.negativePrompt, maxLength: 4000, ariaLabel: '固定负面提示词' });
+        const fields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
+        append(fields, [
+            field('接口模式', apiMode), field('生图密钥预设 ID', presetId), field('生图站点', baseUrl), field('生图接口路径', endpointPath),
+            field('模型', model), field('采样器', sampler), field('噪点表', noiseSchedule), field('Guidance', guidance),
+            field('Guidance Rescale', guidanceRescale), field('宽度', width), field('高度', height), field('步数', steps), field('种子（0 为随机）', seed),
+            field('质量标签', switchShell(qualityToggle)), field('随机性', switchShell(variety)),
+            field('前置正面提示词', positivePrefix), field('后置正面提示词', positiveSuffix), field('固定负面提示词', negativePrompt),
+        ]);
+        section.appendChild(fields);
+        section.appendChild(field('生图 API Key', apiKey));
+        section.appendChild(keyStatus);
+        const keyActions = element('div', { className: 'yl-settings-actions yl-image-generation-key-actions' });
+        const refreshKeyStatus = () => {
+            const id = String(presetId.value ?? '').trim();
+            try {
+                keyStatus.textContent = hasSessionKey(id)
+                    ? '此预设已有可用 API Key（不会显示或导出）。'
+                    : '此预设尚未解锁 API Key。';
+            } catch {
+                keyStatus.textContent = '请填写合法的生图密钥预设 ID 后再管理 API Key。';
+            }
+        };
+        keyActions.appendChild(actionButton('保存 API Key', async () => {
+            try {
+                const result = unlockSessionKey(presetId.value, apiKey.value);
+                apiKey.value = '';
+                refreshKeyStatus();
+                onFeedback(result.persisted ? '生图 API Key 已保存到当前浏览器。' : '浏览器缓存不可用；生图 API Key 仅在本次会话可用。');
+            } catch (error) {
+                apiKey.value = '';
+                onFeedback(safeErrorMessage(error, '生图 API Key 未保存，请检查预设 ID 与 Key。'));
+            }
+        }, signal, { name: 'image-generation-key-save' }));
+        keyActions.appendChild(actionButton('删除已保存 API Key', async () => {
+            try {
+                const removed = deletePersistentKey(presetId.value);
+                apiKey.value = '';
+                refreshKeyStatus();
+                onFeedback(removed ? '已删除当前生图预设在此浏览器保存的 API Key。' : '当前生图预设没有可删除的浏览器缓存 API Key。');
+            } catch (error) {
+                onFeedback(safeErrorMessage(error, '生图 API Key 未删除。'));
+            }
+        }, signal, { secondary: true, danger: true, name: 'image-generation-key-delete' }));
+        section.appendChild(keyActions);
+        refreshKeyStatus();
+        listen(presetId, presetId, 'input', refreshKeyStatus, signal);
+
+        const formSettings = () => ({
+            enabled: Boolean(enabled.checked), presetId: presetId.value, apiMode: apiMode.value, baseUrl: baseUrl.value, endpointPath: endpointPath.value,
+            model: model.value, sampler: sampler.value, noiseSchedule: noiseSchedule.value,
+            guidance: numberValue(guidance, image.guidance), guidanceRescale: numberValue(guidanceRescale, image.guidanceRescale),
+            width: numberValue(width, image.width), height: numberValue(height, image.height), steps: numberValue(steps, image.steps), seed: numberValue(seed, image.seed),
+            qualityToggle: Boolean(qualityToggle.checked), variety: Boolean(variety.checked),
+            positivePrefix: positivePrefix.value, positiveSuffix: positiveSuffix.value, negativePrompt: negativePrompt.value,
+            conversationSettings: image.conversationSettings,
+        });
+        const save = actionButton('保存生图设置', async () => updateSettings(
+            () => settingsStore.setImageGenerationSettings(formSettings()),
+            '生图设置已保存；API Key 仍只保存在独立浏览器缓存。',
+        ), signal, { name: 'image-generation-save' });
+        section.appendChild(element('p', { className: 'yl-image-generation-order-note', text: '正面提示词固定顺序：前置提示词 → core_dna → outfit_dna → AI 场景结构 → 后置提示词。负面提示词独立保持不变。' }));
+        section.appendChild(save);
+        return section;
+    }
+
     function buildPersonalizationSection(snapshot, { openPreferences }) {
         const section = element('section', { className: 'yl-settings-section' });
         const personalization = snapshot.personalization ?? { enabled: true, keywordWeightsByMode: { SFW: [], NSFW: [] } };

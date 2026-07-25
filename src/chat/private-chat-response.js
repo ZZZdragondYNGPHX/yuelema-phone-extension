@@ -5,6 +5,7 @@
  * transport output belongs to the caller so a string, SDK response, or other
  * wrapper cannot accidentally be treated as an already validated reply.
  */
+import { normalizeImageDirective } from '../images/image-directive.js';
 
 export const MAX_PRIVATE_CHAT_REPLY_COUNT = 6;
 export const MAX_PRIVATE_CHAT_REPLY_LENGTH = 600;
@@ -131,6 +132,20 @@ function normalizeReplies(value) {
     return replies;
 }
 
+function normalizeImageDirectives(value, replyCount) {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > replyCount) fail('private_chat_response_invalid');
+    const seen = new Set();
+    return value.map((item) => {
+        assertExactRecord(item, ['replyIndex', 'directive']);
+        const replyIndex = ownEnumerableData(item, 'replyIndex');
+        if (!Number.isInteger(replyIndex) || replyIndex < 0 || replyIndex >= replyCount || seen.has(replyIndex)) fail('private_chat_response_invalid');
+        seen.add(replyIndex);
+        let directive;
+        try { directive = normalizeImageDirective(ownEnumerableData(item, 'directive')); } catch { fail('private_chat_response_invalid'); }
+        return { replyIndex, directive };
+    });
+}
+
 function normalizeRelationship(value) {
     try {
         assertExactRecord(value, RELATIONSHIP_FIELDS);
@@ -185,7 +200,7 @@ function normalizeBondAssessment(value, contentMode) {
  */
 export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
     try {
-        assertExactRecord(raw, ['relationship'], ['replies', 'reply', 'sessionSummary', 'bondAssessment']);
+        assertExactRecord(raw, ['relationship'], ['replies', 'reply', 'sessionSummary', 'bondAssessment', 'imageDirectives']);
         const hasReplies = Object.hasOwn(raw, 'replies');
         const hasReply = Object.hasOwn(raw, 'reply');
         if (!hasReplies && !hasReply) fail('private_chat_response_missing_field');
@@ -218,8 +233,9 @@ export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
             relationship: normalizeRelationship(ownEnumerableData(raw, 'relationship')),
             bondAssessment: Object.hasOwn(raw, 'bondAssessment')
                 ? normalizeBondAssessment(ownEnumerableData(raw, 'bondAssessment'), contentMode)
-                : { kind: 'none', intensity: 0 },
+                : { kind: 'none', intensity: 0 }
         };
+        if (Object.hasOwn(raw, 'imageDirectives')) normalized.imageDirectives = normalizeImageDirectives(ownEnumerableData(raw, 'imageDirectives'), replies.length);
         if (Object.hasOwn(raw, 'sessionSummary')) {
             normalized.sessionSummary = normalizeShortText(
                 ownEnumerableData(raw, 'sessionSummary'),

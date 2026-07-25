@@ -8,7 +8,7 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 9;
+export const SETTINGS_SCHEMA_VERSION = 10;
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -34,7 +34,9 @@ const SECRET_FIELD_NAMES = new Set([
 ]);
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
-const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 5, 6, 7, 8]);
+const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+const IMAGE_GENERATION_CONVERSATION_KINDS = new Set(['private', 'group', 'forum']);
+const MAX_IMAGE_GENERATION_CONVERSATIONS = 256;
 
 export class YueLeMaSettingsError extends Error {
     constructor(code, message) {
@@ -134,6 +136,7 @@ function makeDefaultDocument() {
                 NSFW: [],
             },
         },
+        imageGeneration: defaultImageGenerationSettings(),
     };
 }
 
@@ -370,6 +373,107 @@ function normalizeChatSummary(input) {
     return { ...normalized };
 }
 
+/** The image configuration is intentionally non-secret: credentials are held only by session-key-store. */
+export function defaultImageGenerationSettings() {
+    return {
+        enabled: false,
+        presetId: 'image_generation_default',
+        apiMode: 'novelai',
+        baseUrl: 'https://image.novelai.net',
+        endpointPath: '/ai/generate-image',
+        model: 'nai-diffusion-4-5-full',
+        sampler: 'k_euler',
+        noiseSchedule: 'exponential',
+        guidance: 10,
+        guidanceRescale: 0.18,
+        width: 1024,
+        height: 1024,
+        steps: 28,
+        seed: 0,
+        qualityToggle: true,
+        variety: true,
+        positivePrefix: '',
+        positiveSuffix: '',
+        negativePrompt: '',
+        conversationSettings: { private: {}, group: {}, forum: {} },
+    };
+}
+
+function cleanImageText(value, field, maxLength, { allowEmpty = true } = {}) {
+    if (typeof value !== 'string') fail('INVALID_IMAGE_GENERATION', field + '必须是文本。');
+    const cleaned = value.trim();
+    if ((!allowEmpty && !cleaned) || cleaned.length > maxLength || /[\u0000-\u001F\u007F]/.test(cleaned)) fail('INVALID_IMAGE_GENERATION', field + '长度或字符不符合要求。');
+    return cleaned;
+}
+
+function cleanFiniteNumber(value, field, min, max) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) fail('INVALID_IMAGE_GENERATION', field + '数值无效。');
+    return value;
+}
+
+function normalizeImageConversationSettings(input) {
+    const candidate = safeClone(input);
+    if (!isPlainObject(candidate) || Object.keys(candidate).some((key) => key !== 'autoGenerate') || typeof candidate.autoGenerate !== 'boolean') {
+        fail('INVALID_IMAGE_GENERATION', '对话生图设置无效。');
+    }
+    return { autoGenerate: candidate.autoGenerate };
+}
+
+export function normalizeImageGenerationSettings(input) {
+    if (input === undefined || input === null) return defaultImageGenerationSettings();
+    const candidate = safeClone(input);
+    if (!isPlainObject(candidate)) fail('INVALID_IMAGE_GENERATION', '生图设置必须是对象。');
+    const defaults = defaultImageGenerationSettings();
+    const allowed = new Set(Object.keys(defaults));
+    if (Object.keys(candidate).some((key) => !allowed.has(key))) fail('INVALID_IMAGE_GENERATION', '生图设置包含不支持或敏感字段。');
+    const value = { ...defaults, ...candidate };
+    if (typeof value.enabled !== 'boolean' || typeof value.qualityToggle !== 'boolean' || typeof value.variety !== 'boolean') fail('INVALID_IMAGE_GENERATION', '生图开关必须为布尔值。');
+    if (!['novelai', 'openai_compatible'].includes(value.apiMode)) fail('INVALID_IMAGE_GENERATION', '生图接口模式不受支持。');
+    const presetId = cleanId(value.presetId, '生图密钥预设 ID');
+    const baseUrl = cleanImageText(value.baseUrl, '生图站点', 512, { allowEmpty: false });
+    let parsedUrl;
+    try { parsedUrl = new URL(baseUrl); } catch { fail('INVALID_IMAGE_GENERATION', '生图站点必须是有效 URL。'); }
+    const loopback = ['localhost', '127.0.0.1', '::1'].includes(parsedUrl.hostname);
+    if (!['https:', 'http:'].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash || (parsedUrl.protocol === 'http:' && !loopback)) fail('INVALID_IMAGE_GENERATION', '生图站点必须使用 HTTPS；仅本机回环地址允许 HTTP。');
+    const endpointPath = cleanImageText(value.endpointPath, '生图接口路径', 256, { allowEmpty: false });
+    if (!endpointPath.startsWith('/') || endpointPath.startsWith('//') || endpointPath.includes('..') || endpointPath.includes('?') || endpointPath.includes('#')) fail('INVALID_IMAGE_GENERATION', '生图接口路径必须是安全的站内绝对路径。');
+    const conversationSettings = safeClone(value.conversationSettings);
+    if (!isPlainObject(conversationSettings) || Object.keys(conversationSettings).some((key) => !IMAGE_GENERATION_CONVERSATION_KINDS.has(key)) || [...IMAGE_GENERATION_CONVERSATION_KINDS].some((key) => !Object.hasOwn(conversationSettings, key))) fail('INVALID_IMAGE_GENERATION', '对话生图设置结构无效。');
+    let count = 0;
+    const normalizedConversations = {};
+    for (const kind of IMAGE_GENERATION_CONVERSATION_KINDS) {
+        const records = safeClone(conversationSettings[kind]);
+        if (!isPlainObject(records)) fail('INVALID_IMAGE_GENERATION', '对话生图设置必须是对象。');
+        normalizedConversations[kind] = {};
+        for (const [id, settings] of Object.entries(records)) {
+            if (!/^[A-Za-z0-9_-]{1,128}$/.test(id) || ++count > MAX_IMAGE_GENERATION_CONVERSATIONS) fail('INVALID_IMAGE_GENERATION', '对话生图设置数量或标识无效。');
+            normalizedConversations[kind][id] = normalizeImageConversationSettings(settings);
+        }
+    }
+    return {
+        enabled: value.enabled,
+        presetId,
+        apiMode: value.apiMode,
+        baseUrl: parsedUrl.toString().replace(/\/$/, ''),
+        endpointPath,
+        model: cleanImageText(value.model, '生图模型', 160, { allowEmpty: false }),
+        sampler: cleanImageText(value.sampler, '采样器', 80, { allowEmpty: false }),
+        noiseSchedule: cleanImageText(value.noiseSchedule, '噪点表', 80, { allowEmpty: false }),
+        guidance: cleanFiniteNumber(value.guidance, 'Guidance', 0, 30),
+        guidanceRescale: cleanFiniteNumber(value.guidanceRescale, 'Guidance Rescale', 0, 1),
+        width: cleanInteger(value.width, '图片宽度', 256, 2048),
+        height: cleanInteger(value.height, '图片高度', 256, 2048),
+        steps: cleanInteger(value.steps, '步数', 1, 100),
+        seed: cleanInteger(value.seed, '种子', 0, 4294967295),
+        qualityToggle: value.qualityToggle,
+        variety: value.variety,
+        positivePrefix: cleanImageText(value.positivePrefix, '前置正面提示词', 4000),
+        positiveSuffix: cleanImageText(value.positiveSuffix, '后置正面提示词', 4000),
+        negativePrompt: cleanImageText(value.negativePrompt, '固定负面提示词', 4000),
+        conversationSettings: normalizedConversations,
+    };
+}
+
 function assertSize(document) {
     const encoded = JSON.stringify(document);
     if (new TextEncoder().encode(encoded).byteLength > MAX_SERIALIZED_BYTES) {
@@ -381,7 +485,7 @@ function assertSize(document) {
 export function normalizeSettingsDocument(input) {
     const candidate = safeClone(input);
     if (!isPlainObject(candidate)) fail('INVALID_SETTINGS', '设置文档必须是对象。');
-    const allowed = new Set(['schema', 'schemaVersion', 'connectionPresets', 'promptPresets', 'defaults', 'functionBindings', 'functionModeBindings', 'chatSummary', 'personalization']);
+    const allowed = new Set(['schema', 'schemaVersion', 'connectionPresets', 'promptPresets', 'defaults', 'functionBindings', 'functionModeBindings', 'chatSummary', 'personalization', 'imageGeneration']);
     if (Object.keys(candidate).some((key) => !allowed.has(key))) {
         fail('INVALID_SETTINGS', '设置文档包含不支持的字段。');
     }
@@ -460,6 +564,7 @@ export function normalizeSettingsDocument(input) {
 
     const chatSummary = normalizeChatSummary(candidate.chatSummary);
     const personalization = normalizePersonalization(candidate.personalization, candidate.schemaVersion);
+    const imageGeneration = normalizeImageGenerationSettings(candidate.imageGeneration);
     const normalized = {
         schema: SETTINGS_SCHEMA_ID,
         schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -470,6 +575,7 @@ export function normalizeSettingsDocument(input) {
         functionModeBindings,
         chatSummary,
         personalization,
+        imageGeneration,
     };
     assertSize(normalized);
     return normalized;
@@ -728,6 +834,31 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         return persist(next);
     }
 
+    function getImageGenerationSettings() {
+        return cloneDocument(current().imageGeneration);
+    }
+
+    function setImageGenerationSettings(input) {
+        const next = cloneDocument(current());
+        next.imageGeneration = normalizeImageGenerationSettings(input);
+        return persist(next);
+    }
+
+    function getConversationImageGenerationSettings(kind, id) {
+        if (!IMAGE_GENERATION_CONVERSATION_KINDS.has(kind) || typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) fail('INVALID_IMAGE_GENERATION', '对话生图设置标识无效。');
+        return { ...(current().imageGeneration.conversationSettings[kind][id] ?? { autoGenerate: false }) };
+    }
+
+    function setConversationImageGenerationSettings(kind, id, input) {
+        if (!IMAGE_GENERATION_CONVERSATION_KINDS.has(kind) || typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) fail('INVALID_IMAGE_GENERATION', '对话生图设置标识无效。');
+        const normalized = normalizeImageConversationSettings(input);
+        const next = cloneDocument(current());
+        if (!Object.hasOwn(next.imageGeneration.conversationSettings[kind], id)
+            && Object.values(next.imageGeneration.conversationSettings).reduce((count, records) => count + Object.keys(records).length, 0) >= MAX_IMAGE_GENERATION_CONVERSATIONS) fail('INVALID_IMAGE_GENERATION', '对话生图设置数量达到上限。');
+        next.imageGeneration.conversationSettings[kind][id] = normalized;
+        return persist(next);
+    }
+
     function setPersonalizationEnabled(enabled) {
         if (typeof enabled !== 'boolean') fail('INVALID_PERSONALIZATION', '个性化内容推荐开关必须为布尔值。');
         const next = cloneDocument(current());
@@ -842,6 +973,10 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         resolveFunction,
         getChatSummarySettings,
         setChatSummarySettings,
+        getImageGenerationSettings,
+        setImageGenerationSettings,
+        getConversationImageGenerationSettings,
+        setConversationImageGenerationSettings,
         setPersonalizationEnabled,
         setPersonalizationKeywordWeights,
         ensurePersonalizationKeywordWeights,

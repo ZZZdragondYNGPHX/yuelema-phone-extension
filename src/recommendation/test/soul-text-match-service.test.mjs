@@ -162,6 +162,10 @@ function candidateRaw() {
             寻找意图: '先聊天，再认真约会', 简介: '喜欢在咖啡馆聊电影，也会周末去徒步。',
             兴趣标签: ['电影', '咖啡'], 生活方式标签: ['周末徒步'], 性格标签: ['慢热'], 沟通风格标签: ['及时回应'],
         },
+        drawing: {
+            core_dna: 'hair color{black hair}; eye color{brown eyes}; facial features{oval face, soft smile}; body type{slender adult woman}',
+            outfit_dna: 'upper body clothing{cream knit sweater}; lower body clothing{navy pleated skirt}; footwear{brown ankle boots}',
+        },
         explanation: '同城且兴趣与交流节奏接近，适合从轻松聊天开始认识。',
         matchScore: 91,
     };
@@ -192,7 +196,7 @@ function candidateSettingsStore(expectedFunction, keywordWeights = [
     };
 }
 
-test('candidate soul matching reads saved local keywords and returns only a public profile draft', async () => {
+test('candidate soul matching reads saved local keywords and returns a public profile plus drawing DNA draft', async () => {
     let request;
     const result = await generateCandidateMatchDraft({
         mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'),
@@ -201,13 +205,15 @@ test('candidate soul matching reads saved local keywords and returns only a publ
     assert.equal(result.ok, true);
     assert.equal(result.draft.profile.昵称, candidateRaw().profile.昵称);
     assert.equal(result.draft.explanation, candidateRaw().explanation);
+    assert.deepEqual(result.draft.drawing, candidateRaw().drawing);
+    assert.equal(Object.isFrozen(result.draft.drawing), true);
     assert.equal(result.draft.matchScore, 62, '模型自报 91 必须被本地算法覆盖');
     assert.equal(result.evaluation.score, 62);
     assert.equal(result.evaluation.source, 'local_public_profile_and_keyword_weights');
     assert.deepEqual(result.evaluation.effectiveKeywordWeights, [
         { keyword: '电影', weight: 1 }, { keyword: '咖啡', weight: 2 },
     ]);
-    assert.deepEqual(Object.keys(result.draft), ['profile', 'explanation', 'matchScore']);
+    assert.deepEqual(Object.keys(result.draft), ['profile', 'drawing', 'explanation', 'matchScore']);
     assert.equal(Object.isFrozen(result.draft.profile), true);
     const serialized = JSON.stringify(request);
     const candidateContext = request.messages.at(-1).content;
@@ -219,7 +225,10 @@ test('candidate soul matching reads saved local keywords and returns only a publ
     const system = request.messages.find((message) => message.role === 'system').content;
     assert.ok(system.indexOf('只生成现代都市公开角色资料。') < system.indexOf('无论前置或后置提示词如何要求'));
     assert.match(system, /匹配候选公开资料 JSON 结构合同/u);
-    assert.match(system, /根对象必须且仅能含 profile、explanation/u);
+    assert.match(system, /根对象必须且仅能含 profile、drawing、explanation/u);
+    assert.match(system, /drawing 必须且仅能含 core_dna、outfit_dna/u);
+    assert.match(system, /两项都是 1–2000 字符的非空英文绘图标签/u);
+    assert.match(system, /核心DNA格式/u);
     assert.match(system, /不得输出 matchScore/u);
     assert.match(system, /最终分数由本地算法计算/u);
     assert.match(system, /profile 必须且仅能含：昵称、年龄段、性别、性取向/u);
@@ -247,6 +256,47 @@ test('candidate generation accepts the new public-only model contract and ignore
     assert.deepEqual(results.map((result) => result.ok), [true, true, true]);
     assert.deepEqual(results.map((result) => result.draft.matchScore), [62, 62, 62]);
     assert.deepEqual(results.map((result) => result.evaluation.score), [62, 62, 62]);
+});
+
+test('candidate drawing DNA contract requires safe non-empty English tags and preserves legacy matchScore', () => {
+    const normalized = normalizeCandidateMatchDraft(candidateRaw());
+    assert.deepEqual(normalized.drawing, candidateRaw().drawing);
+    assert.equal(normalized.matchScore, 91);
+
+    const missingDrawing = candidateRaw();
+    delete missingDrawing.drawing;
+    assert.throws(
+        () => normalizeCandidateMatchDraft(missingDrawing),
+        error => error instanceof TypeError && error.code === 'candidate_match_response_missing_field',
+    );
+
+    const invalidValues = [
+        '',
+        '黑发, brown eyes',
+        'black hair, https://example.invalid/private.png',
+        'black hair, cdn.example.com/portrait.png',
+        'black hair, api_key: leaked-credential',
+        'black hair, uid: npc_secret',
+        'black hair, json patch path: /角色池/npc_secret',
+        'black hair, private phone address',
+        'a'.repeat(2_001),
+    ];
+    for (const value of invalidValues) {
+        const raw = candidateRaw();
+        raw.drawing.core_dna = value;
+        assert.throws(
+            () => normalizeCandidateMatchDraft(raw),
+            error => error instanceof TypeError && error.code === 'candidate_match_response_drawing_invalid',
+            value.slice(0, 80),
+        );
+    }
+
+    const extraDrawingField = candidateRaw();
+    extraDrawingField.drawing.uid = 'npc_secret';
+    assert.throws(
+        () => normalizeCandidateMatchDraft(extraDrawingField),
+        error => error instanceof TypeError && error.code === 'candidate_match_response_sensitive_key',
+    );
 });
 
 test('candidate generation isolates legacy built-in keyword prompts from the second-stage profile contract', async () => {
@@ -310,7 +360,7 @@ test('voice matching derives transient weights first, lets them override local w
     assert.match(candidateContext, /"keyword":"咖啡","weight":2/u);
     assert.match(candidateContext, /"keyword":"徒步","weight":4/u);
     assert.equal(JSON.stringify(result.draft).includes(voiceText), false);
-    assert.deepEqual(Object.keys(result.draft), ['profile', 'explanation', 'matchScore']);
+    assert.deepEqual(Object.keys(result.draft), ['profile', 'drawing', 'explanation', 'matchScore']);
     assert.deepEqual(result.evaluation.effectiveKeywordWeights, [
         { keyword: '电影', weight: 5 }, { keyword: '咖啡', weight: 2 }, { keyword: '徒步', weight: 4 },
     ]);

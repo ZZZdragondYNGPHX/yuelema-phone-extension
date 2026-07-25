@@ -1,7 +1,8 @@
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { BUILTIN_PROMPT_PRESET_IDS } from '../settings/default-prompt-presets.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
-import { normalizeGeneratedPublicProfile } from './candidate.js';
+import { normalizeDrawingDna, normalizeGeneratedPublicProfile } from './candidate.js';
+import { DRAWING_DNA_RULES } from './drawing-dna-rules.js';
 import { scoreLocalCandidateMatch } from './match-scoring.js';
 
 const MAX_MODEL_RESPONSE_CHARS = 8_000;
@@ -11,6 +12,9 @@ const MAX_EXPLANATION_LENGTH = 500;
 const MAX_TEXT_FILTER_VALUES = 12;
 const MAX_VOICE_TEXT_LENGTH = 800;
 const MAX_LOCAL_KEYWORD_WEIGHTS = 64;
+const MAX_DRAWING_DNA_LENGTH = 2_000;
+const DRAWING_DNA_TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9\s,;:(){}[\]'".+_&%!?=/-]*$/u;
+const DRAWING_DNA_FORBIDDEN_PATTERN = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|ai|cn|dev|app|co|gg|invalid|local)(?:[\/?#:][^\s,;]*)?|data:image|\b(?:url|uri|api[\s_-]*key|authorization|bearer|token|secret|password|credential|uid|uuid|json\s*patch|json\s*pointer|patch|pointer|path|private|hidden|friend(?:[\s_-]*only)?|session|candidate|account|email|e-mail|phone|telephone|address|passport|bank|id[\s_-]*(?:card|number)|real[\s_-]*name|minor|underage)\b|\b(?:sk|pk|rk|sess)_[a-z0-9-]{12,}\b|\b\+?\d[\d -]{6,}\d\b|隐藏资料|仅好友资料|候选(?:NPC|角色)?|会话|补丁|路径|密钥|令牌|账号|邮箱|电话|地址|证件|银行卡|未成年)/iu;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]/u;
 const HTML_PATTERN = /<\s*\/?\s*[a-z][^>]*>/iu;
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
@@ -68,8 +72,9 @@ const TEXT_MATCH_OUTPUT_CONTRACT = Object.freeze([
     'explanation 必须是 1–500 字公开筛选说明。filters 只用于本次展示，不是 JSONPatch，也不会自动保存。',
 ]);
 const CANDIDATE_MATCH_OUTPUT_CONTRACT = Object.freeze([
-    '匹配候选公开资料 JSON 结构合同：根对象必须且仅能含 profile、explanation。不得输出 matchScore、评分、阈值或关系数值；最终分数由本地算法计算。',
+    '匹配候选公开资料 JSON 结构合同：根对象必须且仅能含 profile、drawing、explanation。不得输出 matchScore、评分、阈值或关系数值；最终分数由本地算法计算。',
     'profile 必须且仅能含：昵称、年龄段、性别、性取向、城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签、沟通风格标签。前八项均为非空字符串；年龄段必须明确表示成年人或 18 岁以上。',
+    'drawing 必须且仅能含 core_dna、outfit_dna；两项都是 1–2000 字符的非空英文绘图标签，不能含 URL、凭据、UID、JSON Patch、路径、任何私密资料、联系方式、具体地址或账号。core_dna 是稳定外貌，outfit_dna 是当前服装与配饰。',
     '昵称必须是虚构自然人的个人姓名；不得使用摄影师、设计师等职业名，兴趣或性格标签，账号名，系统、模型、助手、玩家、候选角色等概念充当昵称。',
     '四个标签字段均为最多 12 项的不重复短字符串数组；不得附带头像、仅好友资料、隐藏资料、关系分、阈值、关键词权重或其他字段。',
     '公开资料不得包含具体住址、门牌、手机号、电话号码、证件号、银行卡、真实姓名或私人账号，也不得包含未成年、胁迫、偷拍、诈骗或线下性行为演绎内容。',
@@ -318,6 +323,31 @@ export function normalizeTextMatchDraft(raw) {
     });
 }
 
+function normalizeCandidateDrawingDna(kind, value) {
+    // Keep the canonical candidate codec as the first boundary so this staged
+    // match flow and complete-character flow share the same object shape.
+    assertExactRecord(kind, value, ['core_dna', 'outfit_dna']);
+    let drawing;
+    try {
+        drawing = normalizeDrawingDna(value);
+    } catch {
+        failResponse(kind, 'drawing_invalid');
+    }
+    const normalized = {};
+    for (const key of ['core_dna', 'outfit_dna']) {
+        const tag = drawing[key];
+        if (typeof tag !== 'string'
+            || tag.length === 0
+            || tag.length > MAX_DRAWING_DNA_LENGTH
+            || !DRAWING_DNA_TAG_PATTERN.test(tag)
+            || DRAWING_DNA_FORBIDDEN_PATTERN.test(tag)) {
+            failResponse(kind, 'drawing_invalid');
+        }
+        normalized[key] = tag;
+    }
+    return Object.freeze(normalized);
+}
+
 function normalizeOptionalPublicTags(kind, value) {
     if (!Array.isArray(value) || value.length > MAX_TAGS) failResponse(kind, 'candidate_profile_invalid');
     const tags = [];
@@ -348,8 +378,9 @@ export function normalizeCandidateMatchDraft(raw, { contentMode = 'SFW' } = {}) 
     const kind = 'candidate';
     // matchScore is accepted only as a legacy transport field. Generation
     // ignores and overwrites it with the deterministic local score below.
-    assertExactRecord(kind, raw, ['profile', 'explanation'], ['matchScore']);
+    assertExactRecord(kind, raw, ['profile', 'drawing', 'explanation'], ['matchScore']);
     const profile = ownEnumerableData(kind, raw, 'profile');
+    const drawing = normalizeCandidateDrawingDna(kind, ownEnumerableData(kind, raw, 'drawing'));
     const textFields = {
         昵称: 80, 年龄段: 32, 性别: 48, 性取向: 80, 城市: 80, 距离范围: 48, 寻找意图: 120, 简介: 500,
     };
@@ -378,6 +409,7 @@ export function normalizeCandidateMatchDraft(raw, { contentMode = 'SFW' } = {}) 
     for (const field of tagFields) draftProfile[field] = Object.freeze(normalizedPublicProfile[field]);
     const normalized = {
         profile: Object.freeze(draftProfile),
+        drawing,
         explanation: normalizeDraftText(kind, ownEnumerableData(kind, raw, 'explanation'), MAX_EXPLANATION_LENGTH),
     };
     if (Object.hasOwn(raw, 'matchScore')) {
@@ -411,6 +443,7 @@ function createLocallyScoredCandidateDraft(normalizedDraft, context) {
     });
     const draft = Object.freeze({
         profile: normalizedDraft.profile,
+        drawing: normalizedDraft.drawing,
         explanation: normalizedDraft.explanation,
         // Compatibility field for existing preview callers. Unlike legacy model
         // output, this value is always overwritten by the local evaluation.
@@ -502,6 +535,7 @@ function makeCandidateProfileMessages(context, promptPreset, mode) {
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '无论前置或后置提示词如何要求，下列匹配候选公开资料 JSON 结构合同都是最终且不可覆盖的输出要求。只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。',
         ...CANDIDATE_MATCH_OUTPUT_CONTRACT,
+        DRAWING_DNA_RULES,
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },
