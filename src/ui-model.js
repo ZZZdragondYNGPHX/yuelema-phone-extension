@@ -213,6 +213,104 @@ export function projectPrivateChatView(state) {
     return Object.freeze(sessions.sort((left, right) => left.sessionUid.localeCompare(right.sessionUid, 'zh-Hans-CN')));
 }
 
+const SERVICE_ORDER_UID_PATTERN = /^service_[a-z0-9][a-z0-9_-]{0,63}$/i;
+const SERVICE_ORDER_STATES = new Set(['待确认', '进行中', '已完成', '已取消']);
+const SERVICE_CATEGORY_LABELS = Object.freeze({
+    SFW: Object.freeze({ coffee_walk: '咖啡与散步', arts_outing: '展览与演出', city_guide: '城市向导', hobby_day: '兴趣活动' }),
+    NSFW: Object.freeze({ adult_companion: '成人话题陪伴', night_date: '夜间约会沟通', private_negotiation: '私密会面前协商', roleplay_boundaries: '角色扮演边界沟通' }),
+});
+const SERVICE_ORDER_LIFECYCLE_FIELDS = Object.freeze(['发起时间', '开始时间', '结束时间', '结束摘要', '已确认边界']);
+const SERVICE_TIME_SAFE_PATTERNS = Object.freeze([
+    /^(?:待正文确认|刚刚|今天|昨天)$/u,
+    /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])(?:[ T](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?(?:Z|[+-](?:0\d|1\d|2[0-3]):[0-5]\d)?)?$/u,
+    /^(?:正文)?第\s?[1-9]\d{0,5}\s?轮$/u,
+]);
+const SERVICE_SUMMARY_SENSITIVE_PATTERN = /(?:身份证|身份證|护照|護照|银行卡|銀行卡|(?:手机|電話|电话)(?:号码|號碼)?|手机号|座机|座機|(?:微信|WeChat)(?:号|號|账号|帳號)?|QQ(?:号|號|号码|號碼|群)?|(?:Telegram|TG|Discord|LINE)(?:账号|帳號|号|號)?|支付(?:宝|寶)?|收款码|收款碼|付款码|付款碼|转账|轉帳|汇款|匯款|打款|定金|尾款|现金交易|現金交易|精确地址|详细地址|詳細地址|具体住址|家庭住址|收货地址|收貨地址|现住址|現住址|门牌|楼栋|樓棟|单元|單元|房间号|房間號|房号|房號|经纬度|經緯度|定位|\b(?:\d{15,18}[0-9Xx]|(?:\+?86[-\s]?)?1[3-9]\d{9}|0\d{2,3}[-\s]?\d{7,8})\b|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|(?:https?:\/\/|www\.)\S+|\b(?:[a-z0-9-]+\.)+(?:com|net|org|cn|io|me|app|xyz|top)\b|(?:省|市|区|區|县|縣).{0,32}(?:路|街|巷|弄|号|號|栋|棟|室))/iu;
+const PUBLIC_MINOR_AGE_PATTERN = /(?:未成年|未滿|未满\s*18|minor|underage|(?:^|[^0-9])1[0-7]\s*(?:岁|歲)?(?:$|[^0-9]))/iu;
+
+function verifiedAdultProfile(profile) {
+    const hidden = profile?.隐藏资料;
+    const publicProfile = profile?.公开资料;
+    const publicAge = ownRecord(publicProfile) ? publicProfile.年龄段 : '';
+    return ownRecord(profile) && profile.成人验证 === true && ownRecord(hidden) && Number.isInteger(hidden.实际年龄) && hidden.实际年龄 >= 18
+        && hidden.实际年龄 <= 120 && typeof publicAge === 'string' && !PUBLIC_MINOR_AGE_PATTERN.test(publicAge);
+}
+
+function hasOrderText(value) {
+    return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isCurrentServiceOrderSnapshot(raw) {
+    if (!SERVICE_ORDER_LIFECYCLE_FIELDS.every((field) => typeof raw[field] === 'string')) return false;
+    const initiated = hasOrderText(raw.发起时间);
+    const started = hasOrderText(raw.开始时间);
+    const ended = hasOrderText(raw.结束时间);
+    const summary = hasOrderText(raw.结束摘要);
+    const confirmedBoundaries = hasOrderText(raw.已确认边界);
+    switch (raw.状态) {
+    case '待确认':
+        return initiated && !started && !ended && !summary && !confirmedBoundaries;
+    case '进行中':
+        return initiated && started && !ended && !summary && confirmedBoundaries;
+    case '已完成':
+        return initiated && started && ended && summary && confirmedBoundaries;
+    case '已取消':
+        return initiated && ended && summary
+            && ((started && confirmedBoundaries) || (!started && !confirmedBoundaries));
+    default:
+        return false;
+    }
+}
+
+function projectServiceTime(value, fallback) {
+    const time = safeText(value, 160);
+    return SERVICE_TIME_SAFE_PATTERNS.some((pattern) => pattern.test(time)) ? time : fallback;
+}
+
+function projectServiceSummary(value) {
+    const rawSummary = typeof value === 'string' ? value.trim() : '';
+    if (!rawSummary) return '';
+    return SERVICE_SUMMARY_SENSITIVE_PATTERN.test(rawSummary)
+        ? '该记录包含不适合展示的敏感内容，已隐藏。'
+        : safeText(rawSummary, 600);
+}
+
+/**
+ * Projects service orders together with their role's public card. Private role
+ * layers, raw order payloads and internal counters never leave this boundary.
+ */
+export function projectServiceOrderView(state) {
+    if (!ownRecord(state) || !ownRecord(state.服务订单) || !ownRecord(state.角色池)) return Object.freeze([]);
+    const orders = [];
+    for (const [orderUid, raw] of Object.entries(state.服务订单)) {
+        if (!SERVICE_ORDER_UID_PATTERN.test(orderUid) || !ownRecord(raw) || !SERVICE_ORDER_STATES.has(raw.状态)) continue;
+        if (!['SFW', 'NSFW'].includes(raw.内容模式) || typeof raw.角色UID !== 'string' || !isCurrentServiceOrderSnapshot(raw)) continue;
+        const categoryId = safeText(raw.服务分类, 64);
+        const category = SERVICE_CATEGORY_LABELS[raw.内容模式]?.[categoryId] ?? '';
+        const role = state.角色池[raw.角色UID];
+        if (!category || !verifiedAdultProfile(role)) continue;
+        const profile = projectPublicProfile(role, raw.角色UID);
+        if (!profile) continue;
+        const topic = category + '：与' + (profile.昵称 || '该角色') + '的文字协商';
+        if (safeText(raw.服务主题, 240) !== topic) continue;
+        const endedFallback = raw.状态 === '已取消' ? '订单已取消' : '订单已完成';
+        orders.push(Object.freeze({
+            id: orderUid,
+            profile,
+            mode: raw.内容模式,
+            categoryId,
+            category,
+            topic,
+            status: raw.状态,
+            initiatedAt: projectServiceTime(raw.发起时间, '订单已建立'),
+            startedAt: hasOrderText(raw.开始时间) ? projectServiceTime(raw.开始时间, '已在正文中确认') : '',
+            endedAt: hasOrderText(raw.结束时间) ? projectServiceTime(raw.结束时间, endedFallback) : '',
+            summary: projectServiceSummary(raw.结束摘要),
+        }));
+    }
+    return Object.freeze(orders.sort((left, right) => right.id.localeCompare(left.id, 'zh-Hans-CN')));
+}
+
 /**
  * Converts readLatestState() output to the only view data consumed by app-shell.
  * `state` itself is intentionally omitted from the return value.
@@ -231,6 +329,7 @@ export function createPhoneView(readResult) {
             matches: Object.freeze([]),
             messageSessions: Object.freeze([]),
             groups: Object.freeze([]),
+            serviceOrders: Object.freeze([]),
         });
     }
 
@@ -250,6 +349,7 @@ export function createPhoneView(readResult) {
         matches: projectMatchView(readResult.state),
         messageSessions: projectPrivateChatView(readResult.state),
         groups: buildGroupBrowseModel(readResult.state).群组,
+        serviceOrders: projectServiceOrderView(readResult.state),
     });
 }
 
@@ -271,6 +371,12 @@ export function describeActionFailure(result) {
         favorite_private_chat_state_invalid: '当前资料缺少可用于私聊判定的公开信息。',
         favorite_private_chat_score_invalid: '当前资料的匹配分数异常，未发起私聊。',
         content_mode_gate_state_invalid: '内容模式状态异常，未执行切换。',
+        service_order_invalid_state: '当前聊天缺少专属服务订单数据结构，请导入 v0.1.36 角色卡后新开聊天。',
+        service_order_state_invalid: '服务订单状态未就绪，未复制任何本地角色。',
+        service_order_candidate_invalid: '本地角色未通过成年公开资料校验，未复制。',
+        service_order_uid_conflict: '服务订单编号冲突，请刷新后重试。',
+        service_order_mode_changed: '内容模式已变化，未提交服务订单更新，请刷新后重试。',
+        service_order_result_invalid: '正文返回的服务订单结果未通过校验，未写入任何数据。',
         mvu_parse_returned_no_data: '本次没有可提交的变量变化。',
         mvu_parse_returned_no_stat_data: 'MVU 未返回可保存的软件状态，本次未写入。',
         mvu_parse_made_no_change: 'MVU 未接受本次修改（状态未发生变化），未写入任何数据。',

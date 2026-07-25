@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPhoneView, describeActionFailure, projectMatchView, projectPlayerPublicProfile, projectPublicProfile } from '../../ui-model.js';
+import { createPhoneView, describeActionFailure, projectMatchView, projectPlayerPublicProfile, projectPublicProfile, projectServiceOrderView } from '../../ui-model.js';
 
 function profile() {
     return {
@@ -174,3 +174,99 @@ test('profile hub collections expose player and favourite public cards only', ()
     assert.equal(projectPlayerPublicProfile({ 玩家: { 成人验证: false, 公开资料: { 昵称: '未验证' } } }).昵称, '');
 });
 
+
+
+function serviceOrder(overrides = {}) {
+    return {
+        角色UID: 'npc_service_1', 内容模式: 'SFW', 服务分类: 'coffee_walk', 服务主题: '咖啡与散步：与林澈的文字协商',
+        状态: '已完成', 发起时间: '2026-07-25 20:00', 开始时间: '正文第 2 轮', 结束时间: '2026-07-25 22:00',
+        结束摘要: '双方已在正文中结束本次文字协商。', 已确认边界: '私密边界',
+        ...overrides,
+    };
+}
+
+function serviceState(orders) {
+    return { 角色池: { npc_service_1: profile() }, 服务订单: orders };
+}
+
+test('service order projection accepts only current adult lifecycle snapshots and derives a public topic', () => {
+    const projected = projectServiceOrderView(serviceState({
+        service_1: serviceOrder({ 状态: '待确认', 发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '' }),
+        service_2: serviceOrder({ 状态: '进行中', 发起时间: '今天', 开始时间: '正文第 2 轮', 结束时间: '', 结束摘要: '', 已确认边界: '已确认边界' }),
+        service_3: serviceOrder({ 服务主题: '微信号 wx_secret_123 与隐藏资料', 状态: '已完成' }),
+        service_4: serviceOrder({ 状态: '已取消', 发起时间: '昨天', 开始时间: '', 结束时间: '今天', 结束摘要: '双方未继续正文协商。', 已确认边界: '' }),
+        service_5: serviceOrder({ 状态: '已取消', 结束摘要: '双方在开始后结束本次协商。' }),
+    }));
+    const byId = Object.fromEntries(projected.map((order) => [order.id, order]));
+    assert.equal(projected.length, 4);
+    assert.equal(byId.service_1.initiatedAt, '待正文确认');
+    assert.equal(byId.service_2.startedAt, '正文第 2 轮');
+    assert.equal(byId.service_3, undefined, '与分类和公开角色不一致的服务主题不得投影');
+    assert.equal(byId.service_4.endedAt, '今天');
+    assert.doesNotMatch(JSON.stringify(projected), /微信号|隐藏资料|私密边界|实际年龄/u);
+});
+
+test('service order projection rejects malformed ongoing and terminal snapshots for an adult role', () => {
+    const state = serviceState({
+        service_1: serviceOrder({ 状态: '待确认', 开始时间: '正文第 1 轮' }),
+        service_2: serviceOrder({ 状态: '进行中', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '已确认边界' }),
+        service_3: serviceOrder({ 状态: '进行中', 结束时间: '今天', 结束摘要: '', 已确认边界: '已确认边界' }),
+        service_4: serviceOrder({ 状态: '进行中', 结束时间: '', 结束摘要: '', 已确认边界: '' }),
+        service_5: serviceOrder({ 状态: '已完成', 结束时间: '' }),
+        service_6: serviceOrder({ 状态: '已完成', 结束摘要: '' }),
+        service_7: serviceOrder({ 状态: '已完成', 已确认边界: '' }),
+        service_8: serviceOrder({ 状态: '已取消', 结束时间: '' }),
+        service_9: serviceOrder({ 状态: '已取消', 已确认边界: '' }),
+        service_12: serviceOrder({ 状态: '已取消', 开始时间: '', 结束摘要: '', 已确认边界: '' }),
+    });
+    const minor = profile();
+    minor.隐藏资料.实际年龄 = 17;
+    state.角色池.npc_service_2 = minor;
+    state.服务订单.service_10 = serviceOrder({ 角色UID: 'npc_service_2' });
+    state.服务订单.service_11 = serviceOrder({ 服务分类: 'adult_companion' });
+    const projected = projectServiceOrderView(state);
+    assert.deepEqual(projected, []);
+});
+
+test('service order projection replaces unsafe time text with state-derived copy', () => {
+    const unsafeInitiated = '上海市浦东新区张江路 88 号';
+    const unsafeStarted = 'mail@example.com';
+    const unsafeEnded = 'QQ号 12345678';
+    const unsafeCancelledEnded = 'https://secret.example/receipt';
+    const projected = projectServiceOrderView(serviceState({
+        service_1: serviceOrder({ 状态: '待确认', 发起时间: unsafeInitiated, 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '' }),
+        service_2: serviceOrder({ 状态: '进行中', 发起时间: '2026-07-25 20:00', 开始时间: unsafeStarted, 结束时间: '', 结束摘要: '', 已确认边界: '已确认边界' }),
+        service_3: serviceOrder({ 状态: '已完成', 结束时间: unsafeEnded }),
+        service_4: serviceOrder({ 状态: '已取消', 开始时间: '', 已确认边界: '', 结束时间: unsafeCancelledEnded, 结束摘要: '本次未继续。' }),
+    }));
+    const byId = Object.fromEntries(projected.map((order) => [order.id, order]));
+    assert.equal(byId.service_1.initiatedAt, '订单已建立');
+    assert.equal(byId.service_2.initiatedAt, '2026-07-25 20:00');
+    assert.equal(byId.service_2.startedAt, '已在正文中确认');
+    assert.equal(byId.service_3.endedAt, '订单已完成');
+    assert.equal(byId.service_4.endedAt, '订单已取消');
+    assert.doesNotMatch(JSON.stringify(projected), /张江路|mail@example[.]com|12345678|secret[.]example/u);
+});
+
+test('service order projection replaces an entire terminal summary when conservative sensitive checks match', () => {
+    const sensitiveSummaries = [
+        '联系邮箱 qa@example.com，其他内容不得展示。',
+        '查看 https://private.example/order/42 后再说。',
+        'QQ号 12345678 是私人联系方式。',
+        'Telegram @private_handle 是私人联系方式。',
+        '详细地址：上海市浦东新区张江路 88 号 2 栋 301。',
+        '请通过收款码支付尾款。',
+    ];
+    const orders = Object.fromEntries(sensitiveSummaries.map((summary, index) => [
+        'service_' + (index + 1), serviceOrder({ 结束摘要: summary }),
+    ]));
+    const projected = projectServiceOrderView(serviceState(orders));
+    assert.equal(projected.length, sensitiveSummaries.length);
+    for (const order of projected) assert.equal(order.summary, '该记录包含不适合展示的敏感内容，已隐藏。');
+    assert.doesNotMatch(JSON.stringify(projected), /qa@example[.]com|private[.]example|12345678|private_handle|张江路|收款码|尾款/u);
+});
+
+test('service order failure messages explain mode races and invalid bridge results', () => {
+    assert.equal(describeActionFailure({ code: 'service_order_mode_changed' }), '内容模式已变化，未提交服务订单更新，请刷新后重试。');
+    assert.equal(describeActionFailure({ code: 'service_order_result_invalid' }), '正文返回的服务订单结果未通过校验，未写入任何数据。');
+});

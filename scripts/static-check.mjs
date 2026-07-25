@@ -20,7 +20,7 @@ const requiredFiles = [
     'src/characters/test/character-template-codec.test.mjs', 'src/characters/test/character-library-store.test.mjs', 'src/characters/test/character-template-library-store.test.mjs', 'src/characters/test/avatar-codec.test.mjs', 'src/characters/test/character-authoring-service.test.mjs', 'src/characters/test/character-creator-panel.test.mjs',
     'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/match-candidate-materializer.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs', 'src/groups/test/group-forum-store.test.mjs', 'src/groups/test/local-conversation-summary-service.test.mjs',
-    'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
+    'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs', 'src/mvu/test/service-order-handoff.test.mjs',
     'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs', 'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs',
 ];
 
@@ -42,7 +42,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '0.1.34') fail('manifest.version 必须与扩展版本 0.1.34 统一');
+if (manifest.version !== '0.1.36') fail('manifest.version 必须与扩展版本 0.1.36 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -109,7 +109,7 @@ console.log('✓ API Key 仅通过专用浏览器缓存保存，并与设置导�
 const appShell = await readFile(resolve(root, 'src/app-shell.js'), 'utf8');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShell.includes("const UI_VERSION = '0.1.34'")) fail('关于软件 UI_VERSION 必须与扩展版本 0.1.34 统一');
+if (!appShell.includes("const UI_VERSION = '0.1.36'")) fail('关于软件 UI_VERSION 必须与扩展版本 0.1.36 统一');
 const index = await readFile(resolve(root, 'index.js'), 'utf8');
 if (!index.includes('export function onDisable') || !index.includes('export function onDelete') || !index.includes('clearSessionKeys()')) fail('缺少扩展禁用/删除时清理内存密钥镜像的生命周期实现');
 for (const label of ['首页', '匹配', '消息', '群组', '我的']) {
@@ -130,7 +130,7 @@ if (/\.\.\.\s*profile|Object\.entries\(profile\)/u.test(uiModel)) fail('公开�
 if (!uiModel.includes('PUBLIC_PROFILE_FIELDS') || !uiModel.includes('projectPublicProfile')) fail('缺少公开字段白名单投影');
 console.log('✓ UI 仅消费公开字段白名单');
 
-if (!actionBridge.includes("querySelector('#send_textarea')")) fail('缺少面基输入框适配点');
+if (!actionBridge.includes("querySelector?.('#send_textarea')")) fail('缺少面基输入框适配点');
 if (!actionBridge.includes('appendMeetupDraft')) fail('缺少面基草稿函数');
 console.log('✓ 面基仅追加输入框适配点');
 
@@ -155,6 +155,9 @@ if (!recommendationRefresh.includes('generateRecommendationCandidate') || !recom
 if (!controlledPatch.includes('buildRecommendationRefreshPatch')) fail('缺少推荐刷新原子 JSONPatch 生产器');
 if (!actionBridge.includes('runRecommendationRefresh')) fail('缺少推荐刷新受控 MVU 写入桥接');
 console.log('✓ 阶段 3 推荐刷新候选校验、模型绑定与受控 Patch 接线');
+
+if (!controlledPatch.includes('buildServiceOrderHandoffPatch') || !controlledPatch.includes('buildServiceOrderRepeatPatch') || !actionBridge.includes('runServiceOrderHandoff') || !actionBridge.includes('runServiceOrderRepeat') || !appShell.includes('buildServiceHubPage')) fail('缺少约伴服务订单的受控 MVU 与 UI 接线');
+console.log('✓ 关于子界面与约伴服务订单已纳入静态检查');
 
 const characterTemplateCodec = await readFile(resolve(root, 'src/characters/character-template-codec.js'), 'utf8');
 const characterLibraryStore = await readFile(resolve(root, 'src/characters/character-library-store.js'), 'utf8');

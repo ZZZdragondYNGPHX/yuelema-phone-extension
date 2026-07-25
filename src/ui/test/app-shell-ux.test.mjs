@@ -430,8 +430,10 @@ test('operation dialogs always close and dismissed AI generations never reopen o
         click(buttonByPage('profile'));
         click(buttonByText('设置'));
         click(buttonByText('关于软件'));
+        assert.ok(miniDom.document.querySelector('[name="about-version-info"]'), '关于软件应进入子界面');
+        click(miniDom.document.querySelector('[name="about-version-info"]'));
         assert.equal(dialog.hidden, false);
-        assert.match(dialog.textContent, /关于软件/u);
+        assert.match(dialog.textContent, /版本信息/u);
         assertOperationCloseControls(dialog, 'info');
         pressKey('Escape');
         assert.equal(dialog.hidden, true, 'Escape 应关闭 info 弹窗');
@@ -590,8 +592,10 @@ test('content-mode failures use the dedicated alert dialog and never restore the
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(buttonByPage('profile'));
         click(buttonByText('设置'));
-        for (let index = 0; index < 5; index += 1) click(buttonByText('关于软件'));
-
+        click(buttonByText('关于软件'));
+        const version = () => miniDom.document.querySelector('[name="about-version-info"]');
+        for (let index = 0; index < 5; index += 1) click(version());
+        click(miniDom.document.querySelector('[name="about-content-mode-entry"]'));
         const toggle = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '内容模式切换');
         assert.ok(toggle, '连续点击五次后应显示内容模式滑块');
         toggle.checked = true;
@@ -644,7 +648,10 @@ test('打开的功能设置会跟随内容模式刷新到另一套本地预设',
 
         click(buttonByPage('profile'));
         click(buttonByText('设置'));
-        for (let index = 0; index < 5; index += 1) click(buttonByText('关于软件'));
+        click(buttonByText('关于软件'));
+        const version = () => miniDom.document.querySelector('[name="about-version-info"]');
+        for (let index = 0; index < 5; index += 1) click(version());
+        click(miniDom.document.querySelector('[name="about-content-mode-entry"]'));
         const toggle = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '内容模式切换');
         assert.ok(toggle);
         toggle.checked = true;

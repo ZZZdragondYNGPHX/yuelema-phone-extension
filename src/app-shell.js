@@ -12,7 +12,7 @@ import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
 import { DEFAULT_FORUM_AUTO_SETTINGS, DEFAULT_GROUP_AUTO_SETTINGS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 
-const UI_VERSION = '0.1.34';
+const UI_VERSION = '0.1.36';
 const PANEL_DRAG_THRESHOLD = 8;
 const FORUM_PULL_THRESHOLD = 88;
 const FORUM_WHEEL_RELEASE_DELAY = 180;
@@ -22,15 +22,29 @@ const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorit
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
 const LOCAL_PAGE_COPY = Object.freeze({
     settings_image_generation: Object.freeze({ title: '生图设置', description: '配置生图接口、固定提示词与浏览器独立 API Key。' }),
+    about: Object.freeze({ title: '关于软件', description: '查看版本与最近更新；隐藏功能仅保留在本次小手机会话。' }),
+    service_hub: Object.freeze({ title: '专属服务', description: '仅面向明确成年人；所有安排都需要逐次确认，界面不会自动建立订单或现实行动。' }),
 });
+const RECENT_RELEASE_NOTES = Object.freeze([
+    'v0.1.36：专属服务订单、历史再次下单与角色卡 MVU 同步。',
+    'v0.1.34：对话生图接口、绘图 DNA 与窄屏交互。',
+    'v0.1.33：移动端面基、NSFW 合意合同与收藏语义修正。',
+]);
+const SERVICE_ORDER_UID_PATTERN = /^service_[A-Za-z0-9_-]{1,64}$/u;
+const SERVICE_HUB_TABS = Object.freeze([
+    Object.freeze({ id: 'home', label: '首页', icon: '⌂' }),
+    Object.freeze({ id: 'discover', label: '发现', icon: '◇' }),
+    Object.freeze({ id: 'service', label: '服务', icon: '♡' }),
+    Object.freeze({ id: 'history', label: '历史', icon: '◷' }),
+]);
 function pageCopy(pageId) { return PAGE_COPY[pageId] ?? LOCAL_PAGE_COPY[pageId] ?? null; }
 const PRIMARY_PAGE_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'groups', group_chat_create: 'groups', group_chat_summary: 'groups', group_forum: 'groups', forum_post: 'groups', forum_post_summary: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home', match_profile: 'matches',
 });
 const PAGE_PARENT_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'group_chat', group_chat_create: 'group_chat', group_chat_summary: 'group_chat_room', group_forum: 'groups', forum_post: 'group_forum', forum_post_summary: 'forum_post', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', settings_image_generation: 'settings', settings_console: 'settings', settings_chat_summary: 'settings', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', settings_image_generation: 'settings', settings_console: 'settings', settings_chat_summary: 'settings', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'settings', candidate_detail: 'home', match_profile: 'matches',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
@@ -71,6 +85,18 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let voiceMatchText = '';
     let aboutClickStreak = 0;
     let aboutUnlocked = false;
+    let aboutModeControlOpen = false;
+    let releaseNotesClickStreak = 0;
+    let serviceEntryUnlocked = false;
+    let serviceHubUnlocked = false;
+    let activeServiceHubTab = 'home';
+    let activeServiceCategoryId = '';
+    let serviceProfileSequence = 0;
+    let serviceProfileGenerationPending = false;
+    let serviceProfileGenerationAbortController = null;
+    let serviceProfileHandoffPendingId = '';
+    let serviceOrderRepeatPendingId = '';
+    const serviceLocalProfiles = [];
     let activeHelpAnchor = null;
     let playerProfileDraft = null;
     const chatDrafts = new Map();
@@ -148,7 +174,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     const content = element('main', { className: 'yl-phone-content' });
     const nav = element('nav', { className: 'yl-phone-nav', ariaLabel: '约了吗主导航' });
     const navButtons = new Map();
-    for (const item of NAV_ITEMS) {
+    function createPrimaryNavButton(item) {
         const button = element('button', { className: 'yl-phone-nav-item', type: 'button', ariaLabel: item.label });
         append(button, [
             element('span', { className: 'yl-nav-icon', text: item.icon }),
@@ -157,7 +183,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         button.dataset.page = item.id;
         navButtons.set(item.id, button);
         listen(button, button, 'click', () => setActivePage(item.id), abortController.signal);
-        nav.appendChild(button);
+        return button;
+    }
+    const serviceNavButton = createPrimaryNavButton({ id: 'service_hub', label: '约伴', icon: '♡' });
+    serviceNavButton.classList.toggle('yl-service-nav', true);
+    serviceNavButton.hidden = true;
+    for (const item of NAV_ITEMS) {
+        if (item.id === 'profile') nav.appendChild(serviceNavButton);
+        nav.appendChild(createPrimaryNavButton(item));
     }
     append(panel, [header, content, nav]);
 
@@ -534,7 +567,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
     }
     function setActivePage(pageId, { preserveOperation = false } = {}) {
-        if (pageId === 'about') { showAboutSoftware(); return; }
         if (!pageCopy(pageId)) return;
         const privateChatRoute = (page) => page === 'private_chat' || page === 'private_chat_summary';
         if (privateChatRoute(activePage) && !privateChatRoute(pageId)) {
@@ -558,7 +590,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         syncForumAutoTimer();
     }
     function refreshState() {
+        const previousMode = currentView?.mode;
         currentView = createPhoneView(readState());
+        if (previousMode && previousMode !== currentView.mode) {
+            // Local discovery data is mode-scoped and never crosses SFW/NSFW.
+            interactionGeneration += 1;
+            serviceProfileGenerationAbortController?.abort?.();
+            serviceLocalProfiles.splice(0, serviceLocalProfiles.length);
+            activeServiceCategoryId = '';
+        }
         if (open) { renderPage(); syncGroupAutoTimer(); syncForumAutoTimer(); }
         return currentView;
     }
@@ -652,7 +692,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         globalThis.clearTimeout(operationAutoCloseTimer);
         operationAutoCloseTimer = null;
     }
-    function renderOperationDialog({ state = 'info', title, message, visual = '' }, token) {
+    function renderOperationDialog({ state = 'info', title, message, visual = '', autoCloseMs = 0 }, token) {
         if (!activeOperation || activeOperation.token !== token) return false;
         clearOperationAutoClose();
         activeOperation.state = state;
@@ -677,7 +717,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         operationDismiss.hidden = false;
         operationClose.hidden = false;
         operationClose.textContent = state === 'loading' ? '关闭提示' : '关闭';
-        if (state === 'success' || state === 'failure') {
+        if (Number.isFinite(autoCloseMs) && autoCloseMs > 0) {
+            const delay = Math.max(1000, Math.min(10000, Math.round(autoCloseMs)));
+            operationAutoCloseTimer = globalThis.setTimeout(() => {
+                if (activeOperation?.token === token) hideOperationDialog();
+            }, delay);
+            operationAutoCloseTimer?.unref?.();
+        } else if (state === 'success' || state === 'failure') {
             const delay = state === 'success' ? 4000 : 6000;
             operationAutoCloseTimer = globalThis.setTimeout(() => {
                 if (activeOperation?.token === token) hideOperationDialog();
@@ -781,13 +827,18 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             else setFeedback(text, token);
         };
     }
-    function showAboutSoftware() {
-        beginOperationDialog({ state: 'info', title: '关于软件', message: `约了吗 ${UI_VERSION}。现代都市线上文字社交模拟器。` });
+    function showVersionInformation() {
         aboutClickStreak += 1;
-        if (aboutClickStreak >= 5) {
-            aboutUnlocked = true;
-            operationMessage.textContent = '约了吗 ' + UI_VERSION + '。现代都市线上文字社交模拟器。内容模式开关已解锁。';
-        }
+        if (!serviceEntryUnlocked) releaseNotesClickStreak = 0;
+        if (aboutClickStreak >= 5) aboutUnlocked = true;
+        beginOperationDialog({ state: 'info', title: '版本信息', message: '当前版本：' + UI_VERSION, autoCloseMs: 3200 });
+        renderPage();
+    }
+    function showRecentReleaseNotes() {
+        releaseNotesClickStreak += 1;
+        if (!aboutUnlocked) aboutClickStreak = 0;
+        if (releaseNotesClickStreak >= 5) serviceEntryUnlocked = true;
+        beginOperationDialog({ state: 'info', title: '最近三次更新', message: RECENT_RELEASE_NOTES.join('｜'), autoCloseMs: 5200 });
         renderPage();
     }
     function positionHelpPopover(anchor) {
@@ -920,6 +971,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         imageManagerPanel?.dispose?.();
         imageManagerPanel = null;
         const copy = pageCopy(activePage);
+        serviceNavButton.hidden = !serviceHubUnlocked;
+        nav.classList.toggle('has-service-entry', serviceHubUnlocked);
         statusLine.textContent = currentView.status === 'ready' ? '已连接' : 'MVU 未就绪';
         content.replaceChildren();
         const page = element('article', { className: `yl-phone-page yl-page-${activePage}` });
@@ -945,6 +998,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'character_creator') page.appendChild(buildCharacterCreator());
         else if (activePage === 'favorites') page.appendChild(buildFavoritesPage());
         else if (activePage === 'settings') page.appendChild(buildSettingsHome());
+        else if (activePage === 'about') page.appendChild(buildAboutSoftwarePage());
+        else if (activePage === 'service_hub') page.appendChild(buildServiceHubPage());
         else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images', 'settings_image_generation'].includes(activePage)) page.appendChild(buildSettingsDetail());
         else if (activePage === 'settings_console') page.appendChild(buildOperationConsole());
         else if (activePage === 'settings_chat_summary') page.appendChild(buildChatSummarySettingsHome());
@@ -3354,7 +3409,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             ['settings_image_generation', '生图设置', '配置 NovelAI 或 OpenAI-compatible 生图接口与固定提示词。'],
             ['settings_chat_summary', '对话总结', '按楼层整理私聊、聊天群和帖子；后两者仅保存在浏览器本地。'],
             ['settings_console', '控制台', '查看本次会话中的安全运行进度，不显示技术密钥或原始数据。'],
-            ['about', '关于软件', '点击查看版本；连续点击五次可显示内容模式开关。'],
+            ['about', '关于软件', '进入子界面查看版本、更新日志与隐藏功能。'],
         ];
         for (const [page, title, note] of entries) {
             const row = element('div', { className: 'yl-settings-home-row' });
@@ -3362,12 +3417,221 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             append(button, [element('strong', { text: title }), element('span', { text: note }), element('span', { text: '›' })]);
             listen(button, button, 'click', () => setActivePage(page), abortController.signal);
             row.appendChild(button);
-            if (page === 'about' && aboutUnlocked) row.appendChild(buildContentModeSlider());
             section.appendChild(row);
         }
         return section;
     }
-    function buildOperationConsole() {
+    function buildAboutSoftwarePage() {
+        const section = element('section', { className: 'yl-about-page' });
+        const intro = element('article', { className: 'yl-about-card yl-about-intro' });
+        const introCopy = element('div', { className: 'yl-about-copy' });
+        append(intro, [element('span', { className: 'yl-about-mark', text: '约' }), introCopy]);
+        append(introCopy, [element('strong', { text: '约了吗小手机' }), element('p', { text: '现代都市线上文字社交模拟器。版本提示与更新日志会在数秒后自动关闭。' })]);
+        section.appendChild(intro);
+        const actions = element('div', { className: 'yl-about-actions' });
+        const version = element('button', { className: 'yl-center-entry', type: 'button', name: 'about-version-info', ariaLabel: '版本信息' });
+        append(version, [element('span', { text: 'ⓘ' }), element('strong', { text: '版本信息' }), element('span', { text: '查看当前版本号。' }), element('span', { text: '›' })]);
+        listen(version, version, 'click', showVersionInformation, abortController.signal); actions.appendChild(version);
+        if (aboutUnlocked) {
+            const modeEntry = element('button', { className: 'yl-settings-button yl-hidden-feature-entry', type: 'button', name: 'about-content-mode-entry', text: '切换 SFW / NSFW' });
+            listen(modeEntry, modeEntry, 'click', () => { aboutModeControlOpen = !aboutModeControlOpen; renderPage(); }, abortController.signal); actions.appendChild(modeEntry);
+            if (aboutModeControlOpen) actions.appendChild(buildContentModeSlider());
+        }
+        const releases = element('button', { className: 'yl-center-entry', type: 'button', name: 'about-release-notes', ariaLabel: '更新日志' });
+        append(releases, [element('span', { text: '↻' }), element('strong', { text: '更新日志' }), element('span', { text: '查看最近三次更新内容。' }), element('span', { text: '›' })]);
+        listen(releases, releases, 'click', showRecentReleaseNotes, abortController.signal); actions.appendChild(releases);
+        if (serviceEntryUnlocked) {
+            const serviceEntry = element('button', { className: 'yl-settings-button yl-hidden-feature-entry yl-service-unlock-entry', type: 'button', name: 'about-service-entry', text: serviceHubUnlocked ? '专属服务已开启' : '开启专属服务', disabled: serviceHubUnlocked });
+            listen(serviceEntry, serviceEntry, 'click', () => { serviceHubUnlocked = true; serviceNavButton.hidden = false; nav.classList.toggle('has-service-entry', true); setActivePage('service_hub'); }, abortController.signal);
+            actions.appendChild(serviceEntry);
+        }
+        section.appendChild(actions);
+        section.appendChild(element('p', { className: 'yl-about-safety-note', text: 'NSFW 仅改变成年人内容尺度，不代表同意，也不会绕过受控 MVU 写入、隐私分层或现实行动确认。' }));
+        return section;
+    }
+    function serviceHubModeCopy(mode = currentView.mode) {
+        return mode === 'NSFW'
+            ? Object.freeze({ label: 'NSFW · 成人服务', title: '夜间成人陪伴', subtitle: '仅限明确成年人；每次服务都必须重新确认范围、边界与随时撤回权。', categories: Object.freeze([
+                Object.freeze({ id: 'adult_companion', label: '成人话题陪伴', note: '主题与禁区先谈清楚。' }), Object.freeze({ id: 'night_date', label: '夜间约会沟通', note: '只写线上文字协商。' }), Object.freeze({ id: 'private_negotiation', label: '私密会面前协商', note: '不处理地点、支付或定位。' }), Object.freeze({ id: 'roleplay_boundaries', label: '角色扮演边界沟通', note: '可随时拒绝或结束。' }),
+            ]) })
+            : Object.freeze({ label: 'SFW · 租借陪伴', title: '今日陪伴计划', subtitle: '从公开的成年人陪伴主题中选择灵感；本页不自动下单、不自动发送，也不把一次同意延续到下一次。', categories: Object.freeze([
+                Object.freeze({ id: 'coffee_walk', label: '咖啡与散步', note: '公开活动的轻松交流。' }), Object.freeze({ id: 'arts_outing', label: '展览与演出', note: '以共同兴趣为起点。' }), Object.freeze({ id: 'city_guide', label: '城市向导', note: '不读取精确住址。' }), Object.freeze({ id: 'hobby_day', label: '兴趣活动', note: '行程可随时取消。' }),
+            ]) });
+    }
+    function serviceCategory(copy, categoryId) { return copy.categories.find((category) => category.id === categoryId) ?? copy.categories[0] ?? null; }
+    function serviceCreativeBrief(category, mode) {
+        const label = category?.label || '成年人陪伴主题';
+        return mode === 'NSFW'
+            ? `创作一名明确成年、现代都市中的「${label}」主题虚构角色。只写公开资料；强调逐次同意、可撤回边界、线上文字协商，不写价格、支付、地点、联系方式、现实行动、胁迫或未成年人。`
+            : `创作一名明确成年、现代都市中的「${label}」租借陪伴主题角色。只写公开资料；强调线上文字沟通、公开活动灵感、可随时取消的边界，不写价格、支付、精确地点、联系方式或自动现实行动。`;
+    }
+    function serviceProfileName(profile) {
+        const name = profile?.candidate?.公开资料?.昵称 ?? profile?.profile?.昵称;
+        return typeof name === 'string' && name.trim() ? name.trim().slice(0, 80) : '本地服务角色';
+    }
+    function serviceProfileCategoryLabel(profile) {
+        return serviceCategory(serviceHubModeCopy(profile?.mode), profile?.categoryId)?.label || (typeof profile?.category === 'string' && profile.category.trim() ? profile.category.trim().slice(0, 80) : '成年人陪伴');
+    }
+    function serviceExperienceDraft(profile, mode, orderUid) {
+        const name = serviceProfileName(profile); const category = serviceProfileCategoryLabel(profile);
+        const orderReference = SERVICE_ORDER_UID_PATTERN.test(orderUid ?? '') ? `【本次服务订单：${orderUid}】` : '';
+        return mode === 'NSFW'
+            ? `${orderReference}我选择与「${name}」进行「${category}」主题的虚构成人文字体验。请只承接本次服务订单，并先以成年人线上文字沟通逐项确认主题、禁区、隐私与随时停止的边界；双方明确接受前，不要把服务记录推进为进行中，也不要安排现实会面、支付、定位或替任何一方作出同意。`
+            : `${orderReference}我想与「${name}」体验「${category}」租借陪伴主题。请只承接本次服务订单，并先以成年人线上文字沟通确认陪伴主题、公开活动范围、时间与可随时取消的边界；双方明确接受前，不要把服务记录推进为进行中，也不要自动安排现实行动、支付、定位或替任何一方作出同意。`;
+    }
+    async function generateLocalServiceProfiles(categoryId = '') {
+        if (serviceProfileGenerationPending) return;
+        if (typeof actionBridge.generateCharacterAuthoringDraft !== 'function') { setFeedback('本地服务角色生成功能尚未就绪。'); return; }
+        const requestMode = currentView.mode;
+        const category = serviceCategory(serviceHubModeCopy(requestMode), categoryId);
+        if (!category) { setFeedback('请选择有效的服务分类。'); return; }
+        const requestId = ++interactionGeneration; const requestAbortController = new AbortController();
+        serviceProfileGenerationAbortController = requestAbortController; serviceProfileGenerationPending = true;
+        const operationToken = setFeedback(`正在为「${category.label}」批量生成本地角色草稿…`); renderPage();
+        const results = [];
+        try {
+            for (const slot of [1, 2, 3]) {
+                const result = await actionBridge.generateCharacterAuthoringDraft({ creativeBrief: `${serviceCreativeBrief(category, requestMode)} 这是本批第 ${slot} 位，和其他角色保持不同的公开身份与兴趣。`, expectedContentMode: requestMode, signal: requestAbortController.signal });
+                results.push(result);
+                if (!result?.ok || !result?.candidate || currentView.mode !== requestMode || requestAbortController.signal.aborted) break;
+            }
+        } catch { results.length = 0; }
+        if (serviceProfileGenerationAbortController === requestAbortController) {
+            serviceProfileGenerationAbortController = null;
+            serviceProfileGenerationPending = false;
+        }
+        if (isDestroyed || requestId !== interactionGeneration) return;
+        if (currentView.mode !== requestMode || requestAbortController.signal.aborted) { setFeedback('内容模式已改变，本批本地角色未被载入；请按当前模式重新生成。', operationToken); renderPage(); return; }
+        if (results.length !== 3 || results.some((result) => !result?.ok || !result?.candidate)) { setFeedback('本批角色未完整生成；已有本地草稿未被覆盖。', operationToken); renderPage(); return; }
+        const profiles = results.map((result) => ({ id: `service_local_${++serviceProfileSequence}`, candidate: result.candidate, mode: requestMode, categoryId: category.id, orderUid: '' }));
+        const retained = serviceLocalProfiles.filter((profile) => profile.mode !== requestMode || profile.categoryId !== category.id);
+        serviceLocalProfiles.splice(0, serviceLocalProfiles.length, ...[...profiles, ...retained].slice(0, 12));
+        activeServiceHubTab = 'discover'; activeServiceCategoryId = category.id;
+        setFeedback('已生成 3 位本地角色；它们尚未写入 MVU，选择后才会复制。', operationToken); renderPage();
+    }
+    function appendServiceExperienceDraft(profile, mode, orderUid, operationToken = null, successMessage = '已复制角色、创建待确认服务记录并填入正文草稿；未自动发送。') {
+        if (!SERVICE_ORDER_UID_PATTERN.test(orderUid ?? '')) { setFeedback(describeActionFailure({ code: 'service_order_result_invalid' }), operationToken); return false; }
+        if (mode !== 'SFW' && mode !== 'NSFW' || currentView.mode !== mode) {
+            setFeedback('内容模式已改变；服务记录已同步，但未填入正文草稿。', operationToken);
+            return false;
+        }
+        if (typeof actionBridge.appendMeetupDraft !== 'function') { setFeedback('服务记录已写入 MVU，但当前无法接管酒馆输入框。', operationToken); return false; }
+        const handoff = actionBridge.appendMeetupDraft(serviceExperienceDraft(profile, mode, orderUid));
+        if (handoff?.ok) { setFeedback(successMessage, operationToken); return true; }
+        setFeedback('服务记录已写入 MVU，但没有找到酒馆输入框；可稍后再次填入。', operationToken); return false;
+    }
+    function localServiceOrder(profile) {
+        if (!profile?.orderUid || !Array.isArray(currentView.serviceOrders)) return null;
+        return currentView.serviceOrders.find((order) => order.id === profile.orderUid) ?? null;
+    }
+    function isTerminalServiceOrder(order) { return order?.status === '已完成' || order?.status === '已取消'; }
+    async function activateLocalServiceProfile(profile) {
+        if (!profile || serviceProfileHandoffPendingId) return;
+        if (profile.orderUid) {
+            const order = localServiceOrder(profile);
+            if (isTerminalServiceOrder(order)) { activeServiceHubTab = 'history'; setFeedback('该服务已结束；请从历史记录创建新的待确认订单。'); renderPage(); return; }
+            if (!order || !['待确认', '进行中'].includes(order.status)) { setFeedback('服务记录正在同步，请稍后再试。'); renderPage(); return; }
+            appendServiceExperienceDraft(profile, order.mode, order.id); renderPage(); return;
+        }
+        if (typeof actionBridge.runServiceOrderHandoff !== 'function') { setFeedback('专属服务 MVU 桥接尚未就绪；本地角色仍未写入。'); return; }
+        const requestMode = profile.mode;
+        if (currentView.mode !== requestMode) { setFeedback('内容模式已改变，请在当前模式重新选择服务角色。'); renderPage(); return; }
+        const requestId = ++interactionGeneration; serviceProfileHandoffPendingId = profile.id;
+        const operationToken = setFeedback('正在复制角色并创建待确认服务记录…'); renderPage(); let result;
+        try { result = await actionBridge.runServiceOrderHandoff({ candidate: profile.candidate, categoryId: profile.categoryId, expectedContentMode: requestMode }); } catch { result = { ok: false }; }
+        serviceProfileHandoffPendingId = '';
+        if (!result?.ok) {
+            if (isDestroyed || requestId !== interactionGeneration) return;
+            setFeedback(result?.message || describeActionFailure(result), operationToken); renderPage(); return;
+        }
+        if (!SERVICE_ORDER_UID_PATTERN.test(result.orderUid ?? '')) {
+            refreshState();
+            if (isDestroyed || requestId !== interactionGeneration) return;
+            setFeedback(describeActionFailure({ code: 'service_order_result_invalid' }), operationToken); renderPage(); return;
+        }
+        profile.orderUid = result.orderUid;
+        refreshState();
+        if (isDestroyed || requestId !== interactionGeneration) return;
+        if (currentView.mode !== requestMode) { setFeedback('内容模式已改变；已创建待确认服务记录，但未填入正文草稿。', operationToken); return; }
+        appendServiceExperienceDraft(profile, requestMode, result.orderUid, operationToken);
+    }
+    async function repeatServiceOrder(order) {
+        if (!order?.id || serviceOrderRepeatPendingId) return;
+        if (typeof actionBridge.runServiceOrderRepeat !== 'function') { setFeedback('历史再次下单的 MVU 桥接尚未就绪。'); return; }
+        const requestMode = order.mode;
+        if (currentView.mode !== requestMode) { setFeedback('内容模式已改变，请在当前模式重新选择历史服务。'); renderPage(); return; }
+        const requestId = ++interactionGeneration; serviceOrderRepeatPendingId = order.id;
+        const operationToken = setFeedback('正在创建新的待确认服务记录…'); renderPage(); let result;
+        try { result = await actionBridge.runServiceOrderRepeat({ sourceOrderUid: order.id, expectedContentMode: requestMode }); } catch { result = { ok: false }; }
+        serviceOrderRepeatPendingId = '';
+        if (!result?.ok) {
+            if (isDestroyed || requestId !== interactionGeneration) return;
+            setFeedback(result?.message || describeActionFailure(result), operationToken); renderPage(); return;
+        }
+        if (!SERVICE_ORDER_UID_PATTERN.test(result.orderUid ?? '')) {
+            refreshState();
+            if (isDestroyed || requestId !== interactionGeneration) return;
+            setFeedback(describeActionFailure({ code: 'service_order_result_invalid' }), operationToken); renderPage(); return;
+        }
+        refreshState();
+        if (isDestroyed || requestId !== interactionGeneration) return;
+        if (currentView.mode !== requestMode) { setFeedback('内容模式已改变；已创建新的待确认服务记录，但未填入正文草稿。', operationToken); return; }
+        appendServiceExperienceDraft(order, requestMode, result.orderUid, operationToken, '已创建新的待确认服务记录并填入正文草稿；未自动发送。');
+    }
+    function buildServiceHubCard(title, note, tags = []) {
+        const card = element('article', { className: 'yl-service-card' }); append(card, [element('strong', { text: title }), element('p', { text: note })]);
+        if (tags.length) { const row = element('div', { className: 'yl-service-tags' }); for (const tag of tags) row.appendChild(element('span', { text: tag })); card.appendChild(row); } return card;
+    }
+    function buildLocalServiceProfileCard(profile) {
+        const publicProfile = profile?.candidate?.公开资料 ?? {}; const name = serviceProfileName(profile); const category = serviceCategory(serviceHubModeCopy(), profile.categoryId)?.label || '成年人陪伴';
+        const card = buildServiceHubCard(name, typeof publicProfile.简介 === 'string' && publicProfile.简介 ? publicProfile.简介 : '该角色只保留公开摘要，尚未复制到 MVU。', [category, typeof publicProfile.年龄段 === 'string' ? publicProfile.年龄段 : '明确成年人', ...(Array.isArray(publicProfile.兴趣标签) ? publicProfile.兴趣标签.slice(0, 2) : [])]);
+        card.classList.toggle('yl-local-service-profile', true); const pending = serviceProfileHandoffPendingId === profile.id; const order = localServiceOrder(profile);
+        const terminal = isTerminalServiceOrder(order); const waitingForOrder = Boolean(profile.orderUid) && !order;
+        const actionText = pending ? '正在复制…' : terminal ? '前往历史记录' : waitingForOrder ? '等待服务记录同步' : profile.orderUid ? '再次填入正文草稿' : '复制到 MVU 并创建服务记录';
+        const action = element('button', { className: 'yl-settings-button', type: 'button', name: `service-profile-${profile.id}`, disabled: pending || waitingForOrder, text: actionText });
+        action.setAttribute('aria-label', `${actionText}：${name}`); listen(action, action, 'click', () => { void activateLocalServiceProfile(profile); }, abortController.signal); card.appendChild(action); return card;
+    }
+    function buildServiceProfileGenerator(category) {
+        const card = buildServiceHubCard(category ? `生成「${category.label}」本地角色` : '选择分类后生成本地角色', '每次会批量生成 3 位只存在于本次小手机会话的角色。仅当你点选某位角色时，才会通过受控管线复制一份到 MVU 并创建待确认记录。', ['本地草稿', '批量生成', '先确认后复制']);
+        const generate = element('button', { className: 'yl-settings-button yl-service-generate-button', type: 'button', name: 'service-profile-generate', disabled: serviceProfileGenerationPending || !category, text: serviceProfileGenerationPending ? '正在批量生成…' : '批量生成 3 位角色' });
+        listen(generate, generate, 'click', () => { if (category) void generateLocalServiceProfiles(category.id); }, abortController.signal); card.appendChild(generate); return card;
+    }
+    function serviceOrdersForCurrentMode() { return Array.isArray(currentView.serviceOrders) ? currentView.serviceOrders.filter((order) => order.mode === currentView.mode) : []; }
+    function buildServiceOrderCard(order) {
+        const name = order?.profile?.昵称 || '已复制角色'; const status = order?.status || '待确认'; const note = order?.summary || (status === '待确认' ? '正文中尚未完成双方明确确认。' : status === '进行中' ? '服务正在正文中推进；任一方均可随时结束。' : '已由正文更新结果。');
+        const card = buildServiceHubCard(name, note, [order.category, status]); card.classList.toggle('yl-service-order-card', true); card.appendChild(element('span', { className: 'yl-service-order-topic', text: order.topic }));
+        const time = order.endedAt || order.startedAt || order.initiatedAt; if (time) card.appendChild(element('span', { className: 'yl-service-order-time', text: time }));
+        if (status === '已完成' || status === '已取消') {
+            const pending = serviceOrderRepeatPendingId === order.id;
+            const repeat = element('button', { className: 'yl-settings-button yl-service-repeat-button', type: 'button', name: 'service-order-repeat', disabled: pending, text: pending ? '正在创建新订单…' : '再次下单' });
+            repeat.setAttribute('aria-label', `再次下单：${name}`);
+            listen(repeat, repeat, 'click', () => { void repeatServiceOrder(order); }, abortController.signal);
+            card.appendChild(repeat);
+        }
+        return card;
+    }
+    function buildServiceHubPage() {
+        const copy = serviceHubModeCopy(); const category = serviceCategory(copy, activeServiceCategoryId); const section = element('section', { className: 'yl-service-hub', ariaLabel: '专属服务小程序' });
+        const tabs = element('div', { className: 'yl-service-tabs', ariaLabel: '专属服务导航' }); tabs.setAttribute('role', 'tablist');
+        for (const item of SERVICE_HUB_TABS) { const tab = element('button', { className: 'yl-service-tab', type: 'button', ariaLabel: item.label }); tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(activeServiceHubTab === item.id)); tab.classList.toggle('is-active', activeServiceHubTab === item.id); append(tab, [element('span', { text: item.icon }), element('span', { text: item.label })]); listen(tab, tab, 'click', () => { activeServiceHubTab = item.id; renderPage(); }, abortController.signal); tabs.appendChild(tab); }
+        section.appendChild(tabs); const body = element('div', { className: 'yl-service-body' });
+        if (activeServiceHubTab === 'home') {
+            const hero = element('article', { className: 'yl-service-hero' }); append(hero, [element('span', { className: 'yl-service-mode-badge', text: copy.label }), element('h2', { text: copy.title }), element('p', { text: copy.subtitle })]); body.appendChild(hero);
+            const grid = element('div', { className: 'yl-service-category-grid' });
+            for (const item of copy.categories) { const button = element('button', { className: 'yl-service-category', type: 'button', name: `service-category-${item.id}`, ariaLabel: `浏览${item.label}` }); append(button, [element('strong', { text: item.label }), element('span', { text: item.note })]); listen(button, button, 'click', () => { activeServiceCategoryId = item.id; activeServiceHubTab = 'discover'; renderPage(); void generateLocalServiceProfiles(item.id); }, abortController.signal); grid.appendChild(button); }
+            body.appendChild(grid); body.appendChild(buildServiceHubCard('使用前确认', '本页的本地生成结果不会写入 MVU；选中后才会原子复制角色与建立“待确认”服务记录。正文必须先取得每位明确成年人的当前同意，不能自动发送、支付或安排现实行动。', ['逐次确认', '可随时停止']));
+        } else if (activeServiceHubTab === 'discover') {
+            const choices = element('div', { className: 'yl-service-category-grid yl-service-discover-categories' });
+            for (const item of copy.categories) { const choice = element('button', { className: 'yl-service-category', type: 'button', name: `service-discover-category-${item.id}`, text: item.label, pressed: activeServiceCategoryId === item.id }); choice.classList.toggle('is-active', activeServiceCategoryId === item.id); listen(choice, choice, 'click', () => { activeServiceCategoryId = item.id; renderPage(); }, abortController.signal); choices.appendChild(choice); }
+            body.appendChild(choices); body.appendChild(buildServiceProfileGenerator(category)); const visibleProfiles = serviceLocalProfiles.filter((profile) => profile.mode === currentView.mode && profile.categoryId === category?.id);
+            if (!visibleProfiles.length) body.appendChild(buildServiceHubCard('暂无本地角色', '选择上方分类后批量生成 3 位角色。生成失败不会写入 MVU，已有本地草稿也不会被覆盖。', ['本地优先'])); for (const profile of visibleProfiles) body.appendChild(buildLocalServiceProfileCard(profile));
+        } else if (activeServiceHubTab === 'service') {
+            const active = serviceOrdersForCurrentMode().filter((order) => order.status === '待确认' || order.status === '进行中'); if (!active.length) body.appendChild(buildServiceHubCard('暂无进行中的服务', '从“发现”选择本地角色后才会创建待确认记录。确认角色复制和正文草稿后，仍须由你自行发送并在酒馆正文中推进。', ['不自动发送'])); for (const order of active) body.appendChild(buildServiceOrderCard(order)); body.appendChild(buildServiceHubCard('安全边界', '多人服务必须由每一位明确成年人分别同意；历史记录、关系、付款或 NSFW 模式都不能代替当前同意。', ['禁止默认同意', '禁止胁迫']));
+        } else {
+            const history = serviceOrdersForCurrentMode().filter((order) => order.status === '已完成' || order.status === '已取消'); if (!history.length) body.appendChild(buildServiceHubCard('暂无历史记录', '完成或取消需要由正文明确更新服务记录；再次发起会建立全新的待确认记录，不继承此前边界。', ['重新确认', '最小留存'])); for (const order of history) body.appendChild(buildServiceOrderCard(order));
+        }
+        section.appendChild(body); return section;
+    }    function buildOperationConsole() {
         const section = element('section', { className: 'yl-operation-console' });
         const toolbar = element('div', { className: 'yl-operation-console-toolbar' });
         toolbar.appendChild(element('p', { text: '只保留本次小手机会话的公开状态，不持久化，也不显示密钥、内部标识、补丁或原始模型内容。' }));
@@ -3449,6 +3713,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!result?.ok) { setFeedback(describeActionFailure(result), operationToken); refreshState(); return; }
         aboutClickStreak = 0;
         aboutUnlocked = true;
+        interactionGeneration += 1;
         setFeedback(`已切换为 ${currentView.mode === 'SFW' ? 'NSFW' : 'SFW'}。`, operationToken);
         refreshState();
         if (!bindingDialog.hidden && featureBindingDialogState) {

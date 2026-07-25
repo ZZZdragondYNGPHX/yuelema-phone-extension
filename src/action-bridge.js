@@ -1,5 +1,5 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
+import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply, generatePrivateChatSummary } from './chat/private-chat-service.js';
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
@@ -22,6 +22,8 @@ const MVU_KINDS = new Set(['like', 'favorite', 'dislike', 'refresh', 'unfavorite
 const PERSONALIZATION_DELTAS = Object.freeze({ like: 3, favorite: 1, dislike: -3 });
 const PERSONALIZATION_PUBLIC_TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
 const IMAGE_CONVERSATION_KINDS = new Set(['private', 'group', 'forum']);
+const CONTENT_MODES = new Set(['SFW', 'NSFW']);
+const SERVICE_MODE_WRITE_KINDS = new Set(['advance_content_mode_gate', 'toggle_content_mode']);
 
 function makePassiveCommand(kind, payload) {
     const safePayload = {};
@@ -108,6 +110,16 @@ export function createActionBridge({
     onControlledAction = () => {},
 }) {
     const pending = new Set();
+    let serviceModeWriteTail = Promise.resolve();
+
+    // Mode switches and service-order writes share one transaction lane so their
+    // read -> exact patch -> apply sequence cannot be built from the same stale snapshot.
+    function serializeServiceModeWrite(task) {
+        const previous = serviceModeWriteTail;
+        let release;
+        serviceModeWriteTail = new Promise((resolve) => { release = resolve; });
+        return previous.then(task, task).finally(release);
+    }
 
     function chatSummarySettings() {
         try {
@@ -146,14 +158,12 @@ export function createActionBridge({
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
 
         pending.add(key);
-        try {
+        const execute = async () => {
             const currentMvu = resolveMvu(mvu);
             const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
 
-            const command = ['advance_content_mode_gate', 'toggle_content_mode'].includes(kind)
-                ? { kind }
-                : { kind, npcUid };
+            const command = SERVICE_MODE_WRITE_KINDS.has(kind) ? { kind } : { kind, npcUid };
             const built = buildControlledPatch(read.state, command);
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code, detail: built.detail };
 
@@ -171,6 +181,9 @@ export function createActionBridge({
                 sessionUid: sessionOperation?.path.split('/')[2] ?? '',
                 invitationOutcome: invitationStateOperation?.value === '已匹配' ? 'accepted' : 'declined',
             };
+        };
+        try {
+            return SERVICE_MODE_WRITE_KINDS.has(kind) ? await serializeServiceModeWrite(execute) : await execute();
         } finally {
             pending.delete(key);
         }
@@ -744,26 +757,89 @@ export function createActionBridge({
     }
 
     /** Generates a full AI candidate from a safe brief and the latest public player context; no MVU write occurs. */
-    async function generateCharacterAuthoringDraft({ creativeBrief, signal } = {}) {
+    async function generateCharacterAuthoringDraft({ creativeBrief, expectedContentMode = '', signal } = {}) {
         const key = actionKey('character_authoring_draft', '');
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        if (expectedContentMode && !CONTENT_MODES.has(expectedContentMode)) return { ok: false, status: 'rejected', code: 'character_authoring_mode_invalid' };
         pending.add(key);
         try {
             const currentMvu = resolveMvu(mvu);
             const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
-            return await generateCharacterAuthoringCandidate({
+            const currentMode = read.state?.软件?.内容模式;
+            if (expectedContentMode && currentMode !== expectedContentMode) return { ok: false, status: 'rejected', code: 'character_authoring_mode_changed', message: '内容模式已改变，请重新生成角色。' };
+            const generated = await generateCharacterAuthoringCandidate({
                 creativeBrief,
-                contentMode: read.state?.软件?.内容模式,
+                contentMode: currentMode,
                 playerPublicProfile: read.state?.玩家?.公开资料,
                 settingsStore,
                 llmClient,
                 signal,
             });
+            if (!expectedContentMode || !generated?.ok) return generated;
+            const latest = readLatestState({ mvu: currentMvu });
+            if (!latest.ok) return latest;
+            if (latest.state?.软件?.内容模式 !== expectedContentMode) {
+                return { ok: false, status: 'rejected', code: 'character_authoring_mode_changed', message: '内容模式已改变，请重新生成角色。' };
+            }
+            return generated;
         } finally {
             pending.delete(key);
         }
     }
+    /**
+     * Copies one confirmed local service profile to MVU and creates its pending
+     * order atomically. No textarea draft is appended until this write succeeds.
+     */
+    async function runServiceOrderHandoff({ candidate, categoryId, expectedContentMode = '' } = {}) {
+        const key = actionKey('service_order_handoff', '');
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        if (expectedContentMode && !CONTENT_MODES.has(expectedContentMode)) return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
+        pending.add(key);
+        const execute = async () => {
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            if (expectedContentMode && read.state?.软件?.内容模式 !== expectedContentMode) {
+                return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
+            }
+            const built = buildServiceOrderHandoffPatch(read.state, { candidate, categoryId });
+            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
+            return applied.ok ? { ...applied, npcUid: built.value.npcUid, orderUid: built.value.orderUid } : applied;
+        };
+        try {
+            return await serializeServiceModeWrite(execute);
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Reopens a terminal service record as a new pending order. */
+    async function runServiceOrderRepeat({ sourceOrderUid, expectedContentMode = '' } = {}) {
+        const key = actionKey('service_order_repeat', sourceOrderUid || '');
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        if (expectedContentMode && !CONTENT_MODES.has(expectedContentMode)) return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
+        pending.add(key);
+        const execute = async () => {
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            if (expectedContentMode && read.state?.软件?.内容模式 !== expectedContentMode) {
+                return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
+            }
+            const built = buildServiceOrderRepeatPatch(read.state, { sourceOrderUid });
+            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
+            return applied.ok ? { ...applied, npcUid: built.value.npcUid, orderUid: built.value.orderUid } : applied;
+        };
+        try {
+            return await serializeServiceModeWrite(execute);
+        } finally {
+            pending.delete(key);
+        }
+    }
+
     /** Registers an already validated author/import draft through the sole MVU write boundary. */
     async function registerCharacter(candidate) {
         const key = actionKey('register_character', '');
@@ -848,21 +924,31 @@ export function createActionBridge({
      * #send_textarea, emits input, focuses it, and never auto-sends/clicks.
      */
     function appendMeetupDraft(draft) {
-        const textarea = documentRef.querySelector('#send_textarea');
-        if (!textarea || (typeof HTMLTextAreaElement !== 'undefined' && !(textarea instanceof HTMLTextAreaElement))) return { ok: false, reason: 'send_textarea_not_found' };
+        const textarea = documentRef?.querySelector?.('#send_textarea');
+        const TextareaCtor = documentRef?.defaultView?.HTMLTextAreaElement ?? globalThis.HTMLTextAreaElement;
+        if (!textarea || (typeof TextareaCtor === 'function' && !(textarea instanceof TextareaCtor))) return { ok: false, reason: 'send_textarea_not_found' };
 
         const next = String(draft ?? '').trim();
         if (!next) return { ok: false, reason: 'empty_draft' };
-
-        textarea.value = textarea.value.trim()
-            ? `${textarea.value.replace(/\s+$/, '')}\n${next}`
-            : next;
-        textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        textarea.focus();
-        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+        try {
+            textarea.value = String(textarea.value ?? '').trim()
+                ? `${String(textarea.value).replace(/\s+$/, '')}\n${next}`
+                : next;
+        } catch {
+            return { ok: false, reason: 'send_textarea_write_failed' };
+        }
+        const EventCtor = documentRef?.defaultView?.Event ?? globalThis.Event;
+        if (typeof EventCtor !== 'function') return { ok: false, reason: 'send_textarea_event_unavailable' };
+        try {
+            textarea.dispatchEvent?.(new EventCtor('input', { bubbles: true }));
+        } catch {
+            return { ok: false, reason: 'send_textarea_input_failed' };
+        }
+        try { textarea.focus?.(); } catch { /* Draft is already inserted; focus is presentation-only. */ }
+        try { textarea.setSelectionRange?.(textarea.value.length, textarea.value.length); } catch { /* Selection is presentation-only. */ }
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, generateConversationImage, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, generateConversationImage, isPending, appendMeetupDraft });
 }
 

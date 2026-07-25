@@ -56,7 +56,8 @@
 .yl-phone-action-card:focus-visible, .yl-settings-button:focus-visible, .yl-settings-control:focus-visible,
 .yl-center-entry:focus-visible, .yl-miniapp-card:focus-visible, .yl-chat-session:focus-visible,
 .yl-page-back:focus-visible, .yl-help-trigger:focus-visible, .yl-candidate-avatar:focus-visible,
-.yl-chat-send-button:focus-visible, .yl-chat-tool-button:focus-visible, .yl-switch input:focus-visible, .yl-mode-switch input:focus-visible {
+.yl-chat-send-button:focus-visible, .yl-chat-tool-button:focus-visible, .yl-switch input:focus-visible, .yl-mode-switch input:focus-visible,
+.yl-service-tab:focus-visible, .yl-hidden-feature-entry:focus-visible {
     outline: 2px solid #fff;
     outline-offset: 3px;
     border-radius: var(--yl-r-sm, 10px);
@@ -309,6 +310,8 @@
     border-top: 1px solid var(--yl-border, rgb(255 255 255 / 13%));
     background: rgb(15 11 22 / 92%);
 }
+.yl-phone-nav.has-service-entry { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.yl-phone-nav-item[hidden] { display: none; }
 .yl-phone-nav-item {
     display: grid;
     gap: 3px;
@@ -2389,4 +2392,46 @@ body.reduced-motion .yl-phone-extension *, body.reduced-motion .yl-phone-extensi
     .yl-image-directive-toggle { min-height: 40px; flex-basis: 100%; }
     .yl-image-directive-action { min-height: 40px; width: 100%; }
     .yl-image-directive-image { max-height: min(48dvh, 360px); }
+}
+
+
+/* ============ 阶段 57：关于软件子界面与专属服务入口 ============ */
+.yl-about-page, .yl-service-hub { display: grid; gap: 12px; }
+.yl-about-card, .yl-service-card, .yl-service-hero {
+    border: 1px solid var(--yl-border, rgb(255 255 255 / 13%));
+    border-radius: var(--yl-r-md, 16px);
+    background: rgb(255 255 255 / 5%);
+    box-shadow: var(--yl-shadow-sm);
+}
+.yl-about-intro { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 14px; }
+.yl-about-mark { display: grid; width: 46px; height: 46px; place-items: center; border: 1px solid rgb(255 200 225 / 42%); border-radius: 16px; color: #fff; background: var(--yl-grad); font-size: 1.2rem; font-weight: 800; box-shadow: var(--yl-glow-accent); }
+.yl-about-copy { display: grid; min-width: 0; gap: 4px; }
+.yl-about-copy strong { font-size: .94rem; }
+.yl-about-copy p, .yl-about-safety-note, .yl-service-section-intro { margin: 0; color: var(--yl-muted, #b9acc6); font-size: .72rem; line-height: 1.52; }
+.yl-about-actions { display: grid; gap: 8px; }
+.yl-hidden-feature-entry { min-height: 44px; border-color: rgb(255 201 77 / 42%); color: #fff4d6; background: linear-gradient(135deg, rgb(255 201 77 / 17%), rgb(255 78 142 / 12%)); }
+.yl-hidden-feature-entry:disabled { cursor: default; opacity: .74; }
+.yl-service-unlock-entry { border-color: rgb(142 107 255 / 48%); background: linear-gradient(135deg, rgb(142 107 255 / 22%), rgb(255 78 142 / 16%)); }
+.yl-about-safety-note { padding: 0 3px; }
+.yl-service-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; padding: 5px; border: 1px solid var(--yl-border, rgb(255 255 255 / 13%)); border-radius: 14px; background: rgb(255 255 255 / 4%); }
+.yl-service-tab { display: grid; min-height: 46px; gap: 2px; padding: 5px 3px; place-items: center; border: 1px solid transparent; border-radius: 10px; color: var(--yl-muted, #b9acc6); background: transparent; cursor: pointer; font: inherit; font-size: .64rem; font-weight: 700; }
+.yl-service-tab > span:first-child { font-size: 1rem; line-height: 1; }
+.yl-service-tab.is-active { border-color: rgb(255 120 170 / 38%); color: #fff; background: linear-gradient(145deg, rgb(255 78 142 / 22%), rgb(142 107 255 / 20%)); }
+.yl-service-body { display: grid; gap: 10px; }
+.yl-service-hero { display: grid; gap: 8px; padding: 16px; background: radial-gradient(circle at 100% 0%, rgb(255 78 142 / 24%), transparent 48%), radial-gradient(circle at 0% 100%, rgb(142 107 255 / 20%), transparent 46%), rgb(255 255 255 / 5%); }
+.yl-service-hero h2, .yl-service-hero p { margin: 0; }
+.yl-service-hero h2 { font-size: 1.08rem; }
+.yl-service-hero p { color: var(--yl-muted, #b9acc6); font-size: .76rem; line-height: 1.55; }
+.yl-service-mode-badge { width: fit-content; padding: 3px 8px; border: 1px solid rgb(255 225 155 / 42%); border-radius: var(--yl-r-pill, 999px); color: #fff1c7; background: rgb(255 201 77 / 12%); font-size: .62rem; font-weight: 800; letter-spacing: .03em; }
+.yl-service-category-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.yl-service-category { min-height: 62px; display: grid; padding: 10px; place-items: center start; border: 1px solid rgb(142 107 255 / 24%); border-radius: 13px; color: #f7edf9; background: rgb(142 107 255 / 9%); font-size: .76rem; font-weight: 700; }
+.yl-service-card { display: grid; gap: 7px; padding: 13px; }
+.yl-service-card strong { font-size: .86rem; }
+.yl-service-card p { margin: 0; color: var(--yl-muted, #b9acc6); font-size: .73rem; line-height: 1.52; }
+.yl-service-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.yl-service-tags span { padding: 3px 7px; border: 1px solid rgb(255 255 255 / 13%); border-radius: var(--yl-r-pill, 999px); color: var(--yl-faint, #8d7f9b); background: rgb(255 255 255 / 4%); font-size: .61rem; }
+@media (max-width: 430px) {
+    .yl-phone-nav.has-service-entry { padding-inline: 5px; }
+    .yl-phone-nav.has-service-entry .yl-nav-label { font-size: .58rem; letter-spacing: 0; }
+    .yl-phone-nav.has-service-entry .yl-nav-icon { font-size: 1.06rem; }
 }

@@ -514,6 +514,71 @@ function emptyRecommendationState() {
     return current;
 }
 
+function serviceOrderState() {
+    const current = recommendationState();
+    current.系统 = { UID计数器: { 角色: 12, 服务订单: 0 } };
+    current.角色池 = {};
+    current.服务订单 = {};
+    return current;
+}
+
+test('service-order bridge rejects a changed expected mode before it builds or writes a patch', async () => {
+    const { mvu, calls } = createMvu({ initialState: serviceOrderState() });
+    const bridge = createActionBridge({ documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {} });
+
+    const result = await bridge.runServiceOrderHandoff({ candidate: adultCandidate(), categoryId: 'coffee_walk', expectedContentMode: 'NSFW' });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'service_order_mode_changed');
+    assert.deepEqual(calls.map(([name]) => name), ['get']);
+});
+
+test('mode toggles wait for a service-order transaction instead of reading the same MVU snapshot', async () => {
+    const { mvu, calls, releaseParse } = createMvu({ deferredParse: true, initialState: serviceOrderState() });
+    const bridge = createActionBridge({ documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {} });
+
+    const handoff = bridge.runServiceOrderHandoff({ candidate: adultCandidate(), categoryId: 'coffee_walk', expectedContentMode: 'SFW' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.filter(([name]) => name === 'get').length, 2);
+    assert.equal(calls.filter(([name]) => name === 'parse').length, 1);
+
+    const toggle = bridge.runMvuAction('toggle_content_mode');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.filter(([name]) => name === 'get').length, 2, 'queued toggle must not read until the order commit releases the shared lane');
+
+    releaseParse();
+    const [handoffResult, toggleResult] = await Promise.all([handoff, toggle]);
+    assert.equal(handoffResult.ok, true);
+    assert.equal(toggleResult.ok, true);
+    assert.equal(calls.filter(([name]) => name === 'get').length, 4);
+});
+
+test('full authoring rejects a stale expected content mode after local generation without writing MVU', async () => {
+    const initialState = recommendationState();
+    initialState.软件 = { 内容模式: 'SFW', 关于软件点击数: 0 };
+    const { mvu, calls, data } = createMvu({ initialState });
+    let modelCalls = 0;
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {}, settingsStore,
+        llmClient: {
+            async chat() {
+                modelCalls += 1;
+                data.stat_data.软件.内容模式 = 'NSFW';
+                return { text: JSON.stringify(adultCandidate()) };
+            },
+        },
+    });
+
+    const result = await bridge.generateCharacterAuthoringDraft({
+        creativeBrief: '创作一名明确成年的现代都市软件角色。', expectedContentMode: 'SFW',
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'character_authoring_mode_changed');
+    assert.equal(modelCalls, 1);
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get']);
+    assert.equal(calls.some(([name]) => name === 'parse' || name === 'replace'), false);
+});
 test('initial fast-model candidate also starts image matching after public-profile validation', async () => {
     const initialState = emptyRecommendationState();
     initialState.软件.内容模式 = 'NSFW';
