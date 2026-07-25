@@ -3474,7 +3474,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function serviceExperienceDraft(profile, mode, orderUid) {
         const name = serviceProfileName(profile); const category = serviceProfileCategoryLabel(profile);
-        const orderReference = SERVICE_ORDER_UID_PATTERN.test(orderUid ?? '') ? `【本次服务订单：${orderUid}】` : '';
+        const orderReference = SERVICE_ORDER_UID_PATTERN.test(orderUid ?? '') ? '【本次新建的待确认订单】' : '';
         return mode === 'NSFW'
             ? `${orderReference}我选择与「${name}」进行「${category}」主题的虚构成人文字体验。请只承接本次服务订单，并先以成年人线上文字沟通逐项确认主题、禁区、隐私与随时停止的边界；双方明确接受前，不要把服务记录推进为进行中，也不要安排现实会面、支付、定位或替任何一方作出同意。`
             : `${orderReference}我想与「${name}」体验「${category}」租借陪伴主题。请只承接本次服务订单，并先以成年人线上文字沟通确认陪伴主题、公开活动范围、时间与可随时取消的边界；双方明确接受前，不要把服务记录推进为进行中，也不要自动安排现实行动、支付、定位或替任何一方作出同意。`;

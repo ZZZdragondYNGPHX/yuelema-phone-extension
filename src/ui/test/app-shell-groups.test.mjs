@@ -466,7 +466,8 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         await flushUi();
         assert.equal(serviceHandoffCalls, 1);
         assert.equal(handoffDrafts.length, 1);
-        assert.match(handoffDrafts[0], /【本次服务订单：service_1】/u);
+        assert.match(handoffDrafts[0], /【本次新建的待确认订单】/u);
+        assert.doesNotMatch(handoffDrafts[0], /service_1/u, '正文草稿不得暴露内部订单 UID');
         assert.match(handoffDrafts[0], /与「林澄」体验「咖啡与散步」租借陪伴主题/u);
         assert.doesNotMatch(handoffDrafts[0], /自动发送/u);
         click(serviceTabs()[2]);
@@ -493,7 +494,8 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         await flushUi();
         assert.equal(serviceRepeatCalls, 1);
         assert.equal(handoffDrafts.length, 2);
-        assert.match(handoffDrafts[1], /【本次服务订单：service_2】/u);
+        assert.match(handoffDrafts[1], /【本次新建的待确认订单】/u);
+        assert.doesNotMatch(handoffDrafts[1], /service_2/u, '复约草稿不得暴露内部订单 UID');
         click(serviceTabs()[2]);
         assert.match(miniDom.document.body.textContent, /待确认/u);
 
