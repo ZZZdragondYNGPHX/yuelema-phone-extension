@@ -110,7 +110,7 @@ node --input-type=module -e "await import('./index.js'); console.log('production
 - 角色卡、角色创建、AI 补全/完整创作、推荐刷新、灵魂/语音匹配及角色资料均增加 `绘图.core_dna` / `绘图.outfit_dna`。人物图只允许读取明确成年且可用的关联角色绘图 DNA；没有角色时仅可生成场景快照。图片生成不写入 MVU，保留为会话 UI 内存态。
 - 生图客户端只接受通过 PNG/JPEG/WebP 魔数校验的 base64、直接二进制或受控 ZIP 图片；即使接口 JSON 返回远程 `url` 也会拒绝，避免 UI 通过 `<img src>` 绕过注入式 transport 发网。真实 Response 优先按流读取，并对声明长度、累计响应和 ZIP 解压结果施加 24 MiB 图片上限；OpenAI-compatible 接口需实际支持 `b64_json` 或直接图片响应。
 - 本阶段本地验证已完成：`npm run check` 通过；全量 Node 回归 **425 / 425 通过，0 failed**；生产 ESM import 图、关键文件语法检查和 `git diff --check` 通过。角色卡构建生成 `角色卡源/dist/约了吗_MVU_v0.1.34.json`，大小 **43303 bytes**，SHA-256 `E2A40D317E37986B127E84831948F93FAEE2402A67060A0A35033E50552292F4`，读取确认 `data.character_version=0.1.34`。这些结果不等于 SillyTavern 真机验收。
-- v0.1.34 将通过 GitHub `main` 发布；真机仍需从 Git URL 更新扩展、导入 `约了吗_MVU_v0.1.34.json` 并新开聊天，检查真实 NovelAI / OpenAI-compatible CORS 与响应、成人角色门禁、私聊/群聊/论坛消息映射、同会话多结构自动生成、手动/重新生成、长按冲突、窄屏布局、浏览器 Key 缓存与切页/销毁后的无重复请求。
+- v0.1.34 已通过 GitHub `main` 发布（功能提交 `b0f7383`）；真机仍需从 Git URL 更新扩展、导入 `约了吗_MVU_v0.1.34.json` 并新开聊天，检查真实 NovelAI / OpenAI-compatible CORS 与响应、成人角色门禁、私聊/群聊/论坛消息映射、同会话多结构自动生成、手动/重新生成、长按冲突、窄屏布局、浏览器 Key 缓存与切页/销毁后的无重复请求。
 ## 阶段 54（v0.1.32）
 
 - 十个内置 NSFW 提示词均改为明确成年人、双方自愿前提下的主动成人向线上表达：推荐人物不再默认普通社交，私聊、群聊、社区、角色创作、匹配关键词、图片匹配和总结都会保留或优先成人主题；未成年人、胁迫、非自愿、隐私泄露、伪造线下发生与自动现实行动仍被拒绝。
