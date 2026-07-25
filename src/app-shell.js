@@ -11,11 +11,12 @@ import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
 import { DEFAULT_FORUM_AUTO_SETTINGS, DEFAULT_GROUP_AUTO_SETTINGS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 
-const UI_VERSION = '0.1.32';
+const UI_VERSION = '0.1.33';
 const PANEL_DRAG_THRESHOLD = 8;
 const FORUM_PULL_THRESHOLD = 88;
 const FORUM_WHEEL_RELEASE_DELAY = 180;
 const FORUM_WHEEL_MAX_DISTANCE = 288;
+const CHAT_TOOL_LONG_PRESS_MS = 460;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
 const PRIMARY_PAGE_FOR = Object.freeze({
@@ -55,6 +56,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let activeMeetupSessionUid = '';
     let summaryHistorySessionUid = '';
     let activeChatToolsSessionUid = '';
+    let chatToolLongPressTimer = null;
+    let chatToolLongPressSessionUid = '';
+    let chatToolLongPressInputType = '';
+    let suppressChatToolClickForSessionUid = '';
+    let chatToolClickSuppressionTimer = null;
     let selectedCandidateUid = '';
     let matchedProfileDraft = null;
     let voiceMatchText = '';
@@ -1836,8 +1842,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 kind,
                 direction: kind === 'append' ? -1 : 1,
                 indicator: kind === 'append' ? appendIndicator : replacementIndicator,
+                inputType: event?.inputType === 'touch' ? 'touch' : 'pointer',
             };
-            surface.setPointerCapture?.(event?.pointerId);
+            if (forumPullState.inputType === 'pointer') surface.setPointerCapture?.(event?.pointerId);
         };
         const move = (event) => {
             const state = forumPullState;
@@ -1856,11 +1863,37 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const end = (event) => {
             const state = forumPullState;
             if (!state || (state.pointerId !== undefined && event?.pointerId !== undefined && state.pointerId !== event.pointerId)) return;
-            try { surface.releasePointerCapture?.(state.pointerId); } catch { /* Pointer capture may already be gone. */ }
+            if (state.inputType === 'pointer') {
+                try { surface.releasePointerCapture?.(state.pointerId); } catch { /* Pointer capture may already be gone. */ }
+            }
             forumPullState = null;
             const shouldRefresh = !state.cancelled && state.peak >= FORUM_PULL_THRESHOLD;
             resetForumPullIndicator(state.indicator, state.kind);
             if (shouldRefresh) void runForumHomeRefresh({ mode: state.kind });
+        };
+        const touchPoint = (event, pointerId = undefined) => {
+            const points = [...(event?.touches ?? []), ...(event?.changedTouches ?? [])];
+            if (pointerId === undefined) return points[0] ?? null;
+            return points.find((point) => point?.identifier === pointerId) ?? null;
+        };
+        const touchStart = (event) => {
+            if (forumPullState?.inputType === 'pointer') return;
+            const point = touchPoint(event);
+            if (!point) return;
+            start({ pointerId: point.identifier, clientY: point.clientY, isPrimary: true, inputType: 'touch' });
+        };
+        const touchMove = (event) => {
+            const state = forumPullState;
+            if (!state || state.inputType !== 'touch') return;
+            const point = touchPoint(event, state.pointerId);
+            if (!point) return;
+            move({ pointerId: point.identifier, clientY: point.clientY, preventDefault: () => event.preventDefault?.() });
+        };
+        const touchEnd = (event) => {
+            const state = forumPullState;
+            if (!state || state.inputType !== 'touch') return;
+            const point = touchPoint(event, state.pointerId);
+            end({ pointerId: point?.identifier ?? state.pointerId });
         };
         const wheel = (event) => {
             if (forumRefreshing || event?.ctrlKey || forumPullState) return;
@@ -1899,6 +1932,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         listen(surface, surface, 'pointermove', move, controller.signal);
         listen(surface, surface, 'pointerup', end, controller.signal);
         listen(surface, surface, 'pointercancel', end, controller.signal);
+        // Older embedded WebViews may expose Touch Events without Pointer Events.
+        surface.addEventListener('touchstart', touchStart, { passive: true, signal: controller.signal });
+        surface.addEventListener('touchmove', touchMove, { passive: false, signal: controller.signal });
+        surface.addEventListener('touchend', touchEnd, { passive: true, signal: controller.signal });
+        surface.addEventListener('touchcancel', touchEnd, { passive: true, signal: controller.signal });
         // The persistent phone content area is the browser's actual scroll container.
         // Listening there makes a wheel over the forum heading and feed behave alike.
         listen(surface, content, 'wheel', wheel, controller.signal);
@@ -2233,6 +2271,17 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         section.appendChild(sessionList);
         return section;
+    }
+    function cancelChatToolLongPress() {
+        if (chatToolLongPressTimer !== null) clearTimeout(chatToolLongPressTimer);
+        chatToolLongPressTimer = null;
+        chatToolLongPressSessionUid = '';
+        chatToolLongPressInputType = '';
+    }
+    function clearChatToolClickSuppression() {
+        if (chatToolClickSuppressionTimer !== null) clearTimeout(chatToolClickSuppressionTimer);
+        chatToolClickSuppressionTimer = null;
+        suppressChatToolClickForSessionUid = '';
     }
     function buildPrivateChatPage() {
         const session = messageSessionByUid(activeMessageSessionUid);
@@ -2583,7 +2632,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const sendGlyph = element('span', { className: pending ? 'yl-chat-send-pending' : 'yl-chat-send-icon', text: pending ? '···' : '' });
         sendGlyph.setAttribute('aria-hidden', 'true');
         send.appendChild(sendGlyph);
-        const meetupSupported = typeof actionBridge.runMeetupHandoff === 'function';
+        const meetupSupported = typeof actionBridge.runPrivateChatMeetupHandoff === 'function' || typeof actionBridge.runMeetupHandoff === 'function';
         const meetupUnlocked = meetupSupported && session.meetupAccess?.unlocked === true;
         const meetupAvailable = meetupSupported;
         const toolsOpen = meetupAvailable && activeChatToolsSessionUid === session.sessionUid;
@@ -2604,13 +2653,56 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             activeChatToolsSessionUid = '';
             void runPrivateChat(session);
         }, abortController.signal);
-        listen(send, send, 'click', () => { activeChatToolsSessionUid = ''; void runPrivateChat(session); }, abortController.signal);
-        if (meetupSupported) listen(send, send, 'contextmenu', (event) => {
-            event.preventDefault?.();
-            if (pending) return;
-            activeChatToolsSessionUid = toolsOpen ? '' : session.sessionUid;
-            renderPage();
+        listen(send, send, 'click', () => {
+            if (suppressChatToolClickForSessionUid === session.sessionUid) {
+                clearChatToolClickSuppression();
+                return;
+            }
+            activeChatToolsSessionUid = '';
+            void runPrivateChat(session);
         }, abortController.signal);
+        if (meetupSupported) {
+            const openToolsFromLongPress = () => {
+                if (pending || activePage !== 'private_chat' || activeMessageSessionUid !== session.sessionUid) return;
+                chatToolLongPressTimer = null;
+                chatToolLongPressSessionUid = '';
+                clearChatToolClickSuppression();
+                suppressChatToolClickForSessionUid = session.sessionUid;
+                chatToolClickSuppressionTimer = setTimeout(() => {
+                    if (suppressChatToolClickForSessionUid === session.sessionUid) clearChatToolClickSuppression();
+                }, 900);
+                activeChatToolsSessionUid = session.sessionUid;
+                renderPage();
+            };
+            const beginLongPress = (event, inputType) => {
+                if (pending || event?.pointerType === 'mouse') return;
+                // Current browsers dispatch Pointer Events and compatibility Touch Events
+                // for one finger. Keep the original timer instead of restarting it.
+                if (chatToolLongPressSessionUid === session.sessionUid) {
+                    if (chatToolLongPressInputType === 'pointer' && inputType === 'touch') return;
+                    cancelChatToolLongPress();
+                }
+                chatToolLongPressSessionUid = session.sessionUid;
+                chatToolLongPressInputType = inputType;
+                chatToolLongPressTimer = setTimeout(openToolsFromLongPress, CHAT_TOOL_LONG_PRESS_MS);
+            };
+            const endLongPress = (inputType) => {
+                if (chatToolLongPressSessionUid === session.sessionUid && chatToolLongPressInputType === inputType) cancelChatToolLongPress();
+            };
+            // Pointer Events cover current mobile browsers; touch events retain support for older WebViews.
+            listen(send, send, 'pointerdown', (event) => beginLongPress(event, 'pointer'), abortController.signal);
+            listen(send, send, 'pointerup', () => endLongPress('pointer'), abortController.signal);
+            listen(send, send, 'pointercancel', () => endLongPress('pointer'), abortController.signal);
+            listen(send, send, 'touchstart', (event) => beginLongPress(event, 'touch'), abortController.signal);
+            listen(send, send, 'touchend', () => endLongPress('touch'), abortController.signal);
+            listen(send, send, 'touchcancel', () => endLongPress('touch'), abortController.signal);
+            listen(send, send, 'contextmenu', (event) => {
+                event.preventDefault?.();
+                if (pending) return;
+                activeChatToolsSessionUid = toolsOpen ? '' : session.sessionUid;
+                renderPage();
+            }, abortController.signal);
+        }
         const controls = element('div', { className: 'yl-chat-composer-controls' });
         controls.appendChild(send);
         if (toolsOpen) {
@@ -2696,7 +2788,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     async function runMeetupHandoff(session) {
         const operationToken = setFeedback('正在校验面基约定…'); renderPage();
-        const result = await actionBridge.runMeetupHandoff({ sessionUid: session.sessionUid, npcUid: session.npcUid, ...meetupFieldsFor(session.sessionUid) });
+        const request = { sessionUid: session.sessionUid, ...meetupFieldsFor(session.sessionUid) };
+        const result = typeof actionBridge.runPrivateChatMeetupHandoff === 'function'
+            ? await actionBridge.runPrivateChatMeetupHandoff(request)
+            : await actionBridge.runMeetupHandoff({ ...request, npcUid: session.npcUid });
         if (result.ok && result.draftApplied) { meetupDrafts.delete(session.sessionUid); activeMeetupSessionUid = ''; setFeedback('正文草稿已填入，未自动发送。', operationToken); }
         else if (result.ok) setFeedback('已保存约定，但没有找到正文输入框。', operationToken);
         else setFeedback(describeActionFailure(result), operationToken);
@@ -3177,7 +3272,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     async function runCandidateAction(kind, npcUid) {
         const isRefresh = kind === 'refresh';
-        const advancesCandidate = kind === 'like' || kind === 'favorite' || kind === 'dislike';
+        // 收藏只保存到收藏夹；只有明确的喜欢/不喜欢反馈才会推进到下一位。
+        const advancesCandidate = kind === 'like' || kind === 'dislike';
         refreshing = isRefresh || advancesCandidate;
         const refreshActivityHandle = isRefresh ? operationActivity.start('首页推荐', '正在生成下一位候选人……') : null;
         const operationToken = isRefresh ? showAiLoading('正在生成下一位候选人，请稍候…') : setFeedback('正在保存操作…');
@@ -3314,6 +3410,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     renderPage();
     return Object.freeze({
         refreshState,
-        destroy() { isDestroyed = true; stopGroupAutoTimer(); stopForumAutoTimer(); cancelForumPullInteractions(); clearSummaryToast(); hideOperationDialog(); closeGroupMemberPicker(); closeGroupAutoDialog(); closeForumSettingsDialog(); resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { cancelChatToolLongPress(); clearChatToolClickSuppression(); isDestroyed = true; stopGroupAutoTimer(); stopForumAutoTimer(); cancelForumPullInteractions(); clearSummaryToast(); hideOperationDialog(); closeGroupMemberPicker(); closeGroupAutoDialog(); closeForumSettingsDialog(); resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }

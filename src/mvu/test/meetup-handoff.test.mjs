@@ -130,6 +130,67 @@ test('meetup bridge persists before appending the host textarea draft and never 
     assert.equal('click' in textarea, false);
 });
 
+test('private-chat meetup controller derives the NPC from the latest session and ignores a forged UI target', async () => {
+    const calls = [];
+    const data = { stat_data: matchedState() };
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'variable_update_ended' },
+        getMvuData(scope) { calls.push(['get', scope]); return data; },
+        async parseMessage(raw, oldData) {
+            calls.push(['parse', raw]);
+            const next = structuredClone(oldData);
+            const patch = JSON.parse(raw.match(/<JSONPatch>([\s\S]*?)<\/JSONPatch>/u)[1]);
+            for (const operation of patch) {
+                if (operation.op === 'add' && operation.path.startsWith('/面基记录/')) {
+                    next.stat_data.面基记录[operation.path.split('/').at(-1)] = operation.value;
+                }
+                if (operation.op === 'replace' && operation.path === '/系统/UID计数器/面基') {
+                    next.stat_data.系统.UID计数器.面基 = operation.value;
+                }
+            }
+            return next;
+        },
+        async replaceMvuData() { calls.push(['replace']); },
+    };
+    const textarea = {
+        value: '', dispatched: 0, focused: 0,
+        dispatchEvent() { this.dispatched += 1; }, focus() { this.focused += 1; }, setSelectionRange() {},
+    };
+    const bridge = createActionBridge({
+        documentRef: { querySelector: (selector) => selector === '#send_textarea' ? textarea : null },
+        mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+    });
+
+    const result = await bridge.runPrivateChatMeetupHandoff({ ...request(), npcUid: 'npc_forged' });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.draftApplied, true);
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
+    const parsedEnvelope = calls.find(([name]) => name === 'parse')[1];
+    assert.match(parsedEnvelope, /"对象UID":"npc_ava"/u);
+    assert.doesNotMatch(parsedEnvelope, /npc_forged/u);
+    assert.equal(textarea.dispatched, 1);
+    assert.equal(textarea.focused, 1);
+    assert.equal('click' in textarea, false);
+});
+
+test('private-chat meetup controller rejects a stale session before any MVU write or host draft', async () => {
+    const calls = [];
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => { throw new Error('textarea must not be queried'); } },
+        mvu: {
+            getMvuData(scope) { calls.push(['get', scope]); return { stat_data: matchedState() }; },
+        },
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+    });
+
+    const result = await bridge.runPrivateChatMeetupHandoff({ ...request(), sessionUid: 'chat_stale' });
+
+    assert.deepEqual(result, { ok: false, status: 'rejected', code: 'meetup_private_chat_session_not_found' });
+    assert.deepEqual(calls.map(([name]) => name), ['get']);
+});
+
 test('meetup bridge force-summarizes pending chat through MVU before it writes the host draft', async () => {
     const calls = [];
     const initial = matchedState();

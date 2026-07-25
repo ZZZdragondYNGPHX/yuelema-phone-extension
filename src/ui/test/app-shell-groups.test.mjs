@@ -61,6 +61,16 @@ function pointer(type, clientY, pointerId = 1, pointerType = undefined) {
     return event;
 }
 
+function touch(type, clientY, identifier = 1, { ended = false } = {}) {
+    const event = new Event(type, { cancelable: true });
+    const point = { clientY, identifier };
+    Object.defineProperties(event, {
+        touches: { value: ended ? [] : [point] },
+        changedTouches: { value: [point] },
+    });
+    return event;
+}
+
 function wheel(deltaY, deltaMode = 0) {
     const event = new Event('wheel', { cancelable: true });
     Object.defineProperties(event, { deltaY: { value: deltaY }, deltaMode: { value: deltaMode } });
@@ -387,7 +397,7 @@ test('about entry shows a version dialog and reveals the SFW/NSFW slider after f
             click(about());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /约了吗 0\.1\.32/u);
+            assert.match(dialog.textContent, /约了吗 0\.1\.33/u);
         }
         await flushUi();
 
@@ -522,6 +532,14 @@ test('forum home only calls AI after an armed pull gesture, and opened posts upd
         await flushUi();
         assert.equal(homeCalls, 1, '到达下拉阈值并松开后才调用论坛 AI');
         assert.match(miniDom.document.body.textContent, /雨后的书店/u);
+
+        const touchSurface = miniDom.document.querySelector('.yl-forum-home');
+        touchSurface.dispatchEvent(touch('touchstart', 0, 3));
+        touchSurface.dispatchEvent(touch('touchmove', 104, 3));
+        assert.equal(miniDom.document.querySelector('.yl-forum-pull-indicator').classList.contains('is-armed'), true, 'Touch Events 也应能把顶部刷新手势解锁');
+        touchSurface.dispatchEvent(touch('touchend', 104, 3, { ended: true }));
+        await flushUi();
+        assert.equal(homeCalls, 2, '没有 Pointer Events 的手机 WebView 也应在触摸下拉松开后刷新帖子');
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开帖子：雨后的书店'));
         const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入论坛评论');
         input.value = '周末人会很多吗？'; input.dispatchEvent(new Event('input'));

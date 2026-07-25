@@ -515,6 +515,36 @@ export function createActionBridge({
     }
 
     /**
+     * Private-chat entry point for desktop context menus and touch long-press
+     * controls.  The UI supplies only its current chat session plus fields for
+     * the agreement; the target NPC UID is re-derived from the latest MVU
+     * snapshot and any caller-provided npcUid is deliberately ignored.
+     */
+    async function runPrivateChatMeetupHandoff(request = {}) {
+        const sessionUid = typeof request?.sessionUid === 'string' ? request.sessionUid : '';
+        if (!sessionUid) return { ok: false, status: 'rejected', code: 'meetup_invalid_target' };
+
+        const currentMvu = resolveMvu(mvu);
+        const read = readLatestState({ mvu: currentMvu });
+        if (!read.ok) return read;
+        const npcUid = read.state?.会话?.[sessionUid]?.对象UID;
+        if (typeof npcUid !== 'string' || !npcUid) {
+            return { ok: false, status: 'rejected', code: 'meetup_private_chat_session_not_found' };
+        }
+
+        return runMeetupHandoff({
+            sessionUid,
+            npcUid,
+            time: request?.time,
+            place: request?.place,
+            mutualIntent: request?.mutualIntent,
+            confirmedBoundaries: request?.confirmedBoundaries,
+            pendingItems: request?.pendingItems,
+            riskNotice: request?.riskNotice,
+        });
+    }
+
+    /**
      * Persists an explicitly agreed, adult matched-session meetup record first,
      * then and only then appends a non-sending prose draft to the host textarea.
      */
@@ -761,6 +791,6 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, isPending, appendMeetupDraft });
 }
 

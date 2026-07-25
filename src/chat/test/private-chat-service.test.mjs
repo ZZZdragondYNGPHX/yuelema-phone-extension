@@ -146,6 +146,29 @@ test('private chat requests replies and returns only validated multi-bubble data
     assert.deepEqual(current, before);
 });
 
+test('NSFW core contract permits consensual adult chat without treating explicitness as local block pressure', async () => {
+    let request;
+    const result = await generatePrivateChatReply({
+        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我想和你聊些更亲密的事，可以吗？', settingsStore: settingsStore(),
+        llmClient: {
+            async chat(input) {
+                request = input;
+                return { text: JSON.stringify({
+                    replies: ['可以，我们按彼此舒服的节奏来。'],
+                    relationship: { 好感: 1, 信任: 1, 戒备: 0, 面基意愿: 0 },
+                    bondAssessment: { kind: 'sexual_desire', intensity: 1 },
+                }) };
+            },
+        },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.response.relationship.戒备, 0);
+    assert.match(request.messages[0].content, /成人话题尊重已知边界/u);
+    assert.match(request.messages[0].content, /直白或露骨本身不是冒犯/u);
+    assert.match(request.messages[0].content, /不得仅因内容成人化降低好感或信任、提高戒备/u);
+    assert.match(request.messages[0].content, /明确的拒绝或撤回同意、已知边界冲突、胁迫、非自愿、隐私侵犯/u);
+    assert.match(request.messages[0].content, /同意或边界不清时应先用线上文字澄清/u);
+});
 test('private chat accepts old single-reply model output as one canonical bubble', async () => {
     const result = await generatePrivateChatReply({
         state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', settingsStore: settingsStore(),

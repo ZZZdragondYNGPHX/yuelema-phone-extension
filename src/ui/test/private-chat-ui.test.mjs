@@ -246,7 +246,7 @@ test('a successful private-chat reply starts background summary work and shows o
     }
 });
 
-test('right-clicking the paper plane opens the meetup tool and reuses the existing handoff bridge', async () => {
+test('desktop right-click and mobile long-press on the paper plane open the meetup tool through the private-chat handoff bridge', async () => {
     const meetupCalls = [];
     let privateChatCalls = 0;
     const result = readResult();
@@ -255,7 +255,7 @@ test('right-clicking the paper plane opens the meetup tool and reuses the existi
         emit() {},
         isPending() { return false; },
         runPrivateChat() { privateChatCalls += 1; return { ok: true }; },
-        runMeetupHandoff(request) { meetupCalls.push(request); return { ok: true, draftApplied: true }; },
+        runPrivateChatMeetupHandoff(request) { meetupCalls.push(request); return { ok: true, draftApplied: true }; },
     };
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-private-chat-tools', actionBridge: bridge,
@@ -268,9 +268,33 @@ test('right-clicking the paper plane opens the meetup tool and reuses the existi
 
         assert.equal(miniDom.document.querySelector('.yl-meetup-panel'), null, '未打开工具栏前不渲染底部面基卡片');
         let sendButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息');
+        const previousSetTimeout = globalThis.setTimeout;
+        const previousClearTimeout = globalThis.clearTimeout;
+        const longPressTimers = [];
+        globalThis.setTimeout = (callback, delay) => { const timer = { callback, delay, cleared: false }; longPressTimers.push(timer); return timer; };
+        globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
+        try {
+            const longPress = new Event('pointerdown', { cancelable: true });
+            Object.defineProperty(longPress, 'pointerType', { configurable: true, value: 'touch' });
+            sendButton.dispatchEvent(longPress);
+            assert.equal(longPressTimers.at(-1).delay, 460, '手机长按应在明确阈值后展开工具栏');
+            sendButton.dispatchEvent(new Event('touchstart'));
+            assert.equal(longPressTimers.length, 1, 'Pointer/Touch 兼容事件不得为同一次长按重复创建计时器');
+            longPressTimers.at(-1).callback();
+        } finally {
+            globalThis.setTimeout = previousSetTimeout;
+            globalThis.clearTimeout = previousClearTimeout;
+        }
+        let toolMenu = miniDom.document.querySelector('.yl-chat-tool-menu');
+        assert.ok(toolMenu, '手机长按纸飞机应打开小型工具栏');
+        assert.equal(privateChatCalls, 0, '手机长按不得发送私聊');
+        sendButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息');
         const contextMenuEvent = rightClick(sendButton);
+        assert.equal(miniDom.document.querySelector('.yl-chat-tool-menu'), null, '桌面右键可收起已打开的工具栏');
+        const secondContextMenuEvent = rightClick(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息'));
+        assert.equal(secondContextMenuEvent.defaultPrevented, true, '右键纸飞机应阻止浏览器默认菜单');
         assert.equal(contextMenuEvent.defaultPrevented, true, '右键纸飞机应阻止浏览器默认菜单');
-        const toolMenu = miniDom.document.querySelector('.yl-chat-tool-menu');
+        toolMenu = miniDom.document.querySelector('.yl-chat-tool-menu');
         assert.ok(toolMenu, '右键纸飞机应打开小型工具栏');
         assert.equal(toolMenu.getAttribute('role'), 'menu');
         assert.match(toolMenu.textContent, /^约定面基 · 友情路线$/u);
@@ -301,7 +325,7 @@ test('right-clicking the paper plane opens the meetup tool and reuses the existi
         await flushUi();
 
         assert.deepEqual(meetupCalls, [{
-            sessionUid: 'chat_lin', npcUid: 'npc_lin',
+            sessionUid: 'chat_lin',
             time: '本周六 19:30', place: '静安寺地铁站 2 号口', mutualIntent: '一起吃饭，确认是否继续约会',
             confirmedBoundaries: '公共场所见面；任何亲密行为需当场确认', pendingItems: '21:30 前散场', riskNotice: '各自独立到场，可随时离开',
         }], '工具栏入口必须复用 runMeetupHandoff，不得另造写入路径');

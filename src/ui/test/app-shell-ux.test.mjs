@@ -924,7 +924,7 @@ test('declined match stays on matches and never opens an empty session', async (
     } finally { mounted.destroy(); }
 });
 
-test('home feedback actions save before generating next candidate while refresh and unfavorite stay single-purpose', async () => {
+test('home favorites save without generating a profile while like/dislike still advance and refresh stays single-purpose', async () => {
     const calls = [];
     let next = { ok: true };
     const bridge = {
@@ -936,6 +936,8 @@ test('home feedback actions save before generating next candidate while refresh 
     const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-home-auto-next', actionBridge: bridge, settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '收藏')); await flushUi();
+        assert.deepEqual(calls.splice(0), [['save', 'favorite', 'npc_1']], '收藏只保存，不得生成新角色');
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '喜欢')); await flushUi();
         assert.deepEqual(calls.splice(0), [['save', 'like', 'npc_1'], ['next']]);
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '刷新')); await flushUi();
