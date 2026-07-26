@@ -309,3 +309,28 @@ test('fast recommender applies the selected SFW/NSFW output contract before any 
     }
     assert.equal(JSON.stringify(nsfwMessages).includes('功能绑定提示词只能补充人物风格'), true);
 });
+
+test('fast recommender treats a concise player target gender as a non-bypassable hard condition', async () => {
+    const constrainedState = state();
+    constrainedState.玩家.公开资料.性取向 = '女';
+    const incompatible = adultCandidate();
+    incompatible.公开资料.性别 = '男';
+    incompatible.公开资料.性取向 = '双性恋';
+    const result = await generateRecommendationCandidate({
+        state: constrainedState, settingsStore,
+        llmClient: { async chat() { return { text: JSON.stringify(incompatible) }; } },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'recommendation_basic_compatibility_invalid');
+});
+
+test('fast recommender rejects an unknown candidate orientation when the player has an explicit orientation hard condition', async () => {
+    const incomplete = adultCandidate();
+    incomplete.公开资料.性取向 = '随缘';
+    const result = await generateRecommendationCandidate({
+        state: state(), settingsStore,
+        llmClient: { async chat() { return { text: JSON.stringify(incomplete) }; } },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'recommendation_basic_compatibility_invalid');
+});

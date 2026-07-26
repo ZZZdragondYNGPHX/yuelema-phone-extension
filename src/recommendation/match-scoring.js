@@ -60,6 +60,11 @@ function orientationAllows(sourceGender, sourceOrientation, targetGender) {
     if (/(?:双性|泛性|bisexual|\bbi\b|pansexual|\bpan\b|不限|开放)/iu.test(orientation)) return true;
     if (/(?:异性恋|heterosexual|\bhetero\b|straight)/iu.test(orientation)) return sourceGender !== targetGender;
     if (/(?:同性恋|lesbian|\bgay\b|homosexual)/iu.test(orientation)) return sourceGender === targetGender;
+    // The profile form is free text and many users write "女" / "男"
+    // as a concise answer to "期待遇见谁". Treat those common values as
+    // an explicit target gender rather than falling through to neutral/unknown.
+    if (/(?:^|[、，,\s])(?:女|女性|女生|女人|女孩|女孩子)(?:$|[、，,\s])/iu.test(orientation)) return targetGender === 'female';
+    if (/(?:^|[、，,\s])(?:男|男性|男生|男人|男孩|男孩子)(?:$|[、，,\s])/iu.test(orientation)) return targetGender === 'male';
     return null;
 }
 

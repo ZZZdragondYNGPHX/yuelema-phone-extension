@@ -158,12 +158,18 @@ function orientationKind(value) {
     if (/双性恋|泛性恋|全性恋|双性|pansexual|bisexual|不限/u.test(text)) return 'all';
     if (/异性恋|异性向|heterosexual|straight/u.test(text)) return 'opposite';
     if (/同性恋|同性向|lesbian|\bgay\b/u.test(text)) return 'same';
+    // “期待遇见谁” accepts concise target-gender wording too. It is a
+    // hard filter, not an unknown orientation that may be silently bypassed.
+    if (/^(?:女|女性|女生|女人|女孩|女孩子)$/iu.test(text)) return 'female';
+    if (/^(?:男|男性|男生|男人|男孩|男孩子)$/iu.test(text)) return 'male';
     return null;
 }
 
 function orientationAccepts(orientation, subjectGender, targetGender) {
     if (!orientation || !subjectGender || !targetGender) return null;
     if (orientation === 'all') return true;
+    if (orientation === 'female') return targetGender === 'female';
+    if (orientation === 'male') return targetGender === 'male';
     return orientation === 'same' ? subjectGender === targetGender : subjectGender !== targetGender;
 }
 
@@ -175,9 +181,11 @@ function assertBasicMutualCompatibility(playerProfile, candidate) {
     const candidateAccepts = orientationAccepts(
         orientationKind(candidateProfile.性取向), binaryGender(candidateProfile.性别), binaryGender(playerProfile.性别),
     );
-    // Custom identities remain model-directed rather than being falsely rejected
-    // by a narrow local taxonomy. Standard binary/common labels must agree both ways.
-    if (playerAccepts === false || candidateAccepts === false) {
+    // When the player's own public gender/orientation is a common explicit
+    // value, a generated candidate must prove reciprocal compatibility. An
+    // unknown candidate orientation cannot silently pass that hard contract.
+    const playerHasExplicitRequirement = Boolean(binaryGender(playerProfile.性别) && orientationKind(playerProfile.性取向));
+    if (playerAccepts === false || candidateAccepts === false || (playerHasExplicitRequirement && (playerAccepts !== true || candidateAccepts !== true))) {
         const error = new TypeError('recommendation_basic_compatibility_invalid');
         error.code = 'recommendation_basic_compatibility_invalid';
         throw error;

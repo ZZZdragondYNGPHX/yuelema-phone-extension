@@ -626,3 +626,67 @@ test('candidate match rejects missing voice text or unavailable local preference
     assert.deepEqual(missingLocal, { ok: false, code: 'candidate_match_local_preferences_unavailable', message: '本地个性化关键词暂不可用。' });
     assert.equal(calls, 0);
 });
+
+test('candidate generation rejects an incompatible gender before exposing a draft', async () => {
+    const constrainedState = state();
+    constrainedState.玩家.公开资料.性别 = '男';
+    constrainedState.玩家.公开资料.性取向 = '异性恋';
+    const incompatible = candidateRaw();
+    incompatible.profile.性别 = '男';
+    incompatible.profile.性取向 = '双性恋';
+    const result = await generateCandidateMatchDraft({
+        mode: 'soul', state: constrainedState, settingsStore: candidateSettingsStore('soul_match'),
+        llmClient: { async chat() { return { text: JSON.stringify(incompatible) }; } },
+    });
+    assert.deepEqual(result, {
+        ok: false,
+        code: 'candidate_match_basic_compatibility_invalid',
+        message: '模型返回的角色不符合性别或性取向硬条件；当前状态未改变。',
+    });
+});
+
+test('voice description gender request is derived without forwarding its original text and rejects the wrong candidate gender', async () => {
+    const requests = [];
+    const voiceText = '想要温柔爱看电影的女性。';
+    const incompatible = candidateRaw();
+    incompatible.profile.性别 = '男';
+    incompatible.profile.性取向 = '双性恋';
+    const result = await generateCandidateMatchDraft({
+        mode: 'voice', voiceText, state: state(), settingsStore: candidateSettingsStore('text_match'),
+        llmClient: { async chat(value) { requests.push(value); return { text: JSON.stringify(requests.length === 1 ? voiceKeywordRaw() : incompatible) }; } },
+    });
+    assert.equal(requests.length, 2);
+    const candidateSystem = requests[1].messages.find((message) => message.role === 'system').content;
+    const candidateContext = requests[1].messages.at(-1).content;
+    assert.match(candidateSystem, /hardMatchRequirements.*最高优先级.*不可被/u);
+    assert.equal(candidateContext.includes(voiceText), false);
+    assert.match(candidateContext, /"候选人性别":"女"/u);
+    assert.deepEqual(result, {
+        ok: false,
+        code: 'candidate_match_basic_compatibility_invalid',
+        message: '模型返回的角色不符合性别或性取向硬条件；当前状态未改变。',
+    });
+});
+
+test('voice description gender request admits a mutually compatible requested candidate', async () => {
+    const constrainedState = state();
+    constrainedState.玩家.公开资料.性别 = '男';
+    constrainedState.玩家.公开资料.性取向 = '异性恋';
+    const result = await generateCandidateMatchDraft({
+        mode: 'voice', voiceText: '想要温柔爱看电影的女性。', state: constrainedState, settingsStore: candidateSettingsStore('text_match'),
+        llmClient: { async chat(value) { return { text: JSON.stringify(value.messages.some((message) => /关键词解析器/u.test(message.content)) ? voiceKeywordRaw() : candidateRaw()) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.draft.profile.性别, '女');
+});
+
+test('candidate generation rejects an unknown candidate orientation when player public orientation is explicit', async () => {
+    const incomplete = candidateRaw();
+    incomplete.profile.性取向 = '随缘';
+    const result = await generateCandidateMatchDraft({
+        mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'),
+        llmClient: { async chat() { return { text: JSON.stringify(incomplete) }; } },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'candidate_match_basic_compatibility_invalid');
+});

@@ -829,7 +829,7 @@ test('voice match first resolves transient voice keywords and then commits the s
     assert.deepEqual(imageMatches[0][1], { contentMode: 'SFW', signal });
 });
 
-test('candidate match records a local-score decline without creating or incrementing a chat session', async () => {
+test('candidate match rejects a hard gender-orientation mismatch without any MVU write', async () => {
     const initialState = recommendationState();
     initialState.会话 = {};
     initialState.系统 = { UID计数器: { 角色: 8, 会话: 3 } };
@@ -853,18 +853,13 @@ test('candidate match records a local-score decline without creating or incremen
 
     const result = await bridge.runCandidateMatch('soul');
 
-    assert.equal(result.ok, true, JSON.stringify(result));
-    assert.equal(result.matchOutcome, 'declined');
-    assert.equal(result.matchScore, 0);
-    assert.equal(result.npcUid, 'npc_match_9');
-    assert.equal(result.sessionUid, '');
-    assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
-    const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
-    const patch = JSON.parse(wrappedPatch.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)[1]);
-    assert.equal(patch.some((operation) => operation.path.startsWith('/会话/')), false);
-    assert.equal(patch.some((operation) => operation.path === '/系统/UID计数器/会话'), false);
-    assert.equal(patch.find((operation) => operation.path === '/角色池/npc_match_9').value.与玩家关系.状态, '已取消');
-    assert.equal(patch.find((operation) => operation.path === '/系统/UID计数器/角色').value, 9);
+    assert.deepEqual(result, {
+        ok: false,
+        status: 'rejected',
+        code: 'candidate_match_basic_compatibility_invalid',
+        message: '模型返回的角色不符合性别或性取向硬条件；当前状态未改变。',
+    });
+    assert.deepEqual(calls.map(([name]) => name), ['get']);
 });
 
 test('conversation image bridge composes immutable drawing prompts and never writes MVU', async () => {

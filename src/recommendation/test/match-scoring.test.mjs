@@ -44,3 +44,17 @@ test('candidate matching score is local, deterministic, and uses the current eff
     assert.equal(disliked.score, 70);
     assert.equal(disliked.keywordScore, 40);
 });
+
+test('concise target-gender orientation values are hard reciprocal filters', () => {
+    const player = {
+        年龄段: '26-30', 性别: '男', 性取向: '女', 城市: '上海', 距离范围: '10 km', 寻找意图: '认真约会',
+        兴趣标签: [], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
+    };
+    const incompatibleMan = {
+        年龄段: '25-29', 性别: '男', 性取向: '双性恋', 城市: '上海', 距离范围: '10 km', 寻找意图: '约会',
+        兴趣标签: [], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
+    };
+    const compatibleWoman = { ...incompatibleMan, 性别: '女', 性取向: '异性恋' };
+    assert.equal(scoreLocalCandidateMatch(player, incompatibleMan, {}).eligible, false);
+    assert.equal(scoreLocalCandidateMatch(player, compatibleWoman, {}).eligible, true);
+});

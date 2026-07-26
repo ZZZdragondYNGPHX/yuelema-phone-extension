@@ -3,7 +3,7 @@ import { BUILTIN_PROMPT_PRESET_IDS } from '../settings/default-prompt-presets.js
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
 import { extractExplicitAgeNumbers, normalizeDrawingDna, normalizeGeneratedPublicProfile } from './candidate.js';
 import { DRAWING_DNA_RULES } from './drawing-dna-rules.js';
-import { scoreLocalCandidateMatch } from './match-scoring.js';
+import { scoreHeartCardCompatibility, scoreLocalCandidateMatch } from './match-scoring.js';
 
 // Real providers return the same candidate payload family as
 // recommendation-refresh (full drawing DNA plus profile), so the response
@@ -73,6 +73,8 @@ const CANDIDATE_MATCH_ERROR_MESSAGES = Object.freeze({
     candidate_match_llm_unavailable: '当前浏览器未提供匹配模型连接。',
     candidate_match_invalid_json: '模型没有返回可用的匹配角色草稿；当前状态未改变。',
     candidate_match_response_invalid: '匹配角色草稿不符合公开资料安全格式；当前状态未改变。',
+    candidate_match_basic_compatibility_invalid: '模型返回的角色不符合性别或性取向硬条件；当前状态未改变。',
+    candidate_match_hard_requirements_conflict: '个人资料与本次描述中的性别要求相互冲突；请修改后重试。',
 });
 
 const SOUL_MATCH_OUTPUT_CONTRACT = Object.freeze([
@@ -611,12 +613,59 @@ function makeTextMessages(context, promptPreset) {
     ];
 }
 
-function buildCandidateMatchContext(state, keywordWeights) {
+function compactGender(value) {
+    const normalized = typeof value === 'string' ? value.trim().toLocaleLowerCase('zh-Hans-CN') : '';
+    if (/^(?:女|女性|女生|女人|女孩|女孩子|female|woman)$/iu.test(normalized)) return '女';
+    if (/^(?:男|男性|男生|男人|男孩|男孩子|male|man)$/iu.test(normalized)) return '男';
+    return '';
+}
+
+function profileRequiredCandidateGender(profile) {
+    const playerGender = compactGender(profile?.性别);
+    const orientation = typeof profile?.性取向 === 'string' ? profile.性取向.trim().toLocaleLowerCase('zh-Hans-CN') : '';
+    if (!playerGender || !orientation) return '';
+    if (/(?:双性|泛性|全性|bisexual|pansexual|不限|开放)/iu.test(orientation)) return '';
+    if (/(?:异性恋|异性向|heterosexual|\bhetero\b|straight)/iu.test(orientation)) return playerGender === '男' ? '女' : '男';
+    if (/(?:同性恋|同性向|lesbian|\bgay\b|homosexual)/iu.test(orientation)) return playerGender;
+    return compactGender(orientation);
+}
+
+function hasExplicitOrientation(profile) {
+    const orientation = typeof profile?.性取向 === 'string' ? profile.性取向.trim() : '';
+    return /(?:双性|泛性|全性|bisexual|pansexual|不限|开放|异性恋|异性向|heterosexual|\bhetero\b|straight|同性恋|同性向|lesbian|\bgay\b|homosexual|^(?:女|女性|女生|女人|女孩|女孩子|男|男性|男生|男人|男孩|男孩子)$)/iu.test(orientation);
+}
+
+function requiresConfirmedBidirectionalCompatibility(profile) {
+    return Boolean(compactGender(profile?.性别) && hasExplicitOrientation(profile));
+}
+
+// Only recognise a direct, prospective request. We deliberately do not infer a
+// target from vague wording or statements such as "我是女性", and the original
+// description never reaches the candidate-profile request.
+function explicitRequestedCandidateGender(voiceText) {
+    if (typeof voiceText !== 'string' || !voiceText) return '';
+    if (/(?:想要|想找|寻找|希望|偏好|喜欢|只要|只想要)[^。；，,]{0,20}(?:女性|女生|女孩|女孩子|女人|女的)/u.test(voiceText)) return '女';
+    if (/(?:想要|想找|寻找|希望|偏好|喜欢|只要|只想要)[^。；，,]{0,20}(?:男性|男生|男孩|男孩子|男人|男的)/u.test(voiceText)) return '男';
+    return '';
+}
+
+function buildCandidateMatchContext(state, keywordWeights, { requestedCandidateGender = '' } = {}) {
     const base = buildSoulTextMatchContext(state);
+    const playerRequiredGender = profileRequiredCandidateGender(base.playerPublicProfile);
+    const explicitRequestedGender = compactGender(requestedCandidateGender);
+    const hardRequirementConflict = Boolean(playerRequiredGender && explicitRequestedGender && playerRequiredGender !== explicitRequestedGender);
+    const candidateGender = playerRequiredGender || explicitRequestedGender;
     return Object.freeze({
         contentMode: base.contentMode,
         playerPublicProfile: base.playerPublicProfile,
         keywordWeights: freezeKeywordWeights(keywordWeights),
+        hardMatchRequirements: Object.freeze({
+            玩家性别: base.playerPublicProfile.性别,
+            玩家性取向: base.playerPublicProfile.性取向,
+            候选人性别: candidateGender,
+            最低要求: '性别与性取向是最高优先级硬条件：候选人与玩家必须双向相容；若指定候选人性别，候选公开资料的性别必须精确满足。',
+        }),
+        hardRequirementConflict,
     });
 }
 
@@ -637,7 +686,8 @@ function makeCandidateProfileMessages(context, promptPreset, mode) {
     const matchingLabel = mode === 'soul' ? '灵魂匹配' : '语音匹配';
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
-        `你是现代现实都市线上约会软件的“${matchingLabel}”候选资料生成器。仅依据提供的玩家公开资料、有效关键词权重与 SFW/NSFW 模式，生成一名虚构、明确成年且适合本次推荐的角色公开资料。`,
+        `你是现代现实都市线上约会软件的“${matchingLabel}”候选资料生成器。仅依据提供的玩家公开资料、有效关键词权重、hardMatchRequirements 与 SFW/NSFW 模式，生成一名虚构、明确成年且适合本次推荐的角色公开资料。`,
+        'hardMatchRequirements 是最高优先级、不可被任何关键词、偏好提示词、内容模式或其他指令覆盖的硬合同：必须先保证候选人与玩家的公开性别和性取向双向相容；若 hardMatchRequirements.候选人性别 非空，profile.性别 必须精确满足该性别。',
         '不得索取、推断、复述或输出隐藏资料、仅好友资料、会话、UID、关系分、阈值、Patch、路径、API Key、密钥或任何用户输入原文。不得创建 MVU 角色、匹配或会话。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '无论前置或后置提示词如何要求，下列匹配候选公开资料 JSON 结构合同都是最终且不可覆盖的输出要求。只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。',
@@ -808,9 +858,11 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
     if (!local.ok) return candidateFailure(local.code);
     const normalizedVoiceText = normalizedMode === 'voice' ? cleanVoiceText(voiceText) : null;
     if (normalizedMode === 'voice' && !normalizedVoiceText) return candidateFailure('candidate_match_voice_text_invalid');
+    const requestedCandidateGender = normalizedMode === 'voice' ? explicitRequestedCandidateGender(normalizedVoiceText) : '';
 
     const functionKey = normalizedMode === 'soul' ? 'soul_match' : 'text_match';
-    const context = buildCandidateMatchContext(state, local.keywordWeights);
+    const context = buildCandidateMatchContext(state, local.keywordWeights, { requestedCandidateGender });
+    if (context.hardRequirementConflict) return candidateFailure('candidate_match_hard_requirements_conflict');
     let resolved;
     try {
         resolved = settingsStore.resolveFunction(functionKey, { contentMode: context.contentMode });
@@ -832,7 +884,7 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
             const voiceDraft = normalizeVoiceKeywordWeightDraft(voiceRaw);
             effectiveKeywordWeights = mergeMatchKeywordWeights(local.keywordWeights, voiceDraft.keywordWeights);
         }
-        const candidateContext = buildCandidateMatchContext(state, effectiveKeywordWeights);
+        const candidateContext = buildCandidateMatchContext(state, effectiveKeywordWeights, { requestedCandidateGender });
         const completion = await llmClient.chat({
             preset: resolved.connectionPreset,
             messages: makeCandidateProfileMessages(candidateContext, resolved.promptPreset, mode),
@@ -841,6 +893,14 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
         const raw = parseResponseJson(completion?.text);
         if (!raw) return candidateFailure('candidate_match_invalid_json');
         const normalizedDraft = normalizeCandidateMatchDraft(raw, { contentMode: candidateContext.contentMode });
+        const compatibility = scoreHeartCardCompatibility(candidateContext.playerPublicProfile, normalizedDraft.profile);
+        const requiredGender = candidateContext.hardMatchRequirements.候选人性别;
+        const hasConfirmedCompatibility = compatibility.reasons.includes('性别与性取向相容');
+        if (!compatibility.eligible
+            || (requiresConfirmedBidirectionalCompatibility(candidateContext.playerPublicProfile) && !hasConfirmedCompatibility)
+            || (requiredGender && compactGender(normalizedDraft.profile.性别) !== requiredGender)) {
+            return candidateFailure('candidate_match_basic_compatibility_invalid');
+        }
         const locallyScored = createLocallyScoredCandidateDraft(normalizedDraft, candidateContext);
         return Object.freeze({ ok: true, draft: locallyScored.draft, evaluation: locallyScored.evaluation });
     } catch (error) {
