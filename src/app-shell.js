@@ -28,7 +28,10 @@ import { createProfilePage } from './pages/profile.js';
 
 const UI_VERSION = '0.1.37';
 const UI_LAYOUT_STORAGE_KEY = 'yuelema.ui-layout/v1';
+const LAUNCHER_POSITION_STORAGE_KEY = 'yuelema.launcher-position/v1';
+const PHONE_PANEL_POSITION_STORAGE_KEY = 'yuelema.phone-panel-position/v1';
 const PANEL_DRAG_THRESHOLD = 8;
+const PHONE_NAV_DRAG_HOLD_MS = 360;
 const LOCAL_PAGE_COPY = Object.freeze({
     settings_image_generation: Object.freeze({ title: '生图设置' }),
     about: Object.freeze({ title: '关于软件' }),
@@ -68,6 +71,47 @@ function persistUiLayoutPreference(storage, mode) {
     try {
         if (!storage) return false;
         storage.setItem(UI_LAYOUT_STORAGE_KEY, mode === 'desktop' ? 'desktop' : 'phone');
+        return true;
+    } catch { return false; }
+}
+
+/** @param {unknown} value */
+function isFiniteCoordinate(value) {
+    return Number.isFinite(Number(value));
+}
+function readLauncherPosition(storage) {
+    try {
+        const raw = storage?.getItem(LAUNCHER_POSITION_STORAGE_KEY);
+        const value = raw ? JSON.parse(raw) : null;
+        return value && isFiniteCoordinate(value.left) && isFiniteCoordinate(value.top)
+            ? { left: Number(value.left), top: Number(value.top) }
+            : null;
+    } catch { return null; }
+}
+function persistLauncherPosition(storage, position) {
+    try {
+        if (!storage || !position || !isFiniteCoordinate(position.left) || !isFiniteCoordinate(position.top)) return false;
+        storage.setItem(LAUNCHER_POSITION_STORAGE_KEY, JSON.stringify({
+            left: Math.round(Number(position.left)),
+            top: Math.round(Number(position.top)),
+        }));
+        return true;
+    } catch { return false; }
+}
+
+function readPhonePanelPosition(storage) {
+    try {
+        const raw = storage?.getItem(PHONE_PANEL_POSITION_STORAGE_KEY);
+        const value = raw ? JSON.parse(raw) : null;
+        return value && isFiniteCoordinate(value.left) && isFiniteCoordinate(value.top)
+            ? { left: Number(value.left), top: Number(value.top) }
+            : null;
+    } catch { return null; }
+}
+function persistPhonePanelPosition(storage, position) {
+    try {
+        if (!storage || !position || !isFiniteCoordinate(position.left) || !isFiniteCoordinate(position.top)) return false;
+        storage.setItem(PHONE_PANEL_POSITION_STORAGE_KEY, JSON.stringify({ left: Math.round(Number(position.left)), top: Math.round(Number(position.top)) }));
         return true;
     } catch { return false; }
 }
@@ -535,7 +579,20 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     documentRef.body.appendChild(root);
 
-    const launcherDrag = createLauncherDragController({ launcher, documentRef, threshold: 8, edgeGap: 12 });
+    // Launcher placement is local browser UI state only. It deliberately never enters
+    // MVU, prompts, settings export, or network requests.
+    const launcherDrag = createLauncherDragController({
+        launcher,
+        documentRef,
+        threshold: 8,
+        edgeGap: 12,
+        onDragEnd(result) {
+            if (result.dragged && !result.cancelled && result.position) {
+                persistLauncherPosition(layoutStorage, result.position);
+            }
+        },
+    });
+    launcherDrag.restore(readLauncherPosition(layoutStorage));
     let panelDrag = null;
     function viewportSize() {
         const view = documentRef.defaultView;
@@ -646,58 +703,136 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         return false;
     }
-    function beginPanelDrag(event) {
-        if (uiLayoutMode === 'phone' || !open || event?.isPrimary === false || (event?.pointerType === 'mouse' && Number(event.button) !== 0) || isHeaderControl(event?.target)) return;
-        const rect = typeof panel.getBoundingClientRect === 'function' ? panel.getBoundingClientRect() : null;
-        const width = Number(rect?.width);
-        const height = Number(rect?.height);
+    let phoneNavHold = null;
+    let suppressPhoneNavClick = false;
+    let phoneNavClickSuppressionTimer = null;
+    function restorePhonePanelPosition() {
+        if (uiLayoutMode !== 'phone') return false;
+        const saved = readPhonePanelPosition(layoutStorage);
+        const rect = panel.getBoundingClientRect?.();
+        const width = Number(rect?.width); const height = Number(rect?.height);
+        if (!saved || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return false;
+        const next = clampPanelPosition(saved.left, saved.top, width, height);
+        setPanelPosition(next.left, next.top);
+        return true;
+    }
+    function beginPanelDrag(event, { dragHandle = header, allowPhone = false, rejectHeaderControls = false } = {}) {
+        if ((!allowPhone && uiLayoutMode === 'phone') || !open || event?.isPrimary === false || (event?.pointerType === 'mouse' && Number(event.button) !== 0) || (rejectHeaderControls && isHeaderControl(event?.target))) return;
+        const rect = panel.getBoundingClientRect?.();
+        const width = Number(rect?.width); const height = Number(rect?.height);
         if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
-        panelDrag = {
-            pointerId: event?.pointerId,
-            startX: Number(event?.clientX) || 0,
-            startY: Number(event?.clientY) || 0,
-            left: Number(rect?.left) || 0,
-            top: Number(rect?.top) || 0,
-            width,
-            height,
-            engaged: false,
-            originX: 0,
-            originY: 0,
-        };
-        header.setPointerCapture?.(event?.pointerId);
+        panelDrag = { pointerId: event?.pointerId, pointerType: event?.pointerType ?? 'mouse', startX: Number(event?.clientX) || 0, startY: Number(event?.clientY) || 0, left: Number(rect?.left) || 0, top: Number(rect?.top) || 0, width, height, engaged: false, originX: 0, originY: 0, dragHandle, phone: uiLayoutMode === 'phone' };
+        try { dragHandle.setPointerCapture?.(event?.pointerId); } catch { /* optional capture */ }
     }
     function movePanelDrag(event) {
+    function beginHeaderPanelDrag(event) { beginPanelDrag(event, { rejectHeaderControls: true }); }
         if (!panelDrag || (panelDrag.pointerId !== undefined && event?.pointerId !== undefined && event.pointerId !== panelDrag.pointerId)) return;
-        const deltaX = (Number(event?.clientX) || 0) - panelDrag.startX;
-        const deltaY = (Number(event?.clientY) || 0) - panelDrag.startY;
+        const deltaX = (Number(event?.clientX) || 0) - panelDrag.startX; const deltaY = (Number(event?.clientY) || 0) - panelDrag.startY;
         if (!panelDrag.engaged) {
-            // 8px threshold keeps plain header taps from hijacking clicks or scroll gestures.
             if (Math.hypot(deltaX, deltaY) < PANEL_DRAG_THRESHOLD) return;
-            panelDrag.engaged = true;
-            panel.classList.toggle('is-dragging', true);
-            setPanelPosition(panelDrag.left, panelDrag.top);
-            // A transformed host ancestor shifts the fixed containing block away from
-            // the viewport; measure the offset once and compensate all writes.
-            const check = typeof panel.getBoundingClientRect === 'function' ? panel.getBoundingClientRect() : null;
-            panelDrag.originX = (Number(check?.left) || 0) - panelDrag.left;
-            panelDrag.originY = (Number(check?.top) || 0) - panelDrag.top;
+            panelDrag.engaged = true; panel.classList.toggle('is-dragging', true); setPanelPosition(panelDrag.left, panelDrag.top);
+            const check = panel.getBoundingClientRect?.();
+            panelDrag.originX = (Number(check?.left) || 0) - panelDrag.left; panelDrag.originY = (Number(check?.top) || 0) - panelDrag.top;
             if (panelDrag.originX || panelDrag.originY) setPanelPosition(panelDrag.left - panelDrag.originX, panelDrag.top - panelDrag.originY);
         }
-        const next = clampPanelPosition(
-            panelDrag.left + deltaX,
-            panelDrag.top + deltaY,
-            panelDrag.width,
-            panelDrag.height,
-        );
-        setPanelPosition(next.left - panelDrag.originX, next.top - panelDrag.originY);
-        event?.preventDefault?.();
+        const next = clampPanelPosition(panelDrag.left + deltaX, panelDrag.top + deltaY, panelDrag.width, panelDrag.height);
+        setPanelPosition(next.left - panelDrag.originX, next.top - panelDrag.originY); event?.preventDefault?.();
     }
     function endPanelDrag(event) {
         if (!panelDrag || (panelDrag.pointerId !== undefined && event?.pointerId !== undefined && event.pointerId !== panelDrag.pointerId)) return;
-        try { header.releasePointerCapture?.(panelDrag.pointerId); } catch { /* pointer capture may already be released */ }
+        const completed = panelDrag;
+        try { completed.dragHandle?.releasePointerCapture?.(completed.pointerId); } catch { /* optional capture */ }
         panelDrag = null;
         panel.classList.toggle('is-dragging', false);
     }
+        if (completed.phone && completed.engaged) {
+            const rect = panel.getBoundingClientRect?.();
+            persistPhonePanelPosition(layoutStorage, { left: Number(rect?.left) || 0, top: Number(rect?.top) || 0 });
+        }
+    }
+    function touchByIdentifier(list, identifier) {
+        if (!list || typeof list.length !== 'number') return null;
+        for (let index = 0; index < list.length; index += 1) {
+            const touch = list[index];
+            if (touch && (identifier === undefined || touch.identifier === identifier)) return touch;
+        }
+        return null;
+    }
+    function touchPointerEvent(event, touch) {
+        return {
+            pointerId: touch?.identifier, pointerType: 'touch', isPrimary: true, button: 0,
+            clientX: Number(touch?.clientX) || 0, clientY: Number(touch?.clientY) || 0, target: event?.target,
+            preventDefault() { event?.preventDefault?.(); },
+        };
+    }
+    function cancelPhoneNavHold(inputType = '') {
+        if (inputType && phoneNavHold?.inputType !== inputType) return;
+        if (phoneNavHold?.timer) clearTimeout(phoneNavHold.timer);
+        phoneNavHold = null;
+    }
+    function clearPhoneNavClickSuppression() {
+        suppressPhoneNavClick = false;
+        if (phoneNavClickSuppressionTimer) clearTimeout(phoneNavClickSuppressionTimer);
+        phoneNavClickSuppressionTimer = null;
+    }
+    function armPhoneNavClickSuppression() {
+        clearPhoneNavClickSuppression();
+        suppressPhoneNavClick = true;
+        phoneNavClickSuppressionTimer = setTimeout(clearPhoneNavClickSuppression, 1000);
+    }
+    function beginPhoneNavHold(event, inputType = 'pointer') {
+        if (uiLayoutMode !== 'phone' || !open || event?.isPrimary === false || phoneNavHold || panelDrag) return;
+        const snapshot = {
+            pointerId: event?.pointerId, pointerType: event?.pointerType ?? 'touch', isPrimary: true, button: 0,
+            clientX: Number(event?.clientX) || 0, clientY: Number(event?.clientY) || 0, target: event?.target, inputType,
+        };
+        phoneNavHold = {
+            ...snapshot,
+            timer: setTimeout(() => {
+                if (!phoneNavHold || phoneNavHold.inputType !== inputType) return;
+                beginPanelDrag(snapshot, { dragHandle: nav, allowPhone: true });
+                if (panelDrag) armPhoneNavClickSuppression();
+            }, PHONE_NAV_DRAG_HOLD_MS),
+        };
+    }
+    function movePhoneNavHold(event, inputType = 'pointer') {
+        if (!phoneNavHold || phoneNavHold.inputType !== inputType
+            || (phoneNavHold.pointerId !== undefined && event?.pointerId !== undefined && event.pointerId !== phoneNavHold.pointerId)) return;
+        if (!panelDrag && Math.hypot((Number(event?.clientX) || 0) - phoneNavHold.clientX, (Number(event?.clientY) || 0) - phoneNavHold.clientY) >= PANEL_DRAG_THRESHOLD) {
+            cancelPhoneNavHold(inputType);
+        }
+    }
+    function beginPhoneNavTouchHold(event) {
+        if (phoneNavHold || panelDrag) return;
+        const touch = touchByIdentifier(event?.changedTouches) ?? touchByIdentifier(event?.touches);
+        if (touch) beginPhoneNavHold(touchPointerEvent(event, touch), 'touch');
+    }
+    function movePhoneNavTouchHold(event) {
+        if (!phoneNavHold || phoneNavHold.inputType !== 'touch') return;
+        const touch = touchByIdentifier(event?.changedTouches, phoneNavHold.pointerId)
+            ?? touchByIdentifier(event?.touches, phoneNavHold.pointerId);
+        if (touch) movePhoneNavHold(touchPointerEvent(event, touch), 'touch');
+    }
+    function movePhonePanelTouch(event) {
+        if (!panelDrag || panelDrag.pointerType !== 'touch') return;
+        const touch = touchByIdentifier(event?.changedTouches, panelDrag.pointerId)
+            ?? touchByIdentifier(event?.touches, panelDrag.pointerId);
+        if (touch) movePanelDrag(touchPointerEvent(event, touch));
+    }
+    function endPhoneNavTouch(event, cancelled = false) {
+        const pointerId = panelDrag?.pointerType === 'touch'
+            ? panelDrag.pointerId
+            : phoneNavHold?.inputType === 'touch' ? phoneNavHold.pointerId : undefined;
+        const touch = touchByIdentifier(event?.changedTouches, pointerId);
+        cancelPhoneNavHold('touch');
+        if (touch && panelDrag?.pointerType === 'touch') endPanelDrag(touchPointerEvent(event, touch));
+        else if (cancelled && panelDrag?.pointerType === 'touch') endPanelDrag({ pointerId });
+    }
+    function suppressPhoneNavActivation(event) {
+        if (!suppressPhoneNavClick) return;
+        clearPhoneNavClickSuppression();
+        event?.preventDefault?.();
+        event?.stopImmediatePropagation?.();
 
     function invalidateServiceProfileGeneration() {
         interactionGeneration += 1;
@@ -738,6 +873,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (open) {
             syncPhonePanelViewport();
             refreshState();
+            restorePhonePanelPosition();
         }
         else {
             ctx.stopGroupAutoTimer();
@@ -1469,7 +1605,16 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
 
     listen(launcher, launcher, 'click', () => setOpen(!open), abortController.signal);
     listen(closeButton, closeButton, "click", () => setOpen(false), abortController.signal);
-    listen(header, header, 'pointerdown', beginPanelDrag, abortController.signal);
+    listen(header, header, 'pointerdown', beginHeaderPanelDrag, abortController.signal);
+    listen(nav, nav, 'pointerdown', (event) => beginPhoneNavHold(event, 'pointer'), abortController.signal);
+    listen(nav, nav, 'pointermove', (event) => movePhoneNavHold(event, 'pointer'), abortController.signal);
+    listen(nav, nav, 'pointerup', () => cancelPhoneNavHold('pointer'), abortController.signal);
+    listen(nav, nav, 'pointercancel', () => cancelPhoneNavHold('pointer'), abortController.signal);
+    listen(nav, nav, 'touchstart', beginPhoneNavTouchHold, abortController.signal);
+    listen(nav, nav, 'touchmove', movePhoneNavTouchHold, abortController.signal);
+    listen(nav, nav, 'touchend', (event) => endPhoneNavTouch(event, false), abortController.signal);
+    listen(nav, nav, 'touchcancel', (event) => endPhoneNavTouch(event, true), abortController.signal);
+    nav.addEventListener('click', suppressPhoneNavActivation, { capture: true, signal: abortController.signal });
     listen(header, header, 'pointermove', movePanelDrag, abortController.signal);
     listen(header, header, 'pointerup', endPanelDrag, abortController.signal);
     listen(header, header, 'pointercancel', endPanelDrag, abortController.signal);
@@ -1520,6 +1665,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     renderPage();
     return Object.freeze({
         refreshState,
-        destroy() { ctx.cancelChatToolLongPress(); ctx.clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; invalidateServiceProfileGeneration(); invalidateServiceOrderOperations(); ctx.stopGroupAutoTimer(); ctx.stopForumAutoTimer(); ctx.cancelForumPullInteractions(); ctx.clearSummaryToast(); hideOperationDialog(); ctx.closeGroupMemberPicker(); ctx.closeGroupAutoDialog(); ctx.closeForumSettingsDialog(); ctx.resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); dialogController.dispose(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { cancelPhoneNavHold(); clearPhoneNavClickSuppression(); ctx.cancelChatToolLongPress(); ctx.clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; invalidateServiceProfileGeneration(); invalidateServiceOrderOperations(); ctx.stopGroupAutoTimer(); ctx.stopForumAutoTimer(); ctx.cancelForumPullInteractions(); ctx.clearSummaryToast(); hideOperationDialog(); ctx.closeGroupMemberPicker(); ctx.closeGroupAutoDialog(); ctx.closeForumSettingsDialog(); ctx.resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); dialogController.dispose(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }
+    listen(root, documentRef, 'touchmove', movePhonePanelTouch, abortController.signal);
+    listen(root, documentRef, 'touchend', (event) => endPhoneNavTouch(event, false), abortController.signal);
+    listen(root, documentRef, 'touchcancel', (event) => endPhoneNavTouch(event, true), abortController.signal);

@@ -1035,21 +1035,22 @@
 @media (max-width: 640px), (pointer: coarse) {
     .yl-phone-extension { right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); }
     .yl-phone-extension[data-ui-layout="phone"] .yl-phone-panel {
-        /* fixed 已相对实际显示视口定位；叠加 visualViewport offset 会使 Termux/WebView 的底部上移到屏幕中部。 */
+        /* fixed 已相对实际显示视口定位；保持紧凑窗口，避免每次都从屏幕顶端开始。 */
         position: fixed;
-        top: max(8px, env(safe-area-inset-top));
+        top: auto;
         right: max(8px, env(safe-area-inset-right));
-        bottom: max(8px, env(safe-area-inset-bottom));
-        left: max(8px, env(safe-area-inset-left));
-        width: min(560px, calc(100vw - max(8px, env(safe-area-inset-left)) - max(8px, env(safe-area-inset-right))));
-        height: min(820px, calc(100vh - max(8px, env(safe-area-inset-top)) - max(8px, env(safe-area-inset-bottom))));
-        height: min(820px, calc(100dvh - max(8px, env(safe-area-inset-top)) - max(8px, env(safe-area-inset-bottom))));
-        max-height: calc(100vh - max(8px, env(safe-area-inset-top)) - max(8px, env(safe-area-inset-bottom)));
-        max-height: calc(100dvh - max(8px, env(safe-area-inset-top)) - max(8px, env(safe-area-inset-bottom)));
-        min-height: 0;
-        margin: auto;
+        bottom: max(84px, calc(env(safe-area-inset-bottom) + 72px));
+        left: auto;
+        width: min(392px, calc(100vw - max(8px, env(safe-area-inset-left)) - max(8px, env(safe-area-inset-right))));
+        height: min(700px, calc(100vh - max(96px, env(safe-area-inset-top) + env(safe-area-inset-bottom))));
+        height: min(700px, calc(100dvh - max(96px, env(safe-area-inset-top) + env(safe-area-inset-bottom))));
+        max-height: calc(100dvh - max(16px, env(safe-area-inset-top) + env(safe-area-inset-bottom)));
+        min-height: min(440px, calc(100dvh - 96px));
+        margin: 0;
         border-radius: var(--yl-radius-sheet);
     }
+    .yl-phone-extension[data-ui-layout="phone"] .yl-phone-nav { cursor: grab; touch-action: none; user-select: none; }
+    .yl-phone-extension[data-ui-layout="phone"] .yl-phone-panel.is-dragging .yl-phone-nav { cursor: grabbing; }
     .yl-phone-extension[data-ui-layout="phone"] .yl-phone-drag-hint { display: none; }
 }
 /* —— P3-G 微交互：导航切换手感（激活药丸弹入 + 图标轻弹；用独立 scale 属性避免覆写两布局的 transform 基线） —— */

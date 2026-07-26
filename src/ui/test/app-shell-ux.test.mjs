@@ -723,6 +723,10 @@ function pointerEvent(type, properties = {}) {
     return event;
 }
 
+function touchEvent(type, touches, changedTouches = touches) {
+    return pointerEvent(type, { touches, changedTouches });
+}
+
 function installStyleRecorder(node) {
     const values = Object.create(null);
     node.style = new Proxy({
@@ -843,8 +847,9 @@ test('打开的功能设置会跟随内容模式刷新到另一套本地预设',
 test('launcher drag is wired into app-shell, suppresses the drag click, and keeps the next click usable', () => {
     const previousDefaultView = miniDom.document.defaultView;
     miniDom.document.defaultView = { innerWidth: 320, innerHeight: 240 };
+    const storage = createMemoryStorage();
     const mounted = mountPhoneApp({
-        documentRef: miniDom.document, rootId: 'ylm-test-launcher-drag-integration',
+        documentRef: miniDom.document, rootId: 'ylm-test-launcher-drag-integration', uiLayoutStorage: storage,
         actionBridge: { emit() {}, isPending() { return false; } },
         settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
     });
@@ -866,6 +871,7 @@ test('launcher drag is wired into app-shell, suppresses the drag click, and keep
         assert.equal(launcher.style.position, 'fixed');
         assert.equal(launcher.style.left, '80px');
         assert.equal(launcher.style.top, '90px');
+        assert.deepEqual(JSON.parse(storage.getItem('yuelema.launcher-position/v1')), { left: 80, top: 90 }, '拖动结束应把入口坐标保存在浏览器本地');
         click(launcher);
         assert.equal(panel.hidden, true, '拖动结束后的合成 click 不得打开窗口');
         click(launcher);
@@ -929,32 +935,57 @@ test('desktop header pointer drag clamps the panel, cancels cleanly, and ignores
     }
 });
 
-test('phone panel centers inside visualViewport and keeps the header non-draggable', () => {
+test('phone panel restores local placement and the bottom nav long-press drags through Touch Events', async () => {
     const previousDefaultView = miniDom.document.defaultView;
     const previousDocumentElement = miniDom.document.documentElement;
     miniDom.document.defaultView = {
-        innerWidth: 720, innerHeight: 1280,
-        visualViewport: { offsetLeft: 24, offsetTop: 80, width: 360, height: 640, addEventListener() {} },
+        innerWidth: 360, innerHeight: 640,
+        visualViewport: { offsetLeft: 0, offsetTop: 0, width: 360, height: 640, addEventListener() {} },
     };
-    miniDom.document.documentElement = { clientWidth: 720, clientHeight: 1280 };
+    miniDom.document.documentElement = { clientWidth: 360, clientHeight: 640 };
+    const storage = createMemoryStorage();
+    storage.setItem('yuelema.phone-panel-position/v1', JSON.stringify({ left: 999, top: -40 }));
     const mounted = mountPhoneApp({
-        documentRef: miniDom.document, rootId: 'ylm-test-phone-visual-viewport',
+        documentRef: miniDom.document, rootId: 'ylm-test-phone-panel-placement', uiLayoutStorage: storage,
         actionBridge: { emit() {}, isPending() { return false; } },
         settingsStore: null, llmClient: null, characterLibrary: null, readState: emptyReadResult,
     });
     try {
         const panel = miniDom.document.querySelector('.yl-phone-panel');
         const header = miniDom.document.querySelector('.yl-phone-header');
-        assert.ok(panel && header);
+        const nav = miniDom.document.querySelector('.yl-phone-nav');
+        assert.ok(panel && header && nav);
         const styles = installStyleRecorder(panel);
-        const capture = installPointerCaptureStub(header);
+        panel.getBoundingClientRect = () => {
+            const left = Number.parseFloat(styles.left || '100');
+            const top = Number.parseFloat(styles.top || '120');
+            return { left, top, right: left + 220, bottom: top + 360, width: 220, height: 360 };
+        };
+        const headerCapture = installPointerCaptureStub(header);
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        assert.equal(styles['--yl-phone-viewport-left'], '24px');
-        assert.equal(styles['--yl-phone-viewport-top'], '80px');
-        assert.equal(styles['--yl-phone-viewport-width'], '360px');
-        assert.equal(styles['--yl-phone-viewport-height'], '640px');
+
+        assert.equal(styles.left, '140px', '恢复坐标越过右边界时应按当前屏宽钳制');
+        assert.equal(styles.top, '0px', '恢复坐标越过上边界时应保持面板可见');
         header.dispatchEvent(pointerEvent('pointerdown', { pointerId: 17, pointerType: 'touch', clientX: 180, clientY: 120 }));
-        assert.equal(capture.captureCalls, 0, '手机布局不得把滚动手势当成窗口拖动');
+        assert.equal(headerCapture.captureCalls, 0, '手机布局仍不得把头部滚动手势当成窗口拖动');
+
+        const startTouch = { identifier: 42, clientX: 200, clientY: 560 };
+        nav.dispatchEvent(touchEvent('touchstart', [startTouch]));
+        await new Promise((resolve) => setTimeout(resolve, 390));
+        const move = touchEvent('touchmove', [{ identifier: 42, clientX: 140, clientY: 590 }]);
+        miniDom.document.dispatchEvent(move);
+        assert.equal(move.defaultPrevented, true, '长按成立并移动后必须阻止宿主滚动接管手势');
+        assert.equal(styles.left, '80px');
+        assert.equal(styles.top, '30px');
+        miniDom.document.dispatchEvent(touchEvent('touchend', [], [{ identifier: 42, clientX: 140, clientY: 590 }]));
+        assert.deepEqual(JSON.parse(storage.getItem('yuelema.phone-panel-position/v1')), { left: 80, top: 30 }, '拖窗结束应把面板坐标保存在浏览器本地');
+
+        const syntheticClick = new Event('click', { cancelable: true });
+        nav.dispatchEvent(syntheticClick);
+        assert.equal(syntheticClick.defaultPrevented, true, '拖动后的合成 click 必须被拦截一次');
+        const messagesButton = nav.querySelectorAll('button').find((node) => node.dataset.page === 'messages');
+        click(messagesButton);
+        assert.ok(nav.querySelectorAll('button').find((node) => node.dataset.page === 'messages')?.classList.contains('is-active'), '拦截拖动 click 后的下一次普通轻点仍应正常切换页面');
     } finally {
         mounted.destroy();
         miniDom.document.defaultView = previousDefaultView;

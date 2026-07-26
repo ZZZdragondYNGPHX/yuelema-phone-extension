@@ -254,6 +254,32 @@ export function createLauncherDragController(options) {
         onDragEnd?.(result);
     }
 
+    /**
+     * Restore an earlier viewport position (for example after the extension remounts).
+     * The current viewport is always re-clamped, so rotation, browser chrome changes,
+     * and a smaller Termux visual viewport can never restore the launcher off-screen.
+     *
+     * @param {{ left: number, top: number } | null | undefined} position
+     */
+    function restore(position) {
+        if (disposed || !position) return false;
+        const startRect = readRect(launcher);
+        if (!startRect) return false;
+        const viewport = readViewport(documentRef, windowRef);
+        const next = clampLauncherPosition({
+            left: finiteNumber(position.left),
+            top: finiteNumber(position.top),
+            width: startRect.width,
+            height: startRect.height,
+        }, viewport, edgeGap);
+        fixedPositionPrepared = false;
+        originX = 0;
+        originY = 0;
+        prepareFixedPosition(startRect);
+        writeViewportPosition(next);
+        return true;
+    }
+
     function handleClick(event) {
         if (!suppressNextClick) return;
         suppressNextClick = false;
@@ -305,6 +331,7 @@ export function createLauncherDragController(options) {
     return Object.freeze({
         get dragging() { return Boolean(pointerState?.engaged); },
         get position() { return lastPosition ? { ...lastPosition } : null; },
+        restore,
         dispose() {
             if (disposed) return;
             disposed = true;

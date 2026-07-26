@@ -231,23 +231,25 @@ test('粗指针增强不得替换显式 desktop 布局', () => {
     assert.doesNotMatch(coarse.body, /data-ui-layout="desktop"/u, '粗指针规则不得为 desktop 注入手机几何');
 });
 
-test('手机面板以实际可视视口居中且保留 8px 安全边界', () => {
+test('手机面板以紧凑、右下默认浮窗呈现，并把底部导航作为拖拽手柄', () => {
     const shell = section('shell');
     const coarseIndex = shell.search(/@media\s*\(max-width:\s*640px\),\s*\(pointer:\s*coarse\)/u);
     assert.notEqual(coarseIndex, -1, '缺少粗指针媒体块');
     const coarse = balancedBlock(shell, shell.indexOf('{', coarseIndex), '粗指针媒体块');
     const panel = blockAfter(coarse.body, '.yl-phone-extension[data-ui-layout="phone"] .yl-phone-panel');
     assertDeclarations(panel, [
-        /top\s*:\s*max\(8px,\s*env\(safe-area-inset-top\)\)/u,
+        /position\s*:\s*fixed/u,
+        /top\s*:\s*auto/u,
         /right\s*:\s*max\(8px,\s*env\(safe-area-inset-right\)\)/u,
-        /bottom\s*:\s*max\(8px,\s*env\(safe-area-inset-bottom\)\)/u,
-        /left\s*:\s*max\(8px,\s*env\(safe-area-inset-left\)\)/u,
-        /width\s*:\s*min\(560px,\s*calc\(100vw\s*-/u,
-        /height\s*:\s*min\(820px,\s*calc\(100dvh\s*-/u,
+        /bottom\s*:\s*max\(84px,\s*calc\(env\(safe-area-inset-bottom\)\s*\+\s*72px\)\)/u,
+        /left\s*:\s*auto/u,
+        /width\s*:\s*min\(392px,\s*calc\(100vw\s*-/u,
+        /height\s*:\s*min\(700px,\s*calc\(100dvh\s*-/u,
         /max-height\s*:\s*calc\(100dvh\s*-/u,
-        /margin\s*:\s*auto/u,
-        /min-height\s*:\s*0/u,
-    ], '手机可视视口居中面板');
+        /margin\s*:\s*0/u,
+    ], '手机紧凑浮窗面板');
+    const nav = blockAfter(coarse.body, '.yl-phone-extension[data-ui-layout="phone"] .yl-phone-nav');
+    assertDeclarations(nav, [/touch-action\s*:\s*none/u, /user-select\s*:\s*none/u], '手机底部导航拖拽手柄');
     assert.doesNotMatch(panel, /--yl-phone-viewport-(?:top|left|width|height)/u, 'fixed 面板不得重复叠加 visualViewport offset');
     assert.doesNotMatch(panel, /(?:width|height)\s*:\s*min\(100(?:d)?v[wh]\s*-/u, '不得回归为缺少 calc() 的无效 min() 表达式');
 });

@@ -88,6 +88,22 @@ test('clampLauncherPosition keeps the whole launcher inside normal and undersize
     );
 });
 
+test('restore reapplies a saved launcher position inside the current visual viewport', () => {
+    const visualViewport = { offsetLeft: 10, offsetTop: 20, width: 300, height: 220 };
+    const documentRef = new TestDocument({ width: 500, height: 400, visualViewport });
+    const launcher = new TestLauncher(documentRef, { left: 100, top: 80, width: 60, height: 60 });
+    const controller = createLauncherDragController({ launcher, documentRef, edgeGap: 12 });
+
+    assert.equal(controller.restore({ left: 999, top: -40 }), true);
+    assert.deepEqual(controller.position, { left: 238, top: 32 }, '恢复坐标必须按当前 visualViewport 和边距钳制');
+    assert.equal(launcher.style.position, 'fixed');
+    assert.equal(launcher.style.left, '238px');
+    assert.equal(launcher.style.top, '32px');
+
+    controller.dispose();
+    assert.equal(controller.restore({ left: 30, top: 40 }), false, '销毁后的控制器不得重新写入入口位置');
+});
+
 test('touch and mouse Pointer Events use an 8px threshold and suppress exactly one post-drag click', () => {
     const documentRef = new TestDocument();
     const launcher = new TestLauncher(documentRef);
