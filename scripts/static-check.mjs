@@ -7,6 +7,7 @@ const root = resolve(here, '..');
 const requiredFiles = [
     'manifest.json', 'index.js', 'style.css', 'README.md', 'test/extension-lifecycle.test.mjs',
     'src/app-shell.js', 'src/service-order-history-store.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
+    'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
     'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
@@ -23,6 +24,8 @@ const requiredFiles = [
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs', 'src/mvu/test/service-order-handoff.test.mjs',
     'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs', 'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs',
     'src/ui/icon.js', 'src/ui/media-state.js', 'src/ui/dialog-controller.js', 'src/ui/test/icon.test.mjs', 'src/ui/test/media-state.test.mjs', 'src/ui/test/dialog-controller.test.mjs', 'src/ui/test/app-shell-message-search.test.mjs', 'src/ui/test/style-token-contract.test.mjs',
+    'src/ui/button.js', 'src/ui/badge.js', 'src/ui/list-row.js', 'src/ui/segmented-control.js', 'src/ui/bottom-sheet.js', 'src/ui/empty-state.js', 'src/ui/skeleton.js', 'src/ui/COMPONENTS.md',
+    'src/ui/test/button.test.mjs', 'src/ui/test/badge.test.mjs', 'src/ui/test/list-row.test.mjs', 'src/ui/test/segmented-control.test.mjs', 'src/ui/test/bottom-sheet.test.mjs', 'src/ui/test/empty-state.test.mjs', 'src/ui/test/skeleton.test.mjs', 'src/ui/test/icon-design-system.test.mjs',
 ];
 
 function fail(message) {
@@ -55,6 +58,7 @@ console.log('✓ manifest 基础字段与 lifecycle hooks');
 const sourceRelativeFiles = [
     'index.js', 'test/extension-lifecycle.test.mjs',
     'src/app-shell.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js',
+    'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
     'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
@@ -71,6 +75,8 @@ const sourceRelativeFiles = [
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
     'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs',
     'src/ui/icon.js', 'src/ui/media-state.js', 'src/ui/dialog-controller.js', 'src/ui/test/icon.test.mjs', 'src/ui/test/media-state.test.mjs', 'src/ui/test/dialog-controller.test.mjs', 'src/ui/test/app-shell-message-search.test.mjs', 'src/ui/test/style-token-contract.test.mjs',
+    'src/ui/button.js', 'src/ui/badge.js', 'src/ui/list-row.js', 'src/ui/segmented-control.js', 'src/ui/bottom-sheet.js', 'src/ui/empty-state.js', 'src/ui/skeleton.js',
+    'src/ui/test/button.test.mjs', 'src/ui/test/badge.test.mjs', 'src/ui/test/list-row.test.mjs', 'src/ui/test/segmented-control.test.mjs', 'src/ui/test/bottom-sheet.test.mjs', 'src/ui/test/empty-state.test.mjs', 'src/ui/test/skeleton.test.mjs', 'src/ui/test/icon-design-system.test.mjs',
 ];
 const sourceFiles = sourceRelativeFiles.map(relativePath => resolve(root, relativePath));
 const sourceText = await Promise.all(sourceFiles.map(path => readFile(path, 'utf8')));
@@ -108,10 +114,14 @@ const imageGenerationExecutableSource = imageGenerationClientSource.replace(/\/\
 if (/localStorage/i.test(llmClientExecutableSource) || /localStorage/i.test(imageGenerationExecutableSource)) fail('只有 session-key-store.js 可以访问 API Key 浏览器缓存');
 if (!sessionKeyStore.includes('API_KEY_CACHE_STORAGE_KEY') || !sessionKeyStore.includes('requireSessionKey') || !sessionKeyStore.includes('deletePersistentKey')) fail('缺少预设 ID 隔离的浏览器 API Key 缓存与调用回退');
 console.log('✓ API Key 仅通过专用浏览器缓存保存，并与设置导出 / MVU 隔离');
-const appShell = await readFile(resolve(root, 'src/app-shell.js'), 'utf8');
+const appShellCore = await readFile(resolve(root, 'src/app-shell.js'), 'utf8');
+const pageModuleFiles = ['src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js'];
+const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(resolve(root, path), 'utf8')))).join('\n');
+// 阶段 P1 拆页后，app-shell 的页面构建函数搬至 src/pages/*；文本锚定断言按原语义作用于 壳层+页面模块 的拼接文本。
+const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShell.includes("const UI_VERSION = '0.1.37'")) fail('关于软件 UI_VERSION 必须与扩展版本 0.1.37 统一');
+if (!appShellCore.includes("const UI_VERSION = '0.1.37'")) fail('关于软件 UI_VERSION 必须与扩展版本 0.1.37 统一（必须位于壳层 app-shell.js）');
 const index = await readFile(resolve(root, 'index.js'), 'utf8');
 if (!index.includes('export function onDisable') || !index.includes('export function onDelete') || !index.includes('clearSessionKeys()')) fail('缺少扩展禁用/删除时清理内存密钥镜像的生命周期实现');
 for (const label of ['首页', '匹配', '消息', '群组', '我的']) {

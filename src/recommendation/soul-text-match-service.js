@@ -1,25 +1,39 @@
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { BUILTIN_PROMPT_PRESET_IDS } from '../settings/default-prompt-presets.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
-import { normalizeDrawingDna, normalizeGeneratedPublicProfile } from './candidate.js';
+import { extractExplicitAgeNumbers, normalizeDrawingDna, normalizeGeneratedPublicProfile } from './candidate.js';
 import { DRAWING_DNA_RULES } from './drawing-dna-rules.js';
 import { scoreLocalCandidateMatch } from './match-scoring.js';
 
-const MAX_MODEL_RESPONSE_CHARS = 8_000;
+// Real providers return the same candidate payload family as
+// recommendation-refresh (full drawing DNA plus profile), so the response
+// budget must match its 20k cap; 8k rejected legitimate long DNA outputs.
+const MAX_MODEL_RESPONSE_CHARS = 20_000;
 const MAX_TAGS = 12;
 const MAX_TAG_WEIGHTS = 64;
 const MAX_EXPLANATION_LENGTH = 500;
 const MAX_TEXT_FILTER_VALUES = 12;
 const MAX_VOICE_TEXT_LENGTH = 800;
 const MAX_LOCAL_KEYWORD_WEIGHTS = 64;
-const MAX_DRAWING_DNA_LENGTH = 2_000;
-const DRAWING_DNA_TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9\s,;:(){}[\]'".+_&%!?=/-]*$/u;
-const DRAWING_DNA_FORBIDDEN_PATTERN = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|ai|cn|dev|app|co|gg|invalid|local)(?:[\/?#:][^\s,;]*)?|data:image|\b(?:url|uri|api[\s_-]*key|authorization|bearer|token|secret|password|credential|uid|uuid|json\s*patch|json\s*pointer|patch|pointer|path|private|hidden|friend(?:[\s_-]*only)?|session|candidate|account|email|e-mail|phone|telephone|address|passport|bank|id[\s_-]*(?:card|number)|real[\s_-]*name|minor|underage)\b|\b(?:sk|pk|rk|sess)_[a-z0-9-]{12,}\b|\b\+?\d[\d -]{6,}\d\b|隐藏资料|仅好友资料|候选(?:NPC|角色)?|会话|补丁|路径|密钥|令牌|账号|邮箱|电话|地址|证件|银行卡|未成年)/iu;
+// Aligned with the canonical candidate codec (candidate.js normalizeDrawingDna).
+const MAX_DRAWING_DNA_LENGTH = 12_000;
+// The project drawing-DNA format (DRAWING_DNA_RULES) mandates Chinese category
+// names such as 发色{...} plus fullwidth punctuation like 「当前发型」, so the
+// charset must accept Han characters and common fullwidth punctuation. English
+// stays the tag-value language; safety is enforced by the forbidden pattern,
+// the canonical codec (control characters, HTML), and the length cap.
+const DRAWING_DNA_TAG_PATTERN = /^[\p{Script=Han}A-Za-z0-9][\p{Script=Han}A-Za-z0-9\s,;:(){}[\]'".+_&%!?=/、。，；：！？（）｛｝【】「」『』《》〈〉·—–…～＋－＝／％＆“”‘’-]*$/u;
+const DRAWING_DNA_FORBIDDEN_PATTERN = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|ai|cn|dev|app|co|gg|invalid|local)(?:[\/?#:][^\s,;]*)?|data:image|\b(?:url|uri|api[\s_-]*key|authorization|bearer|token|secret|password|credential|uid|uuid|json\s*patch|json\s*pointer|patch|pointer|path|private|hidden[\s_-]*(?:profile|data|info|information|field|note)|friend(?:[\s_-]*only)?|session|candidate|account|email|e-mail|phone|telephone|address|passport|bank|id[\s_-]*(?:card|number)|real[\s_-]*name|minor|underage)\b|\b(?:sk|pk|rk|sess)_[a-z0-9-]{12,}\b|\b\+?\d[\d -]{6,}\d\b|隐藏资料|仅好友资料|候选(?:NPC|UID|池)|会话(?:UID|ID|标识|指针|路径|记录)|补丁|(?:json|变量|状态|数据|文件|存储|指针)\s*路径|密钥|令牌|账号|邮箱|电话|地址|证件|银行卡|未成年)/iu;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]/u;
 const HTML_PATTERN = /<\s*\/?\s*[a-z][^>]*>/iu;
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SENSITIVE_KEY_PATTERN = /(?:hidden|private|friend|candidate|session|uid|patch|path|api[_ -]?key|token|authorization|secret|隐藏|仅好友|候选|会话|补丁|路径|密钥|令牌)/iu;
-const FORBIDDEN_DISCLOSURE_PATTERN = /(?:隐藏资料|仅好友资料|候选(?:NPC|角色)?|会话|json\s*patch|补丁|路径|api\s*(?:key|密钥)|api[_-]?key|授权|authorization|\btoken\b|\buid\b)/iu;
+// Bans references to internal architecture concepts in public display text.
+// Generic dating-app words such as bare 候选/会话/路径 (e.g. “这位候选人”,
+// “期待你们的会话”, “人生路径”) are legitimate model phrasing and are only
+// rejected in an internal-identifier context; the hidden and friend-only
+// layers stay structurally unreachable regardless of model wording.
+const FORBIDDEN_DISCLOSURE_PATTERN = /(?:隐藏资料|仅好友资料|候选(?:NPC|UID|池)|会话(?:UID|ID|标识|指针|路径|记录)|json\s*(?:patch|pointer)|补丁|(?:json|变量|状态|数据|文件|存储|指针)\s*路径|api\s*(?:key|密钥)|api[_-]?key|授权|authorization|\btoken\b|\buid\b)/iu;
 const CANDIDATE_INCOMPATIBLE_BUILTIN_PROMPT_IDS = new Set([
     BUILTIN_PROMPT_PRESET_IDS.soulMatchSfw,
     BUILTIN_PROMPT_PRESET_IDS.soulMatchNsfw,
@@ -73,8 +87,8 @@ const TEXT_MATCH_OUTPUT_CONTRACT = Object.freeze([
 ]);
 const CANDIDATE_MATCH_OUTPUT_CONTRACT = Object.freeze([
     '匹配候选公开资料 JSON 结构合同：根对象必须且仅能含 profile、drawing、explanation。不得输出 matchScore、评分、阈值或关系数值；最终分数由本地算法计算。',
-    'profile 必须且仅能含：昵称、年龄段、性别、性取向、城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签、沟通风格标签。前八项均为非空字符串；年龄段必须明确表示成年人或 18 岁以上。',
-    'drawing 必须且仅能含 core_dna、outfit_dna；两项都是 1–2000 字符的非空英文绘图标签，不能含 URL、凭据、UID、JSON Patch、路径、任何私密资料、联系方式、具体地址或账号。core_dna 是稳定外貌，outfit_dna 是当前服装与配饰。',
+    'profile 必须且仅能含：昵称、年龄段、性别、性取向、城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签、沟通风格标签。前八项均为非空字符串；年龄段必须明确表示成年人或 18 岁以上（例如「26-30」「28岁」「成年人」，不要使用「90后」「00后」这类出生年代写法）。',
+    'drawing 必须且仅能含 core_dna、outfit_dna；两项都是 1–12000 字符、符合下方绘图 DNA 格式的非空标签字符串（类别名可为中文，标签值使用英文），不能含 URL、凭据、UID、JSON Patch、路径、任何私密资料、联系方式、具体地址或账号。core_dna 是稳定外貌，outfit_dna 是当前服装与配饰。',
     '昵称必须是虚构自然人的个人姓名；不得使用摄影师、设计师等职业名，兴趣或性格标签，账号名，系统、模型、助手、玩家、候选角色等概念充当昵称。',
     '四个标签字段均为最多 12 项的不重复短字符串数组；不得附带头像、仅好友资料、隐藏资料、关系分、阈值、关键词权重或其他字段。',
     '公开资料不得包含具体住址、门牌、手机号、电话号码、证件号、银行卡、真实姓名或私人账号，也不得包含未成年、胁迫、偷拍、诈骗或线下性行为演绎内容。',
@@ -106,6 +120,66 @@ function cleanText(value, maxLength) {
     const text = value.trim();
     if (!text || text.length > maxLength || CONTROL_CHARACTER_PATTERN.test(text) || HTML_PATTERN.test(text)) return '';
     return text;
+}
+
+/**
+ * Lossless-intent coercion for scalar model output: real models frequently
+ * emit numbers for text fields and put newlines inside JSON strings. Values
+ * that are not scalar are returned unchanged so the strict validators fail.
+ */
+function coerceScalarText(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+    if (typeof value !== 'string') return value;
+    return value.replace(/\s+/gu, ' ').trim();
+}
+
+/** Bounds display text without splitting a surrogate pair at the cut. */
+function truncateForLimit(text, maxLength) {
+    if (text.length <= maxLength) return text;
+    let bounded = text.slice(0, maxLength);
+    const lastCode = bounded.charCodeAt(bounded.length - 1);
+    if (lastCode >= 0xd800 && lastCode <= 0xdbff) bounded = bounded.slice(0, -1);
+    return bounded.trimEnd();
+}
+
+/** Accepts integers, integral floats, and numeric strings; null otherwise. */
+function coerceRoundedInteger(value) {
+    let numeric = value;
+    if (typeof numeric === 'string') {
+        const text = numeric.trim();
+        if (!/^[+-]?\d+(?:\.\d+)?$/u.test(text)) return null;
+        numeric = Number(text);
+    }
+    if (typeof numeric !== 'number' || !Number.isFinite(numeric)) return null;
+    return Math.round(numeric);
+}
+
+/**
+ * Coerces a model list field into a de-duplicated short-string list. A bare
+ * string becomes a separator-split list; overlong and duplicate entries are
+ * dropped and the list is truncated instead of rejecting the whole draft.
+ * Non-list-like input is returned unchanged so the strict validators fail.
+ */
+function coerceStringList(value, maxItems, maxLength) {
+    const source = Array.isArray(value)
+        ? value
+        : (typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value))
+            ? String(value).split(/[,，、;；|/]+/u)
+            : value);
+    if (!Array.isArray(source)) return value;
+    const items = [];
+    const seen = new Set();
+    for (const raw of source) {
+        const item = coerceScalarText(raw);
+        if (typeof item !== 'string' || !item || item.length > maxLength) continue;
+        const folded = item.toLocaleLowerCase('zh-Hans-CN');
+        if (seen.has(folded)) continue;
+        seen.add(folded);
+        items.push(item);
+        if (items.length >= maxItems) break;
+    }
+    return items;
 }
 
 function cleanPublicTags(value) {
@@ -154,20 +228,22 @@ function freezeKeywordWeights(entries) {
 }
 
 function normalizeKeywordWeightEntries(kind, value, { minItems = 0, maxItems = MAX_LOCAL_KEYWORD_WEIGHTS } = {}) {
-    if (!Array.isArray(value) || value.length < minItems || value.length > maxItems) failResponse(kind, 'keyword_weights_invalid');
+    if (!Array.isArray(value) || value.length < minItems) failResponse(kind, 'keyword_weights_invalid');
     const entries = [];
     const seen = new Set();
     for (const item of value) {
-        assertExactRecord(kind, item, ['keyword', 'weight']);
-        const keyword = normalizeDraftText(kind, ownEnumerableData(kind, item, 'keyword'), 40);
+        if (entries.length >= maxItems) break;
+        const record = sanitizeDraftRecord(kind, item, ['keyword', 'weight']);
+        const keyword = normalizeDraftText(kind, record.keyword, 40);
         const normalizedKeyword = keyword.toLocaleLowerCase('zh-Hans-CN');
-        const weight = ownEnumerableData(kind, item, 'weight');
-        if (!Number.isInteger(weight) || weight < -5 || weight > 5 || seen.has(normalizedKeyword)) {
-            failResponse(kind, 'keyword_weights_invalid');
-        }
+        const weight = coerceRoundedInteger(record.weight);
+        if (weight === null || weight < -5 || weight > 5) failResponse(kind, 'keyword_weights_invalid');
+        // Tolerant duplicate handling: the first occurrence wins.
+        if (seen.has(normalizedKeyword)) continue;
         seen.add(normalizedKeyword);
         entries.push({ keyword, weight });
     }
+    if (entries.length < minItems) failResponse(kind, 'keyword_weights_invalid');
     return freezeKeywordWeights(entries);
 }
 
@@ -231,39 +307,44 @@ function assertSafeKey(kind, key) {
     if (SENSITIVE_KEY_PATTERN.test(key)) failResponse(kind, 'sensitive_key');
 }
 
-function ownEnumerableData(kind, record, key) {
-    const descriptor = Object.getOwnPropertyDescriptor(record, key);
-    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
-        failResponse(kind, 'accessor_or_hidden_field');
-    }
-    return descriptor.value;
-}
-
-function assertExactRecord(kind, value, required, optional = []) {
+/**
+ * Copies only allowed own enumerable string-keyed data properties. Dangerous
+ * or sensitive keys and accessor properties still reject the whole draft, but
+ * unknown benign extra fields — a common real-model habit — are dropped
+ * instead of failing. Missing required fields keep rejecting.
+ */
+function sanitizeDraftRecord(kind, value, required, optional = []) {
     if (!ownPlainRecord(value)) failResponse(kind, 'required');
     const allowed = new Set([...required, ...optional]);
+    const record = {};
     for (const key of Reflect.ownKeys(value)) {
         if (typeof key !== 'string') failResponse(kind, 'dangerous_key');
         assertSafeKey(kind, key);
-        if (!allowed.has(key)) failResponse(kind, 'unknown_field');
-        ownEnumerableData(kind, value, key);
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+            failResponse(kind, 'accessor_or_hidden_field');
+        }
+        if (allowed.has(key)) record[key] = descriptor.value;
     }
     for (const key of required) {
-        if (!Object.hasOwn(value, key)) failResponse(kind, 'missing_field');
-        ownEnumerableData(kind, value, key);
+        if (!Object.hasOwn(record, key)) failResponse(kind, 'missing_field');
     }
+    return record;
 }
 
 function normalizeDraftText(kind, value, maxLength) {
-    const text = cleanText(value, maxLength);
+    const coerced = coerceScalarText(value);
+    const bounded = typeof coerced === 'string' ? truncateForLimit(coerced, maxLength) : coerced;
+    const text = cleanText(bounded, maxLength);
     if (!text || FORBIDDEN_DISCLOSURE_PATTERN.test(text)) failResponse(kind, 'text_invalid');
     return text;
 }
 
 function normalizeTextArray(kind, value, maxItems, maxLength) {
-    if (!Array.isArray(value) || value.length > maxItems) failResponse(kind, 'array_invalid');
+    const coerced = coerceStringList(value, maxItems, maxLength);
+    if (!Array.isArray(coerced)) failResponse(kind, 'array_invalid');
     const result = [];
-    for (const raw of value) {
+    for (const raw of coerced) {
         const text = normalizeDraftText(kind, raw, maxLength);
         if (result.includes(text)) failResponse(kind, 'array_invalid');
         result.push(text);
@@ -278,22 +359,26 @@ function normalizeTextArray(kind, value, maxItems, maxLength) {
  */
 export function normalizeSoulMatchDraft(raw) {
     const kind = 'soul';
-    assertExactRecord(kind, raw, ['tagWeightDraft', 'explanation']);
-    const source = ownEnumerableData(kind, raw, 'tagWeightDraft');
-    if (!Array.isArray(source) || source.length < 1 || source.length > MAX_TAGS) failResponse(kind, 'draft_invalid');
+    const record = sanitizeDraftRecord(kind, raw, ['tagWeightDraft', 'explanation']);
+    const source = record.tagWeightDraft;
+    if (!Array.isArray(source) || source.length < 1) failResponse(kind, 'draft_invalid');
     const tagWeightDraft = [];
+    const seen = new Set();
     for (const item of source) {
-        assertExactRecord(kind, item, ['tag', 'weight']);
-        const tag = normalizeDraftText(kind, ownEnumerableData(kind, item, 'tag'), 32);
-        const weight = ownEnumerableData(kind, item, 'weight');
-        if (!Number.isInteger(weight) || weight < -5 || weight > 5 || tagWeightDraft.some((entry) => entry.tag === tag)) {
-            failResponse(kind, 'draft_invalid');
-        }
+        if (tagWeightDraft.length >= MAX_TAGS) break;
+        const entry = sanitizeDraftRecord(kind, item, ['tag', 'weight']);
+        const tag = normalizeDraftText(kind, entry.tag, 32);
+        const weight = coerceRoundedInteger(entry.weight);
+        if (weight === null || weight < -5 || weight > 5) failResponse(kind, 'draft_invalid');
+        const folded = tag.toLocaleLowerCase('zh-Hans-CN');
+        if (seen.has(folded)) continue;
+        seen.add(folded);
         tagWeightDraft.push(Object.freeze({ tag, weight }));
     }
+    if (tagWeightDraft.length < 1) failResponse(kind, 'draft_invalid');
     return Object.freeze({
         tagWeightDraft: Object.freeze(tagWeightDraft),
-        explanation: normalizeDraftText(kind, ownEnumerableData(kind, raw, 'explanation'), MAX_EXPLANATION_LENGTH),
+        explanation: normalizeDraftText(kind, record.explanation, MAX_EXPLANATION_LENGTH),
     });
 }
 
@@ -303,33 +388,48 @@ export function normalizeSoulMatchDraft(raw) {
  */
 export function normalizeTextMatchDraft(raw) {
     const kind = 'text';
-    assertExactRecord(kind, raw, ['filters', 'explanation']);
-    const source = ownEnumerableData(kind, raw, 'filters');
+    const record = sanitizeDraftRecord(kind, raw, ['filters', 'explanation']);
     const filterKeys = ['城市', '年龄段', '距离范围', '寻找意图关键词', '包含标签', '排除标签', '简介关键词'];
-    assertExactRecord(kind, source, filterKeys);
+    // Missing filter keys are tolerated as empty lists; at least one list must
+    // still end up non-empty for the draft to mean anything.
+    const source = sanitizeDraftRecord(kind, record.filters, [], filterKeys);
     const filters = Object.freeze({
-        城市: normalizeTextArray(kind, ownEnumerableData(kind, source, '城市'), MAX_TEXT_FILTER_VALUES, 80),
-        年龄段: normalizeTextArray(kind, ownEnumerableData(kind, source, '年龄段'), MAX_TEXT_FILTER_VALUES, 32),
-        距离范围: normalizeTextArray(kind, ownEnumerableData(kind, source, '距离范围'), MAX_TEXT_FILTER_VALUES, 48),
-        寻找意图关键词: normalizeTextArray(kind, ownEnumerableData(kind, source, '寻找意图关键词'), MAX_TEXT_FILTER_VALUES, 64),
-        包含标签: normalizeTextArray(kind, ownEnumerableData(kind, source, '包含标签'), MAX_TEXT_FILTER_VALUES, 32),
-        排除标签: normalizeTextArray(kind, ownEnumerableData(kind, source, '排除标签'), MAX_TEXT_FILTER_VALUES, 32),
-        简介关键词: normalizeTextArray(kind, ownEnumerableData(kind, source, '简介关键词'), MAX_TEXT_FILTER_VALUES, 64),
+        城市: normalizeTextArray(kind, source.城市 ?? [], MAX_TEXT_FILTER_VALUES, 80),
+        年龄段: normalizeTextArray(kind, source.年龄段 ?? [], MAX_TEXT_FILTER_VALUES, 32),
+        距离范围: normalizeTextArray(kind, source.距离范围 ?? [], MAX_TEXT_FILTER_VALUES, 48),
+        寻找意图关键词: normalizeTextArray(kind, source.寻找意图关键词 ?? [], MAX_TEXT_FILTER_VALUES, 64),
+        包含标签: normalizeTextArray(kind, source.包含标签 ?? [], MAX_TEXT_FILTER_VALUES, 32),
+        排除标签: normalizeTextArray(kind, source.排除标签 ?? [], MAX_TEXT_FILTER_VALUES, 32),
+        简介关键词: normalizeTextArray(kind, source.简介关键词 ?? [], MAX_TEXT_FILTER_VALUES, 64),
     });
     if (!Object.values(filters).some((items) => items.length > 0)) failResponse(kind, 'filters_empty');
     return Object.freeze({
         filters,
-        explanation: normalizeDraftText(kind, ownEnumerableData(kind, raw, 'explanation'), MAX_EXPLANATION_LENGTH),
+        explanation: normalizeDraftText(kind, record.explanation, MAX_EXPLANATION_LENGTH),
     });
 }
 
 function normalizeCandidateDrawingDna(kind, value) {
     // Keep the canonical candidate codec as the first boundary so this staged
     // match flow and complete-character flow share the same object shape.
-    assertExactRecord(kind, value, ['core_dna', 'outfit_dna']);
+    const record = sanitizeDraftRecord(kind, value, ['core_dna', 'outfit_dna']);
+    const cleaned = {};
+    for (const key of ['core_dna', 'outfit_dna']) {
+        let raw = record[key];
+        // Some models return the DNA as a tag list instead of one string.
+        if (Array.isArray(raw)) {
+            raw = raw
+                .filter((item) => typeof item === 'string' || (typeof item === 'number' && Number.isFinite(item)))
+                .map((item) => String(item).trim())
+                .filter(Boolean)
+                .join('; ');
+        }
+        const coerced = coerceScalarText(raw);
+        cleaned[key] = typeof coerced === 'string' ? coerced : raw;
+    }
     let drawing;
     try {
-        drawing = normalizeDrawingDna(value);
+        drawing = normalizeDrawingDna(cleaned);
     } catch {
         failResponse(kind, 'drawing_invalid');
     }
@@ -349,13 +449,14 @@ function normalizeCandidateDrawingDna(kind, value) {
 }
 
 function normalizeOptionalPublicTags(kind, value) {
-    if (!Array.isArray(value) || value.length > MAX_TAGS) failResponse(kind, 'candidate_profile_invalid');
+    const coerced = coerceStringList(value ?? [], MAX_TAGS, 32);
+    if (!Array.isArray(coerced)) failResponse(kind, 'candidate_profile_invalid');
     const tags = [];
     const seen = new Set();
-    for (const raw of value) {
+    for (const raw of coerced) {
         const tag = normalizeDraftText(kind, raw, 32);
         const folded = tag.toLocaleLowerCase('zh-Hans-CN');
-        if (seen.has(folded)) failResponse(kind, 'candidate_profile_invalid');
+        if (seen.has(folded)) continue;
         seen.add(folded);
         tags.push(tag);
     }
@@ -363,8 +464,12 @@ function normalizeOptionalPublicTags(kind, value) {
 }
 
 function assertExplicitAdult(kind, ageBand) {
-    if (/成年人|成人|18\s*(?:岁)?(?:以上|\+)/u.test(ageBand)) return;
-    const ages = [...ageBand.matchAll(/\d{1,3}/gu)].map((match) => Number(match[0]));
+    if (/未成年|未滿|未满/u.test(ageBand)) failResponse(kind, 'candidate_not_adult');
+    // Explicit ages come from ASCII digits or common Chinese numerals; birth
+    // decade shorthand such as 「90后」 is never counted as adult evidence.
+    const ages = extractExplicitAgeNumbers(ageBand);
+    if (ages.some((age) => age < 18)) failResponse(kind, 'candidate_not_adult');
+    if (/成年|成人|满\s*18|18\s*(?:岁)?\s*(?:以上|\+)/u.test(ageBand)) return;
     if (ages.length > 0 && ages.every((age) => age >= 18)) return;
     failResponse(kind, 'candidate_not_adult');
 }
@@ -378,20 +483,20 @@ export function normalizeCandidateMatchDraft(raw, { contentMode = 'SFW' } = {}) 
     const kind = 'candidate';
     // matchScore is accepted only as a legacy transport field. Generation
     // ignores and overwrites it with the deterministic local score below.
-    assertExactRecord(kind, raw, ['profile', 'drawing', 'explanation'], ['matchScore']);
-    const profile = ownEnumerableData(kind, raw, 'profile');
-    const drawing = normalizeCandidateDrawingDna(kind, ownEnumerableData(kind, raw, 'drawing'));
+    const record = sanitizeDraftRecord(kind, raw, ['profile', 'drawing', 'explanation'], ['matchScore']);
+    const drawing = normalizeCandidateDrawingDna(kind, record.drawing);
     const textFields = {
         昵称: 80, 年龄段: 32, 性别: 48, 性取向: 80, 城市: 80, 距离范围: 48, 寻找意图: 120, 简介: 500,
     };
     const tagFields = ['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签'];
-    assertExactRecord(kind, profile, [...Object.keys(textFields), ...tagFields]);
+    // Text fields stay required; missing tag lists degrade to empty lists.
+    const profile = sanitizeDraftRecord(kind, record.profile, Object.keys(textFields), tagFields);
     const publicProfile = {};
     for (const [field, maxLength] of Object.entries(textFields)) {
-        publicProfile[field] = normalizeDraftText(kind, ownEnumerableData(kind, profile, field), maxLength);
+        publicProfile[field] = normalizeDraftText(kind, profile[field], maxLength);
     }
     assertExplicitAdult(kind, publicProfile.年龄段);
-    for (const field of tagFields) publicProfile[field] = normalizeOptionalPublicTags(kind, ownEnumerableData(kind, profile, field));
+    for (const field of tagFields) publicProfile[field] = normalizeOptionalPublicTags(kind, profile[field]);
     let normalizedPublicProfile;
     try {
         normalizedPublicProfile = normalizeGeneratedPublicProfile({
@@ -410,14 +515,16 @@ export function normalizeCandidateMatchDraft(raw, { contentMode = 'SFW' } = {}) 
     const normalized = {
         profile: Object.freeze(draftProfile),
         drawing,
-        explanation: normalizeDraftText(kind, ownEnumerableData(kind, raw, 'explanation'), MAX_EXPLANATION_LENGTH),
+        explanation: normalizeDraftText(kind, record.explanation, MAX_EXPLANATION_LENGTH),
     };
-    if (Object.hasOwn(raw, 'matchScore')) {
-        const legacyMatchScore = ownEnumerableData(kind, raw, 'matchScore');
-        if (!Number.isInteger(legacyMatchScore) || legacyMatchScore < 0 || legacyMatchScore > 100) {
-            failResponse(kind, 'match_score_invalid');
+    if (Object.hasOwn(record, 'matchScore')) {
+        // The model was told not to report a score and any value it reports is
+        // always overwritten by the deterministic local evaluation, so a
+        // malformed legacy score is dropped rather than failing the draft.
+        const legacyMatchScore = coerceRoundedInteger(record.matchScore);
+        if (legacyMatchScore !== null && legacyMatchScore >= 0 && legacyMatchScore <= 100) {
+            normalized.matchScore = legacyMatchScore;
         }
-        normalized.matchScore = legacyMatchScore;
     }
     return Object.freeze(normalized);
 }
@@ -466,9 +573,9 @@ export function getLocalCandidateMatchEvaluation(draft) {
 /** Parses the transient voice-text -> keyword-weights stage; UI never receives it. */
 export function normalizeVoiceKeywordWeightDraft(raw) {
     const kind = 'voice';
-    assertExactRecord(kind, raw, ['keywordWeights']);
+    const record = sanitizeDraftRecord(kind, raw, ['keywordWeights']);
     return Object.freeze({
-        keywordWeights: normalizeKeywordWeightEntries(kind, ownEnumerableData(kind, raw, 'keywordWeights'), { minItems: 1, maxItems: MAX_TAGS }),
+        keywordWeights: normalizeKeywordWeightEntries(kind, record.keywordWeights, { minItems: 1, maxItems: MAX_TAGS }),
     });
 }
 

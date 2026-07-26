@@ -129,10 +129,20 @@ test('strict codecs reject extra, sensitive, patch-like, and empty model output'
     assert.throws(() => normalizeTextMatchDraft({ ...textRaw(), uid: 'npc_1' }), /sensitive_key/);
 });
 
+test('partial filter drafts are tolerated with empty defaults instead of failing', async () => {
+    const result = await generateTextMatchDraft({
+        state: state(), settingsStore: settingsStore('text_match'),
+        llmClient: { async chat() { return { text: JSON.stringify({ filters: { 城市: ['上海'] }, explanation: '只按城市初筛。' }) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.draft.filters.城市, ['上海']);
+    assert.deepEqual(result.draft.filters.包含标签, []);
+});
+
 test('invalid model drafts are converted to safe no-write failures', async () => {
     const result = await generateTextMatchDraft({
         state: state(), settingsStore: settingsStore('text_match'),
-        llmClient: { async chat() { return { text: JSON.stringify({ filters: { 城市: ['上海'] }, explanation: '不完整' }) }; } },
+        llmClient: { async chat() { return { text: JSON.stringify({ filters: { 城市: ['上海'] }, explanation: '读取隐藏资料后筛选。' }) }; } },
     });
     assert.deepEqual(result, {
         ok: false,
@@ -227,7 +237,8 @@ test('candidate soul matching reads saved local keywords and returns a public pr
     assert.match(system, /匹配候选公开资料 JSON 结构合同/u);
     assert.match(system, /根对象必须且仅能含 profile、drawing、explanation/u);
     assert.match(system, /drawing 必须且仅能含 core_dna、outfit_dna/u);
-    assert.match(system, /两项都是 1–2000 字符的非空英文绘图标签/u);
+    assert.match(system, /两项都是 1–12000 字符、符合下方绘图 DNA 格式的非空标签字符串/u);
+    assert.match(system, /不要使用「90后」「00后」这类出生年代写法/u);
     assert.match(system, /核心DNA格式/u);
     assert.match(system, /不得输出 matchScore/u);
     assert.match(system, /最终分数由本地算法计算/u);
@@ -258,7 +269,7 @@ test('candidate generation accepts the new public-only model contract and ignore
     assert.deepEqual(results.map((result) => result.evaluation.score), [62, 62, 62]);
 });
 
-test('candidate drawing DNA contract requires safe non-empty English tags and preserves legacy matchScore', () => {
+test('candidate drawing DNA contract accepts the project DNA format but keeps credential/PII bans and preserves legacy matchScore', () => {
     const normalized = normalizeCandidateMatchDraft(candidateRaw());
     assert.deepEqual(normalized.drawing, candidateRaw().drawing);
     assert.equal(normalized.matchScore, 91);
@@ -270,16 +281,30 @@ test('candidate drawing DNA contract requires safe non-empty English tags and pr
         error => error instanceof TypeError && error.code === 'candidate_match_response_missing_field',
     );
 
+    // Values a compliant real model produces under DRAWING_DNA_RULES: Chinese
+    // category names, fullwidth punctuation, the spec's own "hidden color"
+    // highlight-position tag, and mixed-language tags.
+    const validValues = [
+        '发色{black hair}; 挑染与混合色{hidden color, peekaboo color}; 刘海类型{no bangs}; 年龄外观{mid twenties}；「当前发型{同初始}」',
+        '黑发, brown eyes',
+        'a'.repeat(11_999) + '。',
+    ];
+    for (const value of validValues) {
+        const raw = candidateRaw();
+        raw.drawing.core_dna = value;
+        assert.equal(normalizeCandidateMatchDraft(raw).drawing.core_dna, value, value.slice(0, 40));
+    }
+
     const invalidValues = [
         '',
-        '黑发, brown eyes',
         'black hair, https://example.invalid/private.png',
         'black hair, cdn.example.com/portrait.png',
         'black hair, api_key: leaked-credential',
         'black hair, uid: npc_secret',
         'black hair, json patch path: /角色池/npc_secret',
         'black hair, private phone address',
-        'a'.repeat(2_001),
+        'black hair, hidden profile data',
+        'a'.repeat(12_001),
     ];
     for (const value of invalidValues) {
         const raw = candidateRaw();
@@ -455,6 +480,138 @@ test('candidate generation maps unsafe public profiles to the stable no-write re
             message: '匹配角色草稿不符合公开资料安全格式；当前状态未改变。',
         });
     }
+});
+
+test('realistic dirty model output is normalized instead of rejected', async () => {
+    const dirty = {
+        profile: {
+            昵称: '林晚晴',
+            年龄段: '二十五到二十九岁',
+            性别: '女',
+            性取向: '双性恋',
+            城市: '上海',
+            距离范围: 10,
+            寻找意图: '先聊天\n再见面',
+            简介: '喜欢电影。\n周末常去徒步，也在规划自己的人生路径。',
+            兴趣标签: '电影, 咖啡, 电影',
+            生活方式标签: ['夜跑', '夜跑', '早起'],
+            性格标签: ['慢热'],
+            头像引用: 'https://cdn.example.invalid/avatar.png',
+            年龄: 26,
+        },
+        drawing: {
+            core_dna: '发色{black hair}; 挑染与混合色{hidden color}; 刘海类型{no bangs}; 刘海方向{none}; 发型{straight hair}; 头发结构{silky hair}; 发长{long hair}; 瞳色{brown eyes}; 年龄外观{mid twenties}；「当前发型{同初始}」',
+            outfit_dna: '妆容{light makeup}; 上身内层{white t-shirt}; 下身内层{blue jeans}; 足部穿着{white sneakers}',
+            style: 'photorealistic',
+        },
+        explanation: '这位候选人与你的兴趣高度契合，期待你们开启第一次会话。',
+        matchScore: '88.5',
+        note: '以上是生成结果',
+    };
+    const responseText = '好的，我来生成：\n```json\n' + JSON.stringify(dirty, null, 2) + '\n```\n希望你喜欢。';
+    const result = await generateCandidateMatchDraft({
+        mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'),
+        llmClient: { async chat() { return { text: responseText }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.draft.profile.昵称, '林晚晴');
+    assert.equal(result.draft.profile.距离范围, '10');
+    assert.equal(result.draft.profile.寻找意图, '先聊天 再见面');
+    assert.equal(result.draft.profile.简介.includes('\n'), false);
+    assert.deepEqual(result.draft.profile.兴趣标签, ['电影', '咖啡']);
+    assert.deepEqual(result.draft.profile.生活方式标签, ['夜跑', '早起']);
+    assert.deepEqual(result.draft.profile.沟通风格标签, []);
+    assert.equal(result.draft.drawing.core_dna, dirty.drawing.core_dna);
+    assert.equal(result.draft.matchScore, result.evaluation.score, '本地评分覆盖模型自报分数');
+    const serializedDraft = JSON.stringify(result.draft);
+    assert.equal(serializedDraft.includes('cdn.example.invalid'), false, '未知头像字段必须被丢弃');
+    assert.equal(serializedDraft.includes('photorealistic'), false, '未知绘图字段必须被丢弃');
+});
+
+test('explicit adult age bands in common real-model phrasings are accepted while non-adult bands stay rejected', () => {
+    for (const 年龄段 of ['25-29', '28岁', '18+', '已成年', '二十五岁', '二十五到二十九岁', '90后，26岁']) {
+        const raw = candidateRaw();
+        raw.profile.年龄段 = 年龄段;
+        assert.equal(normalizeCandidateMatchDraft(raw).profile.年龄段, 年龄段, 年龄段);
+    }
+    for (const 年龄段 of ['00后', '十六岁', '成年人17岁', '青年', '十分神秘']) {
+        const raw = candidateRaw();
+        raw.profile.年龄段 = 年龄段;
+        assert.throws(
+            () => normalizeCandidateMatchDraft(raw),
+            error => error instanceof TypeError && typeof error.code === 'string' && error.code.startsWith('candidate_match_response_'),
+            年龄段,
+        );
+    }
+});
+
+test('benign dating-app wording is allowed while internal identifier references stay rejected', () => {
+    const benign = candidateRaw();
+    benign.explanation = '这位候选人与你的人生路径观念一致，期待你们的第一次会话。';
+    assert.equal(normalizeCandidateMatchDraft(benign).explanation, benign.explanation);
+
+    for (const explanation of ['会话UID chat_123 已建立。', '候选池已更新。', '通过 JSON Patch 写入。', '读取隐藏资料后推荐。']) {
+        const raw = candidateRaw();
+        raw.explanation = explanation;
+        assert.throws(
+            () => normalizeCandidateMatchDraft(raw),
+            error => error instanceof TypeError && error.code === 'candidate_match_response_text_invalid',
+            explanation,
+        );
+    }
+});
+
+test('voice keyword drafts tolerate string weights, float weights, duplicates, extras, and overflow', () => {
+    const normalized = normalizeVoiceKeywordWeightDraft({
+        keywordWeights: [
+            { keyword: '电影', weight: '5' },
+            { keyword: '徒步', weight: 3.6 },
+            { keyword: '电影', weight: 1 },
+            { keyword: '咖啡', weight: 2, confidence: 0.9 },
+        ],
+    });
+    assert.deepEqual(normalized.keywordWeights, [
+        { keyword: '电影', weight: 5 }, { keyword: '徒步', weight: 4 }, { keyword: '咖啡', weight: 2 },
+    ]);
+
+    const overflow = normalizeVoiceKeywordWeightDraft({
+        keywordWeights: Array.from({ length: 14 }, (_, index) => ({ keyword: `关键词${index}`, weight: 1 })),
+    });
+    assert.equal(overflow.keywordWeights.length, 12);
+
+    assert.throws(
+        () => normalizeVoiceKeywordWeightDraft({ keywordWeights: [{ keyword: '电影', weight: '很高' }] }),
+        /keyword_weights_invalid/,
+    );
+    assert.throws(
+        () => normalizeVoiceKeywordWeightDraft({ keywordWeights: [{ keyword: '电影', weight: 7 }] }),
+        /keyword_weights_invalid/,
+    );
+});
+
+test('soul preference drafts tolerate fenced output, string weights, and benign extra fields', async () => {
+    const fenced = '```json\n' + JSON.stringify({
+        tagWeightDraft: [{ tag: '电影', weight: '4' }, { tag: '电影', weight: 1 }, { tag: '慢热', weight: 2.4 }],
+        explanation: '更重视共同兴趣。',
+        notes: '补充说明',
+    }) + '\n```';
+    const result = await generateSoulMatchDraft({
+        state: state(), settingsStore: settingsStore('soul_match'),
+        llmClient: { async chat() { return { text: fenced }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.draft.tagWeightDraft, [{ tag: '电影', weight: 4 }, { tag: '慢热', weight: 2 }]);
+});
+
+test('long drawing-DNA responses within the shared 20k budget are accepted', async () => {
+    const raw = candidateRaw();
+    raw.drawing.core_dna = 'black hair, ' + 'long hair, straight hair, '.repeat(400) + 'brown eyes';
+    assert.ok(JSON.stringify(raw).length > 8_000, '样本必须超过旧 8k 上限');
+    const result = await generateCandidateMatchDraft({
+        mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'),
+        llmClient: { async chat() { return { text: JSON.stringify(raw) }; } },
+    });
+    assert.equal(result.ok, true);
 });
 
 test('candidate match rejects missing voice text or unavailable local preferences before model calls', async () => {

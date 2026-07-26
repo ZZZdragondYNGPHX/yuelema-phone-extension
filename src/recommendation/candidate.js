@@ -28,6 +28,41 @@ const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SENSITIVE_KEY_PATTERN = /(?:api[\s_-]*key|authorization|token|secret|password|credential|private[\s_-]*key|密钥|令牌|密码|授权|凭据)/iu;
 const HTML_PATTERN = /<!--|<\s*\/?\s*[a-z][^>]*>/iu;
 const UNDERAGE_PATTERN = /(?:未成年|未滿|未满\s*18|minor|underage|小于\s*18|小於\s*18|<\s*18)/iu;
+// Birth-decade shorthand (「90后」「00后」) is not an explicit age statement.
+const GENERATION_DECADE_PATTERN = /\d{1,2}\s*后/gu;
+// Chinese numerals only count as an age when they carry age context (岁, a
+// range separator, …) so idioms like 「十分成熟」 never register as numbers.
+const CHINESE_AGE_NUMERAL_PATTERN = /[零一二两三四五六七八九十百]+(?=\s*(?:岁|歲|多|几|幾|余|來|来|出头|左右|上下|以上|以下|之间|之間|到|至|[~～\-—–]))/gu;
+const CHINESE_DIGIT_VALUES = Object.freeze({ 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 });
+
+function parseChineseNumeral(text) {
+    let total = 0;
+    let current = 0;
+    for (const char of text) {
+        if (char === '百') {
+            total += (current || 1) * 100;
+            current = 0;
+        } else if (char === '十') {
+            total += (current || 1) * 10;
+            current = 0;
+        } else if (char !== '零') {
+            current = CHINESE_DIGIT_VALUES[char] ?? 0;
+        }
+    }
+    return total + current;
+}
+
+/**
+ * Extracts every explicit age-like number (ASCII digits or age-context Chinese
+ * numerals) from an age-band text, excluding birth-decade shorthand. Shared by
+ * the match-draft adult gate so both boundaries read ages identically.
+ */
+export function extractExplicitAgeNumbers(value) {
+    const text = String(value ?? '').replace(GENERATION_DECADE_PATTERN, ' ');
+    const numbers = [...text.matchAll(/\d{1,3}/gu)].map(match => Number(match[0]));
+    for (const match of text.matchAll(CHINESE_AGE_NUMERAL_PATTERN)) numbers.push(parseChineseNumeral(match[0]));
+    return numbers;
+}
 const CONTENT_MODES = new Set(['SFW', 'NSFW']);
 const PERSONAL_NAME_PATTERN = /^(?:[\p{Script=Han}]{2,12}|[\p{Script=Latin}][\p{Script=Latin}' -]{1,31}|[\p{Script=Han}]{1,12}(?:·[\p{Script=Han}\p{Script=Latin}]{1,16})+)$/u;
 const NON_PERSONAL_NAME_PATTERN = /(?:玩家|用户|使用者|系统|模型|人工智能|智能体|智核|助手|机器人|候选人|角色|档案|资料|测试|官方|管理员|客服|团队|工作室|公司|平台|账号|帐号|游客|匿名|摄影师|设计师|工程师|咖啡师|医生|律师|教师|老师|作家|主播|店长|经理|教授|学生|总监|总裁|\b(?:ai|gpt|bot|npc|test|unknown|user|player|system|model|assistant)\b)/iu;
@@ -182,6 +217,9 @@ function normalizePublicProfile(value, contentMode, { requirePersonalName = fals
     if (UNDERAGE_PATTERN.test(profile.年龄段)) fail('公开资料.年龄段:underage');
     for (const numberText of profile.年龄段.matchAll(/\d{1,3}/gu)) {
         if (Number(numberText[0]) < 18) fail('公开资料.年龄段:underage');
+    }
+    for (const numeralText of profile.年龄段.matchAll(CHINESE_AGE_NUMERAL_PATTERN)) {
+        if (parseChineseNumeral(numeralText[0]) < 18) fail('公开资料.年龄段:underage');
     }
     return profile;
 }
