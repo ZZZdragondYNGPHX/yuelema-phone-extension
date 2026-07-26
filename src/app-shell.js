@@ -724,8 +724,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         panelDrag = { pointerId: event?.pointerId, pointerType: event?.pointerType ?? 'mouse', startX: Number(event?.clientX) || 0, startY: Number(event?.clientY) || 0, left: Number(rect?.left) || 0, top: Number(rect?.top) || 0, width, height, engaged: false, originX: 0, originY: 0, dragHandle, phone: uiLayoutMode === 'phone' };
         try { dragHandle.setPointerCapture?.(event?.pointerId); } catch { /* optional capture */ }
     }
-    function movePanelDrag(event) {
     function beginHeaderPanelDrag(event) { beginPanelDrag(event, { rejectHeaderControls: true }); }
+    function movePanelDrag(event) {
         if (!panelDrag || (panelDrag.pointerId !== undefined && event?.pointerId !== undefined && event.pointerId !== panelDrag.pointerId)) return;
         const deltaX = (Number(event?.clientX) || 0) - panelDrag.startX; const deltaY = (Number(event?.clientY) || 0) - panelDrag.startY;
         if (!panelDrag.engaged) {
@@ -744,7 +744,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         try { completed.dragHandle?.releasePointerCapture?.(completed.pointerId); } catch { /* optional capture */ }
         panelDrag = null;
         panel.classList.toggle('is-dragging', false);
-    }
         if (completed.phone && completed.engaged) {
             const rect = panel.getBoundingClientRect?.();
             persistPhonePanelPosition(layoutStorage, { left: Number(rect?.left) || 0, top: Number(rect?.top) || 0 });
@@ -833,6 +832,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         clearPhoneNavClickSuppression();
         event?.preventDefault?.();
         event?.stopImmediatePropagation?.();
+    }
 
     function invalidateServiceProfileGeneration() {
         interactionGeneration += 1;
@@ -872,8 +872,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         launcher.setAttribute('aria-label', open ? '关闭约了吗小手机' : '打开约了吗小手机');
         if (open) {
             syncPhonePanelViewport();
-            refreshState();
             restorePhonePanelPosition();
+            refreshState();
         }
         else {
             ctx.stopGroupAutoTimer();
@@ -1621,6 +1621,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(root, documentRef, 'pointermove', movePanelDrag, abortController.signal);
     listen(root, documentRef, 'pointerup', endPanelDrag, abortController.signal);
     listen(root, documentRef, 'pointercancel', endPanelDrag, abortController.signal);
+    listen(root, documentRef, 'touchmove', movePhonePanelTouch, abortController.signal);
+    listen(root, documentRef, 'touchend', (event) => endPhoneNavTouch(event, false), abortController.signal);
+    listen(root, documentRef, 'touchcancel', (event) => endPhoneNavTouch(event, true), abortController.signal);
     const windowRef = documentRef.defaultView;
     const handleViewportChange = () => {
         if (uiLayoutMode === 'phone') syncPhonePanelViewport();
@@ -1668,6 +1671,3 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         destroy() { cancelPhoneNavHold(); clearPhoneNavClickSuppression(); ctx.cancelChatToolLongPress(); ctx.clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; invalidateServiceProfileGeneration(); invalidateServiceOrderOperations(); ctx.stopGroupAutoTimer(); ctx.stopForumAutoTimer(); ctx.cancelForumPullInteractions(); ctx.clearSummaryToast(); hideOperationDialog(); ctx.closeGroupMemberPicker(); ctx.closeGroupAutoDialog(); ctx.closeForumSettingsDialog(); ctx.resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); dialogController.dispose(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }
-    listen(root, documentRef, 'touchmove', movePhonePanelTouch, abortController.signal);
-    listen(root, documentRef, 'touchend', (event) => endPhoneNavTouch(event, false), abortController.signal);
-    listen(root, documentRef, 'touchcancel', (event) => endPhoneNavTouch(event, true), abortController.signal);
