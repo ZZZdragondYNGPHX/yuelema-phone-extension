@@ -63,8 +63,7 @@ test('设置页提供图片管理入口并挂载浏览器本地图片面板', as
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
-        const entry = miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('图片管理'));
+        const entry = miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.textContent.includes('图片素材'));
         assert.ok(entry);
         click(entry);
         await flushUi();
@@ -131,7 +130,7 @@ test('图片管理设置按钮打开 image_match 预设绑定', async () => {
     const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-image-binding', actionBridge: { emit() {}, isPending() { return false; } }, settingsStore, llmClient: null, characterLibrary: null, imageLibrary, readState: readResult });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile')); click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置'))); click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('图片管理'))); await flushUi();
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile')); click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.textContent.includes('图片素材'))); await flushUi();
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '配置图片管理预设'));
         assert.match(miniDom.document.body.textContent, /图片匹配设置/u);
         assert.ok(miniDom.document.querySelector('[name="image_match-quick-connection"]'));

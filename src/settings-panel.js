@@ -72,11 +72,12 @@ function switchShell(input) {
     return shell;
 }
 
-/** Section title row with a decorative unicode glyph slot for the section icon. */
-function sectionHeading(icon, title) {
+/** Section title row: caption-level group heading with a local SVG icon (设计系统 2.0，§10.2). */
+function sectionHeading(iconName, title) {
     const heading = element('div', { className: 'yl-section-heading' });
-    const glyph = element('span', { className: 'yl-section-icon', text: icon });
+    const glyph = element('span', { className: 'yl-section-icon' });
     glyph.setAttribute('aria-hidden', 'true');
+    glyph.appendChild(createUiIcon(document, iconName, { className: 'yl-section-svg', size: 18 }));
     append(heading, [glyph, element('h2', { text: title })]);
     return heading;
 }
@@ -315,7 +316,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
     function buildConnectionSection(snapshot) {
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
-            sectionHeading('⚡', '连接预设（OpenAI-compatible）'),
+            sectionHeading('connection', '连接预设（OpenAI-compatible）'),
             element('p', { className: 'yl-phone-page-description', text: '连接配置保存在当前浏览器；API Key 位于独立缓存，永不写入 MVU、角色卡、提示词或导出文件。可直接拉取模型列表。' }),
         ]);
         let activeId = null;
@@ -528,7 +529,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
     function buildPromptSection(snapshot) {
         const section = element('section', { className: 'yl-settings-section yl-prompt-workbench' });
         append(section, [
-            sectionHeading('⌘', '提示词预设条目树'),
+            sectionHeading('prompt', '提示词预设条目树'),
             element('p', { className: 'yl-phone-page-description', text: '预设按根节点、插入位置和条目组织；SFW/NSFW 预设只出现在对应模式的绑定列表中。' }),
         ]);
         let activeId = null;
@@ -616,7 +617,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             branch.setAttribute('role', 'group');
             const branchHeading = element('div', { className: 'yl-prompt-tree-branch-heading' });
             append(branchHeading, [
-                element('span', { className: 'yl-prompt-tree-node-dot', text: '◆' }),
+                element('span', { className: 'yl-prompt-tree-node-dot' }),
                 element('strong', { text: label }),
                 element('span', { className: 'yl-prompt-tree-count', text: `${branchEntries.length} 个条目` }),
             ]);
@@ -674,8 +675,11 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             rootNode.setAttribute('role', 'treeitem');
             rootNode.setAttribute('aria-expanded', 'true');
             const rootHeading = element('div', { className: 'yl-prompt-tree-root-heading' });
+            const rootIcon = element('span', { className: 'yl-prompt-tree-root-icon' });
+            rootIcon.setAttribute('aria-hidden', 'true');
+            rootIcon.appendChild(createUiIcon(document, 'prompt', { className: 'yl-prompt-tree-root-svg', size: 16 }));
             append(rootHeading, [
-                element('span', { className: 'yl-prompt-tree-root-icon', text: '⌘' }),
+                rootIcon,
                 element('div', { className: 'yl-prompt-tree-root-copy', text: name.value.trim() || '未命名提示词预设' }),
                 element('span', { className: 'yl-prompt-tree-count', text: `${isNsfw.checked ? 'NSFW' : 'SFW'} · ${entries.length} 个条目 · ${entries.filter((entry) => entry.enabled).length} 个启用` }),
             ]);
@@ -792,7 +796,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const section = element('section', { className: 'yl-settings-section yl-image-generation-settings' });
         const image = snapshot.imageGeneration ?? settingsStore.getImageGenerationSettings();
         append(section, [
-            sectionHeading('◈', '生图设置'),
+            sectionHeading('sparkle', '生图设置'),
             element('p', {
                 className: 'yl-phone-page-description',
                 text: '生图只读取非机密配置与独立浏览器 Key；API Key 不会写入设置、MVU、提示词或导出文件。',
@@ -896,7 +900,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
 
         if (!openPreferences) {
             append(section, [
-                sectionHeading('✦', '个性化内容推荐管理'),
+                sectionHeading('privacy', '个性化内容推荐管理'),
                 element('p', {
                     className: 'yl-phone-page-description',
                     text: '保存当前设备的分模式关键词学习库；不会改变连接、提示词或聊天/MVU 数据。',
@@ -970,7 +974,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         }
 
         append(section, [
-            sectionHeading('✦', '个性化内容偏好'),
+            sectionHeading('sparkle', '个性化内容偏好'),
             element('p', {
                 className: 'yl-phone-page-description',
                 text: '仅编辑 ' + CONTENT_MODE_LABELS[selectedContentMode] + ' 词库；另一模式不受影响。正权重提高相关标签概率，负权重降低，0 表示尚未学习。',
@@ -1070,7 +1074,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
     function buildBindingSection(snapshot, selectedContentMode) {
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
-            sectionHeading('⇄', `${CONTENT_MODE_LABELS[selectedContentMode]} 模式预设与功能绑定`),
+            sectionHeading('settings', `${CONTENT_MODE_LABELS[selectedContentMode]} 模式预设与功能绑定`),
             element('p', {
                 className: 'yl-phone-page-description',
                 text: '仅编辑 ' + CONTENT_MODE_LABELS[selectedContentMode] + ' 功能绑定；提示词只显示当前模式预设，连接可回退到默认连接。',
@@ -1125,7 +1129,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
     function buildPromptTransferSection(snapshot) {
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
-            sectionHeading('⇅', '提示词预设导入 / 导出'),
+            sectionHeading('refresh', '提示词预设导入 / 导出'),
             element('p', { className: 'yl-phone-page-description', text: '仅导入或导出提示词预设；不含 API Key、MVU、聊天或角色隐私资料。' }),
         ]);
         const json = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 8, name: 'prompt-preset-transfer-json', placeholder: '点击导出生成 JSON，或粘贴提示词预设 JSON 后导入', maxLength: MAX_PROMPT_BUNDLE_BYTES, ariaLabel: '提示词预设导入导出 JSON' });

@@ -4,7 +4,7 @@
 
 ## 允许持久化的内容
 
-`settings-store.js` 管理版本化数据（当前 `schema: "yuelema.settings"`、`schemaVersion: 4`）：
+`settings-store.js` 管理版本化数据（当前 `schema: "yuelema.settings"`、`schemaVersion: 13`；v11/v12 在加载/导入时就地迁移，仅刷新内置提示词文案——v12 为内容尺度调整，v13 为 NSFW 内置预设写入具体情色写作指导；自定义预设逐字保留）：
 
 - 非机密连接预设：`id`、`name`、`url`、`model`、`temperature`、`maxTokens`、`timeoutMs`、`transportMode`；
 - 提示词预设及其条目数据，以及每个预设明确的 `contentMode: "SFW" | "NSFW"` 标记；

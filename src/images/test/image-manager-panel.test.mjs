@@ -100,11 +100,64 @@ test('返回可嵌入 DOM 节点、closeEditor/dispose，并显示空图片库�
     assert.equal(harness.element, harness.panel);
     assert.equal(typeof harness.closeEditor, 'function');
     assert.equal(typeof harness.dispose, 'function');
-    assert.equal(harness.element.querySelector('.yl-image-manager-empty').textContent.includes('图片库还是空的'), true);
+    const empty = harness.element.querySelector('.yl-image-manager-empty');
+    assert.equal(empty.textContent.includes('图片库还是空的'), true);
+    assert.equal(empty.classList.contains('yl-empty'), true, '空态应使用 createEmptyState 组件');
+    assert.equal(empty.classList.contains('yl-empty--inbox'), true, '空态应使用 inbox 插画变体');
+    const illustration = empty.querySelector('.yl-empty__svg');
+    assert.ok(illustration, '空态应内联 SVG 插画');
+    assert.equal(illustration.dataset.illustration, 'inbox');
+    assert.equal(empty.querySelector('.yl-empty__title').textContent, '图片库还是空的');
+    assert.equal(empty.querySelector('.yl-empty__hint').textContent.includes('PNG、JPEG 或 WebP'), true);
     assert.equal(harness.element.querySelector('.yl-image-manager-status').textContent, '当前没有图片。');
     harness.closeEditor();
     harness.dispose();
     harness.dispose();
+});
+
+test('初次读取期间网格显示骨架屏，读取完成后骨架被替换', async () => {
+    const store = createStore();
+    await store.add(seedRecord('skeleton_probe'));
+    const api = createImageManagerPanel({
+        documentRef: miniDom.document,
+        imageLibrary: store,
+        onChange() {},
+        onFeedback() {},
+    });
+    try {
+        const skeleton = api.element.querySelector('.yl-skeleton');
+        assert.ok(skeleton, '构建后、读取完成前应显示骨架屏');
+        assert.equal(skeleton.classList.contains('yl-skeleton--candidate-card'), true);
+        assert.equal(skeleton.getAttribute('aria-hidden'), 'true', '骨架屏必须对读屏隐藏');
+        assert.equal(skeleton.parentNode.classList.contains('yl-image-manager-grid'), true);
+        assert.ok(skeleton.querySelectorAll('.yl-skeleton__item').length >= 1);
+        await flushUi();
+        assert.equal(api.element.querySelector('.yl-skeleton'), null, '读取完成后骨架应被网格内容替换');
+        assert.ok(api.element.querySelector('.yl-image-card'), '读取完成后应渲染图片卡片');
+    } finally {
+        api.dispose();
+    }
+});
+
+test('读取失败时网格显示 EmptyState 失败态且骨架不残留', async () => {
+    const failingLibrary = {
+        async list() { throw new ImageLibraryError('STORAGE_READ_FAILED'); },
+        async add() { throw new Error('not used'); },
+        async update() { throw new Error('not used'); },
+        async remove() { throw new Error('not used'); },
+    };
+    const harness = await buildHarness({ imageLibrary: failingLibrary });
+    try {
+        assert.equal(harness.element.querySelector('.yl-skeleton'), null, '失败后骨架不得残留');
+        const failed = harness.element.querySelector('.yl-image-manager-empty');
+        assert.ok(failed, '失败态应渲染空态容器');
+        assert.equal(failed.classList.contains('yl-empty'), true, '失败态应使用 createEmptyState 组件');
+        assert.equal(failed.querySelector('.yl-empty__svg').dataset.illustration, 'search');
+        assert.equal(failed.textContent.includes('图片库读取失败'), true);
+        assert.equal(harness.element.querySelector('.yl-image-manager-status').textContent, '图片库读取失败。');
+    } finally {
+        harness.dispose();
+    }
 });
 
 test('右上角设置按钮明确可访问，点击只调用注入的 onConfigure', async () => {

@@ -8,7 +8,13 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 11;
+export const SETTINGS_SCHEMA_VERSION = 13;
+// v12 rewrote the stock built-in prompt preset copy (阶段 55 内容尺度调整)，
+// v13 enriched the NSFW stock copy with concrete erotic-writing guidance.
+// A stored v11 or v12 document therefore upgrades in place: stock builtin_*
+// prompt presets are refreshed to the current copy, user-created presets are
+// kept verbatim. Versions before 11 stay rejected, matching the v11 cleanup.
+const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12]);
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -198,6 +204,17 @@ function cleanContentMode(value) {
     return value;
 }
 
+
+/**
+ * v11/v12 documents keep stock prompt-preset IDs whose source copy changed in
+ * a later schema (v12 尺度调整、v13 NSFW 写作指导). Refresh only those stock
+ * IDs once during the schema upgrade; user-created prompt IDs (and stock
+ * presets the user deleted) remain untouched.
+ */
+function refreshStockBuiltinPromptPresets(presets) {
+    const stockById = new Map(createBuiltinPromptPresets().map((preset) => [preset.id, normalizePromptPreset(preset)]));
+    return presets.map((preset) => stockById.get(preset.id) ?? preset);
+}
 
 function promptIdForContentMode(presetId, contentMode, promptById) {
     return presetId !== null && promptById.get(presetId)?.contentMode === contentMode ? presetId : null;
@@ -444,9 +461,11 @@ export function normalizeSettingsDocument(input) {
     if (candidate.schema !== SETTINGS_SCHEMA_ID) {
         fail('UNSUPPORTED_SETTINGS_SCHEMA', '设置 schema 不受支持。');
     }
-    if (candidate.schemaVersion !== SETTINGS_SCHEMA_VERSION) {
+    if (candidate.schemaVersion !== SETTINGS_SCHEMA_VERSION
+        && !UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS.has(candidate.schemaVersion)) {
         fail('UNSUPPORTED_SETTINGS_VERSION', '设置版本不受支持。');
     }
+    const isUpgradeableLegacySchema = candidate.schemaVersion !== SETTINGS_SCHEMA_VERSION;
     if (!Array.isArray(candidate.connectionPresets) || candidate.connectionPresets.length > MAX_CONNECTION_PRESETS) {
         fail('INVALID_SETTINGS', '连接预设数量无效。');
     }
@@ -455,7 +474,9 @@ export function normalizeSettingsDocument(input) {
     }
 
     const connectionPresets = candidate.connectionPresets.map(normalizeConnectionPreset);
-    const promptPresets = candidate.promptPresets.map(normalizePromptPreset);
+    const promptPresets = isUpgradeableLegacySchema
+        ? refreshStockBuiltinPromptPresets(candidate.promptPresets.map(normalizePromptPreset))
+        : candidate.promptPresets.map(normalizePromptPreset);
     const connectionIds = new Set(connectionPresets.map((preset) => preset.id));
     const promptIds = new Set(promptPresets.map((preset) => preset.id));
     if (connectionIds.size !== connectionPresets.length || promptIds.size !== promptPresets.length) {
@@ -607,7 +628,9 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         } catch {
             fail('INVALID_IMPORT_JSON', '设置 JSON 无法解析。');
         }
-        // Persist only a normalized current v11 document.
+        // Persist only a normalized current v13 document; an upgradeable
+        // v11/v12 document is migrated (stock prompt copy refreshed) inside
+        // normalize.
         return persist(parsed);
     }
 

@@ -155,12 +155,19 @@ test('rejects overlong text and HTML-like text without invoking network or DOM A
 });
 
 
-test('SFW rejects adult-oriented public tags instead of silently normalizing them', () => {
+test('SFW no longer blocks adult-oriented public tags; hard public-content bans stay mode-independent', () => {
     const candidate = completeAdultCandidate();
     candidate.公开资料.生活方式标签 = ['翘臀'];
+    assert.deepEqual(
+        normalizeGeneratedCandidate(candidate, { contentMode: 'SFW' }).公开资料.生活方式标签,
+        ['翘臀'],
+    );
+
+    const coercive = completeAdultCandidate();
+    coercive.公开资料.简介 = '喜欢强迫别人。';
     assert.throws(
-        () => normalizeGeneratedCandidate(candidate, { contentMode: 'SFW' }),
-        error => error instanceof TypeError && error.code === '公开资料.生活方式标签[0]:adult_keyword_in_sfw',
+        () => normalizeGeneratedCandidate(coercive, { contentMode: 'SFW' }),
+        error => error instanceof TypeError && error.code === '公开资料.简介:prohibited_public_content',
     );
 });
 

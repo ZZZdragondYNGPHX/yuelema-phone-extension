@@ -1,11 +1,43 @@
-// 私聊会话页（含面基面板、聊天总结、聊天工具栏）：从 src/app-shell.js 纯搬移而来，函数体逐行未改，仅将跨模块引用改为 ctx.*。
+// 私聊会话页（设计系统 2.0 · 策划书 §7.2，裁决 D4）：
+// 时间分组 + 连续气泡合并 + 「…」收纳菜单 + 可见「+」工具入口 + BottomSheet 面基两步。
+// 气泡 class 家族（yl-chat-timeline / yl-time-divider / yl-system-pill /
+// yl-msg-group--self|--peer / yl-bubble / yl-bubble-time / yl-bubble-name）为跨代理合同，
+// 社区群聊室将逐字复用；CSS 定义在 style.css 的 chat 子区。
 import { append, element, listen } from '../dom.js';
-import { describeActionFailure } from '../ui-model.js';
+import { describeActionFailure, parseChatMessageTime } from '../ui-model.js';
+import { createBottomSheet } from '../ui/bottom-sheet.js';
+import { createEmptyState } from '../ui/empty-state.js';
 import { createUiIcon } from '../ui/icon.js';
 
 const CHAT_TOOL_LONG_PRESS_MS = 460;
+const CHAT_TIME_DIVIDER_GAP_MS = 10 * 60 * 1000;
+// desktop 上下文栏折叠偏好：纯 UI 状态，只进浏览器本地存储，绝不进 MVU/提示词/导出。
+const CHAT_CONTEXT_COLLAPSED_STORAGE_KEY = 'yuelema.chat-context-collapsed/v1';
+
+function chatContextStorageOrNull() {
+    try {
+        const storage = globalThis.localStorage;
+        return storage && typeof storage.getItem === 'function' && typeof storage.setItem === 'function' ? storage : null;
+    } catch { return null; }
+}
+function readChatContextCollapsed() {
+    try { return chatContextStorageOrNull()?.getItem(CHAT_CONTEXT_COLLAPSED_STORAGE_KEY) === '1'; }
+    catch { return false; }
+}
+function persistChatContextCollapsed(collapsed) {
+    try { chatContextStorageOrNull()?.setItem(CHAT_CONTEXT_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0'); }
+    catch { /* 本地偏好写入失败时静默降级为本次会话内存行为 */ }
+}
 
 export function createChatPage(ctx) {
+    // 本次挂载内已经展示过一次性隐私 pill / 输入提示的会话（配合本地存储的“只出现一次”）。
+    const introVisibleThisVisit = new Set();
+    let composerHintVisibleThisVisit = false;
+    const meetupStepBySession = new Map();
+    // P3-G：气泡入场动画只给“新增”消息——记录每个会话上次渲染时的消息数；
+    // 首次进入会话按当前长度打底（历史消息不动画）。纯动画标记，不进任何存储与提示词。
+    const animatedMessageFloorBySession = new Map();
+
     function cancelChatToolLongPress() {
         if (ctx.chatToolLongPressTimer !== null) clearTimeout(ctx.chatToolLongPressTimer);
         ctx.chatToolLongPressTimer = null;
@@ -19,24 +51,48 @@ export function createChatPage(ctx) {
     }
     function buildPrivateChatPage() {
         const session = ctx.messageSessionByUid(ctx.activeMessageSessionUid);
-        if (!session) return ctx.buildEmptyPlaceholder('这个私聊会话暂时不可见。请返回消息列表后重试。', { icon: '✉' });
+        if (!session) return ctx.buildEmptyPlaceholder('这个私聊会话暂时不可见。请返回消息列表后重试。');
         const conversation = buildConversationPanel(session);
         if (ctx.uiLayoutMode !== 'desktop') return conversation;
-        // desktop 工作台第二层：同一份公开会话投影获得右侧上下文栏；不建第二数据源。
+        // desktop 工作台：最左会话列（复用消息页行组件）+ 会话主列 + 公开资料上下文栏；不建第二数据源。
         const workbench = element('section', { className: 'yl-private-chat-workbench' });
-        append(workbench, [conversation, buildChatContextPanel(session)]);
+        append(workbench, [buildChatSessionRail(session), conversation, buildChatContextPanel(session)]);
         return workbench;
     }
-    /** desktop 私聊上下文栏：只渲染对方公开投影与会话状态，绝不触碰隐藏/仅好友层、关系数据或内部 UID。 */
+    /** desktop 三列工作台最左列：全部私聊会话行逐 session 复用消息页行组件；点击行即切换会话。 */
+    function buildChatSessionRail(activeSession) {
+        const rail = element('nav', { className: 'yl-chat-session-rail', ariaLabel: '私聊会话列表' });
+        for (const session of ctx.messageSessions()) {
+            const row = ctx.buildMessageSessionButton(session);
+            if (session.sessionUid === activeSession.sessionUid) {
+                row.classList.add('is-active');
+                row.setAttribute('aria-current', 'true');
+            }
+            rail.appendChild(row);
+        }
+        return rail;
+    }
+    /** desktop 私聊上下文栏：只渲染对方公开投影与会话状态，绝不触碰非公开层、关系数据或内部 UID。 */
     function buildChatContextPanel(session) {
-        const aside = element('aside', { className: 'yl-chat-context-panel', ariaLabel: `${ctx.chatNickname(session)}的公开资料` });
+        const collapsed = readChatContextCollapsed();
+        const aside = element('aside', { className: collapsed ? 'yl-chat-context-panel is-collapsed' : 'yl-chat-context-panel', ariaLabel: `${ctx.chatNickname(session)}的公开资料` });
         const head = element('div', { className: 'yl-chat-context-head' });
         head.appendChild(ctx.chatAvatar(session, 'yl-chat-context-avatar'));
         const headCopy = element('div', { className: 'yl-chat-context-head-copy' });
         headCopy.appendChild(element('strong', { text: ctx.chatNickname(session) }));
         headCopy.appendChild(element('span', { className: 'yl-chat-context-status', text: session.status }));
         head.appendChild(headCopy);
+        // 折叠钮（disclosure）：折叠偏好持久化到浏览器本地，折叠后只保留头部一行。
+        const toggle = element('button', { className: 'yl-chat-context-toggle', type: 'button', ariaLabel: collapsed ? '展开对方公开资料栏' : '收起对方公开资料栏' });
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        toggle.appendChild(createUiIcon(ctx.documentRef, 'chevron_right', { className: 'yl-chat-context-toggle-svg', size: 18 }));
+        listen(toggle, toggle, 'click', () => {
+            persistChatContextCollapsed(!collapsed);
+            ctx.renderPage();
+        }, ctx.abortController.signal);
+        head.appendChild(toggle);
         aside.appendChild(head);
+        if (collapsed) return aside;
         const profile = session.profile ?? {};
         const facts = element('div', { className: 'yl-chat-context-facts' });
         for (const [label, value] of [['年龄段', profile.年龄段], ['城市', profile.城市], ['性别', profile.性别], ['性取向', profile.性取向], ['距离范围', profile.距离范围], ['寻找意图', profile.寻找意图]]) {
@@ -73,6 +129,11 @@ export function createChatPage(ctx) {
         ctx.renderPage();
         return true;
     }
+    /**
+     * 头部（§7.2.6）：返回键在壳层页头；这里是 头像40 + 昵称 + presence 副行 + 「…」菜单。
+     * 生图设置 / 自动生图开关 / 聊天总结 / 清空记录 / 删除角色 全部收进菜单。
+     * 菜单节点常驻 DOM（hidden 切换），保证生图开关等受控控件在会话期内可被稳定引用。
+     */
     function buildConversationHeader(session) {
         const header = element('section', { className: 'yl-private-chat-contact' });
         header.appendChild(ctx.chatAvatar(session, 'yl-chat-contact-avatar', { interactive: true }));
@@ -88,10 +149,11 @@ export function createChatPage(ctx) {
         const actions = element('div', { className: 'yl-private-chat-actions' });
         const moreOpen = ctx.chatMoreMenuSessionUid === session.sessionUid;
         const more = element('button', {
-            className: 'yl-private-chat-more', type: 'button', text: '…',
+            className: 'yl-private-chat-more', type: 'button',
             ariaLabel: '打开与' + ctx.chatNickname(session) + '的更多操作',
             disabled: ctx.destructiveChatSessionUid === session.sessionUid,
         });
+        more.appendChild(createUiIcon(ctx.documentRef, 'more_vertical', { className: 'yl-private-chat-more-svg', size: 18 }));
         // Disclosure 按钮列表：不宣称 role=menu（无完整菜单键盘模型），aria-expanded 表达展开状态。
         more.setAttribute('aria-expanded', String(moreOpen));
         listen(more, more, 'click', (event) => {
@@ -99,33 +161,31 @@ export function createChatPage(ctx) {
             ctx.chatMoreMenuSessionUid = moreOpen ? '' : session.sessionUid;
             ctx.renderPage();
         }, ctx.abortController.signal);
-        actions.appendChild(ctx.buildConversationImageControls({ kind: 'private', conversationId: session.sessionUid }));
         actions.appendChild(more);
-        if (moreOpen) {
-            const menu = element('div', { className: 'yl-private-chat-more-menu', ariaLabel: '私聊更多操作' });
-            const summary = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '聊天总结', ariaLabel: '查看聊天总结', disabled: !ctx.chatSummaryEnabled() });
-            const clear = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '清空聊天记录', ariaLabel: '清空聊天记录' });
-            const removeCharacter = element('button', { className: 'yl-private-chat-menu-item is-danger', type: 'button', text: '删除角色', ariaLabel: '删除角色完整数据' });
-            listen(summary, summary, 'click', () => {
-                ctx.chatMoreMenuSessionUid = '';
-                ctx.setActivePage('private_chat_summary');
-            }, ctx.abortController.signal);
-            listen(clear, clear, 'click', () => {
-                ctx.chatMoreMenuSessionUid = '';
-                ctx.chatConfirmationSessionUid = session.sessionUid;
-                ctx.chatConfirmationKind = 'clear';
-                ctx.renderPage();
-            }, ctx.abortController.signal);
-            listen(removeCharacter, removeCharacter, 'click', () => {
-                ctx.chatMoreMenuSessionUid = '';
-                ctx.chatConfirmationSessionUid = session.sessionUid;
-                ctx.chatConfirmationKind = 'delete_character';
-                ctx.renderPage();
-            }, ctx.abortController.signal);
-            append(menu, [summary, clear, removeCharacter]);
-            actions.appendChild(menu);
-        }
-        actions.appendChild(element('span', { className: 'yl-private-chat-spark', text: '♥' }));
+        const menu = element('div', { className: 'yl-private-chat-more-menu', ariaLabel: '私聊更多操作', hidden: !moreOpen });
+        // 生图设置钮 + 自动生图开关沿用壳层受控控件（aria 与持久化行为不变），仅改挂载位置。
+        menu.appendChild(ctx.buildConversationImageControls({ kind: 'private', conversationId: session.sessionUid }));
+        const summary = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '聊天总结', ariaLabel: '查看聊天总结', disabled: !ctx.chatSummaryEnabled() });
+        const clear = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '清空聊天记录', ariaLabel: '清空聊天记录' });
+        const removeCharacter = element('button', { className: 'yl-private-chat-menu-item is-danger', type: 'button', text: '删除角色', ariaLabel: '删除角色完整数据' });
+        listen(summary, summary, 'click', () => {
+            ctx.chatMoreMenuSessionUid = '';
+            ctx.setActivePage('private_chat_summary');
+        }, ctx.abortController.signal);
+        listen(clear, clear, 'click', () => {
+            ctx.chatMoreMenuSessionUid = '';
+            ctx.chatConfirmationSessionUid = session.sessionUid;
+            ctx.chatConfirmationKind = 'clear';
+            ctx.renderPage();
+        }, ctx.abortController.signal);
+        listen(removeCharacter, removeCharacter, 'click', () => {
+            ctx.chatMoreMenuSessionUid = '';
+            ctx.chatConfirmationSessionUid = session.sessionUid;
+            ctx.chatConfirmationKind = 'delete_character';
+            ctx.renderPage();
+        }, ctx.abortController.signal);
+        append(menu, [summary, clear, removeCharacter]);
+        actions.appendChild(menu);
         header.appendChild(actions);
         return header;
     }
@@ -188,6 +248,9 @@ export function createChatPage(ctx) {
         for (const sessionUid of sessionsToClear) {
             ctx.chatDrafts.delete(sessionUid);
             ctx.meetupDrafts.delete(sessionUid);
+            meetupStepBySession.delete(sessionUid);
+            introVisibleThisVisit.delete(sessionUid);
+            ctx.messageReadStore?.forgetSession?.(sessionUid);
         }
         if (deletingCharacter) {
             ctx.selectedCandidateUid = ctx.selectedCandidateUid === session.npcUid ? '' : ctx.selectedCandidateUid;
@@ -205,38 +268,134 @@ export function createChatPage(ctx) {
         ctx.setActivePage('messages');
         ctx.setFeedback(deletingCharacter ? '角色完整数据及其关联记录已删除。' : '聊天记录已清空，会话已从消息列表移除。');
     }
-    function buildMessageBubble(session, message) {
-        if (message.sender === '系统') {
-            const note = element('p', { className: 'yl-chat-system-note', text: message.content });
-            if (message.time) note.appendChild(element('span', { text: message.time }));
-            return note;
+    /** 时间分隔 pill 文案：今天只显时分、跨天显“M月D日”，纯时分文本原样展示。 */
+    function buildTimeDividerLabel(raw) {
+        const text = String(raw ?? '').trim();
+        const full = /^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?(?:[ T](\d{1,2}):(\d{2}))?/u.exec(text);
+        if (full) {
+            const nowDate = new Date();
+            const sameDay = nowDate.getFullYear() === Number(full[1]) && nowDate.getMonth() + 1 === Number(full[2]) && nowDate.getDate() === Number(full[3]);
+            const clock = full[4] ? `${full[4].padStart(2, '0')}:${full[5]}` : '';
+            if (sameDay) return clock ? `今天 ${clock}` : '今天';
+            return `${Number(full[2])}月${Number(full[3])}日${clock ? ' ' + clock : ''}`;
         }
-        const isPlayer = message.sender === '玩家';
-        const row = element('article', { className: isPlayer ? 'yl-chat-bubble is-player' : 'yl-chat-bubble is-contact' });
-        if (!isPlayer) row.appendChild(ctx.chatAvatar(session, 'yl-chat-message-avatar'));
-        const bubbleContent = element('div', { className: 'yl-bubble-content' });
-        const label = isPlayer ? '我' : ctx.chatNickname(session);
-        bubbleContent.appendChild(element('strong', { text: label }));
-        bubbleContent.appendChild(element('p', { text: message.content }));
-        if (!isPlayer) {
-            const directive = ctx.privateImageDirectives.get(message.messageUid);
-            const imageCard = directive ? ctx.buildImageDirectiveCard({
-                kind: 'private', conversationId: session.sessionUid, messageId: message.messageUid, characterUid: session.npcUid, directive,
-            }) : null;
-            if (imageCard) bubbleContent.appendChild(imageCard);
+        return text.slice(0, 20);
+    }
+    function buildSystemPill(text, time = '') {
+        const pill = element('p', { className: 'yl-system-pill' });
+        pill.appendChild(element('span', { text }));
+        if (time) pill.appendChild(element('span', { className: 'yl-system-pill-time', text: time }));
+        return pill;
+    }
+    /**
+     * 消息时间线（§7.2.3–7.2.5）：>10 分钟插时间分隔 pill；同发送者连续气泡合并成组，
+     * 组内仅首条显示头像+昵称、时间只作组尾角标；对方=卡面色、自己=品牌渐变白字。
+     */
+    function buildMessageTimeline(session) {
+        const timeline = element('div', { className: 'yl-chat-transcript yl-chat-timeline', ariaLabel: `${ctx.chatNickname(session)}的私聊记录` });
+        // Do not make a full transcript a live region: only concise reply state is announced.
+        timeline.setAttribute('aria-live', 'off');
+        // §7.2.1：常驻隐私横幅移除，改为首次进入会话时流内一条一次性系统 pill。
+        const readStore = ctx.messageReadStore ?? null;
+        if (introVisibleThisVisit.has(session.sessionUid) || !readStore || !readStore.hasSeenIntro(session.sessionUid)) {
+            introVisibleThisVisit.add(session.sessionUid);
+            readStore?.markIntroSeen?.(session.sessionUid);
+            timeline.appendChild(buildSystemPill('线上短消息只保存在当前设备的这份聊天里；重要面基安排请在正文中再次确认。'));
         }
-        if (message.time) bubbleContent.appendChild(element('span', { className: 'yl-bubble-time', text: message.time }));
-        row.appendChild(bubbleContent);
-        if (isPlayer) {
-            row.appendChild(ctx.publicAvatar({ 昵称: '我' }, {
-                className: 'yl-chat-message-avatar yl-chat-self-avatar',
-                imageEnabled: false,
-                interactive: false,
-                fallback: '我',
-                imageSource: ctx.playerAvatarStore?.snapshot?.() ?? '',
+        if (!session.messages.length) {
+            timeline.appendChild(createEmptyState({
+                documentRef: ctx.documentRef,
+                variant: 'heart',
+                title: '还没有消息',
+                hint: '用一句简单的问候开始吧。',
             }));
+            return timeline;
         }
-        return row;
+        const totalMessages = session.messages.length;
+        const animatedFloor = animatedMessageFloorBySession.has(session.sessionUid)
+            ? animatedMessageFloorBySession.get(session.sessionUid)
+            : totalMessages;
+        animatedMessageFloorBySession.set(session.sessionUid, totalMessages);
+        let messageIndex = -1;
+        let groupStack = null;
+        let groupSender = '';
+        let lastBubble = null;
+        let lastBubbleTime = '';
+        let previousStamp = null;
+        const closeGroup = () => {
+            if (lastBubble && lastBubbleTime) lastBubble.appendChild(element('span', { className: 'yl-bubble-time', text: lastBubbleTime }));
+            groupStack = null;
+            groupSender = '';
+            lastBubble = null;
+            lastBubbleTime = '';
+        };
+        for (const message of session.messages) {
+            messageIndex += 1;
+            const isNewMessage = messageIndex >= animatedFloor;
+            if (message.sender === '系统') {
+                closeGroup();
+                const systemPill = buildSystemPill(message.content, message.time);
+                if (isNewMessage) systemPill.classList.add('is-new');
+                timeline.appendChild(systemPill);
+                previousStamp = parseChatMessageTime(message.time) ?? previousStamp;
+                continue;
+            }
+            const stamp = parseChatMessageTime(message.time);
+            if (stamp !== null && (previousStamp === null || stamp - previousStamp > CHAT_TIME_DIVIDER_GAP_MS || stamp < previousStamp)) {
+                closeGroup();
+                timeline.appendChild(element('p', { className: 'yl-time-divider', text: buildTimeDividerLabel(message.time) }));
+            }
+            if (stamp !== null) previousStamp = stamp;
+            const isPlayer = message.sender === '玩家';
+            if (!groupStack || groupSender !== message.sender) {
+                closeGroup();
+                groupSender = message.sender;
+                const group = element('article', { className: isPlayer ? 'yl-msg-group yl-msg-group--self' : 'yl-msg-group yl-msg-group--peer' });
+                groupStack = element('div', { className: 'yl-msg-group-stack' });
+                if (isPlayer) {
+                    group.appendChild(groupStack);
+                    group.appendChild(ctx.publicAvatar({ 昵称: '我' }, {
+                        className: 'yl-chat-message-avatar yl-chat-self-avatar',
+                        imageEnabled: false,
+                        interactive: false,
+                        fallback: '我',
+                        imageSource: ctx.playerAvatarStore?.snapshot?.() ?? '',
+                    }));
+                } else {
+                    group.appendChild(ctx.chatAvatar(session, 'yl-chat-message-avatar'));
+                    group.appendChild(groupStack);
+                }
+                groupStack.appendChild(element('span', { className: 'yl-bubble-name', text: isPlayer ? '我' : ctx.chatNickname(session) }));
+                timeline.appendChild(group);
+            }
+            const bubble = element('article', { className: isPlayer ? 'yl-bubble yl-bubble--self' : 'yl-bubble yl-bubble--peer' });
+            if (isNewMessage) bubble.classList.add('is-new');
+            bubble.appendChild(element('p', { text: message.content }));
+            if (!isPlayer) {
+                const directive = ctx.privateImageDirectives.get(message.messageUid);
+                const imageCard = directive ? ctx.buildImageDirectiveCard({
+                    kind: 'private', conversationId: session.sessionUid, messageId: message.messageUid, characterUid: session.npcUid, directive,
+                }) : null;
+                if (imageCard) bubble.appendChild(imageCard);
+            }
+            groupStack.appendChild(bubble);
+            lastBubble = bubble;
+            lastBubbleTime = String(message.time ?? '');
+        }
+        closeGroup();
+        return timeline;
+    }
+    /** 等待反馈（§7.2.10）：对方头像 + 三点打字气泡，替代文字“正在生成回复”。 */
+    function buildTypingIndicator(session) {
+        const replying = element('div', { className: 'yl-chat-replying' });
+        replying.setAttribute('role', 'status');
+        replying.appendChild(ctx.chatAvatar(session, 'yl-chat-message-avatar'));
+        const bubble = element('span', { className: 'yl-typing-bubble' });
+        bubble.setAttribute('aria-hidden', 'true');
+        for (let index = 0; index < 3; index += 1) bubble.appendChild(element('span', { className: 'yl-typing-dot' }));
+        replying.appendChild(bubble);
+        replying.appendChild(element('span', { className: 'yl-chat-replying-sr', text: `${ctx.chatNickname(session)}正在输入…` }));
+        return replying;
     }
     function isPrivateChatVisible(sessionUid) {
         return ctx.open && ctx.activePage === 'private_chat' && ctx.activeMessageSessionUid === sessionUid;
@@ -338,7 +497,7 @@ export function createChatPage(ctx) {
         }
         section.appendChild(overview);
         if (!info.records.length) {
-            section.appendChild(ctx.buildEmptyPlaceholder(historyMode ? '这个角色还没有已完成的总结记录。' : '还没有已完成的总结记录；达到设定层数后会静默自动整理。', { icon: '⌁' }));
+            section.appendChild(ctx.buildEmptyPlaceholder(historyMode ? '这个角色还没有已完成的总结记录。' : '还没有已完成的总结记录；达到设定层数后会静默自动整理。'));
             return section;
         }
         const list = element('div', { className: 'yl-chat-summary-record-list' });
@@ -363,8 +522,47 @@ export function createChatPage(ctx) {
     }
     function buildPrivateChatSummaryPage() {
         const session = ctx.messageSessionByUid(ctx.activeMessageSessionUid);
-        if (!session) return ctx.buildEmptyPlaceholder('这个私聊会话暂时不可见。请返回消息列表后重试。', { icon: '✉' });
+        if (!session) return ctx.buildEmptyPlaceholder('这个私聊会话暂时不可见。请返回消息列表后重试。');
         return buildConversationSummaryDetail(session, { actionsEnabled: ctx.chatSummaryEnabled() });
+    }
+    /** 工具面板内容（§7.2.8）：图标网格，约定面基未达条件置灰并注明。 */
+    function buildChatToolMenu(session, { meetupSupported, meetupUnlocked }) {
+        const menu = element('div', { className: 'yl-chat-tool-menu', ariaLabel: '私聊发送工具栏' });
+        const meetupLabel = !meetupSupported ? '面基功能未就绪' : meetupUnlocked ? `约定面基 · ${session.meetupAccess.route}路线` : '关系未达面基条件';
+        const meetupTool = element('button', {
+            className: 'yl-chat-tool-button', type: 'button', disabled: !meetupUnlocked,
+            ariaLabel: meetupUnlocked ? `打开约定面基，${session.meetupAccess.route}路线` : meetupLabel,
+        });
+        meetupTool.appendChild(createUiIcon(ctx.documentRef, 'hearts', { className: 'yl-chat-tool-svg', size: 22 }));
+        meetupTool.appendChild(element('span', { text: meetupLabel }));
+        meetupTool.setAttribute('aria-disabled', String(!meetupUnlocked));
+        listen(meetupTool, meetupTool, 'click', () => {
+            if (!meetupUnlocked) return;
+            ctx.activeChatToolsSessionUid = '';
+            ctx.activeMeetupSessionUid = session.sessionUid;
+            ctx.renderPage();
+        }, ctx.abortController.signal);
+        const summaryEnabled = ctx.chatSummaryEnabled();
+        const summaryTool = element('button', {
+            className: 'yl-chat-tool-button', type: 'button', disabled: !summaryEnabled,
+            ariaLabel: summaryEnabled ? '打开聊天总结' : '聊天总结未开启',
+        });
+        summaryTool.appendChild(createUiIcon(ctx.documentRef, 'summary', { className: 'yl-chat-tool-svg', size: 22 }));
+        summaryTool.appendChild(element('span', { text: summaryEnabled ? '聊天总结' : '总结未开启' }));
+        listen(summaryTool, summaryTool, 'click', () => {
+            if (!summaryEnabled) return;
+            ctx.activeChatToolsSessionUid = '';
+            ctx.setActivePage('private_chat_summary');
+        }, ctx.abortController.signal);
+        const imageTool = element('button', { className: 'yl-chat-tool-button', type: 'button', ariaLabel: '打开生图设置页' });
+        imageTool.appendChild(createUiIcon(ctx.documentRef, 'image', { className: 'yl-chat-tool-svg', size: 22 }));
+        imageTool.appendChild(element('span', { text: '生图设置' }));
+        listen(imageTool, imageTool, 'click', () => {
+            ctx.activeChatToolsSessionUid = '';
+            ctx.setActivePage('settings_image_generation');
+        }, ctx.abortController.signal);
+        append(menu, [meetupTool, summaryTool, imageTool]);
+        return menu;
     }
     function buildConversationPanel(session) {
         const panel = element('section', { className: 'yl-private-chat-screen' });
@@ -372,27 +570,15 @@ export function createChatPage(ctx) {
         if (ctx.chatConfirmationSessionUid === session.sessionUid) panel.appendChild(buildPrivateChatConfirmation(session));
         const summaryToastElement = buildSummaryToast(session);
         if (summaryToastElement) panel.appendChild(summaryToastElement);
-        const privacyNote = element('p', { className: 'yl-chat-privacy-note', text: '线上短消息会通过当前“私聊”功能绑定处理；重要面基安排请单独确认。' });
-        panel.appendChild(privacyNote);
-        const transcript = element('div', { className: 'yl-chat-transcript', ariaLabel: `${ctx.chatNickname(session)}的私聊记录` });
-        // Do not make a full transcript a live region: only concise reply state is announced.
-        transcript.setAttribute('aria-live', 'off');
-        if (!session.messages.length) transcript.appendChild(ctx.buildEmptyPlaceholder('还没有消息。用一句简单的问候开始吧。', { tag: 'p', icon: '✦' }));
-        else {
-            transcript.appendChild(element('p', { className: 'yl-chat-transcript-label', text: '最近消息' }));
-            for (const message of session.messages) transcript.appendChild(buildMessageBubble(session, message));
-        }
+        const transcript = buildMessageTimeline(session);
+        // 本地已读水位推进：进入/停留在会话即视为读到当前全部可见消息（纯 UI 状态）。
+        ctx.messageReadStore?.markRead?.(session.sessionUid, session.messages.length);
         const pending = Boolean(ctx.actionBridge.isPending?.('private_chat', session.sessionUid));
-        if (pending) {
-            const replying = element('div', { className: 'yl-chat-replying', text: `${ctx.chatNickname(session)}正在生成回复` });
-            replying.setAttribute('role', 'status');
-            const dots = element('span', { className: 'yl-chat-replying-dots', text: '···' });
-            dots.setAttribute('aria-hidden', 'true');
-            replying.appendChild(dots);
-            transcript.appendChild(replying);
-        }
+        if (pending) transcript.appendChild(buildTypingIndicator(session));
         panel.appendChild(transcript);
         if (!session.canSend) {
+            // §7.2.11 只读态：禁用输入条 + 状态说明 pill。
+            panel.appendChild(buildSystemPill(session.status === '已拉黑' ? '对方已将你拉黑，无法继续发送消息。' : '该会话当前为只读状态。'));
             const composer = element('div', { className: 'yl-chat-composer is-readonly' });
             const input = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 2, placeholder: session.status === '已拉黑' ? '对方已将你拉黑，无法继续发送消息。' : '该会话当前为只读状态。', ariaLabel: '私聊消息输入已禁用', disabled: true });
             const send = element('button', { className: 'yl-chat-send-button', type: 'button', text: '不可发送', ariaLabel: '发送消息已禁用', disabled: true });
@@ -420,11 +606,10 @@ export function createChatPage(ctx) {
         send.appendChild(sendGlyph);
         const meetupSupported = typeof ctx.actionBridge.runPrivateChatMeetupHandoff === 'function' || typeof ctx.actionBridge.runMeetupHandoff === 'function';
         const meetupUnlocked = meetupSupported && session.meetupAccess?.unlocked === true;
-        const meetupAvailable = meetupSupported;
-        const toolsOpen = meetupAvailable && ctx.activeChatToolsSessionUid === session.sessionUid;
-        // Disclosure：右键 / 长按展开工具列表，不宣称 role=menu。
+        const toolsOpen = ctx.activeChatToolsSessionUid === session.sessionUid;
+        // Disclosure：+ 按钮 / 右键 / 长按展开同一工具面板，不宣称 role=menu。
         send.setAttribute('aria-expanded', String(toolsOpen));
-        send.setAttribute('title', meetupSupported ? '左键发送，右键打开工具栏' : '发送消息');
+        send.setAttribute('title', '左键发送，右键打开工具栏');
         const updateSendState = () => {
             const empty = !String(input.value ?? '').trim();
             send.disabled = pending || empty;
@@ -447,70 +632,88 @@ export function createChatPage(ctx) {
             ctx.activeChatToolsSessionUid = '';
             void runPrivateChat(session);
         }, ctx.abortController.signal);
-        if (meetupSupported) {
-            const openToolsFromLongPress = () => {
-                if (pending || ctx.activePage !== 'private_chat' || ctx.activeMessageSessionUid !== session.sessionUid) return;
-                ctx.chatToolLongPressTimer = null;
-                ctx.chatToolLongPressSessionUid = '';
-                clearChatToolClickSuppression();
-                ctx.suppressChatToolClickForSessionUid = session.sessionUid;
-                ctx.chatToolClickSuppressionTimer = setTimeout(() => {
-                    if (ctx.suppressChatToolClickForSessionUid === session.sessionUid) clearChatToolClickSuppression();
-                }, 900);
-                ctx.activeChatToolsSessionUid = session.sessionUid;
-                ctx.renderPage();
-            };
-            const beginLongPress = (event, inputType) => {
-                if (pending || event?.pointerType === 'mouse') return;
-                // Current browsers dispatch Pointer Events and compatibility Touch Events
-                // for one finger. Keep the original timer instead of restarting it.
-                if (ctx.chatToolLongPressSessionUid === session.sessionUid) {
-                    if (ctx.chatToolLongPressInputType === 'pointer' && inputType === 'touch') return;
-                    cancelChatToolLongPress();
-                }
-                ctx.chatToolLongPressSessionUid = session.sessionUid;
-                ctx.chatToolLongPressInputType = inputType;
-                ctx.chatToolLongPressTimer = setTimeout(openToolsFromLongPress, CHAT_TOOL_LONG_PRESS_MS);
-            };
-            const endLongPress = (inputType) => {
-                if (ctx.chatToolLongPressSessionUid === session.sessionUid && ctx.chatToolLongPressInputType === inputType) cancelChatToolLongPress();
-            };
-            // Pointer Events cover current mobile browsers; touch events retain support for older WebViews.
-            listen(send, send, 'pointerdown', (event) => beginLongPress(event, 'pointer'), ctx.abortController.signal);
-            listen(send, send, 'pointerup', () => endLongPress('pointer'), ctx.abortController.signal);
-            listen(send, send, 'pointercancel', () => endLongPress('pointer'), ctx.abortController.signal);
-            listen(send, send, 'touchstart', (event) => beginLongPress(event, 'touch'), ctx.abortController.signal);
-            listen(send, send, 'touchend', () => endLongPress('touch'), ctx.abortController.signal);
-            listen(send, send, 'touchcancel', () => endLongPress('touch'), ctx.abortController.signal);
-            listen(send, send, 'contextmenu', (event) => {
-                event.preventDefault?.();
-                if (pending) return;
-                ctx.activeChatToolsSessionUid = toolsOpen ? '' : session.sessionUid;
-                ctx.renderPage();
-            }, ctx.abortController.signal);
-        }
+        const toggleTools = () => {
+            ctx.activeChatToolsSessionUid = toolsOpen ? '' : session.sessionUid;
+            ctx.renderPage();
+        };
+        const openToolsFromLongPress = () => {
+            if (pending || ctx.activePage !== 'private_chat' || ctx.activeMessageSessionUid !== session.sessionUid) return;
+            ctx.chatToolLongPressTimer = null;
+            ctx.chatToolLongPressSessionUid = '';
+            clearChatToolClickSuppression();
+            ctx.suppressChatToolClickForSessionUid = session.sessionUid;
+            ctx.chatToolClickSuppressionTimer = setTimeout(() => {
+                if (ctx.suppressChatToolClickForSessionUid === session.sessionUid) clearChatToolClickSuppression();
+            }, 900);
+            ctx.activeChatToolsSessionUid = session.sessionUid;
+            ctx.renderPage();
+        };
+        const beginLongPress = (event, inputType) => {
+            if (pending || event?.pointerType === 'mouse') return;
+            // Current browsers dispatch Pointer Events and compatibility Touch Events
+            // for one finger. Keep the original timer instead of restarting it.
+            if (ctx.chatToolLongPressSessionUid === session.sessionUid) {
+                if (ctx.chatToolLongPressInputType === 'pointer' && inputType === 'touch') return;
+                cancelChatToolLongPress();
+            }
+            ctx.chatToolLongPressSessionUid = session.sessionUid;
+            ctx.chatToolLongPressInputType = inputType;
+            ctx.chatToolLongPressTimer = setTimeout(openToolsFromLongPress, CHAT_TOOL_LONG_PRESS_MS);
+        };
+        const endLongPress = (inputType) => {
+            if (ctx.chatToolLongPressSessionUid === session.sessionUid && ctx.chatToolLongPressInputType === inputType) cancelChatToolLongPress();
+        };
+        // Pointer Events cover current mobile browsers; touch events retain support for older WebViews.
+        listen(send, send, 'pointerdown', (event) => beginLongPress(event, 'pointer'), ctx.abortController.signal);
+        listen(send, send, 'pointerup', () => endLongPress('pointer'), ctx.abortController.signal);
+        listen(send, send, 'pointercancel', () => endLongPress('pointer'), ctx.abortController.signal);
+        listen(send, send, 'touchstart', (event) => beginLongPress(event, 'touch'), ctx.abortController.signal);
+        listen(send, send, 'touchend', () => endLongPress('touch'), ctx.abortController.signal);
+        listen(send, send, 'touchcancel', () => endLongPress('touch'), ctx.abortController.signal);
+        listen(send, send, 'contextmenu', (event) => {
+            event.preventDefault?.();
+            if (pending) return;
+            toggleTools();
+        }, ctx.abortController.signal);
+        // §7.2.7 / 裁决 D4：可见「+」按钮与右键/长按并存，打开同一工具面板。
+        const plusButton = element('button', { className: 'yl-chat-composer-plus', type: 'button', disabled: pending, ariaLabel: '打开聊天工具' });
+        plusButton.setAttribute('aria-expanded', String(toolsOpen));
+        plusButton.appendChild(createUiIcon(ctx.documentRef, 'plus', { className: 'yl-chat-composer-plus-svg', size: 20 }));
+        listen(plusButton, plusButton, 'click', () => {
+            if (pending) return;
+            toggleTools();
+        }, ctx.abortController.signal);
         const controls = element('div', { className: 'yl-chat-composer-controls' });
         controls.appendChild(send);
-        if (toolsOpen) {
-            const toolMenu = element('div', { className: 'yl-chat-tool-menu', ariaLabel: '私聊发送工具栏' });
-            const meetupTool = element('button', {
-                className: 'yl-chat-tool-button', type: 'button', disabled: !meetupUnlocked,
-                text: meetupUnlocked ? `约定面基 · ${session.meetupAccess.route}路线` : '关系未达面基条件',
-                ariaLabel: meetupUnlocked ? `打开约定面基，${session.meetupAccess.route}路线` : '关系未达面基条件',
-            });
-            meetupTool.setAttribute('aria-disabled', String(!meetupUnlocked));
-            listen(meetupTool, meetupTool, 'click', () => {
-                if (!meetupUnlocked) return;
-                ctx.activeChatToolsSessionUid = '';
-                ctx.activeMeetupSessionUid = session.sessionUid;
-                ctx.renderPage();
-            }, ctx.abortController.signal);
-            toolMenu.appendChild(meetupTool);
-            controls.appendChild(toolMenu);
+        append(composer, [plusButton, input, controls]);
+        // 提示行只在首次使用出现，3 秒后 CSS 淡出，不常驻（§7.2.7）。
+        const readStore = ctx.messageReadStore ?? null;
+        if (composerHintVisibleThisVisit || !readStore || !readStore.hasSeenComposerHint()) {
+            composerHintVisibleThisVisit = true;
+            readStore?.markComposerHintSeen?.();
+            composer.appendChild(element('span', { className: 'yl-chat-composer-hint', text: '左键发送 · 右键或「+」开工具栏 · Shift+Enter 换行' }));
         }
-        append(composer, [input, controls, element('span', { className: 'yl-chat-composer-hint', text: meetupSupported ? '左键发送 · 右键工具栏 · Shift+Enter 换行' : 'Enter 发送 · Shift+Enter 换行' })]);
         panel.appendChild(composer);
-        if (meetupUnlocked && ctx.activeMeetupSessionUid === session.sessionUid) panel.appendChild(buildMeetupHandoffPanel(session));
+        if (toolsOpen) {
+            const toolSheet = createBottomSheet({
+                documentRef: ctx.documentRef,
+                title: '聊天工具',
+                content: buildChatToolMenu(session, { meetupSupported, meetupUnlocked }),
+                onRequestClose: () => { ctx.activeChatToolsSessionUid = ''; ctx.renderPage(); },
+            });
+            panel.appendChild(toolSheet.root);
+            toolSheet.open();
+        }
+        if (meetupUnlocked && ctx.activeMeetupSessionUid === session.sessionUid) {
+            const meetupSheet = createBottomSheet({
+                documentRef: ctx.documentRef,
+                title: '约定面基',
+                content: buildMeetupHandoffPanel(session),
+                onRequestClose: () => { ctx.activeMeetupSessionUid = ''; ctx.renderPage(); },
+            });
+            panel.appendChild(meetupSheet.root);
+            meetupSheet.open();
+        }
         return panel;
     }
     async function runPrivateChat(session) {
@@ -554,24 +757,41 @@ export function createChatPage(ctx) {
         if (!ctx.meetupDrafts.has(sessionUid)) ctx.meetupDrafts.set(sessionUid, { time: '', place: '', mutualIntent: '', confirmedBoundaries: '', pendingItems: '', riskNotice: '' });
         return ctx.meetupDrafts.get(sessionUid);
     }
+    /**
+     * 面基面板（§7.2.9）：BottomSheet 内两步表单——①时间/地点/双方意图 ②边界/待确认/风险。
+     * 桥接逻辑零改动：提交仍只把行动提示词填入正文输入框，绝不自动发送。
+     */
     function buildMeetupHandoffPanel(session) {
         const wrapper = element('section', { className: 'yl-meetup-panel' });
         const pending = ctx.actionBridge.isPending('meetup_handoff', session.sessionUid);
-        wrapper.appendChild(element('h2', { text: '约定面基' }));
-        const openButton = element('button', { className: 'yl-settings-button', type: 'button', disabled: pending, text: pending ? '处理中…' : ctx.activeMeetupSessionUid === session.sessionUid ? '收起' : '填写约定' });
-        listen(openButton, openButton, 'click', () => { ctx.activeMeetupSessionUid = ctx.activeMeetupSessionUid === session.sessionUid ? '' : session.sessionUid; ctx.renderPage(); }, ctx.abortController.signal);
-        wrapper.appendChild(openButton);
-        if (ctx.activeMeetupSessionUid !== session.sessionUid) return wrapper;
+        const step = meetupStepBySession.get(session.sessionUid) === 2 ? 2 : 1;
         const values = meetupFieldsFor(session.sessionUid);
-        const fields = [['time', '时间', '本周六 19:30', 160, true], ['place', '地点', '静安寺地铁站 2 号口', 160, true], ['mutualIntent', '双方意图', '一起吃饭，确认是否继续约会', 500, true], ['confirmedBoundaries', '已确认边界', '公共场所见面；任何亲密行为需当场确认', 1200, true], ['pendingItems', '待确认事项', '散场时间', 800, false], ['riskNotice', '风险提示', '各自独立到场，可随时离开', 800, false]];
-        for (const [key, label, placeholder, maxLength, required] of fields) {
+        wrapper.appendChild(element('p', {
+            className: 'yl-meetup-step-indicator',
+            text: step === 1 ? '第 1 / 2 步 · 时间、地点与双方意图' : '第 2 / 2 步 · 边界、待确认与风险',
+        }));
+        const stepOneFields = [['time', '时间', '本周六 19:30', 160, true], ['place', '地点', '静安寺地铁站 2 号口', 160, true], ['mutualIntent', '双方意图', '一起吃饭，确认是否继续约会', 500, true]];
+        const stepTwoFields = [['confirmedBoundaries', '已确认边界', '公共场所见面；任何亲密行为需当场确认', 1200, true], ['pendingItems', '待确认事项', '散场时间', 800, false], ['riskNotice', '风险提示', '各自独立到场，可随时离开', 800, false]];
+        for (const [key, label, placeholder, maxLength, required] of (step === 1 ? stepOneFields : stepTwoFields)) {
             const block = element('label', { className: 'yl-settings-field' }); block.appendChild(element('span', { text: label }));
             const input = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: key === 'confirmedBoundaries' ? 4 : 2, maxLength, placeholder, value: values[key], disabled: pending });
             if (required) input.required = true;
             listen(input, input, 'input', () => { values[key] = input.value; }, ctx.abortController.signal); block.appendChild(input); wrapper.appendChild(block);
         }
-        const commit = element('button', { className: 'yl-settings-button', type: 'button', disabled: pending, text: pending ? '正在保存…' : '填入正文草稿' });
-        listen(commit, commit, 'click', () => { void runMeetupHandoff(session); }, ctx.abortController.signal); wrapper.appendChild(commit);
+        const actions = element('div', { className: 'yl-meetup-actions' });
+        if (step === 1) {
+            const next = element('button', { className: 'yl-settings-button', type: 'button', disabled: pending, text: '下一步' });
+            listen(next, next, 'click', () => { meetupStepBySession.set(session.sessionUid, 2); ctx.renderPage(); }, ctx.abortController.signal);
+            actions.appendChild(next);
+        } else {
+            const back = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', disabled: pending, text: '上一步' });
+            listen(back, back, 'click', () => { meetupStepBySession.set(session.sessionUid, 1); ctx.renderPage(); }, ctx.abortController.signal);
+            const commit = element('button', { className: 'yl-settings-button', type: 'button', disabled: pending, text: pending ? '正在保存…' : '填入正文草稿' });
+            listen(commit, commit, 'click', () => { void runMeetupHandoff(session); }, ctx.abortController.signal);
+            append(actions, [back, commit]);
+        }
+        wrapper.appendChild(actions);
+        wrapper.appendChild(element('p', { className: 'yl-meetup-note', text: '提交只会把行动提示词填入正文输入框，不会自动发送。' }));
         return wrapper;
     }
     async function runMeetupHandoff(session) {
@@ -580,7 +800,12 @@ export function createChatPage(ctx) {
         const result = typeof ctx.actionBridge.runPrivateChatMeetupHandoff === 'function'
             ? await ctx.actionBridge.runPrivateChatMeetupHandoff(request)
             : await ctx.actionBridge.runMeetupHandoff({ ...request, npcUid: session.npcUid });
-        if (result.ok && result.draftApplied) { ctx.meetupDrafts.delete(session.sessionUid); ctx.activeMeetupSessionUid = ''; ctx.setFeedback('正文草稿已填入，未自动发送。', operationToken); }
+        if (result.ok && result.draftApplied) {
+            ctx.meetupDrafts.delete(session.sessionUid);
+            meetupStepBySession.delete(session.sessionUid);
+            ctx.activeMeetupSessionUid = '';
+            ctx.setFeedback('正文草稿已填入，未自动发送。', operationToken);
+        }
         else if (result.ok) ctx.setFeedback('已保存约定，但没有找到正文输入框。', operationToken);
         else ctx.setFeedback(describeActionFailure(result), operationToken);
         ctx.refreshState();
@@ -589,12 +814,14 @@ export function createChatPage(ctx) {
         cancelChatToolLongPress,
         clearChatToolClickSuppression,
         buildPrivateChatPage,
+        buildChatSessionRail,
         buildChatContextPanel,
         closeChatMoreMenu,
         buildConversationHeader,
         buildPrivateChatConfirmation,
         runPrivateChatDestructiveAction,
-        buildMessageBubble,
+        buildMessageTimeline,
+        buildTypingIndicator,
         isPrivateChatVisible,
         clearSummaryToast,
         showSummaryToast,

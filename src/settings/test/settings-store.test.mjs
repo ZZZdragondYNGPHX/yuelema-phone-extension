@@ -52,7 +52,7 @@ test('默认内存存储与预设 CRUD、默认策略、功能回退', () => {
     const store = createSettingsStore({ storage });
     const initial = store.load();
     assert.equal(initial.schema, 'yuelema.settings');
-    assert.equal(initial.schemaVersion, 11);
+    assert.equal(initial.schemaVersion, 13);
     assert.deepEqual(initial.personalization, { enabled: true, keywordWeightsByMode: { SFW: [], NSFW: [] } });
     assert.equal(initial.connectionPresets.length, 0);
     assert.equal(initial.promptPresets.length, 22);
@@ -167,7 +167,7 @@ test('连接预设传输模式可持久化并严格校验', () => {
     );
 });
 
-test('旧 settings schema v1-v10 统一拒绝且不覆盖当前 v11 设置', () => {
+test('旧 settings schema v1-v10 统一拒绝且不覆盖当前 v13 设置', () => {
     const store = createSettingsStore({ storage: createMemoryStorage() });
     const current = store.load();
     const before = store.exportJson();
@@ -177,6 +177,39 @@ test('旧 settings schema v1-v10 统一拒绝且不覆盖当前 v11 设置', () 
         legacy.schemaVersion = schemaVersion;
         assert.throws(() => store.importJson(JSON.stringify(legacy)), errorCode('UNSUPPORTED_SETTINGS_VERSION'));
         assert.equal(store.exportJson(), before);
+    }
+});
+
+test('v11/v12 设置在加载与导入时迁移到 v13：内置提示词刷新为新文案，自定义预设保留', () => {
+    for (const legacyVersion of [11, 12]) {
+        const seedStore = createSettingsStore({ storage: createMemoryStorage() });
+        seedStore.load();
+        seedStore.addPromptPreset(prompt('custom_keep', '自定义预设', 'NSFW'));
+        const legacy = JSON.parse(seedStore.exportJson());
+        legacy.schemaVersion = legacyVersion;
+        const staleContent = '旧版内置文案：只做许可不做指导。';
+        for (const preset of legacy.promptPresets) {
+            if (preset.id === 'builtin_private_chat_nsfw' || preset.id === 'builtin_recommendation_sfw') {
+                preset.content = staleContent;
+            }
+        }
+
+        const seeded = createMemoryStorage({ [SETTINGS_STORAGE_KEY]: JSON.stringify(legacy) });
+        const migrated = createSettingsStore({ storage: seeded }).load();
+        assert.equal(migrated.schemaVersion, 13);
+        assert.match(migrated.promptPresets.find((preset) => preset.id === 'builtin_private_chat_nsfw').content, /露骨文爱/u);
+        assert.match(migrated.promptPresets.find((preset) => preset.id === 'builtin_private_chat_nsfw').content, /欲擒故纵/u, '迁移后应带上 v13 情色写作指导');
+        assert.match(migrated.promptPresets.find((preset) => preset.id === 'builtin_recommendation_sfw').content, /本模式保持日常社交尺度/u);
+        assert.equal(migrated.promptPresets.some((preset) => preset.content === staleContent), false);
+        assert.equal(migrated.promptPresets.find((preset) => preset.id === 'custom_keep').content, '提示词-custom_keep');
+        assert.equal(JSON.parse(seeded.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 13, '迁移结果必须落盘为 v13');
+
+        const imported = createSettingsStore({ storage: createMemoryStorage() });
+        const result = imported.importJson(JSON.stringify(legacy));
+        assert.equal(result.schemaVersion, 13);
+        assert.match(result.promptPresets.find((preset) => preset.id === 'builtin_private_chat_nsfw').content, /露骨文爱/u);
+        assert.match(result.promptPresets.find((preset) => preset.id === 'builtin_private_chat_nsfw').content, /欲擒故纵/u);
+        assert.equal(result.promptPresets.find((preset) => preset.id === 'custom_keep').content, '提示词-custom_keep');
     }
 });
 
@@ -321,10 +354,10 @@ test('browser-local group and forum binding overlays resolve without changing ex
     }), errorCode('UNKNOWN_PRESET_ID'));
 });
 
-test('生图设置 v11 严格隔离密钥并按对话类型保存自动生图开关', () => {
+test('生图设置严格隔离密钥并按对话类型保存自动生图开关', () => {
     const store = createSettingsStore({ storage: createMemoryStorage() });
     const initial = store.load();
-    assert.equal(initial.schemaVersion, 11);
+    assert.equal(initial.schemaVersion, 13);
     assert.equal(initial.imageGeneration.enabled, false);
     assert.equal(initial.imageGeneration.apiMode, 'novelai');
     assert.deepEqual(initial.imageGeneration.conversationSettings, { private: {}, group: {}, forum: {} });

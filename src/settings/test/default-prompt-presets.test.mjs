@@ -47,12 +47,17 @@ test('内置 SFW/NSFW 提示词保持一一隔离的模式映射', () => {
     assert.equal(BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw, 'builtin_service_profile_nsfw');
 });
 
-test('SFW 内置提示词继续限制露骨或性化内容', () => {
+test('SFW 内置提示词只用一句话表达日常社交尺度，不再携带硬性禁止清单', () => {
     for (const preset of presetsByMode('SFW')) {
         assert.match(
             preset.content,
-            /保持 SFW|不得出现成人取向|不得把成人或色情取向混入 SFW|不使用露骨|不写露骨|不引入性化|不输出性化/,
-            `${preset.id} 缺少 SFW 非露骨限制`,
+            /本模式保持日常社交尺度/,
+            `${preset.id} 缺少日常社交尺度提示`,
+        );
+        assert.doesNotMatch(
+            preset.content,
+            /不得出现成人取向|不得把成人或色情取向混入|不使用露骨|不写露骨|不引入性化|不输出性化、露骨/,
+            `${preset.id} 不得保留 SFW 硬性禁止清单`,
         );
         assert.doesNotMatch(
             preset.content,
@@ -83,6 +88,30 @@ test('NSFW 内置提示词以自愿成年人的主动线上成人表达为默认
             /克制|不露骨|不得.{0,8}露骨|只能.{0,12}(?:含糊|隐晦|保守)/,
             `${preset.id} 不得继续施加成人尺度限制`,
         );
+    }
+});
+
+test('NSFW 内置提示词从许可式升级为指导式：各职能带具体情色写作指导', () => {
+    const GUIDANCE_BASELINE = {
+        [BUILTIN_PROMPT_PRESET_IDS.recommendationNsfw]: [/咬合/, /独有的色/, /感官画面/, /钩子/],
+        [BUILTIN_PROMPT_PRESET_IDS.privateChatNsfw]: [/欲擒故纵/, /感官细节/, /破碎|喘息/, /命令与恳求/, /隔着屏幕/],
+        [BUILTIN_PROMPT_PRESET_IDS.groupChatNsfw]: [/荤法/, /有来有回/, /分寸差异/, /人设/],
+        [BUILTIN_PROMPT_PRESET_IDS.forumNsfw]: [/钩子/, /有来有回|接龙/, /个性差异/, /感官细节/],
+        [BUILTIN_PROMPT_PRESET_IDS.chatSummaryNsfw]: [/温度而非流水账/, /关键节点/, /兴奋点与雷区/, /热度/],
+        [BUILTIN_PROMPT_PRESET_IDS.characterCompletionNsfw]: [/咬合/, /独有的色/, /场景、节奏/, /口癖/],
+        [BUILTIN_PROMPT_PRESET_IDS.characterAuthoringNsfw]: [/人格化/, /延伸或反差/, /口癖/, /钩子/, /欲望层次/],
+        [BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw]: [/剧目要具体可选/, /卖点/, /感官细节/, /咬合/],
+        [BUILTIN_PROMPT_PRESET_IDS.soulMatchNsfw]: [/欲望维度/, /细化/, /同一种色/],
+        [BUILTIN_PROMPT_PRESET_IDS.voiceMatchNsfw]: [/声音维度/, /气音/, /语气/],
+        [BUILTIN_PROMPT_PRESET_IDS.imageMatchNsfw]: [/氛围与构图/, /光线/, /衣物细节/, /独有的色/],
+    };
+    const presets = presetsByMode('NSFW');
+    assert.equal(Object.keys(GUIDANCE_BASELINE).length, presets.length, '每个 NSFW 预设都必须有写作指导基线');
+    for (const preset of presets) {
+        for (const pattern of GUIDANCE_BASELINE[preset.id]) {
+            assert.match(preset.content, pattern, `${preset.id} 缺少写作指导：${pattern}`);
+        }
+        assert.ok(preset.content.length <= 12_000, `${preset.id} 超出提示词长度上限`);
     }
 });
 

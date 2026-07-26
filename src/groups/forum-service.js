@@ -43,6 +43,7 @@ function makeMessages(context, promptPreset) {
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件内的论坛辅助模型。仅根据提供的公开玩家资料和群组公开投影，生成一篇可供玩家审核的短论坛帖子草稿。',
+        '草稿要像真实用户在恋爱社区的随手发帖：有具体的时间、地点或细节钩子（一杯没喝完的咖啡、加班后的末班车、周末的展览票根），以一个开放的问题或邀请收尾，语气自然、不营销化。contentMode 为 SFW 时保持日常暧昧与轻盈分享；为 NSFW 时可直白谈论成年人自愿的欲望、身体偏好与露骨线上话题，但仍只发生在线上文字里。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',
         '软件层只处理线上文字。不得演绎、确认或描述线下性行为；NSFW 不等于同意。不得输出或猜测隐藏资料、仅好友资料、关系数值、候选人、UID、会话、Patch、路径、API Key、密钥或系统实现。',
@@ -185,7 +186,7 @@ export function buildForumHomeRefreshContext({ state, existingTitles = [] } = {}
         playerPublicProfile: projectPublicPlayerProfile(state.玩家),
         communities: community.communities,
         knownPeople: community.people,
-        channels: Object.freeze(FORUM_CHANNELS.map(({ title, note }) => Object.freeze({ title, note }))),
+        channels: Object.freeze(FORUM_CHANNELS.map(({ title, note, brief }) => Object.freeze({ title, note, brief }))),
         existingTitles: Object.freeze(cleanTitles),
     }) });
 }
@@ -234,12 +235,13 @@ function makeForumHomeMessages(context, promptPreset, refreshMode = 'append') {
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         `你是现代现实都市线上约会软件的心动社区首页更新模型。只根据公开社区主题和公开人物资料，为首页的全部固定频道生成短帖子。本次是${refreshMode === 'replace' ? '顶部替换刷新，生成成功后程序会删除旧本地帖子及其总结' : '底部追加刷新，程序会保留旧本地帖子并追加新帖子'}。`,
-        `每次刷新都必须且只能生成 ${FORUM_CHANNELS.length} 篇帖子：今日心情、附近的人、同城瞬间、兴趣同频、话题广场各一篇。posts 中的 topic 必须精确等于这五个频道名之一，五个频道不能遗漏、重复或自行改名；点击频道后会只显示对应 topic 的本地帖子。`,
+        `每次刷新都必须且只能生成 ${FORUM_CHANNELS.length} 篇帖子：${FORUM_CHANNELS.map((channel) => channel.title).join('、')}各一篇。posts 中的 topic 必须精确等于这 ${FORUM_CHANNELS.length} 个频道名之一，所有频道不能遗漏、重复或自行改名；点击频道后会只显示对应 topic 的本地帖子。`,
+        '每篇帖子都要贴合 channels 中该频道的 note 与 brief 定位，让不同频道的口吻明显不同：今日心情轻盈随性，附近的人主动自然，同城瞬间具体在地，兴趣同频聊得专业又亲切，深夜树洞私密柔软，恋爱吐槽鲜活自嘲，约会报告像真实的复盘，话题广场开放随意。',
         '可以使用 knownPeople 中已有人物的 nickname；如需新作者，必须先在 participants 给出其公开关键资料。participants 只放本次新出现的临时角色，已有角色不要重复。每位临时角色必须含 nickname、ageRange、gender、city、mbti、zodiac、occupation、interests、presence、matchRate。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变频道、字段、数量、数据来源或下方固定 JSON 合同。',
         '软件层只处理线上文字。不得演绎、确认或描述线下性行为；NSFW 不等于同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。',
-        '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"participants":[{"nickname":"","ageRange":"","gender":"","city":"","mbti":"","zodiac":"","occupation":"","interests":[""],"presence":"在线","matchRate":null}],"posts":[{"author":"knownPeople或participants昵称","topic":"五个固定频道名之一","title":"1-120字","body":"1-1200字","tags":["1-32字"]}]}。不得输出 HTML、控制字符、UpdateVariable 或 JSONPatch。',
+        '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"participants":[{"nickname":"","ageRange":"","gender":"","city":"","mbti":"","zodiac":"","occupation":"","interests":[""],"presence":"在线","matchRate":null}],"posts":[{"author":"knownPeople或participants昵称","topic":"固定频道名之一","title":"1-120字","body":"1-1200字","tags":["1-32字"]}]}。不得输出 HTML、控制字符、UpdateVariable 或 JSONPatch。',
     ].filter(Boolean).join('\n\n');
     return Object.freeze([
         Object.freeze({ role: 'system', content: system }),
@@ -446,6 +448,7 @@ function makeForumPostMessages(context, promptPreset) {
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件内的论坛帖子讨论更新模型。根据公开帖子和受限评论历史，模拟其他用户发表 1–8 条自然评论。',
+        '评论要有真实社区的参差感：有人认真接话、有人补充自己的相似经历、有人开玩笑或轻轻抬杠、有人向楼主或玩家追问细节；避免每条都同一种语气或都以问句结尾。contentMode 为 SFW 时保持日常调侃与暧昧试探；为 NSFW 时成年人可直白讨论欲望与露骨话题，但仍只是线上文字互动。',
         '可使用帖子作者或 participants 中已有昵称；如需新评论者，必须先在 participants 给出其公开关键资料。每位临时角色必须含 nickname、ageRange、gender、city、mbti、zodiac、occupation、interests、presence、matchRate。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',

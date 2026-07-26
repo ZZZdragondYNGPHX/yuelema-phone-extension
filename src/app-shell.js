@@ -9,9 +9,12 @@ import { createLauncherDragController } from './launcher-drag.js';
 import { createImageManagerPanel } from './images/image-manager-panel.js';
 import { formatImageDirective } from './images/image-directive.js';
 import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
+import { createUnreadBadge } from './ui/badge.js';
 import { createOperationActivity } from './ui/operation-activity.js';
 import { createUiIcon } from './ui/icon.js';
+import { createRomanceHearts } from './ui/romance-hearts.js';
 import { createMediaState } from './ui/media-state.js';
+import { createEmptyState } from './ui/empty-state.js';
 import { createDialogController } from './ui/dialog-controller.js';
 import { DEFAULT_FORUM_AUTO_SETTINGS, DEFAULT_GROUP_AUTO_SETTINGS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 import { SERVICE_UNLOCK_STORAGE_KEY, createSharedHelpers } from './pages/shared.js';
@@ -33,18 +36,19 @@ const LOCAL_PAGE_COPY = Object.freeze({
 });
 function pageCopy(pageId) { return PAGE_COPY[pageId] ?? LOCAL_PAGE_COPY[pageId] ?? null; }
 const PRIMARY_PAGE_FOR = Object.freeze({
-    group_chat: 'groups', group_chat_room: 'groups', group_chat_create: 'groups', group_chat_summary: 'groups', group_forum: 'groups', forum_post: 'groups', forum_post_summary: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home',
+    group_chat: 'groups', group_chat_room: 'groups', group_chat_create: 'groups', group_chat_summary: 'groups', group_forum: 'groups', forum_post: 'groups', forum_post_summary: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home',
 });
+// E1 裁平（裁决 D7）：settings 目录页已删除，全部设置二级页与“关于软件”直接挂在「我的」下。
 const PAGE_PARENT_FOR = Object.freeze({
-    group_chat: 'groups', group_chat_room: 'group_chat', group_chat_create: 'group_chat', group_chat_summary: 'group_chat_room', group_forum: 'groups', forum_post: 'group_forum', forum_post_summary: 'forum_post', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', settings_image_generation: 'settings', settings_console: 'settings', settings_chat_summary: 'settings', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'settings', candidate_detail: 'home',
+    group_chat: 'groups', group_chat_room: 'group_chat', group_chat_create: 'group_chat', group_chat_summary: 'group_chat_room', group_forum: 'groups', forum_post: 'group_forum', forum_post_summary: 'forum_post', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'profile', settings_image_generation: 'profile', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'profile', candidate_detail: 'home',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
     matches: Object.freeze([{ key: 'soul_match', title: '灵魂匹配' }, { key: 'text_match', title: '描述匹配' }]),
     messages: Object.freeze([{ key: 'chat', title: '私聊' }]),
-    group_forum: Object.freeze([{ key: 'forum', title: '论坛' }]),
+    // group_forum 不再出现：社区广场的「社区设置」入口由 community.js 自建 topbar「⋯」承担（P2-C）。
     character_creator: Object.freeze([{ key: 'character_ai_completion', title: 'AI 完善补全' }, { key: 'character_full_authoring', title: 'AI 完整创作' }]),
     service_hub: Object.freeze([{ key: 'service_profile_generation', title: '约伴服务角色生成' }]),
 });
@@ -111,7 +115,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let releaseNotesClickStreak = 0;
     let serviceEntryUnlocked = false;
     let serviceHubUnlocked = (() => { try { return globalThis.localStorage?.getItem(SERVICE_UNLOCK_STORAGE_KEY) === '1'; } catch { return false; } })();
-    let activeServiceHubTab = 'home';
+    let activeServiceHubTab = 'featured';
     let activeServiceCategoryId = '';
     // XP search stays only in this mounted UI instance. It never enters MVU, history, or diagnostics.
     let serviceXpSearchDraft = '';
@@ -285,12 +289,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         ariaLabel: '关闭操作弹窗',
     }));
     const operationTitle = element('h2', { text: '' });
+    // 恋爱四态动画与匹配页共用同一 SVG 双心构建器（src/ui/romance-hearts.js），不再渲染字符动画。
     const romanceVisual = element('div', { className: 'yl-romance-visual', hidden: true, ariaLabel: '恋爱互动状态动画' });
     romanceVisual.setAttribute('aria-hidden', 'true');
-    const romanceLeft = element('span', { className: 'yl-romance-heart yl-romance-heart-left', text: '♥' });
-    const romanceSignal = element('span', { className: 'yl-romance-signal', text: '∿∿∿' });
-    const romanceRight = element('span', { className: 'yl-romance-heart yl-romance-heart-right', text: '♥' });
-    append(romanceVisual, [romanceLeft, romanceSignal, romanceRight]);
     const operationMessage = element('p', { className: 'yl-phone-page-description', text: '' });
     const operationActions = element('div', { className: 'yl-settings-actions' });
     const operationClose = element('button', {
@@ -350,10 +351,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     const forumSettingsDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-forum-settings-dialog', hidden: true });
     forumSettingsDialog.setAttribute('role', 'dialog');
     forumSettingsDialog.setAttribute('aria-modal', 'false');
-    forumSettingsDialog.setAttribute('aria-label', '心动社区设置');
+    forumSettingsDialog.setAttribute('aria-label', '社区设置');
     const forumSettingsTitlebar = element('div', { className: 'yl-dialog-titlebar' });
-    const forumSettingsTitle = element('h2', { text: '心动社区设置' });
-    const forumSettingsClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭心动社区设置' }));
+    const forumSettingsTitle = element('h2', { text: '社区设置' });
+    const forumSettingsClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭社区设置' }));
     const forumSettingsContent = element('div', { className: 'yl-settings-panel yl-forum-settings-content' });
     append(forumSettingsTitlebar, [forumSettingsTitle, forumSettingsClose]);
     append(forumSettingsDialog, [forumSettingsTitlebar, forumSettingsContent]);
@@ -685,7 +686,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         serviceXpSearchDraft = '';
         serviceXpSearchApplied = '';
         activeServiceCategoryId = ctx.serviceHubModeCopy(currentView?.mode).categories[0]?.id ?? '';
-        activeServiceHubTab = 'home';
+        activeServiceHubTab = 'featured';
     }
     function disableServiceHub() {
         serviceHubUnlocked = false;
@@ -928,10 +929,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         romanceVisual.replaceChildren();
         if (visual) {
             romanceVisual.dataset.visual = visual;
-            append(romanceVisual, [romanceLeft, romanceSignal, romanceRight]);
+            romanceVisual.appendChild(createRomanceHearts(documentRef, visual));
         } else delete romanceVisual.dataset.visual;
-        romanceSignal.textContent = visual === 'accepted' ? '♥' : visual === 'declined' || visual === 'failure' ? '╳' : '∿∿∿';
-        romanceRight.textContent = visual === 'declined' || visual === 'failure' ? '♡' : '♥';
         const wasHidden = operationDialog.hidden;
         operationDialog.hidden = false;
         operationDialog.setAttribute('role', state === 'failure' ? 'alertdialog' : 'dialog');
@@ -1056,7 +1055,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function backPage(pageId) {
         if (PAGE_PARENT_FOR[pageId]) return PAGE_PARENT_FOR[pageId];
-        if (String(pageId).startsWith("settings_")) return "settings";
+        if (String(pageId).startsWith("settings_")) return "profile";
         if (String(pageId).startsWith("group_")) return "groups";
         if (String(pageId).startsWith("profile_")) return "profile";
         return "";
@@ -1124,13 +1123,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         dialogController.open(bindingDialog, { onRequestClose: closeFeatureBindingDialog });
     }
     function buildFeatureOptionsButton(pageId) {
+        // group_forum 已无壳层「设置」钮：社区广场的设置入口由 community.js topbar「⋯」自建。
         const features = FEATURE_BINDING_FOR_PAGE[pageId];
         if (!features) return null;
-        const isForumHome = pageId === 'group_forum';
-        const button = element('button', { className: 'yl-feature-options', type: 'button', text: '设置', ariaLabel: isForumHome ? '打开心动社区设置' : ('配置' + (pageCopy(pageId)?.title || '此功能') + '预设') });
+        const button = element('button', { className: 'yl-feature-options', type: 'button', text: '设置', ariaLabel: '配置' + (pageCopy(pageId)?.title || '此功能') + '预设' });
         listen(button, button, 'click', () => {
-            if (isForumHome) ctx.openForumSettingsDialog();
-            else openFeatureBinding(features, (pageCopy(pageId)?.title || '功能') + '选项');
+            openFeatureBinding(features, (pageCopy(pageId)?.title || '功能') + '选项');
         }, abortController.signal);
         return button;
     }
@@ -1188,7 +1186,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         content.replaceChildren();
         const page = element('article', { className: `yl-phone-page yl-page-${activePage}` });
         page.appendChild(buildPageHeading(copy, activePage));
-        if (currentView.status !== 'ready') page.appendChild(buildEmptyPlaceholder('暂时无法读取当前聊天的软件状态。', { icon: '◌' }));
+        if (currentView.status !== 'ready') page.appendChild(buildEmptyPlaceholder('暂时无法读取当前聊天的软件状态。', { variant: 'search' }));
         else if (activePage === 'home') page.appendChild(currentView.candidate ? ctx.buildCandidateCard(currentView.candidate) : ctx.buildEmptyCandidateCard());
         else if (activePage === 'matches') page.appendChild(ctx.buildMatchesPage());
         else if (activePage === 'messages') page.appendChild(ctx.buildMessagesPage());
@@ -1206,10 +1204,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'profile_editor') page.appendChild(ctx.buildProfileEditor());
         else if (activePage === 'character_creator') page.appendChild(buildCharacterCreator());
         else if (activePage === 'favorites') page.appendChild(ctx.buildFavoritesPage());
-        else if (activePage === 'settings') page.appendChild(ctx.buildSettingsHome());
         else if (activePage === 'about') page.appendChild(ctx.buildAboutSoftwarePage());
         else if (activePage === 'service_hub') page.appendChild(ctx.buildServiceHubPage());
         else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images', 'settings_image_generation'].includes(activePage)) page.appendChild(buildSettingsDetail());
+        else if (activePage === 'settings_preferences') page.appendChild(ctx.buildPreferenceSettingsPage());
         else if (activePage === 'settings_console') page.appendChild(ctx.buildOperationConsole());
         else if (activePage === 'settings_chat_summary') page.appendChild(ctx.buildChatSummarySettingsHome());
         else if (activePage === 'settings_chat_summary_config') page.appendChild(ctx.buildChatSummaryConfigPage());
@@ -1222,6 +1220,19 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const selected = id === primaryPage(activePage);
             button.classList.toggle('is-active', selected);
             button.setAttribute('aria-current', selected ? 'page' : 'false');
+        }
+        // 消息 tab 未读总数徽章（策划书 §4.1/§7.1.2，裁决 D6）：数字来自消息页的本地已读水位，
+        // 纯 UI 状态；页面模块未挂载时静默跳过。
+        const messagesNavButton = navButtons.get('messages');
+        if (messagesNavButton) {
+            const navIconWrap = messagesNavButton.querySelector('.yl-nav-icon');
+            navIconWrap?.querySelector('.yl-nav-unread-badge')?.remove();
+            const unreadTotal = Number(ctx.messageUnreadTotal?.() ?? 0);
+            const navUnreadBadge = unreadTotal > 0 ? createUnreadBadge(unreadTotal, { documentRef }) : null;
+            if (navUnreadBadge && navIconWrap) {
+                navUnreadBadge.classList.toggle('yl-nav-unread-badge', true);
+                navIconWrap.appendChild(navUnreadBadge);
+            }
         }
     }
 
@@ -1239,11 +1250,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 : null,
         });
     }
-    function buildEmptyPlaceholder(text, { tag = 'div', icon = '✧' } = {}) {
-        const placeholder = element(tag, { className: 'yl-phone-placeholder' });
-        const glyph = element('span', { className: 'yl-empty-icon', text: icon });
-        glyph.setAttribute('aria-hidden', 'true');
-        append(placeholder, [glyph, element('span', { className: 'yl-empty-text', text })]);
+    /** P3-D：占位空态统一走 EmptyState 的本地 SVG 插画，字符图标清零；旧 icon 字符参数仅兼容忽略。 */
+    function buildEmptyPlaceholder(text, { variant = 'inbox' } = {}) {
+        const placeholder = createEmptyState({ documentRef, variant, title: text });
+        placeholder.classList.add('yl-phone-placeholder');
         return placeholder;
     }
 
@@ -1418,7 +1428,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         imageAssetsReady, imageMatchPending, imageProfileKey, localProfileCharacterUid, matchedImageFor, meetupDrafts, nav, openAvatarDialog,
         openFeatureBinding, openMark, operationActivity, playerAvatarStore, privateImageDirectives, refreshState, renderPage, retryCandidateImage,
         root, selectedServiceProfileIds, serviceBoundaryDrafts, serviceGenerationBatches, serviceLocalProfiles, serviceNavButton, serviceOrderHistoryStore, setActivePage,
-        setFeedback, settingsStore, showAiLoading, showAiResult, showRomanceLoading, showRomanceResult, toggleContentModeFromSlider,
+        setFeedback, setUiLayoutMode, settingsStore, showAiLoading, showAiResult, showRomanceLoading, showRomanceResult, toggleContentModeFromSlider,
     });
     Object.assign(ctx, createSharedHelpers(ctx));
     Object.assign(ctx, createDiscoverPage(ctx), createMatchPage(ctx), createMessagesPage(ctx), createChatPage(ctx), createCommunityPage(ctx), createServicePage(ctx), createProfilePage(ctx));

@@ -100,6 +100,9 @@ function forumRefreshPosts(author) {
         { author, topic: '附近的人', title: '附近的公园散步', body: '傍晚想去公园慢走，有人也在附近吗？', tags: ['附近', '散步'] },
         { author, topic: '同城瞬间', title: '午后花店', body: '发现一家阳光很好的小花店，适合慢慢挑花。', tags: ['同城', '花店'] },
         { author, topic: '兴趣同频', title: '交换一张书单', body: '最近读到一本很喜欢的小说，想认识也爱阅读的朋友。', tags: ['阅读', '同好'] },
+        { author, topic: '深夜树洞', title: '睡前的一点心事', body: '最近总在深夜想起一些没说出口的话，想找人轻轻聊聊。', tags: ['深夜', '心事'] },
+        { author, topic: '恋爱吐槽', title: '开场白能不能走点心', body: '连续三个“在吗”，大家收过最敷衍的开场白是什么？', tags: ['吐槽', '开场白'] },
+        { author, topic: '约会报告', title: '美术馆初见小结', body: '第一次面基约在美术馆，聊得比预期自然，想听听大家的初见选址。', tags: ['约会', '报告'] },
         { author, topic: '话题广场', title: '周末的快乐清单', body: '分享一个让你期待周末的小计划吧。', tags: ['话题', '周末'] },
     ];
 }
@@ -117,10 +120,10 @@ test('forum home refresh only consumes public community context and returns loca
         }) }; } },
     });
     assert.equal(result.ok, true);
-    assert.equal(result.update.posts.length, 5);
-    assert.deepEqual(result.update.posts.map((post) => post.topic), ['今日心情', '附近的人', '同城瞬间', '兴趣同频', '话题广场']);
+    assert.equal(result.update.posts.length, 8);
+    assert.deepEqual(result.update.posts.map((post) => post.topic), ['今日心情', '附近的人', '同城瞬间', '兴趣同频', '深夜树洞', '恋爱吐槽', '约会报告', '话题广场']);
     assert.match(request.messages[0].content, /心动社区首页更新模型/u);
-    assert.match(request.messages[0].content, /今日心情、附近的人、同城瞬间、兴趣同频、话题广场各一篇/u);
+    assert.match(request.messages[0].content, /今日心情、附近的人、同城瞬间、兴趣同频、深夜树洞、恋爱吐槽、约会报告、话题广场各一篇/u);
     assert.doesNotMatch(JSON.stringify(request.messages), /玩家隐藏资料|成员隐藏资料|不得进入论坛/u);
 });
 
@@ -132,7 +135,7 @@ test('forum home refresh rejects a model batch that omits or duplicates a fixed 
     assert.equal(incomplete.code, 'forum_update_response_invalid');
 
     const posts = forumRefreshPosts('许青');
-    const duplicated = [...posts.slice(0, 4), { ...posts[0], title: '重复频道' }];
+    const duplicated = [...posts.slice(0, 7), { ...posts[0], title: '重复频道' }];
     const repeated = await generateForumHomeRefresh({
         state: state(), existingTitles: [], settingsStore: { resolveFunction: settings },
         llmClient: { async chat() { return { text: JSON.stringify({ participants: [], posts: duplicated }) }; } },
@@ -159,7 +162,7 @@ test('forum automatic update receives only numbered public post slots, updates e
         } },
     });
     assert.equal(result.ok, true);
-    assert.equal(result.update.updates.length, 5);
+    assert.equal(result.update.updates.length, 8);
     assert.equal(result.update.updates[0].slot, 1);
     const system = request.messages[0].content;
     assert.match(system, /既有帖子自动更新模型/u);

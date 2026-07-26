@@ -1,5 +1,6 @@
 import { append, element, listen } from '../dom.js';
 import { createAvatarView } from '../ui/avatar-view.js';
+import { createUiIcon } from '../ui/icon.js';
 import { CHARACTER_TEMPLATE_FORMAT, importCharacterTemplate, projectCharacterTemplateError } from './character-template-codec.js';
 import { avatarAcceptAttribute, compressLocalAvatar, projectAvatarError } from './avatar-codec.js';
 import { projectRemoteImportError } from '../images/remote-image-import.js';
@@ -148,7 +149,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
 
     const hero = element('article', { className: 'yl-character-hero' });
     const heroCopy = element('div', { className: 'yl-character-hero-copy' });
-    heroCopy.appendChild(element('p', { className: 'yl-character-hero-eyebrow', text: 'CREATE A NEW CONNECTION' }));
+    heroCopy.appendChild(element('p', { className: 'yl-character-hero-eyebrow', text: '创建新角色' }));
     heroCopy.appendChild(element('h2', { className: 'yl-character-hero-title', text: '让下一次心动，从一份认真资料开始' }));
     const heroTrust = element('div', { className: 'yl-character-hero-trust' });
     append(heroTrust, [
@@ -157,12 +158,8 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         element('span', { className: 'yl-character-trust-chip', text: '首页仅展示公开资料' }),
     ]);
     heroCopy.appendChild(heroTrust);
-    const journey = element('div', { className: 'yl-character-journey', ariaLabel: '创建角色步骤' });
-    for (const [number, label] of [['01', '心动名片'], ['02', '形象与灵感'], ['03', '边界与节奏'], ['04', '确认登记']]) {
-        const item = element('div', { className: 'yl-character-journey-item' });
-        append(item, [element('span', { className: 'yl-character-journey-number', text: number }), element('span', { className: 'yl-character-journey-label', text: label })]);
-        journey.appendChild(item);
-    }
+    // 4 步 journey：真锚点导航（按钮在分段构建完成后接线），不再是纯装饰条。
+    const journey = element('nav', { className: 'yl-character-journey', ariaLabel: '创建角色步骤' });
     append(hero, [heroCopy, journey]);
     section.appendChild(hero);
 
@@ -171,23 +168,55 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
 
     const form = element('form', { className: 'yl-character-form' });
 
+    // —— 步骤卡折叠（手机端单列可折叠；锚点跳转与表单校验会自动展开目标卡） ——
+    const collapsibleCards = new Map();
+    function expandCard(target) {
+        const setCollapsed = collapsibleCards.get(target);
+        if (setCollapsed) setCollapsed(false);
+    }
+    function expandCardContaining(node) {
+        let current = node;
+        while (current) {
+            if (collapsibleCards.has(current)) { expandCard(current); return; }
+            current = current.parentNode ?? null;
+        }
+    }
+    function collapsibleBody(sectionEl, heading, titleText) {
+        const body = element('div', { className: 'yl-character-card-body' });
+        const toggle = element('button', { className: 'yl-character-card-toggle', type: 'button', ariaLabel: `折叠：${titleText}` });
+        toggle.setAttribute('aria-expanded', 'true');
+        toggle.appendChild(createUiIcon(documentRef ?? globalThis.document, 'chevron_right', { className: 'yl-ui-icon yl-character-card-toggle-icon' }));
+        heading.appendChild(toggle);
+        sectionEl.appendChild(body);
+        const setCollapsed = (collapsed) => {
+            sectionEl.classList.toggle('is-collapsed', collapsed);
+            body.hidden = collapsed;
+            toggle.setAttribute('aria-expanded', String(!collapsed));
+            toggle.setAttribute('aria-label', `${collapsed ? '展开' : '折叠'}：${titleText}`);
+        };
+        listen(toggle, toggle, 'click', () => setCollapsed(!sectionEl.classList.contains('is-collapsed')), signal);
+        collapsibleCards.set(sectionEl, setCollapsed);
+        return body;
+    }
+
     const publicSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-public', id: 'yl-character-section-public' });
-    sectionHeading(publicSection, {
-        step: '01', eyebrow: 'PUBLIC PROFILE', title: '先做一张让人愿意停留的心动名片',
+    const publicHeading = sectionHeading(publicSection, {
+        step: '01', eyebrow: '公开资料', title: '先做一张让人愿意停留的心动名片',
     });
-    const identityGroup = fieldGroup(publicSection, '基本印象', '', 'yl-character-field-grid yl-character-field-grid-two');
+    const publicBody = collapsibleBody(publicSection, publicHeading, '心动名片');
+    const identityGroup = fieldGroup(publicBody, '基本印象', '', 'yl-character-field-grid yl-character-field-grid-two');
     textField(identityGroup, '怎么称呼 TA', { name: 'public-昵称', required: true, placeholder: '例如：林夏' });
     textField(identityGroup, '公开年龄段', { name: 'public-年龄段', required: true, placeholder: '例如：25-29', hint: '页面展示年龄段；实际年龄在私密资料中单独校验。' });
     textField(identityGroup, '性别认同', { name: 'public-性别', required: true, placeholder: '例如：女 / 男 / 非二元' });
     textField(identityGroup, '期待遇见谁', { name: 'public-性取向', required: true, placeholder: '例如：双性恋 / 异性恋' });
 
-    const encounterGroup = fieldGroup(publicSection, '相遇坐标', '', 'yl-character-field-grid yl-character-field-grid-two');
+    const encounterGroup = fieldGroup(publicBody, '相遇坐标', '', 'yl-character-field-grid yl-character-field-grid-two');
     textField(encounterGroup, '所在城市', { name: 'public-城市', required: true, placeholder: '例如：上海' });
     textField(encounterGroup, '愿意相遇的距离', { name: 'public-距离范围', required: true, placeholder: '例如：10 km / 同城' });
     textField(encounterGroup, '这次想寻找什么', { name: 'public-寻找意图', required: true, placeholder: '例如：先聊天，再认真约会', className: 'yl-character-field-wide' });
     textField(encounterGroup, '一句让人想继续了解的介绍', { name: 'public-简介', required: true, rows: 3, placeholder: '写下日常里的小习惯、喜欢的相处方式，或最近正期待的一件事。', className: 'yl-character-field-wide' });
 
-    const tagsGroup = fieldGroup(publicSection, '心动关键词', '', 'yl-character-field-grid yl-character-field-grid-two yl-character-tags-group');
+    const tagsGroup = fieldGroup(publicBody, '心动关键词', '', 'yl-character-field-grid yl-character-field-grid-two yl-character-tags-group');
     const tagCopy = {
         兴趣标签: ['兴趣与爱好', '例如：电影, 咖啡, 城市漫步'],
         生活方式标签: ['生活节奏', '例如：夜猫子, 周末早起, 偶尔小酌'],
@@ -200,9 +229,10 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     }
 
     const avatarSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-avatar', id: 'yl-character-section-avatar' });
-    sectionHeading(avatarSection, {
-        step: '02', eyebrow: 'PROFILE PHOTO', title: '选一张有故事感的头像',
+    const avatarHeading = sectionHeading(avatarSection, {
+        step: '02', eyebrow: '头像与形象', title: '选一张有故事感的头像',
     });
+    const avatarBody = collapsibleBody(avatarSection, avatarHeading, '形象与灵感');
     const avatarLayout = element('div', { className: 'yl-character-avatar-layout' });
     const avatarSourceField = element('label', { className: 'yl-character-field yl-character-avatar-source' });
     avatarSourceField.appendChild(element('span', { className: 'yl-character-field-label', text: '头像来源' }));
@@ -231,15 +261,16 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         avatarLayout.appendChild(remoteField);
     }
     const avatarNote = element('p', { className: 'yl-phone-page-description yl-character-avatar-note', text: '本地头像会压缩为最长边不超过 1024px 的 WebP；导出模板时可自行选择是否包含头像。' });
-    const drawingGroup = fieldGroup(avatarSection, '生图身份锚点', '英文绘图标签会在生成图片时固定人物外观和当前穿搭；它们不会进入推荐评分、关系判断或普通名片。', 'yl-character-field-grid yl-character-field-grid-two');
+    const drawingGroup = fieldGroup(avatarBody, '生图身份锚点', '英文绘图标签会在生成图片时固定人物外观和当前穿搭；它们不会进入推荐评分、关系判断或普通名片。', 'yl-character-field-grid yl-character-field-grid-two');
     textField(drawingGroup, 'core_dna（固定外观）', { name: 'drawing-core-dna', rows: 3, placeholder: '例如：adult woman, short black bob, warm brown eyes, beauty mark', hint: '首次确定后尽量稳定；只写外观锚点。' });
     textField(drawingGroup, 'outfit_dna（当前穿搭）', { name: 'drawing-outfit-dna', rows: 3, placeholder: '例如：cream knit cardigan, dark denim skirt, ankle boots', hint: '明确换装时再更新；只写服装与配饰。' });
-    append(avatarSection, [avatarLayout, avatarNote, drawingGroup]);
+    append(avatarBody, [avatarLayout, avatarNote, drawingGroup]);
 
     const aiSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-ai', id: 'yl-character-section-ai' });
-    sectionHeading(aiSection, {
-        step: '02 · 可选', eyebrow: 'CREATIVE ASSISTANT', title: 'AI 补全 / 完整创作：还没想完整？让 AI 帮你补上灵感',
+    const aiHeading = sectionHeading(aiSection, {
+        step: '02 · 可选', eyebrow: '创作助手', title: 'AI 补全 / 完整创作：还没想完整？让 AI 帮你补上灵感',
     });
+    const aiBody = collapsibleBody(aiSection, aiHeading, '创作助手');
     const aiChoices = element('div', { className: 'yl-character-ai-choices' });
     const completionCard = element('article', { className: 'yl-character-ai-choice yl-character-ai-choice-completion' });
     if (typeof onConfigureFeature === 'function') {
@@ -267,28 +298,30 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     const authoringButton = element('button', { className: 'yl-phone-action-card yl-character-ai-button yl-button-ai', type: 'button', text: 'AI 完整创作到草稿' });
     authoringCard.appendChild(authoringButton);
     append(aiChoices, [completionCard, authoringCard]);
-    aiSection.appendChild(aiChoices);
-    aiSection.appendChild(element('p', { className: 'yl-character-safety-note', text: '隐私提示：AI 补全不会读取头像、仅好友资料、隐藏资料、偏好与边界或互动阈值。' }));
+    aiBody.appendChild(aiChoices);
+    aiBody.appendChild(element('p', { className: 'yl-character-safety-note', text: '隐私提示：AI 补全不会读取头像、仅好友资料、隐藏资料、偏好与边界或互动阈值。' }));
 
     const friendSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-private', id: 'yl-character-section-private' });
-    sectionHeading(friendSection, {
-        step: '03', eyebrow: 'PRIVATE & BOUNDARIES', title: '把亲近后的真实与边界写清楚',
+    const friendHeading = sectionHeading(friendSection, {
+        step: '03', eyebrow: '私密与边界', title: '把亲近后的真实与边界写清楚',
         description: '这一部分只在你拥有的完整编辑草稿中出现，不会进入普通推荐卡 DOM。明确边界不是扫兴，而是让关系有被尊重的可能。',
     });
-    const friendGroup = fieldGroup(friendSection, '熟悉之后可以知道', '仅好友资料用于更深入的关系推进，不会出现在首页推荐。', 'yl-character-field-grid yl-character-field-grid-two');
+    const friendBody = collapsibleBody(friendSection, friendHeading, '边界与节奏');
+    const friendGroup = fieldGroup(friendBody, '熟悉之后可以知道', '仅好友资料用于更深入的关系推进，不会出现在首页推荐。', 'yl-character-field-grid yl-character-field-grid-two');
     textField(friendGroup, '关系状态', { name: 'friend-关系状态', required: true, placeholder: '例如：单身 / 未说明' });
     textField(friendGroup, '希望对方尊重的边界', { name: 'friend-边界与偏好', required: true, rows: 3, placeholder: '例如：尊重明确拒绝，重要决定先沟通。' });
-    const hiddenGroup = fieldGroup(friendSection, '只属于这份角色草稿', '隐藏资料供系统校验和受控上下文使用，不进入普通 UI 展示。', 'yl-character-field-grid yl-character-field-grid-two yl-character-private-group');
+    const hiddenGroup = fieldGroup(friendBody, '只属于这份角色草稿', '隐藏资料供系统校验和受控上下文使用，不进入普通 UI 展示。', 'yl-character-field-grid yl-character-field-grid-two yl-character-private-group');
     textField(hiddenGroup, '实际年龄', { name: 'hidden-age', type: 'number', value: '18', min: 18, max: 120, required: true, inputMode: 'numeric', hint: '必须满 18 岁；登记前仍会经过完整成年人校验。' });
     textField(hiddenGroup, '私人创作备注', { name: 'hidden-note', rows: 3, placeholder: '记录不希望公开展示的角色设定，可留空。' });
     textField(hiddenGroup, '整体偏好与边界', { name: 'boundary', rows: 3, placeholder: '记录关系推进中需要长期遵守的偏好与边界，可留空。', className: 'yl-character-field-wide' });
 
     const thresholdSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-thresholds', id: 'yl-character-section-thresholds' });
-    sectionHeading(thresholdSection, {
-        step: '03 · 进阶', eyebrow: 'INTERACTION RHYTHM', title: '设定 TA 的互动节奏',
+    const thresholdHeading = sectionHeading(thresholdSection, {
+        step: '03 · 进阶', eyebrow: '互动节奏', title: '设定 TA 的互动节奏',
         description: '0–100 的数值用于表达角色在不同负面互动下的反应门槛。它们不是公开标签，也不会替代剧情中的具体沟通与判断。',
     });
-    const thresholdGrid = fieldGroup(thresholdSection, '关系反应阈值', '数值越低，代表越早对相应行为作出反应。', 'yl-character-field-grid yl-character-field-grid-four yl-character-threshold-grid');
+    const thresholdBody = collapsibleBody(thresholdSection, thresholdHeading, '互动节奏');
+    const thresholdGrid = fieldGroup(thresholdBody, '关系反应阈值', '数值越低，代表越早对相应行为作出反应。', 'yl-character-field-grid yl-character-field-grid-four yl-character-threshold-grid');
     const thresholdHints = {
         拒绝阈值: '何时会明确表达不适或拒绝。',
         已读不回阈值: '何时会因长期无回应调整态度。',
@@ -314,44 +347,79 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     append(form, [publicSection, avatarSection, aiSection, friendSection, thresholdSection, submitSection]);
     section.appendChild(form);
 
-    const stepButtons = [];
-    function activateStepButton(activeButton) {
-        for (const button of stepButtons) {
-            const isActive = button === activeButton;
-            button.classList.toggle('is-active', isActive);
-            if (isActive) button.setAttribute('aria-current', 'step');
-            else if (typeof button.removeAttribute === 'function') button.removeAttribute('aria-current');
-            else button.setAttribute('aria-current', 'false');
-        }
-    }
+    // —— 步骤锚点：hero journey 条与 desktop rail 共用同一步骤状态与跳转逻辑 ——
     const stepTargets = [
         ['01', '心动名片', publicSection],
         ['02', '形象与灵感', avatarSection],
         ['03', '边界与节奏', friendSection],
         ['04', '确认登记', submitSection],
     ];
-    for (const [number, label, target] of stepTargets) {
-        const stepButton = element('button', { className: 'yl-character-step-link', type: 'button' });
+    const stepButtons = [];
+    const journeyButtons = [];
+    function activateStep(activeIndex) {
+        for (const list of [journeyButtons, stepButtons]) {
+            list.forEach((button, index) => {
+                const isActive = index === activeIndex;
+                button.classList.toggle('is-active', isActive);
+                if (isActive) button.setAttribute('aria-current', 'step');
+                else if (typeof button.removeAttribute === 'function') button.removeAttribute('aria-current');
+                else button.setAttribute('aria-current', 'false');
+            });
+        }
+    }
+    function goToStep(index, target) {
+        expandCard(target);
+        activateStep(index);
+        const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+        target.scrollIntoView?.({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+    }
+    stepTargets.forEach(([number, label, target], index) => {
         const targetId = target.getAttribute('id') ?? '';
-        stepButton.dataset.stepTarget = targetId;
-        stepButton.setAttribute('data-step-target', targetId);
-        append(stepButton, [
+        const journeyButton = element('button', { className: 'yl-character-journey-item', type: 'button' });
+        append(journeyButton, [
+            element('span', { className: 'yl-character-journey-number', text: number }),
+            element('span', { className: 'yl-character-journey-label', text: label }),
+        ]);
+        const railButton = element('button', { className: 'yl-character-step-link', type: 'button' });
+        append(railButton, [
             element('span', { className: 'yl-character-step-number', text: number }),
             element('span', { className: 'yl-character-step-label', text: label }),
         ]);
-        listen(stepButton, stepButton, 'click', () => {
-            activateStepButton(stepButton);
-            const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
-            target.scrollIntoView?.({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
-        }, signal);
-        stepButtons.push(stepButton);
-        stepRail.appendChild(stepButton);
+        for (const button of [journeyButton, railButton]) {
+            button.dataset.stepTarget = targetId;
+            button.setAttribute('data-step-target', targetId);
+            listen(button, button, 'click', () => goToStep(index, target), signal);
+        }
+        journeyButtons.push(journeyButton);
+        journey.appendChild(journeyButton);
+        stepButtons.push(railButton);
+        stepRail.appendChild(railButton);
+    });
+    activateStep(0);
+
+    // 滚动时高亮当前步：可选能力（真机有 IntersectionObserver；MiniDOM 无则跳过，点击高亮不受影响）。
+    const scrollSpySections = [
+        [publicSection, 0],
+        [avatarSection, 1], [aiSection, 1],
+        [friendSection, 2], [thresholdSection, 2],
+        [submitSection, 3],
+    ];
+    const ObserverCtor = globalThis.IntersectionObserver;
+    if (typeof ObserverCtor === 'function') {
+        const visibleRatio = new Map();
+        const observer = new ObserverCtor((entries) => {
+            for (const entry of entries) visibleRatio.set(entry.target, entry.isIntersecting ? Math.max(entry.intersectionRatio, 0.0001) : 0);
+            for (const [node, stepIndex] of scrollSpySections) {
+                if ((visibleRatio.get(node) ?? 0) > 0) { activateStep(stepIndex); return; }
+            }
+        }, { threshold: [0, 0.2, 0.55] });
+        for (const [node] of scrollSpySections) observer.observe(node);
+        signal?.addEventListener?.('abort', () => observer.disconnect(), { once: true });
     }
-    activateStepButton(stepButtons[0]);
 
     const preview = element('aside', { className: 'yl-character-preview' });
     const previewHeader = element('header', { className: 'yl-character-preview-header' });
-    previewHeader.appendChild(element('p', { className: 'yl-character-section-eyebrow', text: 'LIVE PREVIEW' }));
+    previewHeader.appendChild(element('p', { className: 'yl-character-section-eyebrow', text: '实时预览' }));
     previewHeader.appendChild(element('h2', { className: 'yl-character-preview-title', text: '公开名片实时预览' }));
     previewHeader.appendChild(element('p', { className: 'yl-character-preview-description', text: '这里只显示会出现在发现页的公开资料。' }));
     const previewCard = element('article', { className: 'yl-character-preview-card' });
@@ -364,14 +432,14 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
 
     const templateWorkspace = element('section', { className: 'yl-character-template-workspace' });
     const templateIntro = element('header', { className: 'yl-character-template-heading' });
-    templateIntro.appendChild(element('p', { className: 'yl-character-section-eyebrow', text: 'YOUR CHARACTER CLOSET' }));
+    templateIntro.appendChild(element('p', { className: 'yl-character-section-eyebrow', text: '我的角色衣橱' }));
     templateIntro.appendChild(element('h2', { className: 'yl-character-template-title', text: '把喜欢的角色草稿收进资料箱' }));
     templateIntro.appendChild(element('p', { className: 'yl-character-template-description', text: '导入、导出与本地模板都不会绕过登记校验。你可以先收藏和继续编辑，准备好后再加入当前聊天。' }));
     templateWorkspace.appendChild(templateIntro);
 
     const importSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-import-card' });
     sectionHeading(importSection, {
-        eyebrow: 'IMPORT / EXPORT', title: '导入或导出角色模板',
+        eyebrow: '导入与导出', title: '导入或导出角色模板',
     });
     const templateText = element('textarea', { name: 'character-template-json', rows: 6, placeholder: '在这里粘贴 yuelema.character/v1 JSON 模板' });
     templateText.className = 'yl-character-template-textarea';
@@ -385,7 +453,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
 
     const librarySection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-library' });
     sectionHeading(librarySection, {
-        eyebrow: 'LOCAL DRAFTS', title: '本地模板库',
+        eyebrow: '本地模板', title: '本地模板库',
         description: '最多保存 50 条，仅保留在当前浏览器。你可以载入继续修改，或导出为自己的备份。',
     });
     templateWorkspace.appendChild(librarySection);
@@ -420,6 +488,8 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         for (const field of form.querySelectorAll(tagName)) {
             listen(field, field, 'input', () => updatePreview(), signal);
             listen(field, field, 'change', () => updatePreview(), signal);
+            // 原生必填校验命中折叠卡内控件时自动展开，避免「不可聚焦的失效控件」拦截提交。
+            listen(field, field, 'invalid', () => expandCardContaining(field), signal);
         }
     }
 

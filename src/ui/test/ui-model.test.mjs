@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PAGE_COPY, createPhoneView, describeActionFailure, projectMatchView, projectPlayerPublicProfile, projectPublicProfile, projectServiceOrderView, projectServiceOrderIssues } from '../../ui-model.js';
+import { PAGE_COPY, createPhoneView, describeActionFailure, parseChatMessageTime, projectMatchView, projectPlayerPublicProfile, projectPublicProfile, projectServiceOrderView, projectServiceOrderIssues } from '../../ui-model.js';
 
 function profile() {
     return {
@@ -90,6 +90,40 @@ test('private chat view exposes only public profile and session-visible transcri
     assert.equal(view.messageSessions[0].profile.昵称, '公开名');
     const serialized = JSON.stringify(view.messageSessions);
     assert.doesNotMatch(serialized, /秘密|实际年龄|关系状态/);
+});
+
+test('private chat sessions sort by latest parseable message time desc with timeless sessions last', () => {
+    const character = (nickname) => ({ 成人验证: true, 公开资料: { 昵称: nickname } });
+    const session = (npcUid, messages) => ({ 对象UID: npcUid, 状态: '已匹配', 最近消息: messages });
+    const read = {
+        ok: true,
+        state: {
+            软件: { 内容模式: 'SFW' }, 推荐: { 当前队列: [], 临时候选池: {} },
+            角色池: { npc_a: character('早'), npc_b: character('晚'), npc_c: character('无时间'), npc_d: character('坏时间') },
+            会话: {
+                chat_a: session('npc_a', [{ 消息UID: 'a1', 发送者: '角色', 内容: '早一点', 时间: '2026-07-25 09:00' }]),
+                chat_b: session('npc_b', [
+                    { 消息UID: 'b1', 发送者: '角色', 内容: '旧消息', 时间: '2026-07-24 09:00' },
+                    { 消息UID: 'b2', 发送者: '玩家', 内容: '最新消息', 时间: '2026-07-25 21:00' },
+                ]),
+                chat_c: session('npc_c', []),
+                chat_d: session('npc_d', [{ 消息UID: 'd1', 发送者: '角色', 内容: '时间不可解析', 时间: '正文第 3 轮' }]),
+            },
+        },
+    };
+    const order = createPhoneView(read).messageSessions.map((item) => item.sessionUid);
+    assert.deepEqual(order, ['chat_b', 'chat_a', 'chat_c', 'chat_d'], '排序键 = 最后一条可解析时间；无时间会话按 UID 稳定序垫底');
+});
+
+test('parseChatMessageTime tolerates full dates, clock-only text, and rejects free-form text', () => {
+    const full = parseChatMessageTime('2026-07-25 21:30');
+    assert.equal(full, new Date(2026, 6, 25, 21, 30, 0).getTime());
+    assert.equal(parseChatMessageTime('2026年7月25日 21:30'), full, '中文日期格式等价解析');
+    assert.equal(parseChatMessageTime('21:30') < parseChatMessageTime('21:41'), true, '仅时分可在会话内比较间隔');
+    assert.equal(parseChatMessageTime('21:30') < full, true, '仅时分的时间戳垫在完整日期之后（倒序时排后）');
+    for (const bad of ['', '刚刚', '正文第 3 轮', '25:99', '2026-13-40', null, 42]) {
+        assert.equal(parseChatMessageTime(bad), null, `不可解析输入必须返回 null：${String(bad)}`);
+    }
 });
 
 test('private chat view projects bounded summary history and pending layer counts without exposing profile internals', () => {

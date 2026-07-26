@@ -80,15 +80,23 @@ class MiniElement extends MiniNode {
         this.rows = 0;
         this.multiple = false;
         this.dataset = {};
+        const setToken = (name, present) => {
+            const token = String(name);
+            const tokens = this.className.split(/\s+/u).filter(Boolean);
+            const has = tokens.includes(token);
+            const output = present ? (has ? tokens : [...tokens, token]) : tokens.filter((item) => item !== token);
+            this.className = output.join(' ');
+        };
         this.classList = Object.freeze({
             contains: (name) => this.className.split(/\s+/u).includes(String(name)),
+            // DOM 标准最简实现：add/remove 支持多 token、幂等，返回 undefined；不改动既有 contains/toggle 行为。
+            add: (...names) => { for (const name of names) setToken(name, true); },
+            remove: (...names) => { for (const name of names) setToken(name, false); },
             toggle: (name, force) => {
                 const token = String(name);
-                const tokens = this.className.split(/\s+/u).filter(Boolean);
-                const present = tokens.includes(token);
+                const present = this.className.split(/\s+/u).filter(Boolean).includes(token);
                 const next = force === undefined ? !present : Boolean(force);
-                const output = next ? (present ? tokens : [...tokens, token]) : tokens.filter((item) => item !== token);
-                this.className = output.join(' ');
+                setToken(token, next);
                 return next;
             },
         });

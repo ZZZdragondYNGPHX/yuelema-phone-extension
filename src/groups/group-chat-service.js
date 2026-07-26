@@ -42,6 +42,7 @@ function makeMessages(context, promptPreset) {
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件内的聊天群辅助模型。仅根据提供的公开玩家资料和群组公开投影，生成一条自然、简短的群聊文字回复。',
+        '回复要贴合群主题与此刻的聊天流：可以接话、补一句自己的近况、抛一个轻话题（下班去处、周末计划、最近的剧或歌、附近新开的店、深夜的一点心事），像真人随手打字，允许口语和小表情文字，但不要机械复读群简介。内容尺度始终跟随当前内容模式说明。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',
         groupContentModeInstruction(context.contentMode),
@@ -211,6 +212,7 @@ function makeGroupUpdateMessages(context, promptPreset, trigger) {
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件中的聊天群更新模型。只根据给出的公开资料、群公开信息和受限历史，模拟群友自然地发送 1–8 条短消息。',
+        '让群聊有真实生活质感：不同群友说话节奏和性格要有差异，有人抛话题、有人接梗、有人潜水后突然冒泡；话题可从群主题自然延伸到通勤吐槽、加班夜宵、周末探店、演出电影、健身打卡、恋爱近况、深夜感慨等日常切面，也可以自然向玩家搭话。内容尺度始终跟随当前内容模式说明，不要重复已说过的话。',
         '可使用已有成员的昵称；如果需要新群友，必须在 participants 中先给出其公开关键资料。participants 只放本次首次出现的临时群友，已有成员不要重复。每位临时群友都必须有 nickname、ageRange、gender、city、mbti、zodiac、occupation、interests、presence、matchRate。图片中可见的资料可用，但不要虚构隐藏资料或关系数值。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',

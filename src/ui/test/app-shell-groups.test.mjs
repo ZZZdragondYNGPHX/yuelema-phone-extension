@@ -77,12 +77,34 @@ function wheel(deltaY, deltaMode = 0) {
     return event;
 }
 
+function segItem(label) {
+    return miniDom.document.querySelectorAll('button').find((node) => node.classList.contains('yl-seg__item') && node.textContent === label);
+}
+
+function groupRow(name) {
+    return miniDom.document.querySelectorAll('.yl-row').find((node) => node.getAttribute('aria-label') === `打开${name}`);
+}
+
+// P2-C：社区无 Hub 直达——点底部「社区」→ 微任务跳到上次停留 tab，再用 SegmentedControl 显式选择目标 tab。
+async function openCommunityTab(label) {
+    click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+    await flushUi();
+    const item = segItem(label);
+    if (item && item.getAttribute('aria-checked') !== 'true') {
+        click(item);
+        await flushUi();
+    }
+}
+
 function forumRefreshPosts(author, { cityTitle = '雨后的书店', cityBody = '想找一间适合安静看书的小店。' } = {}) {
     return [
         { author, topic: '今日心情', title: '今天的小确幸', body: '下班路上买到喜欢的甜点，想把好心情分享出来。', tags: ['日常', '心情'] },
         { author, topic: '附近的人', title: '附近的晚风', body: '傍晚想在江边散步，欢迎同城朋友一起聊聊。', tags: ['附近', '散步'] },
         { author, topic: '同城瞬间', title: cityTitle, body: cityBody, tags: ['书店', '同城'] },
         { author, topic: '兴趣同频', title: '周末影展同好', body: '想找喜欢电影的人一起选一场周末影展。', tags: ['电影', '同好'] },
+        { author, topic: '深夜树洞', title: '深夜的一句晚安', body: '睡前想把没说出口的心事放在这里。', tags: ['深夜', '心事'] },
+        { author, topic: '恋爱吐槽', title: '暧昧期的拉扯', body: '聊得热络又突然冷场，大家怎么看这种节奏？', tags: ['吐槽', '恋爱'] },
+        { author, topic: '约会报告', title: '咖啡店初见记录', body: '第一次见面选了安静的咖啡店，气氛比预想的自然。', tags: ['约会', '报告'] },
         { author, topic: '话题广场', title: '你的治愈小事', body: '聊聊这一周让你感觉被治愈的瞬间吧。', tags: ['话题', '分享'] },
     ];
 }
@@ -124,12 +146,10 @@ test('chat group menu creates a browser-local room from private-chat public prof
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        assert.match(miniDom.document.body.textContent, /聊天群/u);
-        assert.match(miniDom.document.body.textContent, /心动社区/u);
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '聊天群创建与查找'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '创建'));
+        await openCommunityTab('群聊');
+        assert.equal(miniDom.document.querySelector('.yl-community-hub'), null, '社区不再有二选一 Hub 中转页');
+        assert.ok(miniDom.document.querySelector('.yl-seg'), '社区页顶部应有「广场｜群聊」分段切换');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '创建群聊'));
 
         const name = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '编辑群名');
         name.value = '周末看展小队'; name.dispatchEvent(new Event('input'));
@@ -208,9 +228,8 @@ test('enabled group auto-update invokes the selected group AI on its configured 
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开定时测试群'));
+        await openCommunityTab('群聊');
+        click(groupRow('定时测试群'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开定时测试群的更多操作'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '自动更新设置'));
         const enabled = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启聊天群自动更新');
@@ -251,9 +270,8 @@ test('group room right-top more menu exposes exit, clear-history, automatic sett
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开菜单测试群'));
+        await openCommunityTab('群聊');
+        click(groupRow('菜单测试群'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开菜单测试群的更多操作'));
         assert.match(miniDom.document.body.textContent, /退出群聊|清空群历史|自动更新设置|预设/u);
         const roomMoreOpen = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开菜单测试群的更多操作');
@@ -300,10 +318,9 @@ test('group preset binding is removed from the chat-group home and saved indepen
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
+        await openCommunityTab('群聊');
         assert.equal(miniDom.document.querySelector('.yl-feature-options'), null, '聊天群首页不应再显示全局绑定设置');
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === `打开${first.name}`));
+        click(groupRow(first.name));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === `打开${first.name}的更多操作`));
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '预设'));
         const firstConnection = miniDom.document.querySelector('[name="group_chat-quick-connection"]');
@@ -317,7 +334,7 @@ test('group preset binding is removed from the chat-group home and saved indepen
         assert.deepEqual(snapshot.threads.find((thread) => thread.key === first.id)?.bindings.SFW, { connectionPresetId: 'group_conn', promptPresetId: 'builtin_group_chat_sfw' });
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关闭功能预设选项'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '返回'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开预设乙群'));
+        click(groupRow('预设乙群'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开预设乙群的更多操作'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '预设'));
         assert.equal(miniDom.document.querySelector('[name="group_chat-quick-connection"]').value, '', '另一群不应继承第一群的绑定');
@@ -440,8 +457,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
         click(launcher);
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关于软件'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '关于软件'));
 
         assert.ok(miniDom.document.querySelector('.yl-page-back'), '关于软件应是可返回的子界面');
         const version = () => miniDom.document.querySelector('[name="about-version-info"]');
@@ -481,15 +497,18 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         assert.ok(primaryNavPages.indexOf('service_hub') < primaryNavPages.indexOf('profile'));
         assert.match(miniDom.document.body.textContent, /今日心动档案/u);
         const serviceTabs = () => miniDom.document.querySelectorAll('.yl-service-tab');
-        assert.deepEqual(serviceTabs().map((node) => node.textContent), ['首页', '发现', '服务', '历史']);
+        assert.deepEqual(serviceTabs().map((node) => node.textContent), ['精选', '订单', '记录']);
         assert.deepEqual(
             serviceTabs().map((tab) => tab.querySelector('svg')?.dataset.icon),
-            ['home', 'sparkle', 'service_hub', 'clock'],
+            ['sparkle', 'service_hub', 'clock'],
             '服务台 tab 应使用本地 SVG 白名单结构图标而非文字符号',
         );
         const firstServiceCategory = miniDom.document.querySelector('[name="service-category-girl_shuren"]');
-        assert.ok(firstServiceCategory, '首页应显示可直接生成角色的服务分类');
+        assert.ok(firstServiceCategory, '精选页应显示可选择的服务分类');
         click(firstServiceCategory);
+        await flushUi();
+        assert.equal(serviceGenerateCalls, 0, 'P2-D：点击分类只选中，不得自动触发三席生成');
+        click(miniDom.document.querySelector('[name="service-slot-generate"]'));
         await flushUi();
         assert.equal(serviceGenerateCalls, 4, '重复昵称应重试当前席，第三席失败后必须停止而非重跑前两席');
         assert.equal(maxServiceGenerationInFlight, 1, '三席模型调用必须严格串行');
@@ -508,6 +527,8 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         assert.match(miniDom.document.body.textContent, /选择此角色/u);
         assert.match(miniDom.document.body.textContent, /以已选 0 位创建服务订单/u);
         click(serviceTabs()[0]);
+        /* P2-D：发布面板收纳在精选底部折叠区，需先展开 */
+        click(miniDom.document.querySelector('[name="service-publication-toggle"]'));
         assert.match(miniDom.document.body.textContent, /服务者发布服务/u);
         assert.ok(miniDom.document.querySelector('[name="service-published-open-girl_shuren"]'));
         assert.ok(miniDom.document.querySelector('[name="service-published-refresh-girl_shuren"]'));
@@ -530,10 +551,13 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
 
         const firstProfileSelect = miniDom.document.querySelector('[name="service-profile-select-service_local_1"]');
         assert.equal(handoffDrafts.length, 0, '选择前不得接管正文输入框');
-        click(firstProfileSelect);
+        /* P2-D：选席改为真 checkbox 的 checked + change */
+        firstProfileSelect.checked = true;
+        firstProfileSelect.dispatchEvent(new Event('change'));
         await flushUi();
         const secondProfileSelect = miniDom.document.querySelector('[name="service-profile-select-service_local_2"]');
-        click(secondProfileSelect);
+        secondProfileSelect.checked = true;
+        secondProfileSelect.dispatchEvent(new Event('change'));
         await flushUi();
         assert.match(miniDom.document.body.textContent, /以已选 2 位创建服务订单/u);
         const createSelected = miniDom.document.querySelector('[name="service-order-create-selected"]');
@@ -546,7 +570,10 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         assert.match(handoffDrafts[0], /与「林澄、顾晴」体验「熟人商品」租借陪伴主题/u);
         assert.doesNotMatch(miniDom.document.body.textContent, /npc_service_|service_\d/u, '页面正文不得显示内部 UID');
         assert.doesNotMatch(handoffDrafts[0], /自动发送/u);
-        click(serviceTabs()[2]);
+        click(serviceTabs()[1]);
+        /* P2-D：结构化服务信息位于订单 Stepper 第 2 步 */
+        assert.equal(miniDom.document.querySelector('[name="service-information-价格"]'), null, '第 1 步不应预渲染服务信息表单');
+        click(miniDom.document.querySelector('[name="service-step-next"]'));
         assert.ok(miniDom.document.querySelector('[name="service-information-价格"]'), 'pending-order editor must expose structured service information');
         assert.ok(miniDom.document.querySelector('[name="service-information-服务者信用"]'));
         assert.match(miniDom.document.body.textContent, /林澄/u);
@@ -567,8 +594,10 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         serviceHistory.push({ localId: 'history_service_1', orderUid: 'service_1', roleUid: 'npc_service_1', roleUids: ['npc_service_1', 'npc_service_2'], status: '已完成', archiveState: 'archived', mode: 'SFW', categoryId: 'girl_shuren', category: '熟人商品', topic: '熟人商品：与林澄、顾晴的文字协商', initiatedAt: '待正文确认', startedAt: '已开始', endedAt: '已结束', summary: '双方已确认结束，未包含现实信息。', profile: { 昵称: '林澄', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }, profiles: [{ 昵称: '林澄', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }, { 昵称: '顾晴', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }] });
         mounted.refreshState();
         assert.match(miniDom.document.body.textContent, /暂无进行中的服务/u);
-        click(serviceTabs()[3]);
+        click(serviceTabs()[2]);
         assert.match(miniDom.document.body.textContent, /林澄/u);
+        /* P2-D：历史动作先开行尾「⋯」菜单 */
+        click(miniDom.document.querySelector('[name="service-history-menu-history_service_1"]'));
         const repeat = miniDom.document.querySelector('[name="service-history-rebook"]');
         assert.ok(repeat, '本地归档历史应提供再次下单入口');
         click(repeat);
@@ -577,7 +606,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         assert.equal(handoffDrafts.length, 2);
         assert.match(handoffDrafts[1], /【本次新建的待确认订单】/u);
         assert.doesNotMatch(handoffDrafts[1], /service_2/u, '复约草稿不得暴露内部订单 UID');
-        click(serviceTabs()[2]);
+        click(serviceTabs()[1]);
         assert.match(miniDom.document.body.textContent, /待确认/u);
 
         assert.equal(events.some((entry) => entry.kind === 'navigate' && entry.payload.page === 'about'), true);
@@ -654,12 +683,12 @@ test('late service-profile generation ignored after the phone closes cannot alte
         const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
         click(launcher);
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关于软件'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '关于软件'));
         for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
         click(miniDom.document.querySelector('[name="about-service-entry"]'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
         click(miniDom.document.querySelector('[name="service-category-girl_shuren"]'));
+        click(miniDom.document.querySelector('[name="service-slot-generate"]'));
         await Promise.resolve();
         assert.equal(typeof resolveLate, 'function');
 
@@ -669,7 +698,7 @@ test('late service-profile generation ignored after the phone closes cannot alte
         assert.equal(miniDom.document.querySelector('.yl-operation-dialog').hidden, true, 'a late provider result must not reopen the closed operation dialog');
 
         click(launcher);
-        assert.match(miniDom.document.body.textContent, /当前进度：0\/3/u);
+        assert.match(miniDom.document.body.textContent, /当前进度 0\/3/u);
         assert.doesNotMatch(miniDom.document.body.textContent, /迟到候补/u);
     } finally {
         mounted.destroy();
@@ -690,7 +719,7 @@ test('personal profile safely calls the controlled public-profile bridge when th
         const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
         click(launcher);
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('个人资料')));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('编辑公开资料')));
         const save = miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('保存公开资料'));
         assert.ok(save, 'a supported host must expose the controlled save action');
         click(save);
@@ -732,8 +761,8 @@ test('summary archive lists private chats, local chat groups, and forum posts wh
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('对话总结')));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.textContent.includes('隐私与总结')));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.textContent.includes('对话总结')));
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('总结档案')));
         const archive = miniDom.document.body.textContent;
         assert.match(archive, /私聊总结/u);
@@ -775,8 +804,7 @@ test('forum home only calls AI after an armed pull gesture, and opened posts upd
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('心动社区')));
+        await openCommunityTab('广场');
         const surface = miniDom.document.querySelector('.yl-forum-home');
         surface.dispatchEvent(pointer('pointerdown', 0));
         surface.dispatchEvent(pointer('pointermove', 104));
@@ -830,20 +858,19 @@ test('forum channel cards are actionable subareas and filter the local feed with
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('心动社区')));
+        await openCommunityTab('广场');
         const content = miniDom.document.querySelector('.yl-phone-content');
         content.scrollTop = 48;
         const mood = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('data-forum-channel') === 'daily_mood');
         assert.ok(mood);
         click(mood);
         assert.equal(content.scrollTop, 0, '进入子区后应回到该频道列表顶部');
-        assert.match(miniDom.document.body.textContent, /今日心情 · 子区/u);
+        assert.match(miniDom.document.body.textContent, /今日心情 · 1 条本地帖子/u);
         assert.match(miniDom.document.body.textContent, /今天的小确幸/u);
         assert.doesNotMatch(miniDom.document.body.textContent, /雨后的书店/u);
         const activeMood = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('data-forum-channel') === 'daily_mood');
         assert.equal(activeMood.getAttribute('aria-pressed'), 'true');
-        assert.match(activeMood.getAttribute('aria-label'), /返回心动社区全部动态/u);
+        assert.match(activeMood.getAttribute('aria-label'), /返回社区全部动态/u);
         click(activeMood);
         assert.match(miniDom.document.body.textContent, /雨后的书店/u);
         assert.equal(refreshCalls, 0, '切换本地频道不应额外调用论坛 AI');
@@ -880,16 +907,15 @@ test('heart community settings toggle updates all existing local posts on its ti
             async generateForumHomeRefresh() { homeCalls += 1; return { ok: false }; },
             async generateForumExistingPostsUpdate(request) {
                 existingCalls += 1;
-                assert.equal(request.posts.length, 5);
+                assert.equal(request.posts.length, 8);
                 return { ok: true, update: { updates: request.posts.map((post, index) => ({ slot: index + 1, title: `自动更新：${post.title}`, body: `这是第${index + 1}篇已有帖子的新内容。`, tags: ['自动更新'] })) } };
             },
         }, settingsStore, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('心动社区')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开心动社区设置'));
+        await openCommunityTab('广场');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '社区设置'));
         const enabled = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启帖子自动更新');
         const interval = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '帖子自动更新时间秒数');
         assert.equal(interval.disabled, true, '关闭帖子自动更新时，秒数输入必须是灰色不可编辑');
@@ -909,7 +935,7 @@ test('heart community settings toggle updates all existing local posts on its ti
         const snapshot = await groupForumStore.snapshot();
         assert.equal(existingCalls, 1);
         assert.equal(homeCalls, 0, '自动更新不可创建新帖子');
-        assert.equal(snapshot.posts.length, 5);
+        assert.equal(snapshot.posts.length, 8);
         assert.match(snapshot.posts[0].title, /^自动更新：/u);
         assert.equal(snapshot.posts.every((post) => post.tags[0] === '自动更新'), true);
         assert.deepEqual(snapshot.forumAuto.channelBindings.SFW, { connectionPresetId: 'channel_conn', promptPresetId: 'builtin_forum_sfw' });
@@ -952,8 +978,7 @@ test('desktop wheel pull refreshes only from the forum top after the wheel settl
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('心动社区')));
+        await openCommunityTab('广场');
         const content = miniDom.document.querySelector('.yl-phone-content');
         const surface = miniDom.document.querySelector('.yl-forum-home');
 
@@ -1028,8 +1053,7 @@ test('forum top refresh replaces old posts and bottom loading appends posts only
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('心动社区')));
+        await openCommunityTab('广场');
         const content = miniDom.document.querySelector('.yl-phone-content');
         Object.defineProperties(content, {
             clientHeight: { value: 100, configurable: true },
@@ -1044,7 +1068,7 @@ test('forum top refresh replaces old posts and bottom loading appends posts only
         assert.equal(requests.length, 1);
         assert.equal(requests[0].refreshMode, 'replace');
         let snapshot = await groupForumStore.snapshot();
-        assert.equal(snapshot.posts.length, 5);
+        assert.equal(snapshot.posts.length, 8);
         assert.equal(snapshot.posts.some((post) => post.id === oldPost.id), false, '顶部刷新成功后应删除旧帖和总结');
         assert.equal((await groupForumStore.getSummaryHistory()).posts.some((entry) => entry.id === oldPost.id), false);
 
@@ -1067,7 +1091,7 @@ test('forum top refresh replaces old posts and bottom loading appends posts only
         assert.equal(requests.length, 2);
         assert.equal(requests[1].refreshMode, 'append');
         snapshot = await groupForumStore.snapshot();
-        assert.equal(snapshot.posts.length, 10, '底部加载应保留五篇旧帖并追加五篇新帖');
+        assert.equal(snapshot.posts.length, 16, '底部加载应保留八篇旧帖并追加八篇新帖');
         assert.equal(snapshot.posts.some((post) => post.title === '替换：替换新帖子'), true);
         assert.equal(snapshot.posts.some((post) => post.title === '追加：追加新帖子'), true);
     } finally {
@@ -1104,14 +1128,16 @@ test('late service-order handoff after close preserves the MVU result without fi
         const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
         click(launcher);
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关于软件'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '关于软件'));
         for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
         click(miniDom.document.querySelector('[name="about-service-entry"]'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
         click(miniDom.document.querySelector('[name="service-category-girl_shuren"]'));
+        click(miniDom.document.querySelector('[name="service-slot-generate"]'));
         await flushUi();
-        click(miniDom.document.querySelector('[name="service-profile-select-service_local_1"]'));
+        const lateSelect = miniDom.document.querySelector('[name="service-profile-select-service_local_1"]');
+        lateSelect.checked = true;
+        lateSelect.dispatchEvent(new Event('change'));
         click(miniDom.document.querySelector('[name="service-order-create-selected"]'));
         await Promise.resolve();
         assert.equal(typeof resolveHandoff, 'function');
@@ -1123,7 +1149,7 @@ test('late service-order handoff after close preserves the MVU result without fi
 
         click(launcher);
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
-        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '服务'));
+        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '订单'));
         assert.match(miniDom.document.body.textContent, /待确认/u, 'the already-committed MVU order remains recoverable after reopening');
     } finally {
         mounted.destroy();
@@ -1157,16 +1183,18 @@ test('pending service-history archive retries finalize only and leaves rebooking
         const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
         click(launcher);
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关于软件'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '关于软件'));
         for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
         click(miniDom.document.querySelector('[name="about-service-entry"]'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
-        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '历史'));
+        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '记录'));
+        /* P2-D：归档动作位于行尾「⋯」菜单内 */
+        click(miniDom.document.querySelector('[name="service-history-menu-history_archive"]'));
         assert.ok(miniDom.document.querySelector('[name="service-history-finalize"]'));
         click(miniDom.document.querySelector('[name="service-history-finalize"]'));
         await flushUi();
         assert.deepEqual(calls, { finalize: 1, archived: 0, rebook: 0 }, 'a failed retry must not archive or create another order');
+        click(miniDom.document.querySelector('[name="service-history-menu-history_archive"]'));
         click(miniDom.document.querySelector('[name="service-history-finalize"]'));
         await flushUi();
         assert.deepEqual(calls, { finalize: 2, archived: 1, rebook: 0 });
@@ -1203,15 +1231,14 @@ test('XP search scopes generated service drafts to the active person category an
         const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
         click(launcher);
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关于软件'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '关于软件'));
         for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
         click(miniDom.document.querySelector('[name="about-service-entry"]'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
-        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '发现'));
+        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '精选'));
 
         const search = miniDom.document.querySelector('[name="service-xp-search"]');
-        assert.ok(search, '发现页必须提供本次 XP 搜索输入框');
+        assert.ok(search, '精选页必须提供本次 XP 搜索输入框');
         search.value = '眼镜 制服 成熟感';
         search.dispatchEvent(new Event('input'));
         click(miniDom.document.querySelector('[name="service-xp-search-submit"]'));
@@ -1223,7 +1250,9 @@ test('XP search scopes generated service drafts to the active person category an
         assert.match(miniDom.document.body.textContent, /当前 XP 搜索：眼镜 制服 成熟感/u);
         assert.equal(miniDom.document.querySelectorAll('.yl-local-service-profile').length, 3);
 
-        click(miniDom.document.querySelector('[name="service-profile-select-service_local_1"]'));
+        const xpSelect = miniDom.document.querySelector('[name="service-profile-select-service_local_1"]');
+        xpSelect.checked = true;
+        xpSelect.dispatchEvent(new Event('change'));
         click(miniDom.document.querySelector('[name="service-order-create-selected"]'));
         await flushUi();
         assert.equal(handoffPayload.categoryId, 'girl_shuren');
@@ -1252,10 +1281,8 @@ test('community group search keeps the input node stable and only swaps the resu
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '聊天群创建与查找'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '查找'));
+        await openCommunityTab('群聊');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '查找群组'));
 
         const input = miniDom.document.querySelector('.yl-group-search-input');
         assert.ok(input, '开启查找后应显示查找输入框');
@@ -1290,8 +1317,7 @@ test('Phase 69: service hub tabs expose a complete tab keyboard model with rovin
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关于软件'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '关于软件'));
         for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
         click(miniDom.document.querySelector('[name="about-service-entry"]'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
@@ -1299,13 +1325,13 @@ test('Phase 69: service hub tabs expose a complete tab keyboard model with rovin
         const tablist = miniDom.document.querySelector('.yl-service-tabs');
         assert.equal(tablist.getAttribute('role'), 'tablist');
         const tabs = () => miniDom.document.querySelectorAll('.yl-service-tab');
-        assert.deepEqual(tabs().map((tab) => tab.getAttribute('role')), ['tab', 'tab', 'tab', 'tab']);
-        assert.deepEqual(tabs().map((tab) => tab.getAttribute('tabindex')), ['0', '-1', '-1', '-1'], 'roving tabindex 只让激活 tab 参与 Tab 序');
+        assert.deepEqual(tabs().map((tab) => tab.getAttribute('role')), ['tab', 'tab', 'tab']);
+        assert.deepEqual(tabs().map((tab) => tab.getAttribute('tabindex')), ['0', '-1', '-1'], 'roving tabindex 只让激活 tab 参与 Tab 序');
         assert.equal(tabs().every((tab) => tab.getAttribute('aria-controls') === 'yl-service-hub-panel'), true);
         const body = miniDom.document.querySelector('.yl-service-body');
         assert.equal(body.getAttribute('role'), 'tabpanel');
         assert.equal(body.getAttribute('id'), 'yl-service-hub-panel');
-        assert.equal(body.getAttribute('aria-labelledby'), 'yl-service-hub-tab-home');
+        assert.equal(body.getAttribute('aria-labelledby'), 'yl-service-hub-tab-featured');
 
         tabs()[0].focus();
         const arrow = (key) => {
@@ -1316,22 +1342,145 @@ test('Phase 69: service hub tabs expose a complete tab keyboard model with rovin
         };
         const right = arrow('ArrowRight');
         assert.equal(right.defaultPrevented, true, '方向键应阻止页面滚动默认行为');
-        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-discover', 'ArrowRight 把焦点移到下一个 tab');
+        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-orders', 'ArrowRight 把焦点移到下一个 tab');
         assert.equal(miniDom.document.activeElement.getAttribute('aria-selected'), 'false', '方向键只移动焦点，不激活面板');
         arrow('End');
-        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-history');
+        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-records');
         arrow('ArrowRight');
-        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-home', '方向键在首尾循环');
+        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-featured', '方向键在首尾循环');
         arrow('ArrowLeft');
-        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-history');
+        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-records');
         arrow('Home');
-        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-home');
+        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-featured');
 
-        click(tabs().find((tab) => tab.getAttribute('name') === 'service-hub-tab-service'));
-        assert.equal(miniDom.document.activeElement?.getAttribute?.('name'), 'service-hub-tab-service', '激活后焦点落在新激活 tab 上');
-        assert.equal(miniDom.document.querySelector('.yl-service-body').getAttribute('aria-labelledby'), 'yl-service-hub-tab-service');
-        assert.deepEqual(tabs().map((tab) => tab.getAttribute('aria-selected')), ['false', 'false', 'true', 'false']);
-        assert.deepEqual(tabs().map((tab) => tab.getAttribute('tabindex')), ['-1', '-1', '0', '-1'], '激活后 roving tabindex 跟随新 tab');
+        click(tabs().find((tab) => tab.getAttribute('name') === 'service-hub-tab-orders'));
+        assert.equal(miniDom.document.activeElement?.getAttribute?.('name'), 'service-hub-tab-orders', '激活后焦点落在新激活 tab 上');
+        assert.equal(miniDom.document.querySelector('.yl-service-body').getAttribute('aria-labelledby'), 'yl-service-hub-tab-orders');
+        assert.deepEqual(tabs().map((tab) => tab.getAttribute('aria-selected')), ['false', 'true', 'false']);
+        assert.deepEqual(tabs().map((tab) => tab.getAttribute('tabindex')), ['-1', '0', '-1'], '激活后 roving tabindex 跟随新 tab');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('P2-C: community lands directly on content, remembers the last tab locally, and renders modern group rows', async () => {
+    const storedValues = new Map();
+    const storageStub = {
+        getItem: (key) => (storedValues.has(key) ? storedValues.get(key) : null),
+        setItem: (key, value) => { storedValues.set(key, String(value)); },
+        removeItem: (key) => { storedValues.delete(key); },
+    };
+    const previousDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storageStub });
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-26T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const member = { nickname: '林澈', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '摄影师', interests: ['摄影'], presence: '在线', matchRate: null };
+    await groupForumStore.createGroup({
+        name: '结构测试群',
+        members: [member, { ...member, nickname: '周遥' }, { ...member, nickname: '许青' }, { ...member, nickname: '顾宁' }],
+    });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-community-tabs', actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        await flushUi();
+        // §8.1 直达内容：无 Hub 中转，默认落在广场
+        assert.equal(miniDom.document.querySelector('.yl-community-hub'), null, '二选一 Hub 必须删除');
+        assert.ok(miniDom.document.querySelector('.yl-forum-home'), '默认应直达广场内容页');
+        assert.ok(miniDom.document.querySelector('.yl-community-topbar'), '社区自绘 topbar 应存在');
+        assert.ok(miniDom.document.querySelector('.yl-seg'), '顶部应有「广场｜群聊」SegmentedControl');
+        assert.equal(miniDom.document.querySelectorAll('.yl-channel-chip').length, 8, '广场应有 8 个频道横滑 chip');
+        assert.ok(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '社区设置'), '广场页头应有「⋯」社区设置入口');
+        // 切到群聊并写入本地 tab 记忆
+        click(segItem('群聊'));
+        await flushUi();
+        assert.ok(miniDom.document.querySelector('.yl-group-list-page'));
+        assert.equal(storedValues.get('yuelema.community-tab/v1'), 'chat', '切 tab 应写入本地记忆');
+        // §8.3-2 顶部两个 tonal 按钮
+        const create = miniDom.document.querySelectorAll('button').find((node) => node.textContent === '创建群聊');
+        const search = miniDom.document.querySelectorAll('button').find((node) => node.textContent === '查找群组');
+        assert.ok(create && create.classList.contains('yl-btn--tonal'), '创建群聊应为列表顶部 tonal 按钮');
+        assert.ok(search && search.classList.contains('yl-btn--tonal'), '查找群组应为列表顶部 tonal 按钮');
+        // §8.3-1 群列表 ListRow：叠放头像 ≤3 + “+N”
+        const row = groupRow('结构测试群');
+        assert.ok(row && row.classList.contains('yl-row'), '群列表项应使用 ListRow');
+        const stack = row.querySelector('.yl-group-avatar-stack');
+        assert.equal(stack.querySelectorAll('.yl-group-stack-avatar').length, 3, '叠放头像最多 3 个');
+        assert.equal(stack.querySelector('.yl-group-stack-more').textContent, '+1', '第 4 位起折叠为 +N');
+        // 离开再回：记住上次停留 tab（群聊）
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        await flushUi();
+        assert.ok(miniDom.document.querySelector('.yl-group-list-page'), '重进社区应直达上次停留的群聊 tab');
+        assert.equal(miniDom.document.querySelector('.yl-forum-home'), null, '记住 tab 后不应先落回广场');
+        // 切回广场同样落盘
+        click(segItem('广场'));
+        await flushUi();
+        assert.equal(storedValues.get('yuelema.community-tab/v1'), 'square');
+        assert.ok(miniDom.document.querySelector('.yl-forum-home'));
+    } finally {
+        mounted.destroy();
+        if (previousDescriptor) Object.defineProperty(globalThis, 'localStorage', previousDescriptor);
+        else delete globalThis.localStorage;
+    }
+});
+
+test('P2-C: group chat room reuses the contract bubble classes with stable per-speaker name tones', async () => {
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-26T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const member = { nickname: '林澈', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '摄影师', interests: ['摄影'], presence: '在线', matchRate: null };
+    await groupForumStore.createGroup({ name: '气泡测试群', members: [member, { ...member, nickname: '周遥' }] });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-community-tones',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async generateGroupConversationUpdate() {
+                return { ok: true, update: { participants: [], messages: [
+                    { speaker: '林澈', text: '我先说一句。' },
+                    { speaker: '周遥', text: '我接一句。' },
+                    { speaker: '林澈', text: '再补一句。' },
+                ] } };
+            },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('群聊');
+        click(groupRow('气泡测试群'));
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入群消息');
+        input.value = '大家好。'; input.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送群消息'));
+        await flushUi();
+        // 跨代理合同 class 逐字复用
+        assert.ok(miniDom.document.querySelector('.yl-chat-timeline'), '群聊室必须复用合同 timeline 容器');
+        assert.ok(miniDom.document.querySelector('.yl-system-pill'), '时间线内应有本地保存说明 system pill');
+        assert.ok(miniDom.document.querySelector('.yl-time-divider'), '首条消息前应有时间分隔 pill');
+        const selfGroup = miniDom.document.querySelector('.yl-msg-group--self');
+        assert.ok(selfGroup && selfGroup.querySelector('.yl-bubble'), '玩家消息应渲染为 self 气泡组');
+        assert.ok(selfGroup.querySelector('.yl-bubble-time'), '气泡组末尾应有时间角标');
+        const peerGroups = miniDom.document.querySelectorAll('.yl-msg-group--peer');
+        assert.equal(peerGroups.length, 3, '发言人交替时应按连续段分组（林澈/周遥/林澈）');
+        // 昵称 tone：格式合法 + 同名稳定
+        const toneOf = new Map();
+        for (const name of miniDom.document.querySelectorAll('.yl-bubble-name')) {
+            const tone = name.className.split(/\s+/u).find((token) => token.startsWith('yl-name-tone-'));
+            assert.match(tone ?? '', /^yl-name-tone-[0-5]$/u, '发言人昵称必须携带 6 色 tone 类');
+            if (toneOf.has(name.textContent)) assert.equal(toneOf.get(name.textContent), tone, '同一发言人的 tone 必须稳定');
+            else toneOf.set(name.textContent, tone);
+        }
+        assert.equal(toneOf.size, 2, '两位发言人都应有昵称 tone');
+        // 重新渲染（返回列表再进入房间）后 tone 分配保持一致
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '返回'));
+        click(groupRow('气泡测试群'));
+        for (const [name, tone] of toneOf) {
+            const again = miniDom.document.querySelectorAll('.yl-bubble-name').find((node) => node.textContent === name);
+            assert.ok(again, '重进房间后发言人昵称仍应渲染');
+            assert.equal(again.className.split(/\s+/u).includes(tone), true, '重渲染后 tone 类保持稳定');
+        }
     } finally {
         mounted.destroy();
     }

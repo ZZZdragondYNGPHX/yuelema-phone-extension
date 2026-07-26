@@ -1,10 +1,19 @@
-// 约伴/专属服务台页面：从 src/app-shell.js 纯搬移而来，函数体逐行未改，仅将跨模块引用改为 ctx.*。
+// 约伴/专属服务台页面（P2-D 现代化改造）：三 tab「精选｜订单｜记录」+ 订单三步 Stepper + 三席生成器。
+// 提交/下单仍走 ctx.actionBridge 原调用链；本文件只重排 UI 采集步骤，最终提交的数据结构与改造前完全一致。
 import { append, element, listen } from '../dom.js';
 import { describeActionFailure } from '../ui-model.js';
 import { createUiIcon } from '../ui/icon.js';
+import { createButton } from '../ui/button.js';
+import { createListRow } from '../ui/list-row.js';
+import { createStatusChip } from '../ui/badge.js';
+import { createSkeleton } from '../ui/skeleton.js';
+import { buildWaitCaptions } from './shared.js';
 
 const SERVICE_ORDER_UID_PATTERN = /^service_[A-Za-z0-9_-]{1,64}$/u;
 const SERVICE_PROFILE_SLOT_COUNT = 3;
+// P3-G 等待期趣味文案（纯 CSS 轮播）：三席串行生成时替代干等。
+const SERVICE_WAIT_CAPTIONS = Object.freeze(['管家正在挑选人选…', '核对档期与偏好…', '确认对方明确成年且自愿…', '整理这一席的资料卡…']);
+const SERVICE_WAIT_SHIFT_TEXT = '高质量的人选值得多等几秒…';
 const SERVICE_PROFILE_MAX_RETRIES = 3;
 // 美人团外卖参考卡的三类商品结构；仅借用分类语义，不继承其中与本项目成年人、同意和隐私规则冲突的内容。
 const SERVICE_PRODUCT_CATEGORIES = Object.freeze([
@@ -13,13 +22,32 @@ const SERVICE_PRODUCT_CATEGORIES = Object.freeze([
     Object.freeze({ id: 'random_generation', label: '随机商品', note: '按你的偏好随机组合的虚构成年都市角色。' }),
 ]);
 const SERVICE_HUB_TABS = Object.freeze([
-    Object.freeze({ id: 'home', label: '首页', iconName: 'home' }),
-    Object.freeze({ id: 'discover', label: '发现', iconName: 'sparkle' }),
-    Object.freeze({ id: 'service', label: '服务', iconName: 'service_hub' }),
-    Object.freeze({ id: 'history', label: '历史', iconName: 'clock' }),
+    Object.freeze({ id: 'featured', label: '精选', iconName: 'sparkle' }),
+    Object.freeze({ id: 'orders', label: '订单', iconName: 'service_hub' }),
+    Object.freeze({ id: 'records', label: '记录', iconName: 'clock' }),
+]);
+// 主线收口后壳层复位值已改写 'featured'，不再产生旧 id；本归一化表保留为导出兼容与陈旧内存态守卫
+// （service-hub-ui.test.mjs 断言旧 home/service/history 仍能折算到新三 tab）。
+const LEGACY_SERVICE_HUB_TAB_ALIASES = Object.freeze({ home: 'featured', discover: 'featured', service: 'orders', history: 'records' });
+export function normalizeServiceHubTab(value) {
+    const raw = typeof value === 'string' ? value : '';
+    if (SERVICE_HUB_TABS.some((tab) => tab.id === raw)) return raw;
+    return LEGACY_SERVICE_HUB_TAB_ALIASES[raw] ?? 'featured';
+}
+const SERVICE_BOUNDARY_FIELDS = Object.freeze(['主题', '允许项', '排除项', '强度', '隐私处理']);
+const SERVICE_INFORMATION_FIELDS = Object.freeze(['价格', '时长', '排期', '套餐', '评价', '投诉', '退款', '服务者信用']);
+const SERVICE_ORDER_STEPS = Object.freeze([
+    Object.freeze({ step: 1, label: '边界与强度' }),
+    Object.freeze({ step: 2, label: '服务与排期' }),
+    Object.freeze({ step: 3, label: '双方同意' }),
 ]);
 
 export function createServicePage(ctx) {
+    // 页面局部 UI 状态（不进 MVU、不进浏览器存储；关小手机即回收）。
+    let servicePublicationOpen = false;
+    let openServiceRecordMenuId = '';
+    let serviceGeneratingBatchKey = '';
+    const serviceOrderStepState = new Map();
     function serviceHubModeCopy(mode = ctx.currentView.mode) {
         const nsfw = mode === 'NSFW';
         return Object.freeze({
@@ -98,6 +126,7 @@ export function createServicePage(ctx) {
         const requestAbortController = new AbortController();
         ctx.serviceProfileGenerationAbortController = requestAbortController;
         ctx.serviceProfileGenerationPending = true;
+        serviceGeneratingBatchKey = batchKey;
         const operationToken = ctx.setFeedback(`正在为「${category.label}」依次生成第 ${batch.profiles.length + 1} 位本地角色草稿…`); ctx.renderPage();
         try {
             for (let slot = batch.profiles.length + 1; slot <= SERVICE_PROFILE_SLOT_COUNT; slot += 1) {
@@ -127,6 +156,7 @@ export function createServicePage(ctx) {
         if (ctx.serviceProfileGenerationAbortController === requestAbortController) {
             ctx.serviceProfileGenerationAbortController = null;
             ctx.serviceProfileGenerationPending = false;
+            serviceGeneratingBatchKey = '';
         }
         if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
         if (ctx.currentView.mode !== requestMode || requestAbortController.signal.aborted) {
@@ -139,7 +169,7 @@ export function createServicePage(ctx) {
             ctx.selectedServiceProfileIds.clear();
             for (const profile of batch.profiles) profile.ready = true;
             ctx.serviceLocalProfiles.splice(0, ctx.serviceLocalProfiles.length, ...retained.slice(-24), ...batch.profiles);
-            ctx.activeServiceHubTab = 'discover'; ctx.activeServiceCategoryId = category.id;
+            ctx.activeServiceHubTab = 'featured'; ctx.activeServiceCategoryId = category.id;
             ctx.setFeedback('已依次生成 3 位本地服务角色；现在可选择其中一位创建服务记录。', operationToken); ctx.renderPage(); return;
         }
         ctx.setFeedback(`第 ${batch.failedSlot || batch.profiles.length + 1} 位尚未生成成功；已通过校验的 ${batch.profiles.length} 位候补已保留。可重试剩余席位。`, operationToken);
@@ -226,24 +256,85 @@ export function createServicePage(ctx) {
             const terminal = isTerminalServiceOrder(order); const waitingForOrder = !order;
             const actionText = terminal ? '前往历史记录' : waitingForOrder ? '等待服务记录同步' : '再次填入正文草稿';
             const action = element('button', { className: 'yl-settings-button', type: 'button', name: `service-profile-${profile.id}`, disabled: pending || waitingForOrder, text: actionText });
-            listen(action, action, 'click', () => { if (terminal) { ctx.activeServiceHubTab = 'history'; ctx.renderPage(); } else if (order) { appendServiceExperienceDraft(order, order.mode, order.id); ctx.renderPage(); } }, ctx.abortController.signal); card.appendChild(action);
+            listen(action, action, 'click', () => { if (terminal) { ctx.activeServiceHubTab = 'records'; ctx.renderPage(); } else if (order) { appendServiceExperienceDraft(order, order.mode, order.id); ctx.renderPage(); } }, ctx.abortController.signal); card.appendChild(action);
             return card;
         }
         const selected = ctx.selectedServiceProfileIds.has(profile.id);
-        const select = element('button', { className: 'yl-settings-button', type: 'button', name: `service-profile-select-${profile.id}`, disabled: pending, text: selected ? '已选择（取消选择）' : '选择此角色' });
-        select.setAttribute('aria-pressed', String(selected)); listen(select, select, 'click', () => toggleServiceProfileSelection(profile), ctx.abortController.signal); card.appendChild(select);
+        const check = element('input', { type: 'checkbox', name: `service-profile-select-${profile.id}`, checked: selected, disabled: pending, ariaLabel: `选择角色：${serviceProfileName(profile)}` });
+        listen(check, check, 'change', () => {
+            const want = Boolean(check.checked);
+            if (want !== ctx.selectedServiceProfileIds.has(profile.id)) toggleServiceProfileSelection(profile);
+        }, ctx.abortController.signal);
+        const checkRow = element('label', { className: 'yl-service-slot-check' });
+        append(checkRow, [check, element('span', { text: selected ? '已选择，将加入本单' : '选择此角色' })]);
+        card.appendChild(checkRow);
         return card;
     }
     function buildServiceProfileGenerator(category, xpSearch = '') {
         const search = normalizeServiceXpSearch(xpSearch);
-        const progress = category ? serviceBatchProgress(ctx.currentView.mode, category.id, search) : 0;
-        const title = category ? `生成「${category.label}」本地角色` : '选择人物类别后生成本地角色';
-        const note = search ? `按固定三席串行生成，应用本次 XP 搜索但不保存该搜索词。当前进度：${progress}/3。` : `按固定三席串行生成；每位一通过格式校验便保留在当前模式候补池。当前进度：${progress}/3。三席齐全后才开放选择。`;
-        const card = buildServiceHubCard(title, note, search ? ['本地草稿', 'XP 搜索', '先确认后复制'] : ['本地草稿', '串行三席', '先确认后复制']);
-        const complete = Boolean(category && ctx.serviceGenerationBatches.get(serviceBatchKey(ctx.currentView.mode, category.id, search))?.complete);
-        const text = ctx.serviceProfileGenerationPending ? '正在生成…' : complete ? '刷新 3 位本地角色' : progress > 0 && progress < SERVICE_PROFILE_SLOT_COUNT ? `重试剩余第 ${progress + 1} 位` : '批量生成 3 位角色';
-        const generate = element('button', { className: 'yl-settings-button yl-service-generate-button', type: 'button', name: 'service-profile-generate', disabled: ctx.serviceProfileGenerationPending || !category, text });
-        listen(generate, generate, 'click', () => { if (category) void generateLocalServiceProfiles(category.id, { refresh: complete, xpSearch: search }); }, ctx.abortController.signal); card.appendChild(generate); return card;
+        const mode = ctx.currentView.mode;
+        const batchKey = category ? serviceBatchKey(mode, category.id, search) : '';
+        const batch = category ? ctx.serviceGenerationBatches.get(batchKey) : null;
+        const complete = Boolean(batch?.complete);
+        const progress = category ? serviceBatchProgress(mode, category.id, search) : 0;
+        const generatingHere = ctx.serviceProfileGenerationPending && serviceGeneratingBatchKey === batchKey && Boolean(batchKey);
+        const readyProfiles = category ? profilesForServiceBatch(mode, category.id, { readyOnly: true, xpSearch: search }) : [];
+        const stagedProfiles = complete ? readyProfiles : (batch && !batch.complete ? batch.profiles : []);
+        const wrap = element('section', { className: 'yl-service-slot-generator', ariaLabel: '三席生成器' });
+        const head = element('div', { className: 'yl-service-slot-generator-head' });
+        append(head, [
+            element('strong', { text: category ? `三席生成器 ·「${category.label}」` : '三席生成器' }),
+            element('span', { className: 'yl-service-slot-progress', text: `当前进度 ${progress}/${SERVICE_PROFILE_SLOT_COUNT}` }),
+        ]);
+        const headText = ctx.serviceProfileGenerationPending ? '正在生成…' : complete ? '刷新 3 位本地角色' : progress > 0 && progress < SERVICE_PROFILE_SLOT_COUNT ? `重试剩余第 ${progress + 1} 位` : '批量生成 3 位角色';
+        const generate = element('button', { className: 'yl-settings-button yl-service-generate-button', type: 'button', name: 'service-profile-generate', disabled: ctx.serviceProfileGenerationPending || !category, text: headText });
+        listen(generate, generate, 'click', () => { if (category) void generateLocalServiceProfiles(category.id, { refresh: complete, xpSearch: search }); }, ctx.abortController.signal);
+        head.appendChild(generate);
+        wrap.appendChild(head);
+        wrap.appendChild(element('p', {
+            className: 'yl-service-slot-note',
+            text: search
+                ? `按固定三席串行生成，应用本次 XP 搜索但不保存该搜索词。${category ? '' : '请先选择上方分类。'}三席齐全后才开放选择。`
+                : `按固定三席串行生成；每位一通过格式校验便保留在当前模式候补池。${category ? '' : '请先选择上方分类。'}三席齐全后才开放选择。`,
+        }));
+        const slotRow = element('div', { className: 'yl-service-slot-row' });
+        for (let slotIndex = 0; slotIndex < SERVICE_PROFILE_SLOT_COUNT; slotIndex += 1) {
+            const profile = stagedProfiles[slotIndex] ?? null;
+            if (profile && complete) {
+                slotRow.appendChild(buildLocalServiceProfileCard(profile));
+                continue;
+            }
+            if (profile) {
+                const staged = element('article', { className: 'yl-service-slot yl-service-slot--staged' });
+                append(staged, [
+                    element('strong', { text: serviceProfileName(profile) }),
+                    element('span', { className: 'yl-service-slot-state', text: '已通过格式校验' }),
+                    element('p', { className: 'yl-service-slot-wait', text: '三席未齐前暂不开放选择。' }),
+                ]);
+                slotRow.appendChild(staged);
+                continue;
+            }
+            if (generatingHere && slotIndex === stagedProfiles.length) {
+                const loading = element('div', { className: 'yl-service-slot yl-service-slot--loading' });
+                loading.appendChild(createSkeleton({ documentRef: ctx.documentRef, variant: 'candidate-card', count: 1 }));
+                // P3-G 等待期趣味文案（纯 CSS 轮播，luxe 配色由 service 子区覆写）。
+                loading.appendChild(buildWaitCaptions(ctx.documentRef, SERVICE_WAIT_CAPTIONS, { shiftText: SERVICE_WAIT_SHIFT_TEXT }));
+                slotRow.appendChild(loading);
+                continue;
+            }
+            const empty = element('div', { className: 'yl-service-slot yl-service-slot--empty' });
+            empty.appendChild(element('strong', { text: `第 ${slotIndex + 1} 席` }));
+            if (!ctx.serviceProfileGenerationPending && slotIndex === stagedProfiles.length) {
+                const slotGenerate = element('button', { className: 'yl-settings-button yl-service-slot-generate', type: 'button', name: 'service-slot-generate', disabled: !category, text: progress > 0 ? '继续生成本席' : '生成' });
+                listen(slotGenerate, slotGenerate, 'click', () => { if (category) void generateLocalServiceProfiles(category.id, { refresh: false, xpSearch: search }); }, ctx.abortController.signal);
+                empty.appendChild(slotGenerate);
+            } else {
+                empty.appendChild(element('span', { className: 'yl-service-slot-wait', text: '待前席完成后依次生成' }));
+            }
+            slotRow.appendChild(empty);
+        }
+        wrap.appendChild(slotRow);
+        return wrap;
     }
     function serviceOrdersForCurrentMode() { return Array.isArray(ctx.currentView.serviceOrders) ? ctx.currentView.serviceOrders.filter((order) => order.mode === ctx.currentView.mode) : []; }
     function serviceParticipantCount(order) { return Array.isArray(order?.profiles) && order.profiles.length ? order.profiles.length : 1; }
@@ -256,32 +347,98 @@ export function createServicePage(ctx) {
     }
     function readServiceBoundaryDraft(order) { const draft = defaultServiceBoundaries(order); return { ...draft, 服务信息: { ...draft.服务信息 }, NPC明确同意: [...draft.NPC明确同意] }; }
     function serviceBoundariesConsented(order) { const draft = defaultServiceBoundaries(order); return draft.玩家已同意 === true && Array.isArray(draft.NPC明确同意) && draft.NPC明确同意.length === serviceParticipantCount(order) && draft.NPC明确同意.every((item) => item === true); }
-    function createServiceBoundaryEditor(order) {
-        const wrap = element('section', { className: 'yl-service-boundary-editor' });
-        wrap.appendChild(element('strong', { text: '确认本次服务边界' }));
-        wrap.appendChild(element('p', { text: '确认前，须在正文完成本次协商；玩家与每位参与的明确成年人都要逐人确认。结构化记录不会自动发送正文。' }));
+    function serviceOrderStep(order) {
+        return serviceOrderStepState.get(order?.id) ?? { step: 1, maxVisited: 1 };
+    }
+    function setServiceOrderStep(order, step) {
+        if (!order?.id) return;
+        const bounded = Math.min(SERVICE_ORDER_STEPS.length, Math.max(1, Math.trunc(step)));
+        const current = serviceOrderStep(order);
+        if (bounded > current.maxVisited + 1) return; // 只能依次前进；回跳不受限。
+        serviceOrderStepState.set(order.id, { step: bounded, maxVisited: Math.max(current.maxVisited, bounded) });
+        ctx.renderPage();
+    }
+    function serviceStepSummary(order, step) {
         const draft = defaultServiceBoundaries(order);
-        for (const field of ['主题', '允许项', '排除项', '强度', '隐私处理']) {
-            const input = element('input', { className: 'yl-settings-control', type: 'text', name: 'service-boundary-' + field, value: draft[field] || '', ariaLabel: field });
-            listen(input, input, 'input', () => { const next = readServiceBoundaryDraft(order); next[field] = String(input.value ?? '').slice(0, 240); ctx.serviceBoundaryDrafts.set(order.id, next); }, ctx.abortController.signal);
-            const row = element('label', { className: 'yl-settings-field' }); append(row, [element('span', { text: field }), input]); wrap.appendChild(row);
+        if (step === 1) {
+            const topic = String(draft.主题 ?? '').trim();
+            return `${topic ? topic.slice(0, 24) : '未填写主题'} · 强度：${String(draft.强度 ?? '').trim() || '未填写'} · 隐私：${String(draft.隐私处理 ?? '').trim() || '未填写'}`;
         }
-        wrap.appendChild(element('strong', { text: '服务信息（仅本次订单合同，不写入本地历史）' }));
-        for (const field of ['价格', '时长', '排期', '套餐', '评价', '投诉', '退款', '服务者信用']) {
-            const input = element('input', { className: 'yl-settings-control', type: 'text', name: 'service-information-' + field, value: draft.服务信息?.[field] || '', ariaLabel: field });
-            listen(input, input, 'input', () => { const next = readServiceBoundaryDraft(order); next.服务信息[field] = String(input.value ?? '').slice(0, 120); ctx.serviceBoundaryDrafts.set(order.id, next); }, ctx.abortController.signal);
-            const row = element('label', { className: 'yl-settings-field' }); append(row, [element('span', { text: field }), input]); wrap.appendChild(row);
+        if (step === 2) {
+            const filled = SERVICE_INFORMATION_FIELDS.filter((field) => String(draft.服务信息?.[field] ?? '').trim()).length;
+            return `已填写 ${filled}/${SERVICE_INFORMATION_FIELDS.length} 项服务信息`;
         }
-        const playerConfirm = element('input', { type: 'checkbox', name: 'service-boundary-player-consent', checked: draft.玩家已同意 === true, ariaLabel: '玩家已同意本次服务主题与边界' });
-        listen(playerConfirm, playerConfirm, 'change', () => { const next = readServiceBoundaryDraft(order); next.玩家已同意 = Boolean(playerConfirm.checked); ctx.serviceBoundaryDrafts.set(order.id, next); ctx.renderPage(); }, ctx.abortController.signal);
-        const playerRow = element('label', { className: 'yl-settings-field yl-service-consent-check' }); append(playerRow, [playerConfirm, element('span', { text: '我已同意本次服务主题与结构化边界' })]); wrap.appendChild(playerRow);
-        const profiles = Array.isArray(order?.profiles) && order.profiles.length ? order.profiles : [order?.profile];
-        profiles.forEach((profile, index) => {
-            const name = typeof profile?.昵称 === 'string' && profile.昵称.trim() ? profile.昵称.trim().slice(0, 80) : `第 ${index + 1} 位参与者`;
-            const npcConfirm = element('input', { type: 'checkbox', name: `service-boundary-npc-consent-${index + 1}`, checked: draft.NPC明确同意[index] === true, ariaLabel: `${name}已在正文明确同意` });
-            listen(npcConfirm, npcConfirm, 'change', () => { const next = readServiceBoundaryDraft(order); next.NPC明确同意[index] = Boolean(npcConfirm.checked); ctx.serviceBoundaryDrafts.set(order.id, next); ctx.renderPage(); }, ctx.abortController.signal);
-            const npcRow = element('label', { className: 'yl-settings-field yl-service-consent-check' }); append(npcRow, [npcConfirm, element('span', { text: `我已在正文取得「${name}」的明确同意` })]); wrap.appendChild(npcRow);
-        });
+        const consented = draft.NPC明确同意.filter((item) => item === true).length;
+        return `${draft.玩家已同意 === true ? '玩家已同意' : '玩家未确认'} · 参与者同意 ${consented}/${draft.NPC明确同意.length}`;
+    }
+    function buildServiceBoundaryTextField(order, field) {
+        const draft = defaultServiceBoundaries(order);
+        const input = element('input', { className: 'yl-settings-control', type: 'text', name: 'service-boundary-' + field, value: draft[field] || '', ariaLabel: field });
+        listen(input, input, 'input', () => { const next = readServiceBoundaryDraft(order); next[field] = String(input.value ?? '').slice(0, 240); ctx.serviceBoundaryDrafts.set(order.id, next); }, ctx.abortController.signal);
+        const row = element('label', { className: 'yl-settings-field' }); append(row, [element('span', { text: field }), input]);
+        return row;
+    }
+    function createServiceBoundaryEditor(order) {
+        const wrap = element('section', { className: 'yl-service-boundary-editor yl-service-stepper' });
+        wrap.appendChild(element('strong', { text: '确认本次服务边界（三步）' }));
+        wrap.appendChild(element('p', { className: 'yl-service-stepper-intro', text: '确认前，须在正文完成本次协商；玩家与每位参与的明确成年人都要逐人确认。结构化记录不会自动发送正文。' }));
+        const state = serviceOrderStep(order);
+        const head = element('div', { className: 'yl-service-stepper-head' });
+        for (const meta of SERVICE_ORDER_STEPS) {
+            const reachable = meta.step <= state.maxVisited;
+            const tab = element('button', { className: 'yl-service-step-tab', type: 'button', name: `service-step-${meta.step}`, disabled: !reachable && meta.step !== state.step, ariaLabel: `第 ${meta.step} 步：${meta.label}` });
+            tab.classList.toggle('is-active', state.step === meta.step);
+            tab.classList.toggle('is-done', reachable && state.step !== meta.step);
+            append(tab, [element('span', { className: 'yl-service-step-num', text: String(meta.step) }), element('span', { text: meta.label })]);
+            listen(tab, tab, 'click', () => setServiceOrderStep(order, meta.step), ctx.abortController.signal);
+            head.appendChild(tab);
+        }
+        wrap.appendChild(head);
+        // 已完成/已到访的其他步骤显示摘要行，随时可点步骤条回跳修改。
+        for (const meta of SERVICE_ORDER_STEPS) {
+            if (meta.step === state.step || meta.step > state.maxVisited) continue;
+            wrap.appendChild(element('p', { className: 'yl-service-step-summary', text: `第 ${meta.step} 步 · ${meta.label}：${serviceStepSummary(order, meta.step)}` }));
+        }
+        const draft = defaultServiceBoundaries(order);
+        if (state.step === 1) {
+            for (const field of SERVICE_BOUNDARY_FIELDS) wrap.appendChild(buildServiceBoundaryTextField(order, field));
+        } else if (state.step === 2) {
+            wrap.appendChild(element('strong', { text: '服务信息（仅本次订单合同，不写入本地历史）' }));
+            const grid = element('div', { className: 'yl-service-grid-2' });
+            for (const field of SERVICE_INFORMATION_FIELDS) {
+                const input = element('input', { className: 'yl-settings-control', type: 'text', name: 'service-information-' + field, value: draft.服务信息?.[field] || '', ariaLabel: field });
+                listen(input, input, 'input', () => { const next = readServiceBoundaryDraft(order); next.服务信息[field] = String(input.value ?? '').slice(0, 120); ctx.serviceBoundaryDrafts.set(order.id, next); }, ctx.abortController.signal);
+                const row = element('label', { className: 'yl-settings-field' }); append(row, [element('span', { text: field }), input]); grid.appendChild(row);
+            }
+            wrap.appendChild(grid);
+        } else {
+            const playerConfirm = element('input', { type: 'checkbox', name: 'service-boundary-player-consent', checked: draft.玩家已同意 === true, ariaLabel: '玩家已同意本次服务主题与边界' });
+            listen(playerConfirm, playerConfirm, 'change', () => { const next = readServiceBoundaryDraft(order); next.玩家已同意 = Boolean(playerConfirm.checked); ctx.serviceBoundaryDrafts.set(order.id, next); ctx.renderPage(); }, ctx.abortController.signal);
+            const playerRow = element('label', { className: 'yl-settings-field yl-service-consent-check' }); append(playerRow, [playerConfirm, element('span', { text: '我已同意本次服务主题与结构化边界' })]); wrap.appendChild(playerRow);
+            const profiles = Array.isArray(order?.profiles) && order.profiles.length ? order.profiles : [order?.profile];
+            profiles.forEach((profile, index) => {
+                const name = typeof profile?.昵称 === 'string' && profile.昵称.trim() ? profile.昵称.trim().slice(0, 80) : `第 ${index + 1} 位参与者`;
+                const consentCard = element('article', { className: 'yl-service-consent-card' });
+                consentCard.appendChild(element('strong', { text: name }));
+                const npcConfirm = element('input', { type: 'checkbox', name: `service-boundary-npc-consent-${index + 1}`, checked: draft.NPC明确同意[index] === true, ariaLabel: `${name}已在正文明确同意` });
+                listen(npcConfirm, npcConfirm, 'change', () => { const next = readServiceBoundaryDraft(order); next.NPC明确同意[index] = Boolean(npcConfirm.checked); ctx.serviceBoundaryDrafts.set(order.id, next); ctx.renderPage(); }, ctx.abortController.signal);
+                const npcRow = element('label', { className: 'yl-settings-field yl-service-consent-check' }); append(npcRow, [npcConfirm, element('span', { text: `我已在正文取得「${name}」的明确同意` })]); consentCard.appendChild(npcRow);
+                wrap.appendChild(consentCard);
+            });
+        }
+        const nav = element('div', { className: 'yl-service-step-nav' });
+        if (state.step > 1) {
+            const prev = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-step-prev', text: '上一步' });
+            listen(prev, prev, 'click', () => setServiceOrderStep(order, state.step - 1), ctx.abortController.signal);
+            nav.appendChild(prev);
+        }
+        if (state.step < SERVICE_ORDER_STEPS.length) {
+            const nextMeta = SERVICE_ORDER_STEPS[state.step];
+            const next = element('button', { className: 'yl-settings-button yl-service-step-next', type: 'button', name: 'service-step-next', text: `下一步：${nextMeta.label}` });
+            listen(next, next, 'click', () => setServiceOrderStep(order, state.step + 1), ctx.abortController.signal);
+            nav.appendChild(next);
+        }
+        if (nav.childNodes.length) wrap.appendChild(nav);
         return wrap;
     }
     async function archiveAndFinalizeServiceOrder(order, status) {
@@ -302,6 +459,7 @@ export function createServicePage(ctx) {
         ctx.refreshState();
         try { result = await ctx.actionBridge.runServiceOrderFinalize?.({ orderUid: order.id }); } catch { result = { ok: false }; }
         if (result?.ok) ctx.serviceOrderHistoryStore.markArchived(staged.localId);
+        serviceOrderStepState.delete(order.id);
         ctx.serviceOrderMutationPendingId = '';
         if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
         ctx.refreshState(); ctx.setFeedback(result?.ok ? '订单已归档至本设备历史，并已从 MVU 开放订单中移除。' : '订单已进入终态；本地已保留待修复归档，稍后可重试。', token); ctx.renderPage();
@@ -314,7 +472,7 @@ export function createServicePage(ctx) {
         ctx.serviceOrderMutationPendingId = '';
         if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
         if (!result?.ok) { ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return; }
-        ctx.serviceBoundaryDrafts.delete(order.id); ctx.refreshState(); ctx.setFeedback('已确认接单；正文剧情现在可以推进。小手机不会自动发送。', token); ctx.renderPage();
+        ctx.serviceBoundaryDrafts.delete(order.id); serviceOrderStepState.delete(order.id); ctx.refreshState(); ctx.setFeedback('已确认接单；正文剧情现在可以推进。小手机不会自动发送。', token); ctx.renderPage();
     }
     async function rebookServiceHistory(record) {
         if (!record || ctx.serviceOrderMutationPendingId) return;
@@ -326,7 +484,7 @@ export function createServicePage(ctx) {
         if (!result?.ok) { ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return; }
         ctx.refreshState();
         if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
-        ctx.activeServiceHubTab = 'service';
+        ctx.activeServiceHubTab = 'orders';
         const createdOrder = ctx.currentView.serviceOrders.find((order) => order?.id === result.orderUid) ?? null;
         if (!createdOrder || ctx.currentView.mode !== record.mode) {
             ctx.setFeedback('已建立新的待确认订单；请重新确认本次边界。', token); ctx.renderPage(); return;
@@ -340,7 +498,7 @@ export function createServicePage(ctx) {
         const terminal = ctx.currentView.serviceOrders.find((order) => order.id === record.orderUid && order.mode === record.mode && isTerminalServiceOrder(order));
         if (!terminal) {
             const malformed = ctx.currentView.serviceOrderIssues?.some((issue) => issue?.id === record.orderUid);
-            if (malformed) { ctx.activeServiceHubTab = 'service'; ctx.setFeedback('该 MVU 订单已损坏；请使用“移除损坏记录”后再处理本地历史。'); ctx.renderPage(); return; }
+            if (malformed) { ctx.activeServiceHubTab = 'orders'; ctx.setFeedback('该 MVU 订单已损坏；请使用“移除损坏记录”后再处理本地历史。'); ctx.renderPage(); return; }
             ctx.serviceOrderHistoryStore.markArchived(record.localId);
             ctx.setFeedback('未找到需要删除的 MVU 终态订单；已将本地记录标为完成归档。');
             ctx.renderPage();
@@ -389,14 +547,20 @@ export function createServicePage(ctx) {
         if (status === '待确认') {
             card.appendChild(createServiceBoundaryEditor(order));
             const actions = element('div', { className: 'yl-service-order-actions' });
+            // 取消 / 重填始终可见；「确认接单」只在第 3 步（双方同意）出现。
             const refill = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-order-refill-draft', disabled: mutationPending, text: '继续协商 / 重新填入草稿' });
             listen(refill, refill, 'click', () => { appendServiceExperienceDraft(order, order.mode, order.id); }, ctx.abortController.signal);
-            const consentReady = serviceBoundariesConsented(order);
-            const confirm = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-order-start', disabled: mutationPending || !consentReady, text: mutationPending ? '正在确认…' : consentReady ? '确认接单' : '请先逐人确认同意' });
-            listen(confirm, confirm, 'click', () => { void startServiceOrder(order); }, ctx.abortController.signal);
+            actions.appendChild(refill);
+            if (serviceOrderStep(order).step === SERVICE_ORDER_STEPS.length) {
+                const consentReady = serviceBoundariesConsented(order);
+                const confirm = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-order-start', disabled: mutationPending || !consentReady, text: mutationPending ? '正在确认…' : consentReady ? '确认接单' : '请先逐人确认同意' });
+                listen(confirm, confirm, 'click', () => { void startServiceOrder(order); }, ctx.abortController.signal);
+                actions.appendChild(confirm);
+            }
             const cancel = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-order-cancel', disabled: mutationPending, text: '取消订单' });
             listen(cancel, cancel, 'click', () => { void archiveAndFinalizeServiceOrder(order, '已取消'); }, ctx.abortController.signal);
-            append(actions, [refill, confirm, cancel]); card.appendChild(actions);
+            actions.appendChild(cancel);
+            card.appendChild(actions);
         } else if (status === '进行中') {
             const actions = element('div', { className: 'yl-service-order-actions' });
             const draft = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-order-refill-draft', disabled: mutationPending, text: '继续协商 / 重新填入草稿' });
@@ -414,23 +578,47 @@ export function createServicePage(ctx) {
         return card;
     }
     function buildLocalServiceHistoryCard(record) {
-        const name = record?.profile?.昵称 || '已归档服务者'; const card = buildServiceHubCard(name, record?.summary || '仅保留最小化本地订单标记。', [record?.category || '服务', record?.status || '已归档']);
-        card.classList.toggle('yl-service-order-card', true); card.appendChild(element('span', { className: 'yl-service-order-topic', text: record?.topic || '' }));
-        if (record?.endedAt) card.appendChild(element('span', { className: 'yl-service-order-time', text: record.endedAt }));
-        const actions = element('div', { className: 'yl-service-order-actions' }); const pending = ctx.serviceOrderMutationPendingId === record?.localId;
+        const name = record?.profile?.昵称 || '已归档服务者';
+        const pending = ctx.serviceOrderMutationPendingId === record?.localId;
         const needsArchive = record?.archiveState === 'pending_archive';
+        const menuOpen = openServiceRecordMenuId === record?.localId;
+        const statusChip = createStatusChip({ documentRef: ctx.documentRef, text: record?.status || '已归档', tone: record?.status === '已完成' ? 'success' : record?.status === '已取消' ? 'neutral' : 'info' });
+        const archiveChip = createStatusChip({ documentRef: ctx.documentRef, text: needsArchive ? '待归档' : '已归档', tone: needsArchive ? 'warning' : 'neutral' });
+        const row = createListRow({
+            documentRef: ctx.documentRef,
+            title: name,
+            subtitle: record?.topic || record?.summary || '仅保留最小化本地订单标记。',
+            meta: { time: record?.endedAt || '', chips: [statusChip, archiveChip] },
+        });
+        const container = element('article', { className: 'yl-service-record' });
+        const main = element('div', { className: 'yl-service-record-main' });
+        const more = createButton({
+            documentRef: ctx.documentRef,
+            variant: 'icon',
+            icon: 'more_vertical',
+            ariaLabel: `更多操作：${name}`,
+            onClick: () => { openServiceRecordMenuId = menuOpen ? '' : String(record?.localId ?? ''); ctx.renderPage(); },
+        });
+        more.classList.toggle('yl-service-record-more', true);
+        more.setAttribute('name', `service-history-menu-${record?.localId ?? ''}`);
+        more.setAttribute('aria-expanded', String(menuOpen));
+        append(main, [row, more]);
+        container.appendChild(main);
+        const menu = element('div', { className: 'yl-service-record-menu', hidden: !menuOpen });
         const rebook = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-history-rebook', disabled: pending || needsArchive, text: pending ? '正在创建…' : '再次下单' });
-        listen(rebook, rebook, 'click', () => { void rebookServiceHistory(record); }, ctx.abortController.signal);
-        const remove = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-history-delete', disabled: pending, text: '删除历史与角色' });
-        listen(remove, remove, 'click', () => { void deleteServiceHistory(record); }, ctx.abortController.signal);
+        listen(rebook, rebook, 'click', () => { openServiceRecordMenuId = ''; void rebookServiceHistory(record); }, ctx.abortController.signal);
         if (needsArchive) {
             const finalize = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-history-finalize', disabled: pending, text: pending ? '正在继续归档…' : '继续归档' });
-            listen(finalize, finalize, 'click', () => { void finalizePendingServiceHistory(record); }, ctx.abortController.signal);
-            append(actions, [finalize, rebook, remove]);
-        } else append(actions, [rebook, remove]);
-        card.appendChild(actions);
-        if (needsArchive) card.appendChild(element('p', { text: '该记录等待与 MVU 终态同步；点击“继续归档”只会重试删除终态订单，不会重新下单。' }));
-        return card;
+            listen(finalize, finalize, 'click', () => { openServiceRecordMenuId = ''; void finalizePendingServiceHistory(record); }, ctx.abortController.signal);
+            menu.appendChild(finalize);
+        }
+        menu.appendChild(rebook);
+        const remove = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-history-delete', disabled: pending, text: '删除历史与角色' });
+        listen(remove, remove, 'click', () => { openServiceRecordMenuId = ''; void deleteServiceHistory(record); }, ctx.abortController.signal);
+        menu.appendChild(remove);
+        container.appendChild(menu);
+        if (needsArchive) container.appendChild(element('p', { className: 'yl-service-record-note', text: '该记录等待与 MVU 终态同步；「继续归档」只会重试删除终态订单，不会重新下单。' }));
+        return container;
     }
     function buildServicePublicationPanel(copy) {
         const panel = buildServiceHubCard('服务者发布服务', '每个分类各保留当前模式的本地服务发布；刷新会继续使用“约伴服务角色生成”绑定的连接预设，且不会写入 MVU。', ['本地发布', '可刷新']);
@@ -444,7 +632,7 @@ export function createServicePage(ctx) {
             const open = element('button', { className: 'yl-settings-button', type: 'button', name: `service-published-open-${category.id}`, text: count ? '查看发布' : '生成发布' });
             listen(open, open, 'click', () => {
                 ctx.activeServiceCategoryId = category.id;
-                ctx.activeServiceHubTab = 'discover';
+                ctx.activeServiceHubTab = 'featured';
                 ctx.renderPage();
                 if (!batch?.complete) void generateLocalServiceProfiles(category.id);
             }, ctx.abortController.signal);
@@ -465,7 +653,7 @@ export function createServicePage(ctx) {
             element('p', { text: '搜索词只用于本次本地角色草稿，不会写入订单、MVU、历史或运行记录。' }),
         ]);
         const row = element('div', { className: 'yl-service-xp-search-row' });
-        const input = element('input', { className: 'yl-settings-control yl-service-xp-search-input', type: 'search', name: 'service-xp-search', maxLength: 80, value: ctx.serviceXpSearchDraft, placeholder: '例如：眼镜、制服、成熟感', ariaLabel: '搜索想探索的 XP' });
+        const input = element('input', { className: 'yl-settings-control yl-service-xp-search-input', type: 'search', name: 'service-xp-search', maxLength: 80, value: ctx.serviceXpSearchDraft, placeholder: '例如：制服、清冷、年下、拉扯感、办公室', ariaLabel: '搜索想探索的 XP' });
         const applySearch = () => {
             const next = normalizeServiceXpSearch(ctx.serviceXpSearchDraft);
             ctx.serviceXpSearchDraft = next;
@@ -489,11 +677,12 @@ export function createServicePage(ctx) {
     }
     function buildServiceHubPage() {
         const copy = serviceHubModeCopy(); const category = serviceCategory(copy, ctx.activeServiceCategoryId); const section = element('section', { className: 'yl-service-hub', ariaLabel: '专属服务小程序' });
+        const activeTab = normalizeServiceHubTab(ctx.activeServiceHubTab);
         const tabs = element('div', { className: 'yl-service-tabs', ariaLabel: '专属服务导航' }); tabs.setAttribute('role', 'tablist');
         const tabButtons = [];
         const focusServiceHubTab = (tabId) => { ctx.root.querySelectorAll?.(`[name="service-hub-tab-${tabId}"]`)?.[0]?.focus?.(); };
         for (const item of SERVICE_HUB_TABS) {
-            const active = ctx.activeServiceHubTab === item.id;
+            const active = activeTab === item.id;
             const tab = element('button', { className: 'yl-service-tab', type: 'button', name: `service-hub-tab-${item.id}`, ariaLabel: item.label });
             tab.setAttribute('role', 'tab');
             tab.setAttribute('id', `yl-service-hub-tab-${item.id}`);
@@ -511,7 +700,7 @@ export function createServicePage(ctx) {
         listen(tabs, tabs, 'keydown', (event) => {
             if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
             const current = tabButtons.indexOf(ctx.documentRef.activeElement);
-            const from = current >= 0 ? current : Math.max(0, SERVICE_HUB_TABS.findIndex((entry) => entry.id === ctx.activeServiceHubTab));
+            const from = current >= 0 ? current : Math.max(0, SERVICE_HUB_TABS.findIndex((entry) => entry.id === activeTab));
             const next = event.key === 'Home' ? 0
                 : event.key === 'End' ? tabButtons.length - 1
                     : event.key === 'ArrowRight' ? (from + 1) % tabButtons.length
@@ -523,32 +712,47 @@ export function createServicePage(ctx) {
         section.appendChild(tabs); const body = element('div', { className: 'yl-service-body' });
         body.setAttribute('role', 'tabpanel');
         body.setAttribute('id', 'yl-service-hub-panel');
-        body.setAttribute('aria-labelledby', `yl-service-hub-tab-${ctx.activeServiceHubTab}`);
-        if (ctx.activeServiceHubTab === 'home') {
+        body.setAttribute('aria-labelledby', `yl-service-hub-tab-${activeTab}`);
+        if (activeTab === 'featured') {
+            // 精选 = 旧「首页 + 发现」合并：模式徽标 + 分类横排 + XP 搜索 + 三席生成器 + 底部折叠发布面板。
             const hero = element('article', { className: 'yl-service-hero' }); append(hero, [element('span', { className: 'yl-service-mode-badge', text: copy.label }), element('h2', { text: copy.title }), element('p', { text: copy.subtitle })]); body.appendChild(hero);
-            const grid = element('div', { className: 'yl-service-category-grid' });
-            for (const item of copy.categories) { const button = element('button', { className: 'yl-service-category', type: 'button', name: `service-category-${item.id}`, ariaLabel: `浏览${item.label}` }); append(button, [element('strong', { text: item.label }), element('span', { text: item.note })]); listen(button, button, 'click', () => { ctx.serviceXpSearchDraft = ''; ctx.serviceXpSearchApplied = ''; ctx.activeServiceCategoryId = item.id; ctx.activeServiceHubTab = 'discover'; ctx.renderPage(); if (!ctx.serviceGenerationBatches.get(serviceBatchKey(ctx.currentView.mode, item.id, ''))?.complete) void generateLocalServiceProfiles(item.id, { xpSearch: '' }); }, ctx.abortController.signal); grid.appendChild(button); }
-            const confirmationNote = ctx.currentView.mode === 'SFW'
-                ? '本页的本地生成结果不会写入 MVU；选中后才会原子复制角色与建立“待确认”服务记录。正文必须先取得每位明确成年人的当前同意；SFW 服务不由小手机安排现实交易或外部行动。'
-                : '本页的本地生成结果不会写入 MVU；选中后才会原子复制角色与建立“待确认”服务记录。NSFW 保持明确成年人、自愿与逐人确认；小手机只留存最小订单摘要，绝不自动发送或替任一方作出同意。';
-            body.appendChild(grid); body.appendChild(buildServicePublicationPanel(copy)); body.appendChild(buildServiceHubCard('使用前确认', confirmationNote, ['逐次确认', '小手机不自动发送']));
-        } else if (ctx.activeServiceHubTab === 'discover') {
-            const choices = element('div', { className: 'yl-service-category-grid yl-service-discover-categories' });
-            for (const item of copy.categories) { const choice = element('button', { className: 'yl-service-category', type: 'button', name: `service-discover-category-${item.id}`, text: item.label, pressed: ctx.activeServiceCategoryId === item.id }); choice.classList.toggle('is-active', ctx.activeServiceCategoryId === item.id); listen(choice, choice, 'click', () => { ctx.activeServiceCategoryId = item.id; ctx.selectedServiceProfileIds.clear(); ctx.renderPage(); }, ctx.abortController.signal); choices.appendChild(choice); }
-            body.appendChild(choices); body.appendChild(buildServiceXpSearchControls(category)); body.appendChild(buildServiceProfileGenerator(category, ctx.serviceXpSearchApplied)); const visibleProfiles = profilesForServiceBatch(ctx.currentView.mode, category?.id, { readyOnly: true, xpSearch: ctx.serviceXpSearchApplied });
-            if (!visibleProfiles.length) body.appendChild(buildServiceHubCard('候补尚未开放', `选择上方分类后按三席依次生成；当前已校验 ${category ? serviceBatchProgress(ctx.currentView.mode, category.id, ctx.serviceXpSearchApplied) : 0}/3 位。生成失败只重试当前席位，不清除前序候补。`, ['本地优先']));
-            for (const profile of visibleProfiles) body.appendChild(buildLocalServiceProfileCard(profile));
+            const categoryRow = element('div', { className: 'yl-service-category-row', ariaLabel: '服务分类' });
+            for (const item of copy.categories) {
+                const button = element('button', { className: 'yl-service-category', type: 'button', name: `service-category-${item.id}`, ariaLabel: `选择${item.label}`, pressed: ctx.activeServiceCategoryId === item.id });
+                button.classList.toggle('is-active', ctx.activeServiceCategoryId === item.id);
+                append(button, [element('strong', { text: item.label }), element('span', { text: item.note })]);
+                listen(button, button, 'click', () => { ctx.activeServiceCategoryId = item.id; ctx.selectedServiceProfileIds.clear(); ctx.renderPage(); }, ctx.abortController.signal);
+                categoryRow.appendChild(button);
+            }
+            body.appendChild(categoryRow);
+            body.appendChild(buildServiceXpSearchControls(category));
+            body.appendChild(buildServiceProfileGenerator(category, ctx.serviceXpSearchApplied));
+            const visibleProfiles = profilesForServiceBatch(ctx.currentView.mode, category?.id, { readyOnly: true, xpSearch: ctx.serviceXpSearchApplied });
             if (visibleProfiles.length === SERVICE_PROFILE_SLOT_COUNT) {
                 const selected = selectedServiceProfiles(category?.id); const hasOpen = ctx.currentView.serviceOrders.some((order) => ['待确认', '进行中'].includes(order.status));
                 const create = element('button', { className: 'yl-settings-button yl-service-generate-button', type: 'button', name: 'service-order-create-selected', disabled: !selected.length || hasOpen || Boolean(ctx.serviceProfileHandoffPendingId), text: ctx.serviceProfileHandoffPendingId ? '正在创建订单…' : `以已选 ${selected.length} 位创建服务订单` });
                 listen(create, create, 'click', () => { void createServiceOrderFromSelectedProfiles(category); }, ctx.abortController.signal); body.appendChild(create);
             }
-        } else if (ctx.activeServiceHubTab === 'service') {
-            const active = serviceOrdersForCurrentMode().filter((order) => order.status === '待确认' || order.status === '进行中'); if (!active.length) body.appendChild(buildServiceHubCard('暂无进行中的服务', '从“发现”选择本地角色后才会创建待确认记录。确认角色复制和正文草稿后，仍须由你自行发送并在酒馆正文中推进。', ['不自动发送'])); for (const order of active) body.appendChild(buildServiceOrderCard(order)); for (const issue of (ctx.currentView.serviceOrderIssues || [])) body.appendChild(buildServiceOrderIssueCard(issue)); const boundaryNote = ctx.currentView.mode === 'SFW' ? '多人服务必须由每一位明确成年人分别同意；历史记录、关系或付款信息都不能代替当前同意。' : '多人服务必须由每一位明确成年人分别同意；历史记录、关系或既往主题都不能代替当前同意，NSFW 不会因小手机默认缩减成人表达尺度。'; body.appendChild(buildServiceHubCard('安全边界', boundaryNote, ['禁止默认同意', '禁止胁迫']));
+            const collapse = element('section', { className: 'yl-service-collapse', ariaLabel: '服务者发布面板' });
+            const toggle = element('button', { className: 'yl-service-collapse-toggle', type: 'button', name: 'service-publication-toggle' });
+            toggle.setAttribute('aria-expanded', String(servicePublicationOpen));
+            append(toggle, [element('span', { text: servicePublicationOpen ? '收起服务者发布面板' : '展开服务者发布面板' }), createUiIcon(ctx.documentRef, 'chevron_right', { className: 'yl-ui-icon yl-service-collapse-chevron', size: 16 })]);
+            listen(toggle, toggle, 'click', () => { servicePublicationOpen = !servicePublicationOpen; ctx.renderPage(); }, ctx.abortController.signal);
+            collapse.appendChild(toggle);
+            if (servicePublicationOpen) collapse.appendChild(buildServicePublicationPanel(copy));
+            body.appendChild(collapse);
+            const confirmationNote = ctx.currentView.mode === 'SFW'
+                ? '本页的本地生成结果不会写入 MVU；选中后才会原子复制角色与建立“待确认”服务记录。正文必须先取得每位明确成年人的当前同意；SFW 服务不由小手机安排现实交易或外部行动。'
+                : '本页的本地生成结果不会写入 MVU；选中后才会原子复制角色与建立“待确认”服务记录。NSFW 保持明确成年人、自愿与逐人确认；小手机只留存最小订单摘要，绝不自动发送或替任一方作出同意。';
+            body.appendChild(buildServiceHubCard('使用前确认', confirmationNote, ['逐次确认', '小手机不自动发送']));
+        } else if (activeTab === 'orders') {
+            const active = serviceOrdersForCurrentMode().filter((order) => order.status === '待确认' || order.status === '进行中'); if (!active.length) body.appendChild(buildServiceHubCard('暂无进行中的服务', '从「精选」选择本地角色后才会创建待确认记录。确认角色复制和正文草稿后，仍须由你自行发送并在酒馆正文中推进。', ['不自动发送'])); for (const order of active) body.appendChild(buildServiceOrderCard(order)); for (const issue of (ctx.currentView.serviceOrderIssues || [])) body.appendChild(buildServiceOrderIssueCard(issue)); const boundaryNote = ctx.currentView.mode === 'SFW' ? '多人服务必须由每一位明确成年人分别同意；历史记录、关系或付款信息都不能代替当前同意。' : '多人服务必须由每一位明确成年人分别同意；历史记录、关系或既往主题都不能代替当前同意，NSFW 不会因小手机默认缩减成人表达尺度。'; body.appendChild(buildServiceHubCard('安全边界', boundaryNote, ['禁止默认同意', '禁止胁迫']));
         } else {
             const history = typeof ctx.serviceOrderHistoryStore?.list === 'function' ? ctx.serviceOrderHistoryStore.list({ includeInternal: true }).filter((record) => record.mode === ctx.currentView.mode) : [];
             if (!history.length) body.appendChild(buildServiceHubCard('暂无历史记录', '完成或取消后仅在当前浏览器保存最小记录；再次下单会建立全新的待确认订单，不继承此前边界。', ['重新确认', '最小留存']));
-            for (const record of history) body.appendChild(buildLocalServiceHistoryCard(record));
+            const list = element('div', { className: 'yl-service-record-list' });
+            for (const record of history) list.appendChild(buildLocalServiceHistoryCard(record));
+            if (history.length) body.appendChild(list);
         }
         section.appendChild(body); return section;
     }
@@ -580,6 +784,9 @@ export function createServicePage(ctx) {
         defaultServiceBoundaries,
         readServiceBoundaryDraft,
         serviceBoundariesConsented,
+        serviceOrderStep,
+        setServiceOrderStep,
+        serviceStepSummary,
         createServiceBoundaryEditor,
         archiveAndFinalizeServiceOrder,
         startServiceOrder,

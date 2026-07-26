@@ -79,10 +79,11 @@ export const COMPLETE_CANDIDATE_OUTPUT_CONTRACT = Object.freeze([
     '与玩家关系必须且仅能含：状态、全局账号表现、NPC专属匹配度、好感、信任、戒备、面基意愿、友情值、心动值、欲望值。状态固定为“陌生”；其余九项都必须是 0–100 的整数；友情值、心动值、欲望值必须填写为 0。',
     '只在对应层级填写这些内部资料：公开资料不得夹带仅好友资料、隐藏资料或关系数值；内部资料不会直接展示给玩家。',
 ]);
-// NSFW permits an adult's stated orientation or body/style preference throughout
-// the applicable public profile. It never authorizes offline sexual enactment,
-// coercion, minors, or disclosure of private identifiers.
-const ADULT_ORIENTATION_TAG_PATTERN = /(?:名器|翘臀|巨乳|丰胸|性感|性开放|性欲|床伴|炮友|约炮|情趣|性偏好|BDSM|支配|臣服|角色扮演)/iu;
+// 阶段 55: an adult's stated orientation or body/style preference is legitimate
+// public-profile content in every mode; the SFW/NSFW tone difference lives in
+// prompt copy only, never in a code-level adult-vocabulary blocklist. Hard bans
+// below stay mode-independent: minors, coercion, non-consent, crime, offline
+// sexual enactment claims, and private identifiers.
 const PROHIBITED_PUBLIC_CONTENT_PATTERN = /(?:未成年|未滿|未满\s*18|minor|underage|非自愿|非自願|强迫|強迫|胁迫|脅迫|迷奸|下药|下藥|强奸|強奸|偷拍|偷窥|偷窺|勒索|诈骗|詐騙|线下(?:性行为|性行為|做爱|做愛|开房|開房|上床)|(?:性行为|性行為|做爱|做愛|开房|開房|上床)演绎|演繹|身份证|身份證|手机号|手機號|电话号码|電話號碼|具体住址|具體住址|家庭住址|门牌|門牌|真实姓名|真實姓名|银行卡|銀行卡|私人账号|私人帳號)/iu;
 // Provenance stays in memory only. It is never enumerable, serialized, persisted,
 // sent to a model, or written into MVU state. This lets the controlled patch path
@@ -193,9 +194,8 @@ function resolveContentMode(input, options) {
     return CANDIDATE_MODE_BY_OBJECT.get(input) ?? 'SFW';
 }
 
-function assertPublicTextPolicy(value, path, contentMode) {
+function assertPublicTextPolicy(value, path) {
     if (PROHIBITED_PUBLIC_CONTENT_PATTERN.test(value)) fail(`${path}:prohibited_public_content`);
-    if (contentMode === 'SFW' && ADULT_ORIENTATION_TAG_PATTERN.test(value)) fail(`${path}:adult_keyword_in_sfw`);
 }
 
 function normalizePublicProfile(value, contentMode, { requirePersonalName = false } = {}) {
@@ -206,12 +206,12 @@ function normalizePublicProfile(value, contentMode, { requirePersonalName = fals
         const path = `公开资料.${key}`;
         profile[key] = normalizeText(ownData(value, key, '公开资料'), path, maxLength, { allowEmpty: key === '头像引用' });
         if (key === '昵称' && requirePersonalName) assertGeneratedPersonalName(profile[key]);
-        assertPublicTextPolicy(profile[key], path, contentMode);
+        assertPublicTextPolicy(profile[key], path);
     }
     for (const key of TAG_FIELDS) {
         profile[key] = normalizeTags(ownData(value, key, '公开资料'), `公开资料.${key}`);
         for (let index = 0; index < profile[key].length; index += 1) {
-            assertPublicTextPolicy(profile[key][index], `公开资料.${key}[${index}]`, contentMode);
+            assertPublicTextPolicy(profile[key][index], `公开资料.${key}[${index}]`);
         }
     }
     if (UNDERAGE_PATTERN.test(profile.年龄段)) fail('公开资料.年龄段:underage');

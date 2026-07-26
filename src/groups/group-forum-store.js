@@ -32,13 +32,19 @@ export const DEFAULT_FORUM_AUTO_SETTINGS = Object.freeze({
     channelBindings: DEFAULT_LOCAL_MODE_BINDINGS,
     postBindings: DEFAULT_LOCAL_MODE_BINDINGS,
 });
-/** Fixed homepage sections. A complete AI refresh must update each one once. */
+/** Fixed homepage sections. A complete AI refresh must update each one once.
+ *  P3-D：频道图标改由 UI 层本地 SVG 白名单（pages/community.js FORUM_CHANNEL_ICON_NAMES）提供，字符图标字段已清零。
+ *  DATA-B：扩为八个恋爱软件频道；brief 是供提示词合同引用的频道定位文案，UI 不展示。
+ *  新增频道在图标白名单补齐前会落到兜底 forum 图标。话题广场必须保持在末位（未知旧 topic 的展示兜底频道）。 */
 export const FORUM_CHANNELS = Object.freeze([
-    Object.freeze({ id: 'daily_mood', icon: '＋', title: '今日心情', note: '记录此刻' }),
-    Object.freeze({ id: 'nearby_people', icon: '⌖', title: '附近的人', note: '同城心动' }),
-    Object.freeze({ id: 'city_moments', icon: '◌', title: '同城瞬间', note: '热门动态' }),
-    Object.freeze({ id: 'shared_interests', icon: '☆', title: '兴趣同频', note: '寻找同好' }),
-    Object.freeze({ id: 'topic_square', icon: '#', title: '话题广场', note: '一起聊聊' }),
+    Object.freeze({ id: 'daily_mood', title: '今日心情', note: '记录此刻', brief: '记录此刻的小情绪与小确幸：一句话、一个瞬间、一杯饮料的温度，让同城的人先认识你的今天。' }),
+    Object.freeze({ id: 'nearby_people', title: '附近的人', note: '同城心动', brief: '同城打招呼的第一站：谁在附近、想认识谁、想被谁认识，从一句自然的搭话开始。' }),
+    Object.freeze({ id: 'city_moments', title: '同城瞬间', note: '热门动态', brief: '本地新鲜事与热门动态：探店、街拍、演出、市集，把这座城市此刻的心跳分享出来。' }),
+    Object.freeze({ id: 'shared_interests', title: '兴趣同频', note: '寻找同好', brief: '按兴趣找同好：电影、健身、桌游、露营、手作……先聊得来，再见得着。' }),
+    Object.freeze({ id: 'late_night_whisper', title: '深夜树洞', note: '深夜心事', brief: '深夜限定的心事树洞：孤独、心动、遗憾、欲言又止，语气更私密、更柔软，说出来就轻了一半。' }),
+    Object.freeze({ id: 'love_complaints', title: '恋爱吐槽', note: '又爱又气', brief: '恋爱与约会的吐槽现场：奇葩开场白、暧昧拉扯、已读不回，笑着聊聊那些又爱又气的瞬间。' }),
+    Object.freeze({ id: 'date_reports', title: '约会报告', note: '面基实录', brief: '线上聊到线下见的真实约会报告：去了哪、聊了什么、还想不想见第二次，给同城人一点参考。' }),
+    Object.freeze({ id: 'topic_square', title: '话题广场', note: '一起聊聊', brief: '什么都能聊的开放广场：提问、投票、闲聊，找不到频道的话题都欢迎来这里。' }),
 ]);
 
 /** Maps legacy or malformed cached topics to the safe catch-all channel for display. */

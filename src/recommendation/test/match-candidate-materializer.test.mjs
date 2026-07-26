@@ -77,12 +77,13 @@ test('materialized match candidate rejects occupational names and concrete addre
     );
 });
 
-test('materialized match candidate preserves the shared SFW/NSFW public-tag contract', () => {
+test('materialized match candidate accepts adult public tags in both modes since the SFW blocklist removal', () => {
     const adultTag = draft();
     adultTag.profile.生活方式标签 = ['情趣探索'];
-    assert.throws(
-        () => materializeCandidateMatchDraft(adultTag, { contentMode: 'SFW' }),
-        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    assert.deepEqual(
+        materializeCandidateMatchDraft(adultTag, { contentMode: 'SFW' }).candidate.公开资料.生活方式标签,
+        ['情趣探索'],
+        'SFW 不再把成年人成人词汇当作拒绝理由',
     );
 
     const normalized = materializeCandidateMatchDraft(adultTag, { contentMode: 'NSFW' });

@@ -266,7 +266,9 @@ test('SFW and NSFW recommendation contexts expose different public-tag contracts
     assert.equal(sfw.contentMode, 'SFW');
     assert.equal(nsfw.contentMode, 'NSFW');
     assert.deepEqual(sfw.publicTagContract.allowedTagCategories, ['常规兴趣', '生活方式', '性格', '沟通风格']);
-    assert.equal(sfw.publicTagContract.forbidden.includes('成人取向或身体性化关键词'), true);
+    assert.equal(sfw.publicTagContract.forbidden.includes('成人取向或身体性化关键词'), false, 'SFW 不再携带成人词汇硬禁止项');
+    assert.equal(sfw.publicTagContract.forbidden.includes('未成年人'), true);
+    assert.equal(sfw.publicTagContract.forbidden.includes('非自愿或胁迫'), true);
     assert.equal(nsfw.publicTagContract.allowedTagCategories.includes('成年人明确自愿的成人取向或身体偏好公开资料'), true);
     assert.equal(Object.hasOwn(nsfw.publicTagContract, 'examples'), false, '开放标签不应由固定示例词库限定。');
     assert.equal(JSON.stringify(nsfw).includes('绝不能发送给模型'), false);
@@ -282,12 +284,10 @@ test('fast recommender applies the selected SFW/NSFW output contract before any 
         state: state(), settingsStore,
         llmClient: { async chat(request) { sfwMessages = request.messages; return { text: JSON.stringify(adultTagCandidate) }; } },
     });
-    assert.deepEqual(sfw, {
-        ok: false,
-        code: '公开资料.生活方式标签[0]:adult_keyword_in_sfw',
-        message: '快速模型返回的候选资料未通过成年人或结构校验；当前推荐未改变。',
-    });
+    assert.equal(sfw.ok, true, 'SFW 不再把成年人成人词汇当作拒绝理由');
+    assert.deepEqual(sfw.candidate.公开资料.生活方式标签, ['翘臀']);
     assert.equal(JSON.stringify(sfwMessages).includes('SFW 输出合同'), true);
+    assert.equal(JSON.stringify(sfwMessages).includes('日常社交尺度'), true);
     assert.equal(JSON.stringify(sfwMessages).includes('NSFW 输出合同'), false);
     for (const requiredField of ['成人验证', '仅好友资料', '隐藏资料', '实际年龄', '私人备注', '拒绝阈值', '与玩家关系', '全局账号表现', 'NPC专属匹配度', '面基意愿']) {
         assert.equal(JSON.stringify(sfwMessages).includes(requiredField), true, `SFW 核心合同缺少 ${requiredField}`);

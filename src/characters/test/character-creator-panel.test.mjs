@@ -281,6 +281,105 @@ test('步骤导航 rail：四个按钮指向真实分段 id，点击后单选高
     });
 });
 
+function sectionById(panel, id) {
+    const found = [...panel.querySelectorAll('section'), ...panel.querySelectorAll('footer')]
+        .find((node) => node.getAttribute('id') === id);
+    assert.ok(found, `应存在分段：${id}`);
+    return found;
+}
+
+test('journey 条是真锚点：四个按钮指向真实分段，点击滚动并同步高亮 journey 与 rail', () => {
+    const { panel } = createHarness();
+    const journey = panel.querySelector('.yl-character-journey');
+    assert.ok(journey, '应存在 journey 锚点条');
+    assert.equal(journey.tagName, 'NAV');
+    const journeyButtons = journey.querySelectorAll('.yl-character-journey-item');
+    assert.equal(journeyButtons.length, 4, 'journey 应有 4 个步骤按钮');
+    const expectedTargets = [
+        'yl-character-section-public', 'yl-character-section-avatar',
+        'yl-character-section-private', 'yl-character-section-submit',
+    ];
+    journeyButtons.forEach((button, index) => {
+        assert.equal(button.tagName, 'BUTTON', 'journey 项必须是可点击按钮而非装饰 div');
+        assert.equal(button.getAttribute('type'), 'button');
+        assert.equal(button.getAttribute('data-step-target'), expectedTargets[index]);
+        sectionById(panel, expectedTargets[index]);
+    });
+    assert.ok(journeyButtons[0].classList.contains('is-active'), '默认第一步高亮');
+    assert.equal(journeyButtons[0].getAttribute('aria-current'), 'step');
+
+    const privateSection = sectionById(panel, 'yl-character-section-private');
+    const scrollCalls = [];
+    privateSection.scrollIntoView = (options) => scrollCalls.push(options);
+    journeyButtons[2].dispatchEvent(new Event('click'));
+
+    assert.equal(scrollCalls.length, 1, '点击 journey 锚点应滚动到对应分段');
+    assert.equal(scrollCalls[0].block, 'start');
+    const railButtons = panel.querySelector('.yl-character-step-rail').querySelectorAll('.yl-character-step-link');
+    journeyButtons.forEach((button, index) => {
+        assert.equal(button.classList.contains('is-active'), index === 2, `journey 按钮 ${index} 高亮状态`);
+        assert.equal(button.getAttribute('aria-current') === 'step', index === 2);
+    });
+    railButtons.forEach((button, index) => {
+        assert.equal(button.classList.contains('is-active'), index === 2, `rail 按钮 ${index} 应与 journey 同步高亮`);
+    });
+});
+
+test('步骤卡可折叠：折叠钮切换 hidden 与 aria-expanded，锚点跳转与必填校验会自动展开', () => {
+    const { panel } = createHarness();
+    const publicSection = sectionById(panel, 'yl-character-section-public');
+    const toggle = publicSection.querySelector('.yl-character-card-toggle');
+    const body = publicSection.querySelector('.yl-character-card-body');
+    assert.ok(toggle, '步骤卡应有折叠钮');
+    assert.ok(body, '步骤卡正文应包在 card-body 中');
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(body.hidden, false);
+    assert.ok(body.querySelector('[name="public-昵称"]'), '表单控件应位于可折叠正文内');
+
+    toggle.dispatchEvent(new Event('click'));
+    assert.equal(publicSection.classList.contains('is-collapsed'), true);
+    assert.equal(body.hidden, true);
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+    assert.ok(toggle.getAttribute('aria-label').startsWith('展开'), '折叠后 aria-label 应变为展开');
+
+    toggle.dispatchEvent(new Event('click'));
+    assert.equal(publicSection.classList.contains('is-collapsed'), false);
+    assert.equal(body.hidden, false);
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+
+    // journey 锚点点击自动展开折叠中的目标卡
+    toggle.dispatchEvent(new Event('click'));
+    assert.equal(body.hidden, true);
+    const journeyButtons = panel.querySelector('.yl-character-journey').querySelectorAll('.yl-character-journey-item');
+    journeyButtons[0].dispatchEvent(new Event('click'));
+    assert.equal(body.hidden, false, '锚点跳转应自动展开目标步骤卡');
+    assert.equal(publicSection.classList.contains('is-collapsed'), false);
+
+    // 原生必填校验（invalid 事件）命中折叠卡内控件时也自动展开
+    toggle.dispatchEvent(new Event('click'));
+    assert.equal(body.hidden, true);
+    control(panel, 'public-昵称').dispatchEvent(new Event('invalid'));
+    assert.equal(body.hidden, false, 'invalid 校验应展开包含控件的折叠卡');
+
+    // 每张步骤卡（含提交页外的 5 张）都可折叠；提交 footer 不折叠
+    for (const id of ['yl-character-section-public', 'yl-character-section-avatar', 'yl-character-section-ai', 'yl-character-section-private', 'yl-character-section-thresholds']) {
+        assert.ok(sectionById(panel, id).querySelector('.yl-character-card-toggle'), `${id} 应可折叠`);
+    }
+    assert.equal(sectionById(panel, 'yl-character-section-submit').querySelector('.yl-character-card-toggle'), null, '提交分段不应折叠');
+});
+
+test('装饰性英文标语全部换为中文 eyebrow（含「我的角色衣橱」）', () => {
+    const { panel } = createHarness();
+    const text = panel.textContent;
+    assert.ok(text.includes('我的角色衣橱'), '模板库 eyebrow 应为「我的角色衣橱」');
+    assert.ok(text.includes('实时预览'), '预览 eyebrow 应为中文');
+    for (const slogan of [
+        'CREATE A NEW CONNECTION', 'PUBLIC PROFILE', 'PROFILE PHOTO', 'CREATIVE ASSISTANT',
+        'PRIVATE & BOUNDARIES', 'INTERACTION RHYTHM', 'LIVE PREVIEW', 'YOUR CHARACTER CLOSET',
+        'IMPORT / EXPORT', 'LOCAL DRAFTS',
+    ]) assert.equal(text.includes(slogan), false, `不得再出现英文装饰标语：${slogan}`);
+});
+
 test('公开名片预览随公开字段更新，且绝不包含私密值', () => {
     const { panel } = createHarness();
     fillExistingDraft(panel);

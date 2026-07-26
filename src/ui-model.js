@@ -20,20 +20,20 @@ export const PAGE_COPY = Object.freeze({
     group_chat_room: { title: '聊天群' },
     group_chat_create: { title: '创建聊天群' },
     group_chat_summary: { title: '聊天总结' },
-    group_forum: { title: '心动社区' },
-    forum_post: { title: '论坛帖子' },
+    group_forum: { title: '社区' },
+    forum_post: { title: '帖子' },
     forum_post_summary: { title: '聊天总结' },
     profile: { title: '我的' },
     profile_editor: { title: '个人资料' },
     character_creator: { title: '创建角色' },
     favorites: { title: '收藏夹' },
-    settings: { title: '设置' },
     settings_connections: { title: '连接预设' },
     settings_prompts: { title: '提示词预设' },
     settings_privacy: { title: '隐私权限设置' },
     settings_personalization: { title: '个性化内容推荐管理' },
     settings_personalization_preference: { title: '个性化内容偏好' },
     settings_images: { title: '图片管理' },
+    settings_preferences: { title: '偏好' },
     settings_console: { title: '控制台' },
     settings_chat_summary: { title: '对话总结' },
     settings_chat_summary_config: { title: '总结方案' },
@@ -140,6 +140,46 @@ const CHAT_SESSION_UID_PATTERN = /^chat_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const CHAT_STATUS = new Set(['请求中', '已匹配', '已取消', '已拉黑']);
 const CHAT_SENDERS = new Set(['玩家', '角色', '系统']);
 
+const CHAT_TIME_FULL_PATTERN = /^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/u;
+const CHAT_TIME_CLOCK_PATTERN = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/u;
+
+/**
+ * 会话/气泡时间文本的容错解析（策划书 §7.1.1 会话排序 + §7.2.3 时间分组共用）。
+ * - 完整日期（可带时分秒）→ 本地时间戳；
+ * - 仅“时:分”→ 以 0 为参考日的当日毫秒数（同一会话内可比较间隔；跨会话排序时
+ *   自然垫在任何完整日期之后）；
+ * - 其他任意文本（“刚刚”“第 3 轮”等）→ null（排序垫底、不插时间分隔）。
+ * 只做解析，绝不改写或回写任何状态。
+ */
+export function parseChatMessageTime(value) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    if (!text) return null;
+    const full = CHAT_TIME_FULL_PATTERN.exec(text);
+    if (full) {
+        const [, year, month, day, hour = '0', minute = '0', second = '0'] = full;
+        if (Number(month) < 1 || Number(month) > 12 || Number(day) < 1 || Number(day) > 31) return null;
+        if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return null;
+        const stamp = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)).getTime();
+        return Number.isFinite(stamp) ? stamp : null;
+    }
+    const clock = CHAT_TIME_CLOCK_PATTERN.exec(text);
+    if (clock) {
+        const [, hour, minute, second = '0'] = clock;
+        if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return null;
+        return ((Number(hour) * 60 + Number(minute)) * 60 + Number(second)) * 1000;
+    }
+    return null;
+}
+
+/** 会话排序键：最后一条可解析时间的消息时间戳；全部不可解析 → null（垫底）。 */
+function latestSessionMessageStamp(session) {
+    for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+        const stamp = parseChatMessageTime(session.messages[index].time);
+        if (stamp !== null) return stamp;
+    }
+    return null;
+}
+
 /**
  * Projects only a chat-visible transcript and a public NPC card. This function
  * never returns the raw session, role, hidden profile, friends-only profile or state.
@@ -209,7 +249,17 @@ export function projectPrivateChatView(state) {
             canSend: session.状态 === '已匹配',
         }));
     }
-    return Object.freeze(sessions.sort((left, right) => left.sessionUid.localeCompare(right.sessionUid, 'zh-Hans-CN')));
+    // §7.1.1：按最后一条消息时间倒序；无可解析时间的会话垫底；同刻/同为无时间时
+    // 退回 UID 稳定序，保证排序确定性。
+    const stampBySession = new Map(sessions.map((session) => [session.sessionUid, latestSessionMessageStamp(session)]));
+    return Object.freeze(sessions.sort((left, right) => {
+        const leftStamp = stampBySession.get(left.sessionUid);
+        const rightStamp = stampBySession.get(right.sessionUid);
+        if (leftStamp === null && rightStamp !== null) return 1;
+        if (leftStamp !== null && rightStamp === null) return -1;
+        if (leftStamp !== null && rightStamp !== null && leftStamp !== rightStamp) return rightStamp - leftStamp;
+        return left.sessionUid.localeCompare(right.sessionUid, 'zh-Hans-CN');
+    }));
 }
 
 const SERVICE_ORDER_UID_PATTERN = /^service_[a-z0-9][a-z0-9_-]{0,63}$/i;

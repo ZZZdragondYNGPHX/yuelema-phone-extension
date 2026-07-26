@@ -446,9 +446,10 @@ test('candidate draft and materialization contract reject occupational names, pr
 
     const adultTag = candidateRaw();
     adultTag.profile.生活方式标签 = ['情趣探索'];
-    assert.throws(
-        () => normalizeCandidateMatchDraft(adultTag, { contentMode: 'SFW' }),
-        error => error instanceof TypeError && error.code === 'candidate_match_response_candidate_profile_invalid',
+    assert.deepEqual(
+        normalizeCandidateMatchDraft(adultTag, { contentMode: 'SFW' }).profile.生活方式标签,
+        ['情趣探索'],
+        'SFW 不再把成年人成人词汇当作拒绝理由',
     );
     assert.deepEqual(
         normalizeCandidateMatchDraft(adultTag, { contentMode: 'NSFW' }).profile.生活方式标签,

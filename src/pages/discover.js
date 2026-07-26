@@ -1,10 +1,19 @@
-// 首页/发现/推荐候选卡页面：从 src/app-shell.js 纯搬移而来，函数体逐行未改，仅将跨模块引用改为 ctx.*。
+// 首页/发现/推荐候选卡页面（策划书 §5 轻改）：
+// 操作钮主次分级（喜欢 64 渐变主钮 / 不喜欢 56 描边 / 收藏与下一位 44 ghost，收藏成功实心轻弹）、
+// 换人时候选卡骨架屏、空态换 EmptyState；媒体区高度与档案区内滚 / 操作行 sticky 由 style.css discover 子区提供。
+// D2 滑卡手势本轮不做（仅保留卡片 transform 结构）、D3 撤销不做。
 import { append, element, listen } from '../dom.js';
 import { describeActionFailure } from '../ui-model.js';
 import { createUiIcon } from '../ui/icon.js';
 import { createMediaState } from '../ui/media-state.js';
+import { createEmptyState } from '../ui/empty-state.js';
+import { createSkeleton } from '../ui/skeleton.js';
+import { buildWaitCaptions } from './shared.js';
 
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
+// P3-G 等待期趣味文案（纯 CSS 轮播）：换人 / AI 生成下一位时替代干等。
+const DISCOVER_WAIT_CAPTIONS = Object.freeze(['正在为你物色下一位…', '翻看今天的新面孔…', '比对你们聊得来的话题…', '把关中：只见成年人…']);
+const DISCOVER_WAIT_SHIFT_TEXT = '还在精挑细选…这一位值得多等几秒';
 const ACTION_ICON_NAMES = Object.freeze({ like: 'action_like', refresh: 'action_next', favorite: 'action_favorite', unfavorite: 'action_favorite', start_private_chat: 'action_chat', dislike: 'action_dislike' });
 
 export function createDiscoverPage(ctx) {
@@ -26,10 +35,23 @@ export function createDiscoverPage(ctx) {
     }
     function buildActionButton(kind, { pending = false, disabled = false, label = ACTION_LABELS[kind], ariaLabel = label } = {}) {
         const actionStyle = kind === 'unfavorite' ? 'favorite' : kind;
-        const button = element('button', { className: `yl-phone-action-card yl-action-${actionStyle} yl-action-circle`, type: 'button', ariaLabel, disabled });
+        // 收藏成功后按钮转实心并轻弹（is-active 由 CSS 提供动画），消除“收藏了但外观无差异”的困惑。
+        const activeClass = kind === 'unfavorite' ? ' is-active' : '';
+        const button = element('button', { className: `yl-phone-action-card yl-action-${actionStyle} yl-action-circle${activeClass}`, type: 'button', ariaLabel, disabled });
         const icon = createUiIcon(ctx.documentRef, ACTION_ICON_NAMES[kind], { className: 'yl-action-icon', size: 22, strokeWidth: 1.9 });
         const text = element('span', { className: 'yl-action-label', text: pending ? '处理中…' : label });
         append(button, [icon, text]);
+        // P3-G：收藏成功的心形微爆——3 颗小心从按钮向上飘散（纯装饰，CSS 一次性动画）。
+        if (kind === 'unfavorite') {
+            const burst = element('span', { className: 'yl-fav-burst' });
+            burst.setAttribute('aria-hidden', 'true');
+            for (let heartIndex = 0; heartIndex < 3; heartIndex += 1) {
+                const heart = element('span', { className: 'yl-fav-burst-heart' });
+                heart.appendChild(createUiIcon(ctx.documentRef, 'action_like', { className: 'yl-fav-burst-svg', size: 10 }));
+                burst.appendChild(heart);
+            }
+            button.appendChild(burst);
+        }
         return button;
     }
     function isFavoriteCandidate(candidate) {
@@ -38,7 +60,8 @@ export function createDiscoverPage(ctx) {
     function buildActionRow(candidate) {
         const actions = element('div', { className: 'yl-candidate-actions' });
         const favoriteAction = isFavoriteCandidate(candidate) ? 'unfavorite' : 'favorite';
-        for (const kind of ['like', 'dislike', favoriteAction, 'refresh']) {
+        // §5 按钮分级排序：收藏(44 ghost) / 不喜欢(56 描边) / 喜欢(64 渐变主钮) / 下一位(44 ghost)。
+        for (const kind of [favoriteAction, 'dislike', 'like', 'refresh']) {
             const pending = ctx.actionBridge.isPending(kind, candidate.uid);
             const button = buildActionButton(kind, { pending, disabled: ctx.refreshing || pending, label: kind === 'refresh' ? '下一位' : ACTION_LABELS[kind], ariaLabel: kind === 'refresh' ? '刷新候选人，显示下一位' : ACTION_LABELS[kind] });
             listen(button, button, 'click', () => { void runCandidateAction(kind, candidate.uid); }, ctx.abortController.signal);
@@ -46,8 +69,17 @@ export function createDiscoverPage(ctx) {
         }
         return actions;
     }
+    /** 换人 / AI 生成中的候选卡骨架屏（§5-4）：头像圆 + 文本条组，替代纯弹窗等待感。 */
+    function buildCandidateSkeletonCard() {
+        const card = element('section', { className: 'yl-candidate-card yl-discovery-workbench yl-candidate-loading-card', ariaLabel: '正在生成下一位候选人' });
+        card.setAttribute('aria-busy', 'true');
+        card.appendChild(createSkeleton({ documentRef: ctx.documentRef, variant: 'candidate-card', count: 1 }));
+        card.appendChild(buildWaitCaptions(ctx.documentRef, DISCOVER_WAIT_CAPTIONS, { shiftText: DISCOVER_WAIT_SHIFT_TEXT }));
+        return card;
+    }
     function buildCandidateCard(candidate) {
-        const card = element('section', { className: ctx.refreshing ? 'yl-candidate-card yl-discovery-workbench is-refreshing' : 'yl-candidate-card yl-discovery-workbench' });
+        if (ctx.refreshing) return buildCandidateSkeletonCard();
+        const card = element('section', { className: 'yl-candidate-card yl-discovery-workbench' });
         const tags = ctx.displayTags(candidate);
         const media = element('div', { className: 'yl-candidate-media' });
         const imageKey = ctx.imageProfileKey(candidate);
@@ -141,7 +173,8 @@ export function createDiscoverPage(ctx) {
         return slot;
     }
     function buildEmptyCandidateCard() {
-        const card = element('section', { className: ctx.refreshing ? 'yl-candidate-card yl-candidate-card-empty yl-discovery-workbench is-refreshing' : 'yl-candidate-card yl-candidate-card-empty yl-discovery-workbench' });
+        if (ctx.refreshing) return buildCandidateSkeletonCard();
+        const card = element('section', { className: 'yl-candidate-card yl-candidate-card-empty yl-discovery-workbench' });
         const media = element('div', { className: 'yl-candidate-media' });
         media.appendChild(buildCandidateBackgroundSlot(null, []));
         const top = element('div', { className: 'yl-candidate-topline yl-candidate-media-copy' });
@@ -153,11 +186,14 @@ export function createDiscoverPage(ctx) {
         copy.appendChild(element('p', { className: 'yl-phone-page-description yl-candidate-subline', text: '下一位将来自已校验的成年人公开资料。' }));
         top.appendChild(copy); media.appendChild(top); card.appendChild(media);
         const dossier = element('aside', { className: 'yl-candidate-dossier yl-candidate-dossier-empty', ariaLabel: '开始发现候选人' });
-        dossier.appendChild(element('span', { className: 'yl-candidate-dossier-kicker', text: '发现从这里开始' }));
-        dossier.appendChild(element('p', { className: 'yl-candidate-bio', text: '点击“下一位”，由快速模型生成一位明确成年的公开候选人。' }));
-        dossier.appendChild(buildTagChips([], '等待生成公开关键词'));
+        // §5-3 空态统一：EmptyState 组件替代 ✧◌ 字符空态。
+        dossier.appendChild(createEmptyState({
+            documentRef: ctx.documentRef, variant: 'search',
+            title: '发现从这里开始',
+            hint: '点击“下一位”，由快速模型生成一位明确成年的公开候选人。',
+        }));
         const actions = element('div', { className: 'yl-candidate-actions' });
-        for (const kind of ['like', 'dislike', 'favorite', 'refresh']) {
+        for (const kind of ['favorite', 'dislike', 'like', 'refresh']) {
             const enabled = kind === 'refresh' && typeof ctx.actionBridge.runRecommendationInitialCandidate === 'function';
             const button = buildActionButton(kind, { pending: ctx.refreshing && kind === 'refresh', disabled: !enabled || ctx.refreshing, label: kind === 'refresh' ? '下一位' : ACTION_LABELS[kind], ariaLabel: kind === 'refresh' ? '刷新候选人，显示下一位' : ACTION_LABELS[kind] });
             if (enabled) listen(button, button, 'click', () => { ctx.actionBridge.emit('open_random_candidates'); void runInitialRecommendationCandidate(); }, ctx.abortController.signal);

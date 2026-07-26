@@ -33,6 +33,9 @@ function forumRefreshPosts(author) {
         { author, topic: '附近的人', title: '浦东散步搭子', body: '傍晚想沿江散步，有同样喜欢慢走的人吗？', tags: ['附近', '散步'] },
         { author, topic: '同城瞬间', title: '雨后的书店', body: '想找一间适合安静看书的小店。', tags: ['书店', '同城'] },
         { author, topic: '兴趣同频', title: '周末胶片放映', body: '想找喜欢老电影的同好，一起挑一场放映。', tags: ['电影', '同好'] },
+        { author, topic: '深夜树洞', title: '凌晨一点的窗外', body: '睡不着的时候会想些什么？想听听大家的深夜心事。', tags: ['深夜', '心事'] },
+        { author, topic: '恋爱吐槽', title: '已读不回的艺术', body: '聊得好好的突然消失三天，大家都怎么消化这种落差？', tags: ['吐槽', '恋爱'] },
+        { author, topic: '约会报告', title: '江边散步初见记', body: '第一次见面沿江走了两小时，比想象里自然，推荐这条路线。', tags: ['约会', '报告'] },
         { author, topic: '话题广场', title: '你最近的治愈瞬间', body: '欢迎聊聊这一周让你放松下来的小事。', tags: ['话题', '分享'] },
     ];
 }
@@ -80,7 +83,7 @@ test('browser-local group/forum store persists groups, temporary people, convers
     assert.deepEqual(snapshot.threads[0].bindings.SFW, { connectionPresetId: null, promptPresetId: null });
     assert.equal(snapshot.threads[0].temporaryMembers[0].nickname, '周遥');
     assert.equal(snapshot.threads[0].messages.length, 2);
-    assert.equal(snapshot.posts.length, 5);
+    assert.equal(snapshot.posts.length, 8);
     assert.equal(snapshot.forumAuto.enabled, false);
     const savedPost = snapshot.posts.find((item) => item.title === '雨后的书店');
     assert.equal(savedPost?.messages.length, 2);
@@ -187,7 +190,7 @@ test('top replacement discards old local posts and summaries while bottom append
         update: { participants: [], posts: forumRefreshPosts('许青').map((post) => ({ ...post, title: `替换：${post.title}` })) },
     });
     let snapshot = await store.snapshot();
-    assert.equal(snapshot.posts.length, 5);
+    assert.equal(snapshot.posts.length, 8);
     assert.equal(snapshot.posts.some((post) => post.id === oldPost.id), false, '替换必须删除旧帖子及其对话/总结');
     assert.equal((await store.getSummaryHistory()).posts.some((entry) => entry.id === oldPost.id), false);
 
@@ -196,7 +199,7 @@ test('top replacement discards old local posts and summaries while bottom append
         update: { participants: [], posts: forumRefreshPosts('周遥').map((post) => ({ ...post, title: `追加：${post.title}` })) },
     });
     snapshot = await store.snapshot();
-    assert.equal(snapshot.posts.length, 10);
+    assert.equal(snapshot.posts.length, 16);
     assert.equal(snapshot.posts.some((post) => post.title === '替换：雨后的书店'), true, '追加必须保留旧帖子');
     assert.equal(snapshot.posts.some((post) => post.title === '追加：雨后的书店'), true);
 });
@@ -222,7 +225,7 @@ test('forum refresh cache rejects partial or duplicated channel batches', async 
         store.addForumRefresh({ communityProfiles: [profile('林澈')], update: { participants: [], posts: posts.slice(0, 4) } }),
         (error) => error instanceof GroupForumStoreError && error.code === 'INVALID_FORUM_REFRESH',
     );
-    const repeated = [...posts.slice(0, 4), { ...posts[0], title: '重复频道不应写入' }];
+    const repeated = [...posts.slice(0, 7), { ...posts[0], title: '重复频道不应写入' }];
     await assert.rejects(
         store.addForumRefresh({ communityProfiles: [profile('林澈')], update: { participants: [], posts: repeated } }),
         (error) => error instanceof GroupForumStoreError && error.code === 'INVALID_FORUM_REFRESH',

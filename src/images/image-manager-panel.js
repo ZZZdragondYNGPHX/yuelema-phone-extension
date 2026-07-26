@@ -1,5 +1,8 @@
 import { normalizeEmbeddedImageDataUrl, projectImageLibraryError } from './image-library-store.js';
 import { projectRemoteImportError } from './remote-image-import.js';
+import { createButton } from '../ui/button.js';
+import { createEmptyState } from '../ui/empty-state.js';
+import { createSkeleton } from '../ui/skeleton.js';
 
 const ACCEPTED_IMAGE_TYPES = Object.freeze(['image/png', 'image/jpeg', 'image/webp']);
 const LONG_PRESS_DELAY_MS = 550;
@@ -115,14 +118,9 @@ export function createImageManagerPanel({
     const element = createElement(documentRef, 'section', { className: 'yl-image-manager' });
     const heading = createElement(documentRef, 'header', { className: 'yl-image-manager-heading' });
     const titlebar = createElement(documentRef, 'div', { className: 'yl-image-manager-titlebar yl-heading-with-help' });
-    titlebar.setAttribute('style', 'justify-content: space-between;');
     titlebar.appendChild(createElement(documentRef, 'h2', { className: 'yl-image-manager-title', text: '图片管理' }));
-    const configureButton = createElement(documentRef, 'button', {
-        type: 'button',
-        className: 'yl-feature-options yl-image-manager-configure',
-        text: '设置',
-    });
-    configureButton.setAttribute('aria-label', '配置图片管理预设');
+    const configureButton = createButton({ documentRef, variant: 'ghost', label: '设置', ariaLabel: '配置图片管理预设' });
+    configureButton.classList.add('yl-feature-options', 'yl-image-manager-configure');
     titlebar.appendChild(configureButton);
     heading.appendChild(titlebar);
     heading.appendChild(createElement(documentRef, 'p', {
@@ -147,7 +145,8 @@ export function createImageManagerPanel({
         remoteUrlInput.setAttribute('inputmode', 'url');
         remoteUrlInput.setAttribute('placeholder', 'https://…');
         remoteUrlInput.setAttribute('aria-label', '要导入的图片链接');
-        remoteImportButton = createElement(documentRef, 'button', { type: 'button', className: 'yl-image-remote-import-button', text: '下载并保存到图片库' });
+        remoteImportButton = createButton({ documentRef, variant: 'tonal', label: '下载并保存到图片库' });
+        remoteImportButton.classList.add('yl-image-remote-import-button');
         remoteRow.appendChild(remoteUrlInput);
         remoteRow.appendChild(remoteImportButton);
         intake.appendChild(remoteRow);
@@ -157,11 +156,15 @@ export function createImageManagerPanel({
     const status = createElement(documentRef, 'p', { className: 'yl-image-manager-status', text: '正在读取图片库…' });
     status.setAttribute('aria-live', 'polite');
     const grid = createElement(documentRef, 'div', { className: 'yl-image-manager-grid' });
+    // 初次读取的等待态：骨架屏占位（aria-hidden，读屏由上方 aria-live 状态行播报）；
+    // 首次 renderGrid / 读取失败分支的 replaceChildren 会自然移除，无需额外清理逻辑。
+    grid.appendChild(createSkeleton({ documentRef, variant: 'candidate-card', count: 3 }));
 
     // Disclosure 动作列表：不宣称 role=menu（无完整菜单键盘模型），Escape 与外点关闭生命周期保留。
     const contextMenu = createElement(documentRef, 'div', { className: 'yl-image-context-menu', hidden: true });
     contextMenu.setAttribute('aria-label', '图片操作');
-    const editMenuButton = createElement(documentRef, 'button', { type: 'button', className: 'yl-image-context-action', text: '编辑匹配关键词' });
+    const editMenuButton = createButton({ documentRef, variant: 'ghost', label: '编辑匹配关键词' });
+    editMenuButton.classList.add('yl-image-context-action');
     contextMenu.appendChild(editMenuButton);
 
     const editorBackdrop = createElement(documentRef, 'div', { className: 'yl-image-keyword-backdrop', hidden: true });
@@ -174,11 +177,15 @@ export function createImageManagerPanel({
     editorHeader.appendChild(createElement(documentRef, 'p', { text: '关键词描述图片适合的角色特征；权重为 -5 到 5 的整数。' }));
     const editorPreview = createElement(documentRef, 'div', { className: 'yl-image-keyword-editor-preview' });
     const keywordRows = createElement(documentRef, 'div', { className: 'yl-image-keyword-rows' });
-    const addKeywordButton = createElement(documentRef, 'button', { type: 'button', className: 'yl-image-keyword-add', text: '添加关键词' });
+    const addKeywordButton = createButton({ documentRef, variant: 'tonal', icon: 'plus', label: '添加关键词' });
+    addKeywordButton.classList.add('yl-image-keyword-add');
     const editorActions = createElement(documentRef, 'footer', { className: 'yl-image-keyword-actions' });
-    const deleteButton = createElement(documentRef, 'button', { type: 'button', className: 'yl-image-delete-button', text: '删除图片' });
-    const cancelButton = createElement(documentRef, 'button', { type: 'button', className: 'yl-image-keyword-cancel', text: '取消' });
-    const saveButton = createElement(documentRef, 'button', { type: 'button', className: 'yl-image-keyword-save', text: '保存关键词' });
+    const deleteButton = createButton({ documentRef, variant: 'danger', label: '删除图片' });
+    deleteButton.classList.add('yl-image-delete-button');
+    const cancelButton = createButton({ documentRef, variant: 'ghost', label: '取消' });
+    cancelButton.classList.add('yl-image-keyword-cancel');
+    const saveButton = createButton({ documentRef, variant: 'primary', label: '保存关键词' });
+    saveButton.classList.add('yl-image-keyword-save');
     editorActions.appendChild(deleteButton);
     editorActions.appendChild(cancelButton);
     editorActions.appendChild(saveButton);
@@ -289,9 +296,13 @@ export function createImageManagerPanel({
     function renderGrid() {
         grid.replaceChildren();
         if (records.length === 0) {
-            const empty = createElement(documentRef, 'div', { className: 'yl-image-manager-empty' });
-            empty.appendChild(createElement(documentRef, 'strong', { text: '图片库还是空的' }));
-            empty.appendChild(createElement(documentRef, 'p', { text: '上传本地 PNG、JPEG 或 WebP 图片后，预览会显示在这里。' }));
+            const empty = createEmptyState({
+                documentRef,
+                variant: 'inbox',
+                title: '图片库还是空的',
+                hint: '上传本地 PNG、JPEG 或 WebP 图片后，预览会显示在这里。',
+            });
+            empty.classList.add('yl-image-manager-empty');
             grid.appendChild(empty);
             status.textContent = '当前没有图片。';
             return;
@@ -355,7 +366,8 @@ export function createImageManagerPanel({
         weightInput.setAttribute('max', '5');
         weightInput.setAttribute('step', '1');
         weightInput.setAttribute('inputmode', 'numeric');
-        const removeButton = createElement(documentRef, 'button', { type: 'button', className: 'yl-image-keyword-remove', text: '移除' });
+        const removeButton = createButton({ documentRef, variant: 'ghost', label: '移除' });
+        removeButton.classList.add('yl-image-keyword-remove');
         listen(removeButton, 'click', () => row.remove());
         row.appendChild(keywordInput);
         row.appendChild(weightInput);
@@ -550,7 +562,13 @@ export function createImageManagerPanel({
     void reload().catch((error) => {
         if (disposed) return;
         records = [];
-        grid.replaceChildren(createElement(documentRef, 'div', { className: 'yl-image-manager-empty', text: '图片库读取失败。' }));
+        const failed = createEmptyState({
+            documentRef,
+            variant: 'search',
+            title: '图片库读取失败。',
+        });
+        failed.classList.add('yl-image-manager-empty');
+        grid.replaceChildren(failed);
         status.textContent = '图片库读取失败。';
         report(feedbackMessage(error));
     });

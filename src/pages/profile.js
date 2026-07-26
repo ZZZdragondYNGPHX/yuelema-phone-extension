@@ -1,8 +1,14 @@
-// 我的页 + 收藏夹 + 设置/总结/关于等二级页：从 src/app-shell.js 纯搬移而来，函数体逐行未改，仅将跨模块引用改为 ctx.*。
+// 我的页 + 收藏夹 + 设置/总结/关于等二级页。
+// P2-E1（策划书 §10.1/§10.2/§10.4 + 裁决 D7）：我的页改为 身份 Hero + 数据行 + 分组直达列表，
+// “我的→设置目录→详情”的中间目录页已随主线收口彻底删除（settings 路由不复存在，
+// 设置二级页返回全部直落「我的」）。头像管理、五连点彩蛋、SFW/NSFW 滑块、
+// 专属服务开关等安全逻辑全部原样保留。
 import { append, element, listen } from '../dom.js';
 import { avatarImageSource } from '../player-avatar-store.js';
 import { describeActionFailure } from '../ui-model.js';
 import { createUiIcon } from '../ui/icon.js';
+import { createButton } from '../ui/button.js';
+import { createEmptyState } from '../ui/empty-state.js';
 import { SERVICE_UNLOCK_STORAGE_KEY } from './shared.js';
 
 const RECENT_RELEASE_NOTES = Object.freeze([
@@ -48,74 +54,81 @@ export function createProfilePage(ctx) {
             return Array.isArray(templates) ? templates.length : 0;
         } catch { return 0; }
     }
+    function profileStatButton(value, label, page) {
+        const stat = element('button', { className: 'yl-profile-stat', type: 'button', ariaLabel: `${label}：${value}` });
+        stat.dataset.statTarget = page;
+        append(stat, [element('strong', { text: String(value) }), element('span', { text: label })]);
+        listen(stat, stat, 'click', () => ctx.setActivePage(page), ctx.abortController.signal);
+        return stat;
+    }
     function buildProfileHub() {
         const section = element('section', { className: 'yl-person-center yl-profile-dashboard' });
         const nickname = ctx.currentView.playerProfile.昵称 || '未填写个人资料';
         const city = ctx.currentView.playerProfile.城市 || '建立公开资料后开启更准确的匹配。';
-        const headerCard = element('article', { className: 'yl-person-summary yl-profile-identity-card' });
-        const hero = element('div', { className: 'yl-person-hero' });
-        hero.appendChild(playerAvatarButton(nickname));
-        headerCard.appendChild(hero);
-        const copy = element('div', { className: 'yl-profile-identity-copy' });
+        // 1. 身份 Hero：72px 头像（点击 = 头像管理弹窗）+ 昵称 + 城市 + 编辑公开资料 tonal 钮。
+        // 保留 yl-profile-identity-card 类以维持 desktop 分区行合同（样式合同见 style.css desktop 区）。
+        const hero = element('article', { className: 'yl-profile-hero yl-profile-identity-card' });
+        const heroAvatar = element('div', { className: 'yl-person-hero' });
+        heroAvatar.appendChild(playerAvatarButton(nickname));
+        hero.appendChild(heroAvatar);
+        const copy = element('div', { className: 'yl-profile-hero-copy' });
         append(copy, [
-            element('span', { className: 'yl-hub-eyebrow', text: '我的公开形象' }),
             element('strong', { text: nickname }),
             element('span', { text: city }),
-            element('small', { text: '这里只呈现公开资料与本地关系资产。' }),
         ]);
-        headerCard.appendChild(copy);
-        const profileSignal = element('div', { className: 'yl-relationship-signal yl-profile-signal', ariaLabel: '关系资产摘要' });
-        profileSignal.appendChild(element('span', { className: 'yl-signal-line', ariaHidden: 'true' }));
-        append(profileSignal, [
-            element('span', { text: ctx.currentView.messageSessions.length + ' 个私聊' }),
-            element('span', { text: ctx.currentView.favorites.length + ' 个收藏' }),
-            element('span', { text: localCharacterTemplateCount() + ' 个模板' }),
+        hero.appendChild(copy);
+        const edit = createButton({
+            documentRef: ctx.documentRef, variant: 'tonal', label: '编辑公开资料',
+            icon: 'edit_profile', onClick: () => ctx.setActivePage('profile_editor'),
+        });
+        edit.classList.toggle('yl-profile-hero-edit', true);
+        hero.appendChild(edit);
+        section.appendChild(hero);
+        // 2. 数据行：三个可点击 stat，分别直达 消息 / 收藏夹 / 模板库。
+        const stats = element('div', { className: 'yl-profile-stats yl-profile-metrics', ariaLabel: '我的数据' });
+        append(stats, [
+            profileStatButton(ctx.currentView.messageSessions.length, '私聊', 'messages'),
+            profileStatButton(ctx.currentView.favorites.length, '收藏', 'favorites'),
+            profileStatButton(localCharacterTemplateCount(), '角色模板', 'character_creator'),
         ]);
-        headerCard.appendChild(profileSignal);
-        section.appendChild(headerCard);
-        const assets = element('div', { className: 'yl-profile-metrics', ariaLabel: '我的关系资产' });
-        for (const [value, label] of [[ctx.currentView.messageSessions.length, '私聊'], [ctx.currentView.favorites.length, '收藏'], [localCharacterTemplateCount(), '角色模板']]) {
-            const metric = element('div', { className: 'yl-profile-metric' });
-            append(metric, [element('strong', { text: String(value) }), element('span', { text: label })]);
-            assets.appendChild(metric);
+        section.appendChild(stats);
+        // 3. 分组直达列表（两级到顶；关于软件只保留诊断分组这一个入口）。
+        const groups = element('div', { className: 'yl-profile-groups yl-profile-dashboard-grid' });
+        const relationshipEntries = [
+            { page: 'favorites', iconName: 'favorite', title: '收藏夹', note: '查看保存的候选人，随时主动发起私聊。', meta: ctx.currentView.favorites.length + ' 人', tone: 'rose' },
+            { page: 'matches', iconName: 'matches', title: '已牵手对象', note: '查看互相匹配的对象，随时进入私聊。', meta: ctx.currentView.matches.length + ' 人', tone: 'rose' },
+        ];
+        if (ctx.serviceHubUnlocked) {
+            relationshipEntries.push({ page: 'service_hub', iconName: 'service_hub', title: '约伴专属服务', note: '进入已开启的会员专属约伴服务馆。', meta: '专属', tone: 'gold' });
         }
-        section.appendChild(assets);
-        const dashboard = element('div', { className: 'yl-profile-dashboard-grid' });
-        dashboard.appendChild(ctx.buildHubSection({
-            title: '我的公开形象', note: '别人在发现页看到的就是这份公开资料。', className: 'yl-profile-section-identity',
-            entries: [
-                { page: 'profile_editor', iconName: 'edit_profile', title: '个人资料', note: '编辑昵称、城市、简介和公开标签。', meta: ctx.currentView.playerProfile.昵称 ? '已建立' : '待完善', tone: 'rose' },
-            ],
+        groups.appendChild(ctx.buildHubSection({
+            title: '关系资产', className: 'yl-profile-group yl-profile-section-relationships', entries: relationshipEntries,
         }));
-        dashboard.appendChild(ctx.buildHubSection({
-            title: '我的关系资产', note: '回访已经保留的人与已经建立的连接。', className: 'yl-profile-section-relationships',
-            entries: [
-                { page: 'favorites', iconName: 'favorite', title: '收藏夹', note: '查看保存的候选人，并决定是否主动发起私聊。', meta: ctx.currentView.favorites.length + ' 人', tone: 'gold' },
-                { page: 'matches', iconName: 'matches', title: '已牵手对象', note: '查看互相匹配的对象，随时进入私聊。', meta: ctx.currentView.matches.length + ' 人', tone: 'rose' },
-            ],
-        }));
-        dashboard.appendChild(ctx.buildHubSection({
-            title: '创作工具', note: '角色与图片素材保持本地、可导入导出。', className: 'yl-profile-section-tools',
+        groups.appendChild(ctx.buildHubSection({
+            title: '创作', className: 'yl-profile-group yl-profile-section-tools',
             entries: [
                 { page: 'character_creator', iconName: 'create_character', title: '创建角色', note: '创建、导入并管理明确为成年人的角色模板。', meta: localCharacterTemplateCount() + ' 个', tone: 'violet' },
                 { page: 'settings_images', iconName: 'image', title: '图片素材', note: '管理本地角色展示图与匹配关键词。', meta: '本地', tone: 'violet' },
             ],
         }));
-        dashboard.appendChild(ctx.buildHubSection({
-            title: '偏好与设置', note: '连接、提示词、推荐与隐私都在这里分层收纳。', className: 'yl-profile-section-preferences',
+        groups.appendChild(ctx.buildHubSection({
+            title: '设置', className: 'yl-profile-group yl-profile-section-preferences',
             entries: [
-                { page: 'settings', iconName: 'settings', title: '设置', note: '管理连接、提示词、隐私、图片与软件信息。', meta: '设备级', tone: 'neutral' },
+                { page: 'settings_connections', iconName: 'connection', title: '连接预设', note: '按名称选择和维护非机密连接信息。', meta: '连接' },
+                { page: 'settings_prompts', iconName: 'prompt', title: '提示词预设', note: '维护提示词条目树以及导入和导出。', meta: '文本' },
+                { page: 'settings_image_generation', iconName: 'sparkle', title: '生图', note: '配置会话生图接口与固定提示词。', meta: '生成' },
+                { page: 'settings_privacy', iconName: 'privacy', title: '隐私与总结', note: '个性化推荐与对话总结都在这里管理。', meta: '受控' },
+                { page: 'settings_preferences', iconName: 'phone', title: '偏好', note: '切换手机端或电脑端界面布局，仅保存在当前浏览器。', meta: '本地' },
             ],
         }));
-        dashboard.appendChild(ctx.buildHubSection({
-            title: '高级与诊断', note: '低频诊断信息；不显示密钥或私密内容。', className: 'yl-profile-section-diagnostics',
+        groups.appendChild(ctx.buildHubSection({
+            title: '诊断', className: 'yl-profile-group yl-profile-section-diagnostics',
             entries: [
-                { page: 'settings_chat_summary', iconName: 'summary', title: '总结档案', note: '按楼层整理私聊、群聊与论坛帖子。', meta: '本地', tone: 'neutral' },
-                { page: 'settings_console', iconName: 'console', title: '运行记录', note: '查看安全运行进度，不显示密钥或原始数据。', meta: '会话级', tone: 'neutral' },
-                { page: 'about', iconName: 'info', title: '关于软件', note: '查看版本与更新日志。', meta: ctx.UI_VERSION, tone: 'neutral' },
+                { page: 'settings_console', iconName: 'console', title: '运行记录', note: '查看安全运行进度，不显示密钥或原始数据。', meta: '会话级' },
+                { page: 'about', iconName: 'info', title: '关于软件', note: '查看版本与更新日志。', meta: ctx.UI_VERSION },
             ],
         }));
-        section.appendChild(dashboard);
+        section.appendChild(groups);
         return section;
     }
     function seedPlayerDraft() {
@@ -171,7 +184,12 @@ export function createProfilePage(ctx) {
         }
     }
     function buildFavoritesPage() {
-        if (!ctx.currentView.favorites.length) return ctx.buildEmptyPlaceholder('收藏夹还是空的。', { icon: '★' });
+        if (!ctx.currentView.favorites.length) {
+            return createEmptyState({
+                documentRef: ctx.documentRef, variant: 'heart',
+                title: '收藏夹还是空的', hint: '在发现页收藏心动的人，这里就会亮起来。',
+            });
+        }
         const section = element('section', { className: 'yl-favorite-list' });
         for (const candidate of ctx.currentView.favorites) {
             const card = element('article', { className: 'yl-favorite-card' });
@@ -249,12 +267,16 @@ export function createProfilePage(ctx) {
         }
     }
     function buildChatSummaryConfigPage() {
-        if (!ctx.chatSummaryEnabled()) return ctx.buildEmptyPlaceholder('自动对话总结当前已关闭。请返回上一页开启后再配置。', { icon: '◌' });
+        if (!ctx.chatSummaryEnabled()) {
+            return createEmptyState({ documentRef: ctx.documentRef, variant: 'inbox', title: '自动对话总结当前已关闭', hint: '请返回上一页开启后再配置。' });
+        }
         if (!ctx.settingsStore || typeof ctx.settingsStore.snapshot !== 'function' || typeof ctx.settingsStore.setChatSummarySettings !== 'function') {
-            return ctx.buildEmptyPlaceholder('对话总结设置暂不可用。', { icon: '◌' });
+            return createEmptyState({ documentRef: ctx.documentRef, variant: 'inbox', title: '对话总结设置暂不可用' });
         }
         let snapshot;
-        try { snapshot = ctx.settingsStore.snapshot(); } catch { return ctx.buildEmptyPlaceholder('无法读取已保存的总结设置。', { icon: '◌' }); }
+        try { snapshot = ctx.settingsStore.snapshot(); } catch {
+            return createEmptyState({ documentRef: ctx.documentRef, variant: 'inbox', title: '无法读取已保存的总结设置' });
+        }
         const contentMode = ctx.currentView.mode === 'NSFW' ? 'NSFW' : 'SFW';
         const settings = ctx.chatSummarySettings();
         const binding = snapshot.functionModeBindings?.chat_summary?.[contentMode]
@@ -303,11 +325,15 @@ export function createProfilePage(ctx) {
         return section;
     }
     function buildChatSummaryHistoryPage() {
-        if (!ctx.chatSummaryEnabled()) return ctx.buildEmptyPlaceholder('自动对话总结当前已关闭。请返回上一页开启后再查看总结档案。', { icon: '◌' });
+        if (!ctx.chatSummaryEnabled()) {
+            return createEmptyState({ documentRef: ctx.documentRef, variant: 'inbox', title: '自动对话总结当前已关闭', hint: '请返回上一页开启后再查看总结档案。' });
+        }
         const sessions = ctx.messageSessions();
         const groupHistory = ctx.socialThreads();
         const postHistory = ctx.socialPosts();
-        if (!sessions.length && !groupHistory.length && !postHistory.length) return ctx.buildEmptyPlaceholder('还没有可查看的私聊、聊天群或论坛帖子记录。', { icon: '✦' });
+        if (!sessions.length && !groupHistory.length && !postHistory.length) {
+            return createEmptyState({ documentRef: ctx.documentRef, variant: 'inbox', title: '还没有可查看的总结', hint: '开始私聊、聊天群或论坛帖子后，这里会按楼层整理记录。' });
+        }
         const section = element('section', { className: 'yl-chat-page yl-message-list-page yl-chat-summary-history' });
         section.appendChild(element('p', { className: 'yl-phone-page-description', text: '私聊总结会写入当前 MVU 会话；聊天群与论坛帖子总结只存在当前浏览器的专用缓存，不影响酒馆正文。' }));
         if (sessions.length) {
@@ -335,7 +361,9 @@ export function createProfilePage(ctx) {
             for (const item of items) {
                 const info = ctx.localSummaryInfo(item);
                 const button = element('button', { className: 'yl-chat-session yl-message-session', type: 'button', ariaLabel: `查看${item.title ?? item.name}的总结档案` });
-                const icon = element('span', { className: 'yl-session-avatar yl-local-summary-history-icon', text: kind === 'group' ? '◌' : '▤' });
+                const icon = element('span', { className: 'yl-session-avatar yl-local-summary-history-icon' });
+                icon.setAttribute('aria-hidden', 'true');
+                icon.appendChild(createUiIcon(ctx.documentRef, kind === 'group' ? 'groups' : 'forum', { className: 'yl-local-summary-history-svg', size: 22 }));
                 const copy = element('span', { className: 'yl-session-copy' });
                 const titleText = kind === 'group' ? item.title : item.title;
                 append(copy, [
@@ -358,50 +386,41 @@ export function createProfilePage(ctx) {
     function buildChatSummaryHistoryDetailPage() {
         if (ctx.localSummaryTarget) return ctx.buildLocalConversationSummaryPage(ctx.localSummaryTarget.kind);
         const session = ctx.messageSessionByUid(ctx.summaryHistorySessionUid);
-        if (!session) return ctx.buildEmptyPlaceholder('这位角色的会话暂时不可见，请返回总结档案后重试。', { icon: '◌' });
+        if (!session) {
+            return createEmptyState({ documentRef: ctx.documentRef, variant: 'search', title: '会话暂时不可见', hint: '这位角色的会话暂时不可见，请返回总结档案后重试。' });
+        }
         return ctx.buildConversationSummaryDetail(session, { actionsEnabled: true, historyMode: true });
     }
-    function buildSettingsHome() {
-        const section = element('section', { className: 'yl-settings-home yl-settings-catalog' });
-        const intro = element('article', { className: 'yl-settings-catalog-intro' });
-        append(intro, [
-            element('span', { className: 'yl-hub-eyebrow', text: '设备与创作控制台' }),
-            element('h2', { text: '把低频配置按任务收起来' }),
-            element('p', { text: '连接、提示词和图片属于创作工具；推荐与总结属于体验偏好；控制台与关于软件属于高级诊断。API Key 与私密内容不会出现在本页摘要。' }),
+    function buildPreferenceSettingsPage() {
+        // 「偏好」设置页（主线收口新增）：只承载浏览器本地的界面布局切换，
+        // 复用壳层 setUiLayoutMode（持久化 + aria 播报 + 位置钳制），不进 MVU、导出或提示词。
+        const section = element('section', { className: 'yl-settings-home yl-preference-settings' });
+        const desktopActive = ctx.uiLayoutMode === 'desktop';
+        const card = element('section', { className: 'yl-chat-summary-status-card yl-preference-layout-card' });
+        const copy = element('div', { className: 'yl-chat-summary-status-copy' });
+        append(copy, [
+            element('strong', { text: desktopActive ? '当前为电脑端界面' : '当前为手机端界面' }),
+            element('p', { text: '布局偏好只保存在当前浏览器，不写入公开资料、MVU、导出或提示词；也可在「我的」页头随时切换。' }),
         ]);
-        section.appendChild(intro);
-        const catalog = element('div', { className: 'yl-settings-catalog-grid' });
-        catalog.appendChild(ctx.buildHubSection({
-            title: 'AI 与创作', note: '配置模型连接和内容生产能力。', className: 'yl-settings-category yl-settings-category-creative',
-            entries: [
-                { page: 'settings_connections', iconName: 'connection', title: '连接预设', note: '按名称选择和维护非机密连接信息。', meta: '连接' },
-                { page: 'settings_prompts', iconName: 'prompt', title: '提示词预设', note: '维护提示词条目以及导入和导出。', meta: '文本' },
-                { page: 'settings_images', iconName: 'image', title: '图片管理', note: '管理本地角色展示图与匹配关键词。', meta: '媒体' },
-                { page: 'settings_image_generation', iconName: 'sparkle', title: '生图设置', note: '配置会话生图接口与固定提示词。', meta: '生成' },
-            ],
-        }));
-        catalog.appendChild(ctx.buildHubSection({
-            title: '偏好与隐私', note: '决定当前设备如何推荐和整理内容。', className: 'yl-settings-category yl-settings-category-preference',
-            entries: [
-                { page: 'settings_privacy', iconName: 'privacy', title: '隐私权限设置', note: '管理个性化推荐与当前设备关键词偏好。', meta: '受控' },
-                { page: 'settings_chat_summary', iconName: 'summary', title: '对话总结', note: '按楼层整理私聊、群聊与论坛帖子。', meta: '本地' },
-            ],
-        }));
-        catalog.appendChild(ctx.buildHubSection({
-            title: '高级与诊断', note: '查看运行状态和软件说明；低频信息保持收纳。', className: 'yl-settings-category yl-settings-category-system',
-            entries: [
-                { page: 'settings_console', iconName: 'console', title: '控制台', note: '查看安全运行进度，不显示密钥或原始数据。', meta: '会话级' },
-                { page: 'about', iconName: 'info', title: '关于软件', note: '查看版本、更新日志与隐藏功能入口。', meta: ctx.UI_VERSION },
-            ],
-        }));
-        section.appendChild(catalog);
+        const switchLabel = element('label', { className: 'yl-switch yl-preference-layout-switch' });
+        const toggle = element('input', { type: 'checkbox', checked: desktopActive, ariaLabel: '切换电脑端界面布局' });
+        switchLabel.appendChild(toggle);
+        listen(toggle, toggle, 'change', () => {
+            ctx.setUiLayoutMode(toggle.checked ? 'desktop' : 'phone');
+            ctx.renderPage();
+        }, ctx.abortController.signal);
+        append(card, [copy, switchLabel]);
+        section.appendChild(card);
         return section;
     }
     function buildAboutSoftwarePage() {
         const section = element('section', { className: 'yl-about-page' });
         const intro = element('article', { className: 'yl-about-card yl-about-intro' });
         const introCopy = element('div', { className: 'yl-about-copy' });
-        append(intro, [element('span', { className: 'yl-about-mark', text: '约' }), introCopy]);
+        const mark = element('span', { className: 'yl-about-mark' });
+        mark.setAttribute('aria-hidden', 'true');
+        mark.appendChild(createUiIcon(ctx.documentRef, 'logo', { className: 'yl-about-mark-svg', size: 24 }));
+        append(intro, [mark, introCopy]);
         append(introCopy, [element('strong', { text: '约了吗小手机' }), element('p', { text: '现代都市线上文字社交模拟器。版本提示与更新日志会在数秒后自动关闭。' })]);
         section.appendChild(intro);
         const actions = element('div', { className: 'yl-about-actions' });
@@ -446,7 +465,10 @@ export function createProfilePage(ctx) {
         section.appendChild(toolbar);
         const snapshot = ctx.operationActivity.snapshot();
         if (!snapshot.entries.length) {
-            section.appendChild(ctx.buildEmptyPlaceholder('暂无运行记录。开始灵魂匹配、语音匹配或收藏主动私聊后，会在这里显示进度。', { icon: '◌' }));
+            section.appendChild(createEmptyState({
+                documentRef: ctx.documentRef, variant: 'inbox',
+                title: '暂无运行记录', hint: '开始灵魂匹配、语音匹配或收藏主动私聊后，会在这里显示进度。',
+            }));
             return section;
         }
         const list = element('div', { className: 'yl-operation-console-list' });
@@ -477,11 +499,15 @@ export function createProfilePage(ctx) {
         return row;
     }
     function buildPrivacySettings() {
-        const section = element('section', { className: 'yl-settings-home' });
-        const button = element('button', { className: 'yl-center-entry', type: 'button', ariaLabel: '个性化内容推荐管理' });
-        append(button, [element('strong', { text: '个性化内容推荐管理' }), element('span', { text: '开启或关闭个性化推荐，并编辑当前设备的关键词权重。' }), ctx.openMark()]);
-        listen(button, button, 'click', () => ctx.setActivePage('settings_personalization'), ctx.abortController.signal);
-        section.appendChild(button);
+        // §10.1「隐私与总结」：个性化推荐管理与对话总结共用这一个二级页收纳。
+        const section = element('section', { className: 'yl-settings-home yl-privacy-summary-home' });
+        section.appendChild(ctx.buildHubSection({
+            title: '隐私与总结', className: 'yl-profile-group',
+            entries: [
+                { page: 'settings_personalization', iconName: 'privacy', title: '个性化内容推荐管理', note: '开启或关闭个性化推荐，并编辑当前设备的关键词权重。', meta: '设备级' },
+                { page: 'settings_chat_summary', iconName: 'summary', title: '对话总结', note: '按楼层整理私聊、群聊与论坛帖子。', meta: '本地' },
+            ],
+        }));
         return section;
     }
     async function startFavoritePrivateChat(candidate) {
@@ -537,7 +563,7 @@ export function createProfilePage(ctx) {
         buildChatSummaryConfigPage,
         buildChatSummaryHistoryPage,
         buildChatSummaryHistoryDetailPage,
-        buildSettingsHome,
+        buildPreferenceSettingsPage,
         buildAboutSoftwarePage,
         buildOperationConsole,
         buildContentModeSlider,

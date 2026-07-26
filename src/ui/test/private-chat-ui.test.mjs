@@ -171,8 +171,8 @@ test('chat summary settings disable their two subpages until enabled, then rende
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '对话总结'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '隐私与总结'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '对话总结'));
 
         const plan = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '总结方案');
         const archive = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '总结档案');
@@ -286,7 +286,8 @@ test('desktop right-click and mobile long-press on the paper plane open the meet
             globalThis.clearTimeout = previousClearTimeout;
         }
         let toolMenu = miniDom.document.querySelector('.yl-chat-tool-menu');
-        assert.ok(toolMenu, '手机长按纸飞机应打开小型工具栏');
+        assert.ok(toolMenu, '手机长按纸飞机应打开工具面板');
+        assert.ok(miniDom.document.querySelector('.yl-sheet'), '工具面板应挂在 BottomSheet 中');
         assert.equal(privateChatCalls, 0, '手机长按不得发送私聊');
         sendButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息');
         const contextMenuEvent = rightClick(sendButton);
@@ -295,18 +296,22 @@ test('desktop right-click and mobile long-press on the paper plane open the meet
         assert.equal(secondContextMenuEvent.defaultPrevented, true, '右键纸飞机应阻止浏览器默认菜单');
         assert.equal(contextMenuEvent.defaultPrevented, true, '右键纸飞机应阻止浏览器默认菜单');
         toolMenu = miniDom.document.querySelector('.yl-chat-tool-menu');
-        assert.ok(toolMenu, '右键纸飞机应打开小型工具栏');
+        assert.ok(toolMenu, '右键纸飞机应打开工具面板');
         assert.equal(toolMenu.getAttribute('role'), null, '工具栏是 disclosure 列表，不得宣称无键盘模型的 role=menu');
         assert.equal(toolMenu.getAttribute('aria-label'), '私聊发送工具栏');
-        assert.match(toolMenu.textContent, /^约定面基 · 友情路线$/u);
+        assert.match(toolMenu.textContent, /约定面基 · 友情路线/u);
         sendButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息');
         assert.equal(sendButton.getAttribute('aria-expanded'), 'true');
+        const plusButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开聊天工具');
+        assert.ok(plusButton, '输入框左侧应有可见「+」按钮（裁决 D4）');
+        assert.equal(plusButton.getAttribute('aria-expanded'), 'true');
         assert.equal(privateChatCalls, 0, '打开工具栏不得发送私聊');
         assert.equal(meetupCalls.length, 0, '打开工具栏不得提前提交面基');
 
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约定面基，友情路线'));
-        assert.equal(miniDom.document.querySelector('.yl-chat-tool-menu'), null, '选择工具后应收起右键菜单');
-        assert.ok(miniDom.document.querySelector('.yl-meetup-panel'), '约定面基工具应打开原有面基表单');
+        assert.equal(miniDom.document.querySelector('.yl-chat-tool-menu'), null, '选择工具后应收起工具面板');
+        assert.ok(miniDom.document.querySelector('.yl-meetup-panel'), '约定面基工具应打开 BottomSheet 两步表单');
+        assert.match(miniDom.document.querySelector('.yl-meetup-step-indicator').textContent, /第 1 \/ 2 步/u);
 
         const fieldValues = new Map([
             ['本周六 19:30', '本周六 19:30'],
@@ -316,12 +321,19 @@ test('desktop right-click and mobile long-press on the paper plane open the meet
             ['散场时间', '21:30 前散场'],
             ['各自独立到场，可随时离开', '各自独立到场，可随时离开'],
         ]);
-        for (const textarea of miniDom.document.querySelectorAll('textarea')) {
-            const value = fieldValues.get(textarea.getAttribute('placeholder'));
-            if (!value) continue;
-            textarea.value = value;
-            textarea.dispatchEvent(new Event('input'));
-        }
+        const fillVisibleMeetupFields = () => {
+            for (const textarea of miniDom.document.querySelectorAll('textarea')) {
+                const value = fieldValues.get(textarea.getAttribute('placeholder'));
+                if (!value) continue;
+                textarea.value = value;
+                textarea.dispatchEvent(new Event('input'));
+            }
+        };
+        fillVisibleMeetupFields();
+        assert.equal(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '填入正文草稿'), undefined, '第 1 步不出现提交钮');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '下一步'));
+        assert.match(miniDom.document.querySelector('.yl-meetup-step-indicator').textContent, /第 2 \/ 2 步/u);
+        fillVisibleMeetupFields();
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '填入正文草稿'));
         await flushUi();
 
@@ -464,6 +476,7 @@ test('message search uses only nickname and latest visible message', () => {
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '搜索私聊会话'));
         const search = miniDom.document.querySelector('[name="missing"]') ?? miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '搜索私聊');
         assert.ok(search);
         search.value = '林澈'; search.dispatchEvent(new Event('input'));
@@ -479,7 +492,7 @@ test('message search uses only nickname and latest visible message', () => {
     } finally { mounted.destroy(); }
 });
 
-test('multiple contact replies render as separate bubbles and blocked chat disables input', () => {
+test('consecutive contact replies merge into one group of separate bubbles and blocked chat disables input', () => {
     const result = readResult();
     result.state.会话.chat_lin.状态 = '已拉黑';
     result.state.角色池.npc_lin.与玩家关系.状态 = '已拉黑';
@@ -492,9 +505,51 @@ test('multiple contact replies render as separate bubbles and blocked chat disab
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
         click(miniDom.document.querySelector('.yl-message-session'));
-        assert.equal(miniDom.document.querySelectorAll('.yl-chat-bubble').filter((node) => node.classList.contains('is-contact')).length, 2);
+        assert.equal(miniDom.document.querySelectorAll('.yl-bubble--peer').length, 2, '两条回复仍是两个独立气泡');
+        assert.equal(miniDom.document.querySelectorAll('.yl-msg-group--peer').length, 1, '同发送者连续气泡合并为一组');
+        const group = miniDom.document.querySelector('.yl-msg-group--peer');
+        assert.equal(group.querySelectorAll('.yl-chat-message-avatar').length, 1, '组内只显示一次头像');
+        assert.equal(group.querySelectorAll('.yl-bubble-name').length, 1, '组内只显示一次昵称');
+        assert.equal(group.querySelectorAll('.yl-bubble-time').length, 1, '时间只作为组尾角标出现一次');
+        assert.match(miniDom.document.body.textContent, /对方已将你拉黑，无法继续发送消息。/u, '只读态应有状态说明 pill');
         assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '私聊消息输入已禁用')?.disabled, true);
         assert.equal(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息已禁用')?.disabled, true);
+    } finally { mounted.destroy(); }
+});
+
+test('timeline inserts a one-time system pill, time dividers over 10 minutes, and groups alternating senders', () => {
+    const result = readResult();
+    result.state.会话.chat_lin.最近消息 = [
+        { 消息UID: 't1', 发送者: '角色', 内容: '早上好呀。', 时间: '2026-07-25 09:00' },
+        { 消息UID: 't2', 发送者: '角色', 内容: '今天有空吗？', 时间: '2026-07-25 09:02' },
+        { 消息UID: 't3', 发送者: '玩家', 内容: '下午可以。', 时间: '2026-07-25 09:05' },
+        { 消息UID: 't4', 发送者: '角色', 内容: '那就下午聊。', 时间: '2026-07-25 21:30' },
+    ];
+    const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-chat-timeline', actionBridge: { emit() {}, isPending() { return false; }, runPrivateChat() { return { ok: true }; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+
+        const timeline = miniDom.document.querySelector('.yl-chat-timeline');
+        assert.ok(timeline, '消息流使用合同 class yl-chat-timeline');
+        assert.equal(timeline.querySelectorAll('.yl-system-pill').length, 1, '首次进入会话插入一条一次性系统 pill');
+        const dividers = timeline.querySelectorAll('.yl-time-divider');
+        assert.equal(dividers.length, 2, '开场 + 超过 10 分钟的间隔各插一个时间分隔 pill');
+        assert.match(dividers[0].textContent, /(?:7月25日|今天) 09:00/u);
+        assert.match(dividers[1].textContent, /(?:7月25日|今天) 21:30/u);
+        assert.equal(timeline.querySelectorAll('.yl-msg-group--peer').length, 2, '角色的两段连续发言各成一组');
+        assert.equal(timeline.querySelectorAll('.yl-msg-group--self').length, 1, '玩家发言单独成组');
+        const firstPeerGroup = timeline.querySelectorAll('.yl-msg-group--peer')[0];
+        assert.equal(firstPeerGroup.querySelectorAll('.yl-bubble--peer').length, 2, '相邻同发送者消息合并进同组');
+        assert.equal(firstPeerGroup.querySelectorAll('.yl-bubble-time').length, 1, '时间只落在组尾气泡角标');
+        assert.equal(miniDom.document.querySelector('.yl-chat-privacy-note'), null, '常驻隐私横幅已删除');
+        assert.doesNotMatch(timeline.textContent, /最近消息/u, '「最近消息」伪分组标签已删除');
+
+        // 同一挂载内再次进入该会话：一次性系统 pill 仍在本次访问内保留，但属于同一条（不重复累积）。
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        assert.equal(miniDom.document.querySelectorAll('.yl-system-pill').length, 1);
     } finally { mounted.destroy(); }
 });
 
@@ -567,6 +622,115 @@ test('desktop layout adds a public-projection context rail beside the private ch
     }
 });
 
+function twoSessionResult() {
+    const result = readResult();
+    result.state.角色池.npc_zhou = {
+        成人验证: true,
+        公开资料: {
+            昵称: '周遥', 头像引用: '', 年龄段: '30-34', 性别: '男', 性取向: '异性恋', 城市: '杭州',
+            距离范围: '5 km', 寻找意图: '认真交往', 简介: '第二会话公开简介。',
+            兴趣标签: ['登山'], 生活方式标签: ['早起'], 性格标签: ['温和'], 沟通风格标签: ['直接'],
+        },
+        与玩家关系: { 状态: '已匹配', 好感: 10, 信任: 10, 戒备: 0, 面基意愿: 0 },
+    };
+    result.state.会话.chat_zhou = {
+        对象UID: 'npc_zhou', 状态: '已匹配',
+        最近消息: [{ 消息UID: 'z1', 发送者: '角色', 内容: '周末去爬山吗？', 时间: '19:00' }],
+    };
+    return result;
+}
+
+test('desktop master-detail: session rail lists every conversation and switches sessions', async () => {
+    const storage = createMemoryStorage();
+    storage.setItem('yuelema.ui-layout/v1', 'desktop');
+    const result = twoSessionResult();
+    const bridge = { emit() {}, isPending() { return false; }, runPrivateChat() { return Promise.resolve({ ok: true }); } };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-private-chat-master-detail', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, uiLayoutStorage: storage, readState: () => result,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+
+        const workbench = miniDom.document.querySelector('.yl-private-chat-workbench');
+        assert.ok(workbench, 'desktop 私聊应组成会话工作台');
+        const rail = workbench.querySelector('.yl-chat-session-rail');
+        assert.ok(rail, 'desktop 私聊工作台应有最左会话列');
+        assert.equal(rail.getAttribute('aria-label'), '私聊会话列表');
+        const rows = rail.querySelectorAll('.yl-message-session');
+        assert.equal(rows.length, 2, '会话列应逐 session 渲染全部会话行');
+        const activeRows = rows.filter((row) => row.classList.contains('is-active'));
+        assert.equal(activeRows.length, 1, '当前会话行应有唯一激活态');
+        assert.equal(activeRows[0].getAttribute('aria-label'), '打开与林澈的私聊');
+        assert.equal(activeRows[0].getAttribute('aria-current'), 'true');
+
+        click(rail.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与周遥的私聊'));
+        await flushUi();
+        assert.match(miniDom.document.querySelector('.yl-private-chat-contact').textContent, /周遥/u, '点击会话行应切换到对应会话');
+        assert.equal(miniDom.document.querySelector('.yl-chat-context-panel').getAttribute('aria-label'), '周遥的公开资料', '上下文栏应同步切换');
+        const nextActive = miniDom.document.querySelector('.yl-chat-session-rail')
+            .querySelectorAll('.yl-message-session').filter((row) => row.classList.contains('is-active'));
+        assert.equal(nextActive.length, 1);
+        assert.equal(nextActive[0].getAttribute('aria-label'), '打开与周遥的私聊', '激活态应跟随当前会话');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('desktop context rail collapse toggle persists through the yuelema.-prefixed local key', async () => {
+    const storedValues = new Map();
+    const storageStub = {
+        getItem: (key) => (storedValues.has(key) ? storedValues.get(key) : null),
+        setItem: (key, value) => { storedValues.set(key, String(value)); },
+        removeItem: (key) => { storedValues.delete(key); },
+    };
+    const previousDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storageStub });
+    const layoutStorage = createMemoryStorage();
+    layoutStorage.setItem('yuelema.ui-layout/v1', 'desktop');
+    const bridge = { emit() {}, isPending() { return false; }, runPrivateChat() { return Promise.resolve({ ok: true }); } };
+    const openLinChat = () => {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+    };
+    const findToggle = () => miniDom.document.querySelectorAll('button').find((node) => node.classList.contains('yl-chat-context-toggle'));
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-context-collapse-a', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, uiLayoutStorage: layoutStorage, readState: readResult,
+    });
+    try {
+        openLinChat();
+        assert.equal(findToggle().getAttribute('aria-expanded'), 'true', '上下文栏默认展开');
+        assert.ok(miniDom.document.querySelector('.yl-chat-context-facts'), '展开态渲染公开资料事实');
+        click(findToggle());
+        assert.equal(findToggle().getAttribute('aria-expanded'), 'false', '点击折叠钮应收起');
+        assert.ok(miniDom.document.querySelector('.yl-chat-context-panel').classList.contains('is-collapsed'), '折叠态挂 is-collapsed 类');
+        assert.equal(miniDom.document.querySelector('.yl-chat-context-facts'), null, '折叠态不渲染资料正文');
+        assert.equal(storedValues.get('yuelema.chat-context-collapsed/v1'), '1', '折叠偏好写入 yuelema. 前缀本地键');
+    } finally {
+        mounted.destroy();
+    }
+    const remounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-context-collapse-b', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, uiLayoutStorage: layoutStorage, readState: readResult,
+    });
+    try {
+        openLinChat();
+        assert.equal(findToggle().getAttribute('aria-expanded'), 'false', '重挂载后折叠态应从本地键恢复');
+        assert.ok(miniDom.document.querySelector('.yl-chat-context-panel').classList.contains('is-collapsed'));
+        click(findToggle());
+        assert.equal(findToggle().getAttribute('aria-expanded'), 'true', '再次点击应恢复展开');
+        assert.equal(storedValues.get('yuelema.chat-context-collapsed/v1'), '0', '展开偏好同样落盘');
+    } finally {
+        remounted.destroy();
+        if (previousDescriptor) Object.defineProperty(globalThis, 'localStorage', previousDescriptor);
+        else delete globalThis.localStorage;
+    }
+});
+
 test('phone layout keeps the private chat single-column without a context rail', async () => {
     const bridge = { emit() {}, isPending() { return false; }, runPrivateChat() { return Promise.resolve({ ok: true }); } };
     const mounted = mountPhoneApp({
@@ -579,6 +743,7 @@ test('phone layout keeps the private chat single-column without a context rail',
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
         assert.equal(miniDom.document.querySelector('.yl-private-chat-workbench'), null, 'phone 私聊不应套工作台外壳');
         assert.equal(miniDom.document.querySelector('.yl-chat-context-panel'), null, 'phone 私聊不渲染上下文栏');
+        assert.equal(miniDom.document.querySelector('.yl-chat-session-rail'), null, 'phone 私聊不渲染 desktop 会话列');
         assert.ok(miniDom.document.querySelector('.yl-private-chat-screen'), 'phone 私聊保持单列会话');
     } finally {
         mounted.destroy();
@@ -609,16 +774,17 @@ test('Phase 69: chat action lists are disclosures and Escape dismisses the send 
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
 
         const more = () => miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的更多操作');
+        const moreMenu = () => miniDom.document.querySelector('.yl-private-chat-more-menu');
         assert.equal(more().getAttribute('aria-haspopup'), null, '更多操作是 disclosure，不再宣称 haspopup=menu');
         assert.equal(more().getAttribute('aria-expanded'), 'false');
+        assert.equal(moreMenu().hidden, true, '菜单节点常驻 DOM 但默认隐藏');
         click(more());
         assert.equal(more().getAttribute('aria-expanded'), 'true');
-        const moreMenu = miniDom.document.querySelector('.yl-private-chat-more-menu');
-        assert.ok(moreMenu, '更多操作应展开动作列表');
-        assert.equal(moreMenu.getAttribute('role'), null, '无键盘模型的动作列表不得宣称 role=menu');
-        assert.equal(moreMenu.querySelectorAll('button').every((node) => node.getAttribute('role') === null), true, '列表项是普通按钮而非 menuitem');
+        assert.equal(moreMenu().hidden, false, '更多操作应展开动作列表');
+        assert.equal(moreMenu().getAttribute('role'), null, '无键盘模型的动作列表不得宣称 role=menu');
+        assert.equal(moreMenu().querySelectorAll('button').every((node) => node.getAttribute('role') === null), true, '列表项是普通按钮而非 menuitem');
         pressEscape();
-        assert.equal(miniDom.document.querySelector('.yl-private-chat-more-menu'), null, 'Escape 应关闭更多操作列表');
+        assert.equal(moreMenu().hidden, true, 'Escape 应关闭更多操作列表');
 
         const sendButton = () => miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息');
         assert.equal(sendButton().getAttribute('aria-haspopup'), null, '纸飞机不再宣称 haspopup');

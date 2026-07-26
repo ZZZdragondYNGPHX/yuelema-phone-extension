@@ -75,12 +75,20 @@ function assertOperationCloseControls(dialog, state) {
     return { topClose, bottomClose };
 }
 
+/* P3-D：hub 入口迁移 ListRow（div[role=button]）后，可点目标 = 原生按钮 ∪ .yl-hub-entry 行 */
+function clickTargets() {
+    return [
+        ...miniDom.document.querySelectorAll('button'),
+        ...miniDom.document.querySelectorAll('.yl-hub-entry'),
+    ];
+}
+
 function buttonByText(text) {
-    return miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes(text));
+    return clickTargets().find((node) => node.textContent.includes(text));
 }
 
 function buttonByPage(page) {
-    return miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === page);
+    return clickTargets().find((node) => node.dataset.page === page);
 }
 
 function backButton() {
@@ -146,7 +154,7 @@ test('layout preference is browser-local and the profile header toggles the same
         assert.equal(root.dataset.contentMode, 'SFW', '布局切换不得混入内容模式');
         assert.deepEqual(actionCalls, [], '布局切换不得进入 action bridge 或 MVU');
 
-        click(buttonByText('设置'));
+        click(buttonByPage('settings_connections'));
         assert.equal(miniDom.document.querySelector('.yl-ui-layout-toggle'), null, '布局按钮只属于顶级“我的”页');
     } finally { mounted.destroy(); }
 });
@@ -251,7 +259,7 @@ test('layout changes preserve the CSS anchor before drag and clamp an already dr
         miniDom.document.documentElement = previousDocumentElement;
     }
 });
-test('all routed child pages keep a top-left back button and settings views stay isolated', () => {
+test('all routed child pages keep a top-left back button and settings views stay isolated', async () => {
     const settingsStore = createSettingsStore({ storage: createMemoryStorage() });
     const bridge = { emit() {}, isPending() { return false; }, runMvuAction: async () => ({ ok: true }) };
     const mounted = mountPhoneApp({
@@ -272,22 +280,21 @@ test('all routed child pages keep a top-left back button and settings views stay
         click(backButton());
 
         click(buttonByPage('groups'));
-        click(buttonByText('聊天群'));
-        assert.ok(backButton(), '聊天群子页应有返回按钮');
-        click(backButton());
-        click(buttonByText('心动社区'));
-        assert.ok(backButton(), '论坛子页应有返回按钮');
-        click(backButton());
+        await flushUi(); // P2-C：社区 Hub 已砍掉，异步直达上次停留 tab（默认广场）
+        assert.ok(backButton(), '广场 tab 作为路由子页应有返回按钮');
+        const communitySeg = miniDom.document.querySelector('.yl-seg');
+        assert.ok(communitySeg, '社区应提供广场/群聊 SegmentedControl');
+        click(communitySeg.querySelectorAll('.yl-seg__item').find((node) => node.dataset.segmentId === 'chat'));
+        assert.ok(backButton(), '群聊 tab 作为路由子页应有返回按钮');
 
         click(buttonByPage('profile'));
-        click(buttonByText('个人资料'));
+        click(buttonByText('编辑公开资料'));
         assert.ok(backButton(), '个人资料子页应有返回按钮');
         click(backButton());
         click(buttonByText('收藏夹'));
         assert.ok(backButton(), '收藏夹子页应有返回按钮');
         click(backButton());
-        click(buttonByText('设置'));
-        assert.ok(backButton(), '设置子页应有返回按钮');
+        /* E1 裁平：设置目录页已删除，各设置详情直接从「我的」进入 */
         assert.doesNotMatch(miniDom.document.body.textContent, /AI 匹配工具|灵魂匹配|文字匹配/u);
 
         click(buttonByText('连接预设'));
@@ -303,7 +310,7 @@ test('all routed child pages keep a top-left back button and settings views stay
         assert.doesNotMatch(miniDom.document.body.textContent, /Worldbook|世界书式/u);
         click(backButton());
 
-        click(buttonByText('隐私权限设置'));
+        click(buttonByText('隐私与总结'));
         assert.ok(backButton(), '隐私权限设置子页应有返回按钮');
         click(buttonByText('个性化内容推荐管理'));
         assert.ok(backButton(), '个性化内容推荐管理子页应有返回按钮');
@@ -342,26 +349,48 @@ test('match tools create a fresh mutual match and message session without using 
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(buttonByPage('matches'));
-        assert.match(miniDom.document.body.textContent, /灵魂匹配|描述匹配/u);
+        assert.match(miniDom.document.body.textContent, /灵魂匹配/u);
+        assert.match(miniDom.document.body.textContent, /描述匹配/u);
+        /* Segmented 切换：默认灵魂模式无描述输入，切到描述模式后出现 */
+        const seg = miniDom.document.querySelector('.yl-seg');
+        assert.ok(seg, '匹配页应提供灵魂/描述 SegmentedControl');
+        assert.equal(seg.querySelectorAll('.yl-seg__item').length, 2);
+        assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '描述匹配文字描述'), undefined, '灵魂模式不渲染描述输入');
+        click(seg.querySelectorAll('.yl-seg__item').find((node) => node.dataset.segmentId === 'voice'));
         const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '描述匹配文字描述');
-        assert.ok(input, '描述匹配应提供独立文字输入框');
+        assert.ok(input, '描述模式应提供独立文字输入框');
         input.value = '周末想逛展，也想认真聊天';
         input.dispatchEvent(new Event('input'));
         const matchButtons = miniDom.document.querySelectorAll('button').filter((node) => node.textContent === '开始匹配');
-        assert.equal(matchButtons.length, 2, '灵魂与描述匹配各有一个开始按钮');
-        click(matchButtons[1]);
+        assert.equal(matchButtons.length, 1, 'Hero 卡只保留一个开始匹配主钮');
+        click(matchButtons[0]);
         await flushUi();
         assert.deepEqual(calls, [{ mode: 'voice', voiceText: '周末想逛展，也想认真聊天' }]);
+        /* 成功 = It's a Match 全屏浮层：分数环 + 公开理由 chips，不自动进入私聊 */
+        const overlay = miniDom.document.querySelector('.yl-match-overlay');
+        assert.ok(overlay, 'accepted 应弹出 It’s a Match 浮层');
+        assert.match(overlay.textContent, /It's a Match/u);
+        assert.ok(overlay.querySelector('.yl-score-ring'), '成功浮层应展示同频度分数环');
+        assert.match(overlay.textContent, /91%/u);
+        const chips = overlay.querySelectorAll('.yl-chip').map((node) => node.textContent);
+        assert.ok(chips.length >= 2 && chips.length <= 4, '同频理由应为 2~4 个 chips');
+        for (const chip of chips) {
+            assert.ok(['电影', '夜猫子', '直接', '慢热', '聊天后约会', '上海'].includes(chip), `理由 chip 只允许公开关键词：${chip}`);
+        }
+        assert.doesNotMatch(overlay.textContent, /never render|隐藏资料|关系分|阈值|npc_match/u, '成功浮层不得泄露隐藏字段或内部标识');
+        assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null, '成功浮层未确认前不得自动进入私聊');
+        click(overlay.querySelectorAll('button').find((node) => node.textContent.includes('开始聊天')));
         const chat = miniDom.document.querySelector('.yl-private-chat-screen');
-        assert.ok(chat, 'accepted 应直接进入非空私聊会话');
+        assert.ok(chat, '点击开始聊天后进入非空私聊会话');
         assert.match(chat.textContent, /灵魂档案/u);
+        assert.equal(miniDom.document.querySelector('.yl-match-overlay'), null, '进入私聊后浮层关闭');
         assert.doesNotMatch(chat.textContent, /never render|隐藏资料|关系分|阈值/u);
     } finally {
         mounted.destroy();
     }
 });
 
-test('feature option entries are scoped to each requested app surface', () => {
+test('feature option entries are scoped to each requested app surface', async () => {
     const store = createSettingsStore({ storage: createMemoryStorage() });
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-feature-options',
@@ -369,7 +398,7 @@ test('feature option entries are scoped to each requested app surface', () => {
     });
     const pageOption = () => miniDom.document.querySelector('.yl-feature-options');
     const closeBinding = () => click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关闭功能预设选项'));
-    const closeForumSettings = () => click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关闭心动社区设置'));
+    const closeForumSettings = () => click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关闭社区设置'));
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         assert.ok(pageOption(), '首页应有独立选项入口');
@@ -389,12 +418,10 @@ test('feature option entries are scoped to each requested app surface', () => {
         closeBinding();
 
         click(buttonByPage('groups'));
-        assert.equal(pageOption(), null, '群组首页不应再提供聊天群/论坛的全局绑定设置');
-        click(buttonByText('聊天群'));
-        assert.equal(pageOption(), null, '聊天群首页不应再提供全局绑定设置');
-        click(backButton());
-        click(buttonByText('心动社区'));
-        click(pageOption());
+        assert.equal(pageOption(), null, '社区跳转过渡帧不应提供全局绑定设置');
+        await flushUi(); // P2-C：社区 Hub 已砍掉，异步直达广场 tab
+        assert.equal(pageOption(), null, '社区广场不再渲染壳层「设置」钮，入口由 topbar「⋯」承担');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '社区设置'));
         assert.ok(miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启帖子自动更新'));
         assert.ok(miniDom.document.querySelector('[name="forum-channel-connection"]'));
         assert.ok(miniDom.document.querySelector('[name="forum-channel-prompt"]'));
@@ -476,7 +503,7 @@ test('my-page avatar is browser-local, while the public-profile editor no longer
         assert.equal(miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '头像图片链接'), undefined);
         assert.deepEqual(playerAvatarStore.snapshot(), { kind: 'placeholder' });
 
-        click(buttonByText('个人资料'));
+        click(buttonByText('编辑公开资料'));
         const editor = miniDom.document.querySelector('.yl-profile-editor');
         assert.doesNotMatch(editor.textContent, /头像引用/u);
         click(backButton());
@@ -489,46 +516,57 @@ test('my-page avatar is browser-local, while the public-profile editor no longer
 });
 
 test('operation dialogs always close and dismissed AI generations never reopen or leak errors', async () => {
+    /* P2-B 后匹配流程改为页面内光环/结果卡，不再走操作弹窗；
+       弹窗机制回归改用仍走 romance 弹窗的收藏主动私聊流程作为载体。 */
     let next = deferred();
+    const readResult = readyReadResult();
+    delete readResult.state.推荐.临时候选池.npc_1;
+    readResult.state.推荐.当前队列 = [];
+    readResult.state.推荐.收藏角色UID = ['npc_1'];
+    readResult.state.角色池.npc_1.与玩家关系.状态 = '陌生';
     const bridge = {
         emit() {}, isPending() { return false; },
-        runCandidateMatch() { return next.promise; },
+        runMvuAction() { return next.promise; },
     };
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-ai-dialog', actionBridge: bridge,
-        settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => readResult,
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        const startMatch = () => { click(buttonByPage('matches')); click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配')); };
-        startMatch();
+        const startInvite = () => {
+            click(buttonByPage('profile'));
+            click(buttonByText('收藏夹'));
+            click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发起私聊'));
+        };
+        startInvite();
 
         const dialog = miniDom.document.querySelector('.yl-operation-dialog');
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.getAttribute('aria-busy'), 'true');
-        assert.equal(dialog.dataset.visual, 'connecting', '通用 AI 调用应使用双心电波连接动画');
-        assert.match(dialog.textContent, /灵魂匹配/u);
+        assert.equal(dialog.dataset.visual, 'connecting', '恋爱互动应使用双心连接动画');
+        assert.match(dialog.textContent, /发起心动私聊/u);
         const loadingControls = assertOperationCloseControls(dialog, 'loading');
 
         click(loadingControls.bottomClose);
         assert.equal(dialog.hidden, true, 'loading 关闭只应隐藏提示窗口');
-        next.resolve({ ok: true, matchOutcome: 'accepted', npcUid: 'npc_1', sessionUid: 'chat_new' });
+        next.resolve({ ok: true, invitationOutcome: 'accepted', sessionUid: 'chat_new' });
         await flushUi();
         assert.equal(dialog.hidden, true, '已关闭 generation 的成功结果不得重新弹窗');
 
         next = deferred();
-        startMatch();
-        next.resolve({ ok: true, matchOutcome: 'accepted', npcUid: 'npc_1', sessionUid: 'chat_new' });
+        startInvite();
+        next.resolve({ ok: true, invitationOutcome: 'accepted', sessionUid: 'chat_new' });
         await flushUi();
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.getAttribute('aria-busy'), 'false');
-        assert.match(dialog.textContent, /心动连接成功/u);
+        assert.match(dialog.textContent, /心意被接住了/u);
         const successControls = assertOperationCloseControls(dialog, 'success');
         click(successControls.topClose);
         assert.equal(dialog.hidden, true);
 
         next = deferred();
-        startMatch();
+        startInvite();
         assertOperationCloseControls(dialog, 'loading');
         pressKey('Escape');
         assert.equal(dialog.hidden, true, 'Escape 应关闭 loading 弹窗');
@@ -538,17 +576,16 @@ test('operation dialogs always close and dismissed AI generations never reopen o
         assert.doesNotMatch(miniDom.document.body.textContent, /Authorization|Bearer|sk-dismissed-secret/u);
 
         next = deferred();
-        startMatch();
+        startInvite();
         next.reject(new Error('Authorization: Bearer sk-visible-secret-api-key'));
         await flushUi();
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.getAttribute('aria-busy'), 'false');
-        assert.match(dialog.textContent, /灵魂匹配未完成/u);
+        assert.match(dialog.textContent, /邀请未送达/u);
         assertOperationCloseControls(dialog, 'failure');
         assert.doesNotMatch(dialog.textContent, /Authorization|Bearer|sk-visible-secret|api-key/u);
 
         click(buttonByPage('profile'));
-        click(buttonByText('设置'));
         click(buttonByText('关于软件'));
         assert.ok(miniDom.document.querySelector('[name="about-version-info"]'), '关于软件应进入子界面');
         click(miniDom.document.querySelector('[name="about-version-info"]'));
@@ -575,37 +612,46 @@ test('success and failure dialogs auto-close while preserving manual close contr
     };
     globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
 
-    let result = { ok: true, matchOutcome: 'accepted', npcUid: 'npc_1', sessionUid: 'chat_new' };
+    let result = { ok: true, invitationOutcome: 'accepted', sessionUid: 'chat_new' };
+    const readResult = readyReadResult();
+    delete readResult.state.推荐.临时候选池.npc_1;
+    readResult.state.推荐.当前队列 = [];
+    readResult.state.推荐.收藏角色UID = ['npc_1'];
+    readResult.state.角色池.npc_1.与玩家关系.状态 = '陌生';
     const bridge = {
         emit() {}, isPending() { return false; },
-        async runCandidateMatch() {
+        async runMvuAction() {
             if (result instanceof Error) throw result;
             return result;
         },
     };
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-dialog-auto-close', actionBridge: bridge,
-        settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => readResult,
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        const startMatch = () => { click(buttonByPage('matches')); click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配')); };
-        startMatch();
+        const startInvite = () => {
+            click(buttonByPage('profile'));
+            click(buttonByText('收藏夹'));
+            click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发起私聊'));
+        };
+        startInvite();
         await flushUi();
 
         const dialog = miniDom.document.querySelector('.yl-operation-dialog');
         assertOperationCloseControls(dialog, 'success');
-        assert.equal(dialog.dataset.visual, 'accepted', '通用 AI 成功应切换为双心依偎动画');
+        assert.equal(dialog.dataset.visual, 'accepted', '恋爱互动成功应切换为双心依偎动画');
         const successTimer = timers.find((timer) => timer.delay === 4000 && !timer.cleared);
         assert.ok(successTimer, '成功状态应登记自动收束计时器');
         successTimer.callback();
         assert.equal(dialog.hidden, true);
 
         result = new Error('Authorization Bearer auto-close-secret');
-        startMatch();
+        startInvite();
         await flushUi();
         assertOperationCloseControls(dialog, 'failure');
-        assert.equal(dialog.dataset.visual, 'failure', '通用 AI 失败应切换为心碎动画');
+        assert.equal(dialog.dataset.visual, 'failure', '恋爱互动失败应切换为心碎动画');
         const failureTimer = timers.find((timer) => timer.delay === 6000 && !timer.cleared);
         assert.ok(failureTimer, '失败状态应登记自动收束计时器');
         failureTimer.callback();
@@ -620,9 +666,14 @@ test('success and failure dialogs auto-close while preserving manual close contr
 
 test('page switches, phone close, and destroy invalidate pending operation dialogs', async () => {
     const requests = [];
+    const readResult = readyReadResult();
+    delete readResult.state.推荐.临时候选池.npc_1;
+    readResult.state.推荐.当前队列 = [];
+    readResult.state.推荐.收藏角色UID = ['npc_1'];
+    readResult.state.角色池.npc_1.与玩家关系.状态 = '陌生';
     const bridge = {
         emit() {}, isPending() { return false; },
-        runCandidateMatch() {
+        runMvuAction() {
             const request = deferred();
             requests.push(request);
             return request.promise;
@@ -630,32 +681,36 @@ test('page switches, phone close, and destroy invalidate pending operation dialo
     };
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-dialog-cleanup', actionBridge: bridge,
-        settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => readResult,
     });
     click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-    const startMatch = () => { click(buttonByPage('matches')); click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配')); };
-    startMatch();
+    const startInvite = () => {
+        click(buttonByPage('profile'));
+        click(buttonByText('收藏夹'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发起私聊'));
+    };
+    startInvite();
     const dialog = miniDom.document.querySelector('.yl-operation-dialog');
     assert.equal(dialog.hidden, false);
 
     click(buttonByPage('messages'));
     assert.equal(dialog.hidden, true, '切换页面应清理操作弹窗');
-    requests[0].resolve({ ok: true, draft: { reply: '页面切换后的迟到结果。' } });
+    requests[0].resolve({ ok: true, invitationOutcome: 'accepted', sessionUid: 'chat_new' });
     await flushUi();
     assert.equal(dialog.hidden, true, '页面切换后迟到结果不得重弹');
 
-    startMatch();
+    startInvite();
     click(miniDom.document.querySelector('.yl-phone-close'));
     assert.equal(dialog.hidden, true, '关闭小手机应清理操作弹窗');
-    requests[1].resolve({ ok: true, draft: { reply: '小手机关闭后的迟到结果。' } });
+    requests[1].resolve({ ok: true, invitationOutcome: 'accepted', sessionUid: 'chat_new' });
     await flushUi();
     assert.equal(dialog.hidden, true, '小手机关闭后迟到结果不得重弹');
 
     click(miniDom.document.querySelector('.yl-phone-launcher'));
-    startMatch();
+    startInvite();
     mounted.destroy();
     assert.equal(miniDom.document.querySelector('#ylm-test-dialog-cleanup'), null);
-    requests[2].resolve({ ok: true, draft: { reply: '销毁后的迟到结果。' } });
+    requests[2].resolve({ ok: true, invitationOutcome: 'accepted', sessionUid: 'chat_new' });
     await flushUi();
     assert.equal(miniDom.document.querySelector('.yl-operation-dialog'), null, '销毁后不得留下或重建弹窗 DOM');
 });
@@ -711,7 +766,6 @@ test('content-mode failures use the dedicated alert dialog and never restore the
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(buttonByPage('profile'));
-        click(buttonByText('设置'));
         click(buttonByText('关于软件'));
         const version = () => miniDom.document.querySelector('[name="about-version-info"]');
         for (let index = 0; index < 5; index += 1) click(version());
@@ -767,7 +821,6 @@ test('打开的功能设置会跟随内容模式刷新到另一套本地预设',
         assert.match(miniDom.document.querySelector('.yl-feature-binding-modal').textContent, /SFW/u);
 
         click(buttonByPage('profile'));
-        click(buttonByText('设置'));
         click(buttonByText('关于软件'));
         const version = () => miniDom.document.querySelector('[name="about-version-info"]');
         for (let index = 0; index < 5; index += 1) click(version());
@@ -918,7 +971,8 @@ test('home candidate card is a request-free visual shell with public info, keywo
 
         const cardButtons = card.querySelectorAll('button');
         assert.equal(cardButtons.length, 4, '候选卡除四个操作外不应混入额外按钮');
-        assert.deepEqual(cardButtons.map((node) => node.getAttribute('aria-label')), ['喜欢', '不喜欢', '收藏', '刷新候选人，显示下一位']);
+        /* §5 主次分级排序：收藏(ghost) / 不喜欢(描边) / 喜欢(渐变主钮) / 下一位(ghost) */
+        assert.deepEqual(cardButtons.map((node) => node.getAttribute('aria-label')), ['收藏', '不喜欢', '喜欢', '刷新候选人，显示下一位']);
         assert.equal(networkRequests, 0, '渲染背景预留槽不得触发 fetch 或 Image 请求');
     } finally {
         mounted.destroy();
@@ -987,8 +1041,7 @@ test('accepted favourite invitation leaves favourites and opens the newly establ
         assert.equal(miniDom.document.querySelector('.yl-operation-dialog').dataset.visual, 'accepted');
         assert.equal(readResult.state.推荐.收藏角色UID.length, 0);
         click(buttonByPage('profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '运行记录'));
         const consolePage = miniDom.document.querySelector('.yl-operation-console');
         assert.match(consolePage.textContent, /收藏主动私聊|私聊邀请已接受/u);
         assert.doesNotMatch(consolePage.textContent, /npc_1|chat_1|Patch|stat_data/u);
@@ -1034,9 +1087,8 @@ test('declined favourite invitation stays out of messages and reports a safe rej
 });
 
 
-test('declined match stays on matches and never opens an empty session', async () => {
-    const opened = [];
-    const bridge = { emit() {}, isPending() { return false; }, async runCandidateMatch() { return { ok: true, matchOutcome: 'declined', npcUid: 'npc_declined', sessionUid: '' }; } };
+test('declined match renders an in-page pastel result card and never opens an empty session', async () => {
+    const bridge = { emit() {}, isPending() { return false; }, async runCandidateMatch() { return { ok: true, matchOutcome: 'declined', npcUid: 'npc_declined', sessionUid: '', matchScore: 41, explanation: '这次的公开偏好方向不太一致。' }; } };
     const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-declined-match', actionBridge: bridge, settingsStore: createSettingsStore({ storage: createMemoryStorage() }), llmClient: null, characterLibrary: null, readState: readyReadResult });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
@@ -1045,9 +1097,21 @@ test('declined match stays on matches and never opens an empty session', async (
         await flushUi();
         assert.match(miniDom.document.body.textContent, /灵魂匹配|描述匹配/u);
         assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null);
-        assert.match(miniDom.document.body.textContent, /婉拒/u);
-        assert.equal(miniDom.document.querySelector('.yl-operation-dialog').dataset.visual, 'declined');
-        assert.deepEqual(opened, []);
+        /* 婉拒 = 页面内浅色结果卡（不再是冷冰冰的弹窗），灰分数环 + declined 态双心 + 再试一次 */
+        const resultCard = miniDom.document.querySelector('.yl-match-result-card');
+        assert.ok(resultCard, '婉拒应渲染页面内结果卡');
+        assert.equal(resultCard.dataset.outcome, 'declined');
+        assert.match(resultCard.textContent, /这次没对上频率/u);
+        assert.match(resultCard.textContent, /41%/u);
+        const mutedRing = resultCard.querySelector('.yl-score-ring');
+        assert.ok(mutedRing, '婉拒结果卡应有分数环');
+        assert.ok(mutedRing.className.includes('is-muted'), '婉拒分数环必须是灰色 muted 形态');
+        const hearts = resultCard.querySelector('.yl-hearts--declined');
+        assert.ok(hearts, '婉拒必须使用 declined 态 SVG 双心');
+        assert.equal(hearts.dataset.state, 'declined');
+        assert.ok(resultCard.querySelectorAll('button').find((node) => node.textContent.includes('再试一次')), '婉拒结果卡应提供再试一次');
+        assert.equal(miniDom.document.querySelector('.yl-operation-dialog').hidden, true, '婉拒不再弹出操作弹窗');
+        assert.equal(miniDom.document.querySelector('.yl-match-overlay'), null, '婉拒不得出现成功浮层');
     } finally { mounted.destroy(); }
 });
 
@@ -1074,8 +1138,7 @@ test('home favorites save without generating a profile while like/dislike still 
         assert.deepEqual(calls.splice(0), [['save', 'dislike', 'npc_1'], ['next']]);
         assert.match(miniDom.document.body.textContent, /不喜欢反馈已保存.*下一位候选人生成失败/u);
         click(buttonByPage('profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '运行记录'));
         assert.match(miniDom.document.querySelector('.yl-operation-console').textContent, /首页推荐/u);
         assert.doesNotMatch(miniDom.document.querySelector('.yl-operation-console').textContent, /npc_1|Patch|stat_data|UID/u);
     } finally { mounted.destroy(); }
@@ -1097,15 +1160,14 @@ test('initial home candidate generation is visible in the safe operation console
         await flushUi();
         assert.deepEqual(calls, ['initial']);
         click(buttonByPage('profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '运行记录'));
         const consoleText = miniDom.document.querySelector('.yl-operation-console').textContent;
         assert.match(consoleText, /首页推荐|首位候选人已通过/u);
         assert.doesNotMatch(consoleText, /UID|Patch|stat_data|npc_/u);
     } finally { mounted.destroy(); }
 });
 
-test('closed match and favourite result dialogs never reopen when async results arrive', async () => {
+test('closed match and favourite result surfaces never reopen when async results arrive', async () => {
     const matchRequest = deferred();
     const favoriteRequest = deferred();
     const matchRead = readyReadResult();
@@ -1118,11 +1180,14 @@ test('closed match and favourite result dialogs never reopen when async results 
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(buttonByPage('matches'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配'));
-        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
-        click(dialog.querySelector('.yl-dialog-close'));
-        matchRequest.resolve({ ok: true, matchOutcome: 'declined', npcUid: 'npc_declined', sessionUid: '' });
+        /* 匹配进行中改为页面内光环加速，离开页面即放弃本次结果 */
+        click(buttonByPage('messages'));
+        matchRequest.resolve({ ok: true, matchOutcome: 'declined', npcUid: 'npc_declined', sessionUid: '', matchScore: 40 });
         await flushUi();
-        assert.equal(dialog.hidden, true, '关闭匹配弹窗后婉拒结果不得重弹');
+        click(buttonByPage('matches'));
+        assert.equal(miniDom.document.querySelector('.yl-match-result-card'), null, '离开匹配页后婉拒结果不得回填展示');
+        assert.equal(miniDom.document.querySelector('.yl-match-overlay'), null, '离开匹配页后不得出现成功浮层');
+        assert.equal(miniDom.document.querySelector('.yl-operation-dialog').hidden, true, '匹配流程不再依赖操作弹窗');
     } finally { matchMounted.destroy(); }
 
     const favoriteRead = readyReadResult();
@@ -1166,10 +1231,10 @@ test('closing a pending romance dialog or phone prevents an accepted result from
         assert.equal(dialog.hidden, true, '收起小手机后接受结果不得重弹');
         click(miniDom.document.querySelector('.yl-phone-launcher'));
         assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null, '收起小手机后接受结果不得强制打开私聊');
+        assert.equal(miniDom.document.querySelector('.yl-match-overlay'), null, '收起小手机后接受结果不得重新弹出成功浮层');
         assert.equal(buttonByPage('matches').getAttribute('aria-current'), 'page');
         click(buttonByPage('profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '运行记录'));
         const consoleText = miniDom.document.querySelector('.yl-operation-console').textContent;
         assert.match(consoleText, /灵魂匹配.*已关闭.*提示已关闭，结果未展示/u);
         assert.doesNotMatch(consoleText, /进行中/u);
@@ -1198,8 +1263,7 @@ test('closing a pending romance dialog or phone prevents an accepted result from
         assert.equal(dialog.hidden, true, '关闭收藏私聊弹窗后接受结果不得重弹');
         assert.ok(miniDom.document.querySelector('.yl-favorite-card'), '关闭提示后接受结果不得强制离开收藏夹');
         click(buttonByPage('profile'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '设置'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '控制台'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '运行记录'));
         const consoleText = miniDom.document.querySelector('.yl-operation-console').textContent;
         assert.match(consoleText, /收藏主动私聊.*已关闭.*提示已关闭，结果未展示/u);
         assert.doesNotMatch(consoleText, /进行中/u);
@@ -1251,10 +1315,20 @@ test('matching page uses description terminology while retaining the voice actio
         click(buttonByPage('matches'));
         assert.match(miniDom.document.body.textContent, /描述匹配/u);
         assert.doesNotMatch(miniDom.document.body.textContent, /语音匹配文字描述/u);
+        /* SegmentedControl 双向切换：voice 段显示描述输入，切回 soul 段即移除 */
+        const segItems = miniDom.document.querySelector('.yl-seg').querySelectorAll('.yl-seg__item');
+        assert.deepEqual(segItems.map((node) => node.textContent), ['灵魂匹配', '描述匹配']);
+        click(segItems.find((node) => node.dataset.segmentId === 'voice'));
         assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '描述匹配文字描述')?.getAttribute('aria-label'), '描述匹配文字描述');
+        const activeVoice = miniDom.document.querySelector('.yl-seg').querySelectorAll('.yl-seg__item').find((node) => node.dataset.segmentId === 'voice');
+        assert.equal(activeVoice.getAttribute('aria-checked'), 'true', '重渲后描述段保持选中');
+        click(miniDom.document.querySelector('.yl-seg').querySelectorAll('.yl-seg__item').find((node) => node.dataset.segmentId === 'soul'));
+        assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '描述匹配文字描述'), undefined, '切回灵魂模式后描述输入移除');
         const history = miniDom.document.querySelector('.yl-match-history');
         assert.equal(history?.getAttribute('aria-label'), '已牵手对象', '匹配结果应进入独立且可访问的结果区域');
         assert.match(history.textContent, /已牵手对象|还没有互相匹配/u);
+        assert.ok(history.querySelector('.yl-empty'), '已牵手空态使用 EmptyState 组件');
+        assert.ok(history.querySelector('.yl-empty__svg'), '空态插画必须是 SVG');
     } finally { mounted.destroy(); }
     await flushUi();
 });
@@ -1364,7 +1438,7 @@ test('Phase 67: primary nav renders whitelist SVG icons with 发现/社区 namin
 
         // 返回按钮使用 chevron_left SVG。
         click(buttonByPage('profile'));
-        click(buttonByText('设置'));
+        click(buttonByPage('settings_connections'));
         const back = backButton();
         assert.equal(back.querySelector('svg')?.dataset.icon, 'chevron_left');
         assert.equal(back.getAttribute('aria-label'), '返回');
@@ -1373,37 +1447,8 @@ test('Phase 67: primary nav renders whitelist SVG icons with 发现/社区 namin
     }
 });
 
-test('Phase 67: profile hub exposes the five asset groups with safe public metrics only', async () => {
-    const mounted = mountPhoneApp({
-        documentRef: miniDom.document, rootId: 'ylm-test-phase67-profile',
-        actionBridge: { emit() {}, isPending() { return false; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
-    });
-    try {
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(buttonByPage('profile'));
-        const sections = miniDom.document.querySelectorAll('.yl-hub-section');
-        assert.deepEqual(
-            sections.map((section) => section.querySelector('h2').textContent),
-            ['我的公开形象', '我的关系资产', '创作工具', '偏好与设置', '高级与诊断'],
-            '我的页应固定为五组关系资产目录',
-        );
-        const entryPages = miniDom.document.querySelectorAll('.yl-hub-entry').map((entry) => entry.dataset.page);
-        assert.deepEqual(entryPages, [
-            'profile_editor', 'favorites', 'matches', 'character_creator', 'settings_images',
-            'settings', 'settings_chat_summary', 'settings_console', 'about',
-        ], '五组目录的入口页面与顺序应保持稳定');
-        for (const entry of miniDom.document.querySelectorAll('.yl-hub-entry')) {
-            assert.ok(entry.querySelector('svg'), '每个目录入口都应有本地 SVG 图标');
-        }
-        const dashboardText = miniDom.document.querySelector('.yl-person-center').textContent;
-        assert.doesNotMatch(dashboardText, /拒绝阈值|NPC专属匹配度|npc_1|api[\s_-]*key/iu, '我的页摘要不得泄漏隐藏资料、阈值或内部 UID');
-        // 入口跳转仍走既有路由：已牵手对象直达匹配页。
-        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((entry) => entry.dataset.page === 'matches'));
-        assert.match(miniDom.document.querySelector('.yl-page-heading').querySelector('h1').textContent, /匹配/u);
-    } finally {
-        mounted.destroy();
-    }
-});
+/* Phase 67 的 profile hub 五分组结构断言已删除（E1 改为 Hero+数据行+四分组结构）；
+   等价结构与隐私断言由 src/ui/test/profile-settings-ui.test.mjs 全量承接。 */
 
 function focusIsInside(node, container) {
     let current = node;
@@ -1457,8 +1502,7 @@ test('Phase 68: operation dialog focuses its close action once and stays put acr
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(buttonByPage('profile'));
-        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((entry) => entry.dataset.page === 'settings'));
-        const aboutEntry = miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('关于软件'));
+        const aboutEntry = miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.textContent.includes('关于软件'));
         click(aboutEntry);
         const versionButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('name') === 'about-version-info');
         assert.ok(versionButton, '关于子页应提供版本信息入口');
@@ -1481,4 +1525,115 @@ test('Phase 68: operation dialog focuses its close action once and stays put acr
     } finally {
         mounted.destroy();
     }
+});
+
+test('P2-B: romance animation is four-state SVG twin hearts with no glyph fallback', async () => {
+    const first = deferred();
+    const readResult = readyReadResult();
+    const queue = [first.promise, Promise.resolve({ ok: false, message: '这次调用没能完成' })];
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        runCandidateMatch() {
+            const matched = adultCharacter('频率对象');
+            matched.与玩家关系.状态 = '已匹配';
+            readResult.state.角色池.npc_match_9 = matched;
+            readResult.state.会话.chat_9 = { 对象UID: 'npc_match_9', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
+            return queue.shift();
+        },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-romance-four-states', actionBridge: bridge,
+        settingsStore: createSettingsStore({ storage: createMemoryStorage() }), llmClient: null, characterLibrary: null, readState: () => readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('matches'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配'));
+
+        /* connecting：光环加速 + connecting 态双心 + 文案轮播，且不再打开 loading 弹窗 */
+        const halo = miniDom.document.querySelector('.yl-match-halo');
+        assert.ok(halo, '匹配页应有光环 Hero');
+        assert.ok(halo.className.includes('is-matching'), '匹配中光环必须进入加速态');
+        const connecting = miniDom.document.querySelector('.yl-hearts--connecting');
+        assert.ok(connecting, '匹配中必须渲染 connecting 态双心');
+        assert.equal(connecting.dataset.state, 'connecting');
+        assert.ok(connecting.querySelector('svg'), '恋爱动画必须是 SVG 而非字符');
+        assert.ok(miniDom.document.querySelector('.yl-match-captions'), '匹配中应有文案轮播');
+        assert.equal(miniDom.document.querySelector('.yl-operation-dialog').hidden, true, '匹配中不再打开通用 loading 弹窗');
+        const matchesPage = miniDom.document.querySelector('.yl-page-matches');
+        assert.doesNotMatch(matchesPage.textContent, /[♥∿╳♡✦]/u, '匹配页不得再出现字符恋爱动画');
+
+        /* accepted：It's a Match 浮层内 accepted 态双心 + 心形粒子；继续逛逛可留在匹配页 */
+        first.resolve({ ok: true, matchOutcome: 'accepted', npcUid: 'npc_match_9', sessionUid: 'chat_9', matchScore: 88, explanation: '都喜欢电影和慢热的聊天节奏。' });
+        await flushUi();
+        const overlay = miniDom.document.querySelector('.yl-match-overlay');
+        assert.ok(overlay, 'accepted 应出现成功浮层');
+        const acceptedHearts = overlay.querySelector('.yl-hearts--accepted');
+        assert.ok(acceptedHearts, '成功浮层必须渲染 accepted 态双心');
+        assert.equal(acceptedHearts.dataset.state, 'accepted');
+        assert.ok(overlay.querySelector('.yl-match-particles'), '成功浮层必须有 SVG 心形粒子');
+        click(overlay.querySelectorAll('button').find((node) => node.textContent.includes('继续逛逛')));
+        assert.equal(miniDom.document.querySelector('.yl-match-overlay'), null, '继续逛逛应关闭浮层');
+        assert.ok(miniDom.document.querySelector('.yl-match-hero'), '继续逛逛后停留在匹配页');
+
+        /* failure：页面内 failure 结果卡 + failure 态双心 */
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配'));
+        await flushUi();
+        const failureCard = miniDom.document.querySelector('.yl-match-result-card');
+        assert.ok(failureCard, '失败应渲染页面内结果卡');
+        assert.equal(failureCard.dataset.outcome, 'failure');
+        const failureHearts = failureCard.querySelector('.yl-hearts--failure');
+        assert.ok(failureHearts, '失败必须使用 failure 态双心');
+        assert.equal(failureHearts.dataset.state, 'failure');
+    } finally { mounted.destroy(); }
+});
+
+test('P2-B: discovery favourite shows an active solid state and next-candidate waits render a skeleton card', async () => {
+    const readResult = readyReadResult();
+    readResult.state.推荐.收藏角色UID = ['npc_1'];
+    const refreshRequest = deferred();
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        runRecommendationRefresh() { return refreshRequest.promise; },
+        async runMvuAction() { return { ok: true }; },
+        async runRecommendationInitialCandidate() { return { ok: true }; },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-discover-skeleton', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        const favourite = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '取消收藏');
+        assert.ok(favourite, '已收藏候选人应显示取消收藏');
+        assert.ok(favourite.className.includes('is-active'), '已收藏按钮必须是实心激活态');
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '刷新候选人，显示下一位'));
+        const loadingCard = miniDom.document.querySelector('.yl-candidate-loading-card');
+        assert.ok(loadingCard, '换人等待时应以骨架卡替换候选卡');
+        assert.ok(loadingCard.querySelector('.yl-skeleton--candidate-card'), '骨架卡必须使用 Skeleton 候选卡变体');
+        assert.equal(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '喜欢'), undefined, '骨架屏期间操作按钮不可用');
+
+        refreshRequest.resolve({ ok: true });
+        await flushUi();
+        assert.equal(miniDom.document.querySelector('.yl-candidate-loading-card'), null, '生成完成后骨架卡退场');
+        assert.ok(miniDom.document.querySelector('.yl-discovery-workbench'), '候选工作台恢复');
+        assert.ok(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '喜欢'), '四操作轨恢复');
+    } finally { mounted.destroy(); }
+});
+
+test('P2-B: match/discover animation classes stay under the global reduced-motion blanket', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const stylesheet = await readFile(new URL('../../../style.css', import.meta.url), 'utf8');
+    /* 新动画类必须存在（光环呼吸/加速、文案轮播、双心四态、粒子、收藏轻弹） */
+    for (const marker of ['.yl-match-halo.is-matching', '.yl-match-captions', '.yl-hearts--connecting',
+        '.yl-hearts--accepted', '.yl-hearts--declined', '.yl-hearts--failure', '.yl-match-particle',
+        '.yl-action-favorite.is-active', '.yl-candidate-loading-card']) {
+        assert.ok(stylesheet.includes(marker), `style.css 缺少动画/状态类：${marker}`);
+    }
+    /* 页面级 keyframes 全部位于 .yl-phone-extension 子树类上，受 motion 分区
+       prefers-reduced-motion 与 body.reduced-motion 双通道全局降级覆盖（合同测试锁定该块存在） */
+    assert.match(stylesheet, /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,200}\.yl-phone-extension \*/u, 'reduced-motion 全局降级必须覆盖扩展全部子树');
+    /* reduced-motion 下文案轮播静态回退：首条文案保持可见 */
+    assert.match(stylesheet, /\.yl-match-captions span:first-child \{ opacity: 1; \}/u, '文案轮播必须有 reduced-motion 静态回退');
 });

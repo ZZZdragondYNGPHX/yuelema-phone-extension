@@ -272,8 +272,9 @@ test('760px + 显式 desktop 双门禁：全部工作台多栏几何都在门禁
     /* 发现 媒体+档案、匹配 工具+已牵手 */
     assert.match(gate.body, /"media\s+dossier"/u, '发现页 desktop 必须排为媒体+档案两区');
     assert.match(gate.body, /"tools\s+history"/u, '匹配页 desktop 必须排为工具+已牵手两区');
-    /* 社区 / 我的 / 设置目录（含行合同回归锁） */
-    for (const marker of ['.yl-community-hub', '.yl-profile-dashboard', '.yl-settings-catalog-grid', '.yl-private-chat-workbench', '.yl-group-chat-room']) {
+    /* 我的 / 私聊 / 群聊室（含行合同回归锁；.yl-community-hub 与 .yl-settings-catalog-grid
+       已无 JS 产出，锁桩规则连同断言一并移除） */
+    for (const marker of ['.yl-profile-dashboard', '.yl-private-chat-workbench', '.yl-group-chat-room']) {
         assert.match(gate.body, new RegExp(`\\.yl-phone-extension\\[data-ui-layout="desktop"\\][^{]*${marker.replace(/\./gu, '\\.')}[^{]*\\{[^}]*grid-template-columns`, 'u'), `${marker} 的多栏几何必须位于 760px 双门禁之内`);
     }
     assert.match(gate.body, /\.yl-profile-dashboard[\s\S]{0,420}?grid-template-rows\s*:\s*auto 1fr/u, '我的工作台必须声明 auto 1fr 行合同');
@@ -289,6 +290,16 @@ test('760px + 显式 desktop 双门禁：全部工作台多栏几何都在门禁
     assert.match(gate.body, /"side\s+grid"/u, '图片工作台必须形成侧栏+素材网格两区');
     assert.match(gate.body, /\.yl-image-manager-side[\s\S]{0,560}?position\s*:\s*sticky/u, '图片侧栏必须 sticky');
     assert.match(section('pages'), /\.yl-character-step-rail,\s*\.yl-character-preview\s*\{\s*display\s*:\s*none/u, '步骤 rail 与预览默认不占位');
+});
+
+test('1080px 三列档：私聊工作台升级为会话列 + 会话 + 上下文栏', () => {
+    const desktop = section('desktop');
+    const wideIndex = desktop.search(/@media\s*\(min-width:\s*1080px\)\s*\{/u);
+    assert.notEqual(wideIndex, -1, '缺少 1080px 三列门禁');
+    const wide = balancedBlock(desktop, desktop.indexOf('{', wideIndex), '1080px 门禁');
+    assert.match(wide.body, /\.yl-private-chat-workbench\s*\{[^}]*grid-template-columns\s*:\s*minmax\(236px[^}]*minmax\(0,[^}]*minmax\(/u, '私聊工作台在 1080px 档必须是以 236px 会话列开头的三列布局');
+    assert.match(wide.body, /\.yl-chat-session-rail[\s\S]{0,700}?overflow-y\s*:\s*auto/u, '会话列必须有独立滚动边界');
+    assert.match(section('pages'), /\.yl-chat-session-rail\s*\{\s*display\s*:\s*none/u, '会话列在门禁外不得占位');
 });
 
 test('980px 三栏档：rail 成为唯一步骤表达，页宽仅创作页放宽', () => {
