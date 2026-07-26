@@ -118,13 +118,3 @@ export function buildGroupBrowseModel(state) {
     }
     return Object.freeze({ 群组: Object.freeze(result) });
 }
-
-/** Resolves only the public people that a specified group marks as discoverable. */
-export function listGroupDiscoverableCharacters(state, groupUid) {
-    const uid = cleanText(groupUid, 80);
-    if (!ownPlainRecord(state) || !GROUP_UID_PATTERN.test(uid)) return Object.freeze([]);
-    const groups = ownData(state, '群组');
-    if (!ownPlainRecord(groups)) return Object.freeze([]);
-    const group = projectGroup(uid, ownData(groups, uid), readCharacterPool(state));
-    return group ? group.可发现角色 : Object.freeze([]);
-}

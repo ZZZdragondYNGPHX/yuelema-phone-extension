@@ -1,5 +1,4 @@
 export const CONTENT_MODES = Object.freeze(['SFW', 'NSFW']);
-export const BOND_FIELDS = Object.freeze(['友情值', '心动值', '欲望值']);
 export const FRIENDSHIP_HEART_UNLOCK = 40;
 export const MEETUP_ROUTE_THRESHOLD = 60;
 

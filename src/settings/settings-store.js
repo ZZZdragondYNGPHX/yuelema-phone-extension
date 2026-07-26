@@ -35,7 +35,6 @@ const SECRET_FIELD_NAMES = new Set([
 ]);
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
-const LEGACY_SETTINGS_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 const IMAGE_GENERATION_CONVERSATION_KINDS = new Set(['private', 'group', 'forum']);
 const MAX_IMAGE_GENERATION_CONVERSATIONS = 256;
 
@@ -199,25 +198,6 @@ function cleanContentMode(value) {
     return value;
 }
 
-function appendMissingBuiltinPromptPresets(presets) {
-    const next = [...presets];
-    const seen = new Set(next.map((preset) => preset.id));
-    for (const preset of createBuiltinPromptPresets()) {
-        if (seen.has(preset.id) || next.length >= MAX_PROMPT_PRESETS) continue;
-        next.push(normalizePromptPreset(preset));
-        seen.add(preset.id);
-    }
-    return next;
-}
-
-/** v0.1.31 and earlier kept stock NSFW prompt IDs after their source text changed. Refresh only those stock IDs once; user-created prompt IDs remain untouched. */
-function upgradeBuiltinNsfwPromptPresets(presets, sourceVersion) {
-    if (sourceVersion > 8) return presets;
-    const currentBuiltinById = new Map(createBuiltinPromptPresets()
-        .filter((preset) => preset.contentMode === 'NSFW')
-        .map((preset) => [preset.id, normalizePromptPreset(preset)]));
-    return presets.map((preset) => currentBuiltinById.get(preset.id) ?? preset);
-}
 
 function promptIdForContentMode(presetId, contentMode, promptById) {
     return presetId !== null && promptById.get(presetId)?.contentMode === contentMode ? presetId : null;
@@ -249,7 +229,7 @@ function validateBindingPresetReferences(binding, functionKey, connectionIds, pr
     }
 }
 
-function normalizeFunctionModeBindings(input, functionBindings, defaults, connectionIds, promptById, { migrateModeMismatch = false } = {}) {
+function normalizeFunctionModeBindings(input, functionBindings, defaults, connectionIds, promptById) {
     const candidate = safeClone(input ?? {});
     if (!isPlainObject(candidate) || Object.keys(candidate).some((key) => !FUNCTION_KEYS.includes(key))) {
         fail('INVALID_BINDING', '模式功能绑定包含未知功能。');
@@ -267,10 +247,6 @@ function normalizeFunctionModeBindings(input, functionBindings, defaults, connec
             let binding = modeBindingsInput && Object.hasOwn(modeBindingsInput, contentMode)
                 ? normalizeBinding(modeBindingsInput[contentMode])
                 : fallback;
-            if (migrateModeMismatch && binding.promptPresetId !== null
-                && promptById.get(binding.promptPresetId)?.contentMode !== contentMode) {
-                binding = { ...binding, promptPresetId: fallback.promptPresetId };
-            }
             validateBindingPresetReferences(binding, `${functionKey}/${contentMode}`, connectionIds, promptById, contentMode);
             functionModeBindings[functionKey][contentMode] = binding;
         }
@@ -278,19 +254,6 @@ function normalizeFunctionModeBindings(input, functionBindings, defaults, connec
     return functionModeBindings;
 }
 
-/** v0.1.27 had no dedicated group/forum content presets. Seed only blank v6 mode bindings. */
-function seedGroupForumPromptBindingsFromV6(functionModeBindings, sourceVersion, promptById) {
-    if (sourceVersion !== 6) return functionModeBindings;
-    for (const functionKey of ['group_chat', 'forum']) {
-        for (const contentMode of CONTENT_MODES) {
-            const current = functionModeBindings[functionKey][contentMode];
-            if (current.promptPresetId !== null) continue;
-            const fallback = modeBindingForDefault(functionKey, contentMode, promptById);
-            functionModeBindings[functionKey][contentMode] = { ...current, promptPresetId: fallback.promptPresetId };
-        }
-    }
-    return functionModeBindings;
-}
 
 function normalizeKeywordWeights(input) {
     if (!Array.isArray(input) || input.length > MAX_PERSONALIZATION_KEYWORDS) {
@@ -332,7 +295,7 @@ function normalizeKeywordWeightsByMode(input) {
     ]));
 }
 
-function normalizePersonalization(input, schemaVersion) {
+function normalizePersonalization(input) {
     if (input === undefined || input === null) {
         return { enabled: true, keywordWeightsByMode: emptyKeywordWeightsByMode() };
     }
@@ -344,18 +307,6 @@ function normalizePersonalization(input, schemaVersion) {
         fail('INVALID_PERSONALIZATION', '个性化内容推荐开关必须为布尔值。');
     }
 
-    if (schemaVersion <= 7) {
-        if (Object.keys(candidate).some((key) => !['enabled', 'keywordWeights'].includes(key))) {
-            fail('INVALID_PERSONALIZATION', '旧版个性化内容推荐设置包含不支持的字段。');
-        }
-        return {
-            enabled: candidate.enabled,
-            keywordWeightsByMode: {
-                SFW: normalizeKeywordWeights(candidate.keywordWeights ?? []),
-                NSFW: [],
-            },
-        };
-    }
 
     if (Object.keys(candidate).some((key) => !['enabled', 'keywordWeightsByMode'].includes(key))
         || !Object.hasOwn(candidate, 'keywordWeightsByMode')) {
@@ -482,7 +433,7 @@ function assertSize(document) {
     }
 }
 
-/** 将未经信任的对象严格迁移并归一化为当前版本的可持久化文档。 */
+/** 严格归一化当前版本的未经信任设置文档。 */
 export function normalizeSettingsDocument(input) {
     const candidate = safeClone(input);
     if (!isPlainObject(candidate)) fail('INVALID_SETTINGS', '设置文档必须是对象。');
@@ -493,7 +444,7 @@ export function normalizeSettingsDocument(input) {
     if (candidate.schema !== SETTINGS_SCHEMA_ID) {
         fail('UNSUPPORTED_SETTINGS_SCHEMA', '设置 schema 不受支持。');
     }
-    if (!LEGACY_SETTINGS_SCHEMA_VERSIONS.has(candidate.schemaVersion) && candidate.schemaVersion !== SETTINGS_SCHEMA_VERSION) {
+    if (candidate.schemaVersion !== SETTINGS_SCHEMA_VERSION) {
         fail('UNSUPPORTED_SETTINGS_VERSION', '设置版本不受支持。');
     }
     if (!Array.isArray(candidate.connectionPresets) || candidate.connectionPresets.length > MAX_CONNECTION_PRESETS) {
@@ -503,14 +454,8 @@ export function normalizeSettingsDocument(input) {
         fail('INVALID_SETTINGS', '提示词预设数量无效。');
     }
 
-    const isLegacySchema = candidate.schemaVersion < SETTINGS_SCHEMA_VERSION;
     const connectionPresets = candidate.connectionPresets.map(normalizeConnectionPreset);
-    const promptPresets = isLegacySchema
-        ? upgradeBuiltinNsfwPromptPresets(
-            appendMissingBuiltinPromptPresets(candidate.promptPresets.map(normalizePromptPreset)),
-            candidate.schemaVersion,
-        )
-        : candidate.promptPresets.map(normalizePromptPreset);
+    const promptPresets = candidate.promptPresets.map(normalizePromptPreset);
     const connectionIds = new Set(connectionPresets.map((preset) => preset.id));
     const promptIds = new Set(promptPresets.map((preset) => preset.id));
     if (connectionIds.size !== connectionPresets.length || promptIds.size !== promptPresets.length) {
@@ -554,17 +499,16 @@ export function normalizeSettingsDocument(input) {
         functionBindings.character_full_authoring = { ...legacyCharacterBinding };
     }
 
-    const functionModeBindings = seedGroupForumPromptBindingsFromV6(normalizeFunctionModeBindings(
+    const functionModeBindings = normalizeFunctionModeBindings(
         candidate.functionModeBindings,
         functionBindings,
         defaults,
         connectionIds,
         promptById,
-        { migrateModeMismatch: isLegacySchema },
-    ), candidate.schemaVersion, promptById);
+    );
 
     const chatSummary = normalizeChatSummary(candidate.chatSummary);
-    const personalization = normalizePersonalization(candidate.personalization, candidate.schemaVersion);
+    const personalization = normalizePersonalization(candidate.personalization);
     const imageGeneration = normalizeImageGenerationSettings(candidate.imageGeneration);
     const normalized = {
         schema: SETTINGS_SCHEMA_ID,
@@ -663,8 +607,7 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         } catch {
             fail('INVALID_IMPORT_JSON', '设置 JSON 无法解析。');
         }
-        // Re-save a normalized legacy document so v1–v7 users receive the
-        // editable built-ins and mode bindings exactly once in local storage.
+        // Persist only a normalized current v11 document.
         return persist(parsed);
     }
 

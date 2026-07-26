@@ -190,46 +190,16 @@ function normalizeBondAssessment(value, contentMode) {
 }
 
 /**
- * Validates a parsed model response and returns a fresh, safe data-only clone.
- * Preferred input: { replies: [1..6 short strings], relationship, sessionSummary? }.
- * Legacy input: { reply: string, relationship, sessionSummary? }.
- *
- * Output always contains canonical `replies` plus a space-joined `reply`
- * compatibility fallback so existing single-message consumers keep working
- * until their write/render boundary is upgraded to consume `replies`.
+ * Validates the current parsed model response shape and returns a fresh,
+ * safe data-only clone.
  */
 export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
     try {
-        assertExactRecord(raw, ['relationship'], ['replies', 'reply', 'sessionSummary', 'bondAssessment', 'imageDirectives']);
-        const hasReplies = Object.hasOwn(raw, 'replies');
-        const hasReply = Object.hasOwn(raw, 'reply');
-        if (!hasReplies && !hasReply) fail('private_chat_response_missing_field');
-
-        const replies = hasReplies
-            ? normalizeReplies(ownEnumerableData(raw, 'replies'))
-            : [normalizeShortText(
-                ownEnumerableData(raw, 'reply'),
-                MAX_PRIVATE_CHAT_REPLY_LENGTH,
-                'private_chat_response_reply_invalid',
-            )];
-        const compatibilityReply = replies.join(' ');
-        if (compatibilityReply.length > MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH) {
-            fail('private_chat_response_reply_invalid');
-        }
-        if (hasReply) {
-            const legacyReply = normalizeShortText(
-                ownEnumerableData(raw, 'reply'),
-                MAX_PRIVATE_CHAT_REPLY_LENGTH,
-                'private_chat_response_reply_invalid',
-            );
-            if (hasReplies && legacyReply !== compatibilityReply) {
-                fail('private_chat_response_reply_invalid');
-            }
-        }
+        assertExactRecord(raw, ['replies', 'relationship'], ['sessionSummary', 'bondAssessment', 'imageDirectives']);
+        const replies = normalizeReplies(ownEnumerableData(raw, 'replies'));
 
         const normalized = {
             replies,
-            reply: compatibilityReply,
             relationship: normalizeRelationship(ownEnumerableData(raw, 'relationship')),
             bondAssessment: Object.hasOwn(raw, 'bondAssessment')
                 ? normalizeBondAssessment(ownEnumerableData(raw, 'bondAssessment'), contentMode)

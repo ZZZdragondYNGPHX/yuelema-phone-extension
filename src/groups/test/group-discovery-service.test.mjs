@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildGroupBrowseModel, listGroupDiscoverableCharacters, projectPublicGroupCharacter } from '../group-discovery-service.js';
+import { buildGroupBrowseModel, projectPublicGroupCharacter } from '../group-discovery-service.js';
 
 function publicProfile(nickname) {
     return {
@@ -50,14 +50,6 @@ test('public group projection never exposes private, relationship, candidate, or
     }
 });
 
-test('discoverable entry is read-only and does not mutate the supplied state', () => {
-    const source = state();
-    const before = structuredClone(source);
-    const discovered = listGroupDiscoverableCharacters(source, 'group_1');
-    assert.deepEqual(discovered.map(item => item.UID), ['npc_2']);
-    assert.deepEqual(source, before);
-    assert.equal(Object.isFrozen(discovered), true);
-});
 
 test('invalid groups and non-adult characters are not projected', () => {
     const source = state();
@@ -65,5 +57,4 @@ test('invalid groups and non-adult characters are not projected', () => {
     source.群组.not_a_group = { 主题: '错误 UID', 描述: '不应显示', 成员UID: ['npc_1'], 可发现角色UID: ['npc_1'] };
     assert.deepEqual(buildGroupBrowseModel(source).群组.map(group => group.UID), ['group_1']);
     assert.equal(projectPublicGroupCharacter('npc_3', source.角色池.npc_3), null);
-    assert.deepEqual(listGroupDiscoverableCharacters(source, 'group_bad'), []);
 });

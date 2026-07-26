@@ -413,8 +413,6 @@ test('clearPrivateChat reads fresh state, uses the dedicated builder, and commit
         documentRef: { querySelector: () => null }, mvu,
         eventEmit: async (...args) => { calls.push(['event', ...args]); },
     });
-
-    assert.equal(bridge.deletePrivateChat, bridge.clearPrivateChat);
     const result = await bridge.clearPrivateChat('chat_1');
 
     assert.equal(result.ok, true);

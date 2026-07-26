@@ -179,7 +179,7 @@ if (!characterCreator.includes('只保存当前草稿到本地模板库') || !ch
 console.log('✓ 角色模板、本地头像、AI 补全/完整创作草稿、模板库与受控登记接线');
 
 const groupDiscoveryService = await readFile(resolve(root, 'src/groups/group-discovery-service.js'), 'utf8');
-if (!groupDiscoveryService.includes('buildGroupBrowseModel') || !groupDiscoveryService.includes('listGroupDiscoverableCharacters') || !groupDiscoveryService.includes('projectPublicGroupCharacter')) fail('缺少群组公开浏览或发现人物投影服务');
+if (!groupDiscoveryService.includes('buildGroupBrowseModel') || !groupDiscoveryService.includes('projectPublicGroupCharacter')) fail('缺少群组公开浏览或人物投影服务');
 if (!uiModel.includes('buildGroupBrowseModel') || !appShell.includes('buildGroupsPage') || !appShell.includes('privateChatMemberCandidates') || !appShell.includes('buildGroupChatCreatePage')) fail('缺少群组浏览或从私聊公开资料创建本地群的 UI 接线');
 console.log('✓ 群组公开浏览与私聊公开资料创建本地群已纳入静态检查');
 

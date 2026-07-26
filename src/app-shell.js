@@ -21,9 +21,9 @@ const CHAT_TOOL_LONG_PRESS_MS = 460;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
 const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
 const LOCAL_PAGE_COPY = Object.freeze({
-    settings_image_generation: Object.freeze({ title: '生图设置', description: '配置生图接口、固定提示词与浏览器独立 API Key。' }),
-    about: Object.freeze({ title: '关于软件', description: '查看版本与最近更新；五击计数仅本次小手机会话，已开启的专属服务保存在当前浏览器设备。' }),
-    service_hub: Object.freeze({ title: '专属服务', description: '仅面向明确成年人；小手机负责候补、订单与收尾，正文负责协商和剧情。界面绝不自动发送或执行外部操作。' }),
+    settings_image_generation: Object.freeze({ title: '生图设置' }),
+    about: Object.freeze({ title: '关于软件' }),
+    service_hub: Object.freeze({ title: '专属服务' }),
 });
 const RECENT_RELEASE_NOTES = Object.freeze([
     'v0.1.37：约伴服务重构、逐人同意与受控归档。',
@@ -120,7 +120,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     const serviceGenerationBatches = new Map();
     const selectedServiceProfileIds = new Set();
     let scheduledServiceCompletionOrderId = '';
-    let activeHelpAnchor = null;
     let playerProfileDraft = null;
     const chatDrafts = new Map();
     const meetupDrafts = new Map();
@@ -216,10 +215,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         nav.appendChild(createPrimaryNavButton(item));
     }
     append(panel, [header, content, nav]);
-
-    const helpPopover = element('div', { className: 'yl-phone-feedback yl-help-popover', hidden: true });
-    helpPopover.setAttribute('role', 'tooltip');
-    helpPopover.setAttribute('aria-live', 'polite');
 
     const operationDialog = element('section', { className: 'yl-phone-placeholder yl-operation-dialog', hidden: true });
     operationDialog.setAttribute('role', 'dialog');
@@ -318,7 +313,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     imageDirectiveDialogText.readOnly = true;
     append(imageDirectiveDialog, [imageDirectiveTitlebar, element('p', { className: 'yl-settings-summary', text: '这里只展示 AI 本次返回的场景结构，不包含角色绘图 DNA、固定提示词或 API Key。' }), imageDirectiveDialogText]);
 
-    append(root, [launcher, panel, helpPopover, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog, forumSettingsDialog, imageDirectiveDialog]);
+    append(root, [launcher, panel, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog, forumSettingsDialog, imageDirectiveDialog]);
 
     function formatDirectiveForDisplay(directive) {
         try { return formatImageDirective(directive); }
@@ -916,26 +911,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         beginOperationDialog({ state: 'info', title: '最近三次更新', message: RECENT_RELEASE_NOTES.join('｜'), autoCloseMs: 5200 });
         renderPage();
     }
-    function positionHelpPopover(anchor) {
-        if (!anchor || typeof anchor.getBoundingClientRect !== "function") return;
-        const anchorRect = anchor.getBoundingClientRect();
-        const view = documentRef.defaultView;
-        const viewportWidth = Number(view?.innerWidth || documentRef.documentElement?.clientWidth || 360);
-        const viewportHeight = Number(view?.innerHeight || documentRef.documentElement?.clientHeight || 640);
-        helpPopover.hidden = false;
-        const popoverRect = typeof helpPopover.getBoundingClientRect === 'function' ? helpPopover.getBoundingClientRect() : { width: 260, height: 100 };
-        const width = Number(popoverRect.width) || 260;
-        const height = Number(popoverRect.height) || 100;
-        const left = Math.max(8, Math.min(Number(anchorRect.left) || 8, viewportWidth - width - 8));
-        const preferredTop = (Number(anchorRect.bottom) || 0) + 8;
-        const top = Math.max(8, Math.min(preferredTop, viewportHeight - Math.min(height, viewportHeight - 16) - 8));
-        if (helpPopover.style?.setProperty) { helpPopover.style.setProperty('left', left + 'px'); helpPopover.style.setProperty('top', top + 'px'); helpPopover.style.setProperty('max-height', Math.max(64, viewportHeight - top - 8) + 'px'); }
-    }
-    function toggleHelp(anchor, text) {
-        if (activeHelpAnchor === anchor && !helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; return; }
-        activeHelpAnchor = anchor; helpPopover.textContent = String(text ?? "");
-        helpPopover.setAttribute("aria-label", "说明：" + text); positionHelpPopover(anchor);
-    }
     function backPage(pageId) {
         if (PAGE_PARENT_FOR[pageId]) return PAGE_PARENT_FOR[pageId];
         if (String(pageId).startsWith("settings_")) return "settings";
@@ -945,13 +920,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function navigateBack(pageId, back) {
         setActivePage(back);
-    }
-    function buildHelp(text) {
-        const trigger = element("span", { className: "yl-help-tooltip yl-help-trigger", ariaLabel: "说明：" + text, text: "?" });
-        trigger.setAttribute("role", "button"); trigger.setAttribute("tabindex", "0");
-        listen(trigger, trigger, "click", () => toggleHelp(trigger, text), abortController.signal);
-        listen(trigger, trigger, "keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault?.(); toggleHelp(trigger, text); } }, abortController.signal);
-        return trigger;
     }
     function closeFeatureBindingDialog() {
         bindingDialog.hidden = true;
@@ -1031,7 +999,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             listen(button, button, "click", () => navigateBack(pageId, back), abortController.signal); row.appendChild(button);
         }
         row.appendChild(element("h1", { text: copy.title }));
-        if (copy.help) row.appendChild(buildHelp(copy.help));
         const featureOptions = buildFeatureOptionsButton(pageId);
         if (featureOptions) row.appendChild(featureOptions);
         const groupListAction = buildGroupListActionButton(pageId);
@@ -1041,7 +1008,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return row;
     }
     function renderPage() {
-        helpPopover.hidden = true; activeHelpAnchor = null;
         cancelForumPullInteractions();
         imageManagerPanel?.dispose?.();
         imageManagerPanel = null;
@@ -1053,7 +1019,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         content.replaceChildren();
         const page = element('article', { className: `yl-phone-page yl-page-${activePage}` });
         page.appendChild(buildPageHeading(copy, activePage));
-        if (copy.description) page.appendChild(element('p', { className: 'yl-phone-page-description', text: copy.description }));
         if (currentView.status !== 'ready') page.appendChild(buildEmptyPlaceholder('暂时无法读取当前聊天的软件状态。', { icon: '◌' }));
         else if (activePage === 'home') page.appendChild(currentView.candidate ? buildCandidateCard(currentView.candidate) : buildEmptyCandidateCard());
         else if (activePage === 'matches') page.appendChild(buildMatchesPage());
@@ -1178,20 +1143,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function isFavoriteCandidate(candidate) {
         return Boolean(candidate?.uid && (currentView.favorites ?? []).some((favorite) => favorite.uid === candidate.uid));
     }
-    function buildActionRow(candidate, { tooltips = true } = {}) {
+    function buildActionRow(candidate) {
         const actions = element('div', { className: 'yl-candidate-actions' });
         const favoriteAction = isFavoriteCandidate(candidate) ? 'unfavorite' : 'favorite';
-        const helpText = {
-            like: '提高这位对象公开标签的偏好权重，不会创建匹配或私聊。',
-            dislike: '降低相似公开标签的推荐权重。',
-            favorite: '保存到收藏夹。',
-            unfavorite: '取消收藏，并移除尚未建立私聊的候选资料。',
-            refresh: '请求快速模型生成下一位候选人。',
-        };
         for (const kind of ['like', 'dislike', favoriteAction, 'refresh']) {
             const pending = actionBridge.isPending(kind, candidate.uid);
             const button = buildActionButton(kind, { pending, disabled: pending });
-            if (tooltips) button.appendChild(buildHelp(helpText[kind]));
             listen(button, button, 'click', () => { void runCandidateAction(kind, candidate.uid); }, abortController.signal);
             actions.appendChild(button);
         }
@@ -1211,7 +1168,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         copy.appendChild(element('p', { className: 'yl-phone-page-description yl-candidate-subline', text: [candidate.年龄段, candidate.城市, candidate.寻找意图].filter(Boolean).join(' · ') || '仅公开资料' }));
         top.appendChild(copy); card.appendChild(top);
         card.appendChild(buildTagChips(tags, '暂无关键词'));
-        card.appendChild(buildActionRow(candidate, { tooltips: false }));
+        card.appendChild(buildActionRow(candidate));
         return card;
     }
     function buildCandidateBackgroundSlot(candidate, tags) {
@@ -1264,7 +1221,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         for (const [label, value] of [['年龄段', candidate.年龄段], ['性别', candidate.性别], ['性取向', candidate.性取向], ['城市', candidate.城市], ['距离范围', candidate.距离范围], ['寻找意图', candidate.寻找意图], ['简介', candidate.简介]]) if (value) section.appendChild(element('p', { className: 'yl-phone-page-description', text: `${label}：${value}` }));
         const tags = displayTags(candidate);
         if (tags.length) section.appendChild(buildTagChips(tags, '暂无关键词'));
-        if (currentView.candidate?.uid === candidate.uid) section.appendChild(buildActionRow(candidate, { tooltips: false }));
+        if (currentView.candidate?.uid === candidate.uid) section.appendChild(buildActionRow(candidate));
         return section;
     }
 
@@ -3099,9 +3056,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function buildMeetupHandoffPanel(session) {
         const wrapper = element('section', { className: 'yl-meetup-panel' });
         const pending = actionBridge.isPending('meetup_handoff', session.sessionUid);
-        const heading = element('div', { className: 'yl-heading-with-help' });
-        heading.appendChild(element('h2', { text: '约定面基' })); heading.appendChild(buildHelp('只会把确认后的现实行动草稿填入酒馆输入框，不会自动发送。'));
-        wrapper.appendChild(heading);
+        wrapper.appendChild(element('h2', { text: '约定面基' }));
         const openButton = element('button', { className: 'yl-settings-button', type: 'button', disabled: pending, text: pending ? '处理中…' : activeMeetupSessionUid === session.sessionUid ? '收起' : '填写约定' });
         listen(openButton, openButton, 'click', () => { activeMeetupSessionUid = activeMeetupSessionUid === session.sessionUid ? '' : session.sessionUid; renderPage(); }, abortController.signal);
         wrapper.appendChild(openButton);
@@ -3234,9 +3189,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         const canSave = typeof actionBridge.runSavePlayerPublicProfile === 'function';
         const save = element('button', { className: 'yl-settings-button', type: 'button', text: canSave ? '保存公开资料' : '保存本次草稿' });
-        save.appendChild(buildHelp(canSave
-            ? '只提交这一页的公开字段，成功后才会参与双层评分与匹配。'
-            : '当前宿主尚未提供玩家资料的受控 MVU 写入接口；草稿只保留在本次界面。'));
         listen(save, save, 'click', () => { void savePlayerProfile(); }, abortController.signal);
         section.appendChild(save);
         return section;
@@ -4253,7 +4205,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(avatarLinkButton, avatarLinkButton, 'click', saveLinkedAvatar, abortController.signal);
     listen(avatarRemoveButton, avatarRemoveButton, 'click', removePlayerAvatar, abortController.signal);
     listen(root, documentRef, "click", (event) => {
-        if (activeHelpAnchor && event.target !== activeHelpAnchor) { helpPopover.hidden = true; activeHelpAnchor = null; }
         if (chatMoreMenuSessionUid && !event.target?.closest?.('.yl-private-chat-actions')) closeChatMoreMenu();
     }, abortController.signal);
     listen(root, documentRef, "keydown", (event) => {
@@ -4268,7 +4219,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (imageManagerPanel?.handleEscape?.()) { /* image manager handled it */ }
         else if (chatMoreMenuSessionUid) closeChatMoreMenu();
         else if (groupRoomMenuOpen) { resetGroupRoomMenu(); renderPage(); }
-        else if (!helpPopover.hidden) { helpPopover.hidden = true; activeHelpAnchor = null; }
         else if (open) setOpen(false);
     }, abortController.signal);
     unsubscribeOperationActivity = operationActivity.subscribe(() => {

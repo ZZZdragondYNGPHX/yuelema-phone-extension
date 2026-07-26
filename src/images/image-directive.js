@@ -59,9 +59,6 @@ export function normalizeImageDirective(input) {
     return Object.freeze({ kind, scene });
 }
 
-export function tryNormalizeImageDirective(input) {
-    try { return normalizeImageDirective(input); } catch { return null; }
-}
 
 function cleanOwnedPrompt(value, field, maxLength) {
     if (value === undefined || value === null || value === '') return '';

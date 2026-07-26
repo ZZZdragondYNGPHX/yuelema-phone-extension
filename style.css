@@ -55,7 +55,7 @@
 .yl-phone-launcher:focus-visible, .yl-phone-close:focus-visible, .yl-phone-nav-item:focus-visible,
 .yl-phone-action-card:focus-visible, .yl-settings-button:focus-visible, .yl-settings-control:focus-visible,
 .yl-center-entry:focus-visible, .yl-miniapp-card:focus-visible, .yl-chat-session:focus-visible,
-.yl-page-back:focus-visible, .yl-help-trigger:focus-visible, .yl-candidate-avatar:focus-visible,
+.yl-page-back:focus-visible, .yl-candidate-avatar:focus-visible,
 .yl-chat-send-button:focus-visible, .yl-chat-tool-button:focus-visible, .yl-switch input:focus-visible, .yl-mode-switch input:focus-visible,
 .yl-service-tab:focus-visible, .yl-hidden-feature-entry:focus-visible {
     outline: 2px solid #fff;
@@ -215,7 +215,7 @@
 .yl-phone-page-description { margin: 0; color: var(--yl-muted, #b9acc6); font-size: .84rem; line-height: 1.55; }
 
 /* --- 页头（sticky）与返回 --- */
-.yl-page-heading, .yl-heading-with-help { display: flex; align-items: center; gap: 10px; }
+.yl-page-heading { display: flex; align-items: center; gap: 10px; }
 .yl-page-heading h1 { flex: 1; min-width: 0; }
 .yl-phone-page > .yl-page-heading {
     position: sticky;
@@ -244,24 +244,6 @@
     transition: transform var(--yl-t-fast) var(--yl-ease), border-color var(--yl-t-fast) var(--yl-ease);
 }
 .yl-page-back:hover { border-color: rgb(255 150 190 / 70%); transform: translateX(-2px); }
-.yl-help-tooltip, .yl-help-trigger {
-    display: inline-grid;
-    flex: 0 0 auto;
-    width: 22px;
-    height: 22px;
-    place-items: center;
-    border: 1px solid var(--yl-border, rgb(255 255 255 / 13%));
-    border-radius: 50%;
-    color: var(--yl-faint, #8d7f9b);
-    background: var(--yl-surface, rgb(255 255 255 / 6%));
-    cursor: help;
-    font: inherit;
-    font-size: .72rem;
-    font-weight: 700;
-    line-height: 1;
-}
-.yl-help-trigger { cursor: pointer; }
-.yl-help-trigger:hover { color: #fff; border-color: var(--yl-border-strong, rgb(255 255 255 / 26%)); }
 
 /* --- 反馈条与占位 / 空态 --- */
 .yl-phone-feedback {
@@ -1286,25 +1268,7 @@
 .yl-character-library-action-primary { border-color: rgb(255 122 170 / 36%); background: rgb(255 78 142 / 14%); }
 .yl-character-library-action-danger { border-color: rgb(255 119 119 / 32%); color: #ffcaca; background: rgb(153 41 62 / 12%); }
 
-/* ============ 浮层：帮助 / 操作弹窗 / 设置模态 ============ */
-.yl-help-popover {
-    position: fixed;
-    z-index: 10070;
-    display: block;
-    max-width: min(260px, calc(100vw - 16px));
-    overflow: auto;
-    padding: 10px 12px;
-    border: 1px solid var(--yl-border-strong, rgb(255 255 255 / 26%));
-    border-radius: var(--yl-r-sm, 10px);
-    color: var(--yl-text, #f8f4fb);
-    background: var(--yl-bg-elev, #1d1727);
-    box-shadow: var(--yl-shadow-md);
-    font: 400 .78rem/1.45 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-    text-align: left;
-    overflow-wrap: anywhere;
-}
-.yl-help-popover[hidden] { display: none; }
-
+/* ============ 浮层：操作弹窗 / 设置模态 ============ */
 .yl-operation-dialog {
     position: fixed;
     z-index: 10080;
@@ -1400,7 +1364,7 @@
     .yl-action-circle .yl-action-icon { background: rgb(28 20 38 / 55%); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
     .yl-phone-nav { background: rgb(15 11 22 / 76%); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
     .yl-phone-page > .yl-page-heading { backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
-    .yl-help-popover, .yl-operation-dialog, .yl-settings-modal { backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
+    .yl-operation-dialog, .yl-settings-modal { backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
 }
 
 /* ============ 宿主性能开关与动效降级 ============ */
@@ -1408,7 +1372,6 @@ body.no-blur .yl-phone-extension .yl-candidate-card,
 body.no-blur .yl-phone-extension .yl-action-circle .yl-action-icon,
 body.no-blur .yl-phone-extension .yl-phone-nav,
 body.no-blur .yl-phone-extension .yl-phone-page > .yl-page-heading,
-body.no-blur .yl-phone-extension .yl-help-popover,
 body.no-blur .yl-phone-extension .yl-operation-dialog,
 body.no-blur .yl-phone-extension .yl-settings-modal {
     backdrop-filter: none;
@@ -2516,8 +2479,7 @@ body.reduced-motion .yl-phone-extension *, body.reduced-motion .yl-phone-extensi
 .yl-service-hero,
 .yl-feature-binding-modal,
 .yl-operation-dialog,
-.yl-settings-modal,
-.yl-help-popover {
+.yl-settings-modal {
     border-color: var(--yl-border);
     background-color: var(--yl-surface);
 }
@@ -2540,8 +2502,7 @@ body.reduced-motion .yl-phone-extension *, body.reduced-motion .yl-phone-extensi
 .yl-phone-extension[data-content-mode="SFW"] .yl-phone-nav-item.is-active .yl-nav-icon { color: var(--yl-accent); }
 .yl-phone-close:hover,
 .yl-dialog-close:hover,
-.yl-page-back:hover,
-.yl-help-trigger:hover { color: var(--yl-text); background: var(--yl-accent-soft); border-color: var(--yl-border-strong); }
+.yl-page-back:hover { color: var(--yl-text); background: var(--yl-accent-soft); border-color: var(--yl-border-strong); }
 
 .yl-settings-control,
 .yl-character-field input,

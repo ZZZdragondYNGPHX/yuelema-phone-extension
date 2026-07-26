@@ -74,7 +74,7 @@ function addSinglePrompt(store, id = 'base', contentMode = 'SFW') {
 }
 
 test('连接预设自动生成 ID、按名称选择载入，界面不要求手填已有 ID', async () => {
-    const { panel, store } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { section: 'connection' });
+    const { panel, store } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { view: 'connection' });
     assert.equal(panel.textContent.includes('编辑时填已有 ID'), false);
     assert.equal(panel.textContent.includes('预设 ID（'), false);
     assert.equal(panel.textContent.includes('提示词预设'), false);
@@ -107,7 +107,7 @@ test('连接预设自动生成 ID、按名称选择载入，界面不要求手�
 test('填写 API Key 后保存连接预设会保存到独立浏览器缓存，但不会写入设置导出', async () => {
     const keyStorage = createMemoryStorage();
     configurePersistentKeyStorage(keyStorage);
-    const { panel, store, feedback } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { section: 'connection' });
+    const { panel, store, feedback } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { view: 'connection' });
     byAria(panel, '连接预设名称').value = '可直接调用';
     byAria(panel, 'API URL').value = 'https://api.example/v1';
     byAria(panel, '模型名称').value = 'gpt-direct';
@@ -129,7 +129,7 @@ test('连接页可删除当前连接的浏览器缓存 API Key', async () => {
     const store = createSettingsStore({ storage: createMemoryStorage() });
     addConnection(store, 'fast');
     unlockSessionKey('fast', 'remove-this-browser-key');
-    const { panel, feedback } = buildHarness(store, { section: 'connection' });
+    const { panel, feedback } = buildHarness(store, { view: 'connection' });
 
     assert.equal(hasPersistentKey('fast'), true);
     await click(button(panel, '删除当前已保存 API Key'));
@@ -147,7 +147,7 @@ test('Model 为空时也能解锁并从 /models 拉取模型列表', async () =>
             return ['model-alpha', 'model-beta'];
         },
     };
-    const { panel } = buildHarness(store, { section: 'connection', llmClient });
+    const { panel } = buildHarness(store, { view: 'connection', llmClient });
     byAria(panel, '连接预设名称').value = '待探测连接';
     byAria(panel, 'API URL').value = 'https://api.example/v1';
     byAria(panel, '模型名称').value = '';
@@ -248,7 +248,7 @@ test('提示词详情不混入连接设置，文案去掉风格措辞且可安�
     assert.deepEqual(envelope.entries.map((entry) => entry.depth), [4, 7]);
     assert.deepEqual(envelope.entries.map((entry) => entry.enabled), [false, true]);
 
-    const exportPanel = buildHarness(store, { section: 'prompt' }).panel;
+    const exportPanel = buildHarness(store, { view: 'prompt' }).panel;
     await click(button(exportPanel, '导出全部提示词预设 JSON'));
     const transfer = byAria(exportPanel, '提示词预设导入导出 JSON').value;
     const bundle = JSON.parse(transfer);
@@ -258,7 +258,7 @@ test('提示词详情不混入连接设置，文案去掉风格措辞且可安�
 
     const importedStore = createSettingsStore({ storage: createMemoryStorage() });
     addConnection(importedStore, 'preserved_connection');
-    const importPanel = buildHarness(importedStore, { section: 'prompts' }).panel;
+    const importPanel = buildHarness(importedStore, { view: 'prompt' }).panel;
     byAria(importPanel, '提示词预设导入导出 JSON').value = transfer;
     await click(button(importPanel, '导入并覆盖提示词预设'));
     assert.equal(importedStore.snapshot().connectionPresets[0].id, 'preserved_connection');
@@ -288,7 +288,7 @@ test('功能绑定设置页会按当前 NSFW 模式保存，不覆盖 SFW 默认
 
 test('提示词预设可标记为 NSFW，功能绑定只显示当前模式对应的预设', async () => {
     const store = createSettingsStore({ storage: createMemoryStorage() });
-    const promptPanel = buildHarness(store, { section: 'prompt' }).panel;
+    const promptPanel = buildHarness(store, { view: 'prompt' }).panel;
     byAria(promptPanel, '提示词预设名称').value = '只给 NSFW 的语音匹配';
     const nsfw = byName(promptPanel, 'prompt-preset-nsfw');
     nsfw.checked = true;
@@ -328,7 +328,7 @@ test('个性化内容推荐管理通过导航回调打开偏好次级页，不�
 
 test('个性化内容推荐关闭需确认，取消保持开启，关闭后偏好入口置灰', async () => {
     const store = createSettingsStore({ storage: createMemoryStorage() });
-    const harness = buildHarness(store, { section: 'personalization' });
+    const harness = buildHarness(store, { view: 'personalization' });
     const toggle = byName(harness.panel, 'personalization-enabled');
     const preferenceEntry = byName(harness.panel, 'personalization-preference-entry');
     assert.equal(toggle.checked, true);
@@ -344,9 +344,9 @@ test('个性化内容推荐关闭需确认，取消保持开启，关闭后偏�
     assert.equal(notice.hidden, false);
     assert.equal(notice.getAttribute('role'), 'dialog');
     assert.equal(notice.getAttribute('aria-modal'), 'true');
-    assert.match(notice.textContent, /1.个性化内容推荐功能/u);
-    assert.match(notice.textContent, /2.我不喜欢推荐的内容怎么办?/u);
-    assert.match(notice.textContent, /3.关闭个性化内容推荐的效果是什么?/u);
+    assert.match(notice.textContent, /个性化推荐仅使用当前设备保存的关键词权重/u);
+    assert.match(notice.textContent, /可长按推荐选择「不感兴趣」/u);
+    assert.match(notice.textContent, /关闭后改按非个性化因素展示/u);
     assert.equal(store.snapshot().personalization.enabled, true);
 
     await click(byName(harness.panel, 'personalization-modal-close'));
@@ -385,7 +385,7 @@ test('preference 子视图只查看并保存当前 contentMode 的独立关键�
     assert.equal(editor.hidden, false);
     assert.equal(panel.querySelector('[name="personalization-preference-entry"]'), null);
     assert.equal(panel.querySelector('[name="personalization-enabled"]'), null, '偏好次级页不得重复渲染管理开关。');
-    assert.match(panel.textContent, /当前只编辑 SFW 模式的独立关键词词库/u);
+    assert.match(panel.textContent, /仅编辑 SFW 词库；另一模式不受影响/u);
     assert.equal(panel.textContent.includes('成年人话题'), false, 'SFW 编辑器不得显示 NSFW 词库。');
 
     byName(panel, 'personalization-keyword').value = '电影';
@@ -395,14 +395,14 @@ test('preference 子视图只查看并保存当前 contentMode 的独立关键�
     assert.deepEqual(store.snapshot().personalization.keywordWeightsByMode.SFW, [{ keyword: '电影', weight: 4 }]);
     assert.deepEqual(store.snapshot().personalization.keywordWeightsByMode.NSFW, [{ keyword: '成年人话题', weight: 2 }]);
 
-    const reopenedSfw = buildHarness(store, { section: 'preferences', contentMode: 'SFW' }).panel;
+    const reopenedSfw = buildHarness(store, { view: 'preference', contentMode: 'SFW' }).panel;
     assert.match(reopenedSfw.textContent, /电影 · 权重 4/u);
     assert.equal(reopenedSfw.textContent.includes('成年人话题'), false);
     assert.equal(reopenedSfw.textContent.includes('真实推荐算法未改变'), false);
-    assert.match(reopenedSfw.textContent, /AI 可自由生成新标签/u);
+    assert.match(reopenedSfw.textContent, /正权重提高相关标签概率/u);
 
-    const reopenedNsfw = buildHarness(store, { section: 'preferences', contentMode: 'NSFW' }).panel;
-    assert.match(reopenedNsfw.textContent, /当前只编辑 NSFW 模式的独立关键词词库/u);
+    const reopenedNsfw = buildHarness(store, { view: 'preference', contentMode: 'NSFW' }).panel;
+    assert.match(reopenedNsfw.textContent, /仅编辑 NSFW 词库；另一模式不受影响/u);
     assert.match(reopenedNsfw.textContent, /成年人话题 · 权重 2/u);
     assert.equal(reopenedNsfw.textContent.includes('电影 · 权重 4'), false);
 });
@@ -410,8 +410,8 @@ test('preference 子视图只查看并保存当前 contentMode 的独立关键�
 test('生图设置只保存非机密配置，API Key 清空后留在独立浏览器缓存', async () => {
     const keyStorage = createMemoryStorage();
     configurePersistentKeyStorage(keyStorage);
-    const { panel, store, feedback } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { section: 'image_generation' });
-    assert.match(panel.textContent, /前置提示词 → core_dna → outfit_dna → AI 场景结构 → 后置提示词/u);
+    const { panel, store, feedback } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { view: 'image_generation' });
+    assert.match(panel.textContent, /前置 → core_dna → outfit_dna → AI 场景 → 后置/u);
 
     byAria(panel, '启用生图接口').checked = true;
     byName(panel, 'image-generation-preset-id').value = 'image_preset';

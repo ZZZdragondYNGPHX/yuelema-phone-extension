@@ -149,7 +149,7 @@ test('导入导出保持严格 schema，并拒绝密钥、原型键、未知字�
     assert.throws(() => imported.importJson(JSON.stringify(unknownTarget)), errorCode('UNKNOWN_PRESET_ID'));
 });
 
-test('连接预设传输模式可持久化，旧 v2 缺失字段默认迁移为 json', () => {
+test('连接预设传输模式可持久化并严格校验', () => {
     const storage = createMemoryStorage();
     const store = createSettingsStore({ storage });
     store.addConnectionPreset({ ...connection('streaming'), transportMode: 'stream' });
@@ -160,26 +160,6 @@ test('连接预设传输模式可持久化，旧 v2 缺失字段默认迁移为 
     assert.equal(saved.connectionPresets[1].transportMode, 'pseudo_stream');
     assert.equal(createSettingsStore({ storage }).load().connectionPresets[0].transportMode, 'stream');
 
-    const legacyV2 = {
-        schema: 'yuelema.settings',
-        schemaVersion: 2,
-        connectionPresets: [{
-            id: 'legacy_v2',
-            name: '旧 v2 连接',
-            url: 'https://api.example.invalid/v1',
-            model: 'legacy-model',
-            temperature: 0.7,
-            maxTokens: 512,
-            timeoutMs: 30_000,
-        }],
-        promptPresets: [],
-        defaults: { connectionPresetId: 'legacy_v2', promptPresetId: null },
-        functionBindings: {},
-        personalization: { enabled: true, keywordWeights: [] },
-    };
-    const migrated = createSettingsStore({ storage: createMemoryStorage() });
-    assert.equal(migrated.importJson(JSON.stringify(legacyV2)).connectionPresets[0].transportMode, 'json');
-    assert.equal(JSON.parse(migrated.exportJson()).connectionPresets[0].transportMode, 'json');
 
     assert.throws(
         () => store.addConnectionPreset({ ...connection('invalid'), transportMode: 'automatic' }),
@@ -187,41 +167,17 @@ test('连接预设传输模式可持久化，旧 v2 缺失字段默认迁移为 
     );
 });
 
-test('历史角色创作绑定迁移为两个独立入口，灵魂与文字匹配保持独立', () => {
-    const historical = {
-        schema: 'yuelema.settings',
-        schemaVersion: 2,
-        connectionPresets: [connection('fast'), connection('smart')],
-        promptPresets: [prompt('base'), prompt('creative')],
-        defaults: { connectionPresetId: 'fast', promptPresetId: 'base' },
-        functionBindings: {
-            character_authoring: { connectionPresetId: 'smart', promptPresetId: 'creative' },
-            soul_match: { connectionPresetId: 'fast', promptPresetId: 'base' },
-            text_match: { connectionPresetId: 'smart', promptPresetId: 'creative' },
-        },
-        personalization: { enabled: true, keywordWeights: [] },
-    };
+test('旧 settings schema v1-v10 统一拒绝且不覆盖当前 v11 设置', () => {
     const store = createSettingsStore({ storage: createMemoryStorage() });
-    store.importJson(JSON.stringify(historical));
-    assert.deepEqual(store.snapshot().functionBindings.character_ai_completion, { connectionPresetId: 'smart', promptPresetId: 'creative' });
-    assert.deepEqual(store.snapshot().functionBindings.character_full_authoring, { connectionPresetId: 'smart', promptPresetId: 'creative' });
-    assert.deepEqual(store.snapshot().functionBindings.soul_match, { connectionPresetId: 'fast', promptPresetId: 'base' });
-    assert.deepEqual(store.snapshot().functionBindings.text_match, { connectionPresetId: 'smart', promptPresetId: 'creative' });
+    const current = store.load();
+    const before = store.exportJson();
 
-    store.bindFunction('soul_match', { connectionPresetId: 'smart', promptPresetId: 'base' });
-    assert.deepEqual(store.snapshot().functionBindings.soul_match, { connectionPresetId: 'smart', promptPresetId: 'base' });
-    assert.deepEqual(store.snapshot().functionBindings.text_match, { connectionPresetId: 'smart', promptPresetId: 'creative' });
-
-    const explicitCompletion = createSettingsStore({ storage: createMemoryStorage() });
-    explicitCompletion.importJson(JSON.stringify({
-        ...historical,
-        functionBindings: {
-            ...historical.functionBindings,
-            character_ai_completion: { connectionPresetId: null, promptPresetId: null },
-        },
-    }));
-    assert.deepEqual(explicitCompletion.snapshot().functionBindings.character_ai_completion, { connectionPresetId: null, promptPresetId: null });
-    assert.deepEqual(explicitCompletion.snapshot().functionBindings.character_full_authoring, { connectionPresetId: 'smart', promptPresetId: 'creative' });
+    for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+        const legacy = structuredClone(current);
+        legacy.schemaVersion = schemaVersion;
+        assert.throws(() => store.importJson(JSON.stringify(legacy)), errorCode('UNSUPPORTED_SETTINGS_VERSION'));
+        assert.equal(store.exportJson(), before);
+    }
 });
 
 test('个性化关键词权重按 SFW/NSFW 独立持久化、收录和增量更新', () => {
@@ -284,171 +240,6 @@ test('个性化关键词权重按 SFW/NSFW 独立持久化、收录和增量更�
     assert.throws(() => activeStore.ensurePersonalizationKeywordWeights(undefined, ['电影']), errorCode('INVALID_CONTENT_MODE'));
 });
 
-test('schema v7 共享关键词只迁移到 SFW，NSFW 保持空词库', () => {
-    const seedStore = createSettingsStore({ storage: createMemoryStorage() });
-    const legacyV7 = structuredClone(seedStore.load());
-    legacyV7.schemaVersion = 7;
-    legacyV7.personalization = {
-        enabled: true,
-        keywordWeights: [
-            { keyword: '电影', weight: 4 },
-            { keyword: '夜猫子', weight: -2 },
-        ],
-    };
-
-    const storage = createMemoryStorage({ [SETTINGS_STORAGE_KEY]: JSON.stringify(legacyV7) });
-    const migratedStore = createSettingsStore({ storage });
-    const migrated = migratedStore.load();
-    assert.equal(migrated.schemaVersion, 11);
-    assert.deepEqual(migrated.personalization.keywordWeightsByMode, {
-        SFW: [{ keyword: '电影', weight: 4 }, { keyword: '夜猫子', weight: -2 }],
-        NSFW: [],
-    });
-    assert.equal(Object.hasOwn(migrated.personalization, 'keywordWeights'), false);
-    assert.equal(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 11, '加载后应把迁移结果回写为 v11。');
-});
-
-test('schema v9 导入严格要求完整且仅含 SFW/NSFW 两套词库', () => {
-    const store = createSettingsStore({ storage: createMemoryStorage() });
-    store.setPersonalizationKeywordWeights('SFW', [{ keyword: '电影', weight: 4 }]);
-    store.setPersonalizationKeywordWeights('NSFW', [{ keyword: '电影', weight: -3 }]);
-    const valid = JSON.parse(store.exportJson());
-
-    const roundTrip = createSettingsStore({ storage: createMemoryStorage() });
-    roundTrip.importJson(JSON.stringify(valid));
-    assert.deepEqual(roundTrip.snapshot().personalization.keywordWeightsByMode, valid.personalization.keywordWeightsByMode);
-
-    const missingMode = structuredClone(valid);
-    delete missingMode.personalization.keywordWeightsByMode.NSFW;
-    assert.throws(() => roundTrip.importJson(JSON.stringify(missingMode)), errorCode('INVALID_PERSONALIZATION'));
-
-    const extraMode = structuredClone(valid);
-    extraMode.personalization.keywordWeightsByMode.ALL = [];
-    assert.throws(() => roundTrip.importJson(JSON.stringify(extraMode)), errorCode('INVALID_PERSONALIZATION'));
-
-    const legacyShapeInV9 = structuredClone(valid);
-    legacyShapeInV9.personalization = { enabled: true, keywordWeights: [] };
-    assert.throws(() => roundTrip.importJson(JSON.stringify(legacyShapeInV9)), errorCode('INVALID_PERSONALIZATION'));
-
-    const extraPersonalizationField = structuredClone(valid);
-    extraPersonalizationField.personalization.shared = [];
-    assert.throws(() => roundTrip.importJson(JSON.stringify(extraPersonalizationField)), errorCode('INVALID_PERSONALIZATION'));
-});
-
-test('schema v1 设置可安全迁移到 v11 个性化字段、默认提示词、模式绑定与总结设置，导出固定为当前版本', () => {
-    const legacy = {
-        schema: 'yuelema.settings',
-        schemaVersion: 1,
-        connectionPresets: [connection('fast')],
-        promptPresets: [prompt('base')],
-        defaults: { connectionPresetId: 'fast', promptPresetId: 'base' },
-        functionBindings: {},
-    };
-    const store = createSettingsStore({ storage: createMemoryStorage() });
-    const migrated = store.importJson(JSON.stringify(legacy));
-    assert.equal(migrated.schemaVersion, 11);
-    assert.deepEqual(migrated.personalization, { enabled: true, keywordWeightsByMode: { SFW: [], NSFW: [] } });
-    assert.equal(migrated.promptPresets.filter((preset) => preset.id.startsWith('builtin_')).length, 22);
-    assert.deepEqual(migrated.chatSummary, { enabled: false, interval: 20, retryLimit: 2 });
-    assert.equal(store.resolveFunction('chat', { contentMode: 'SFW' }).promptPreset.id, 'base', '已有默认提示词应优先保留');
-    assert.equal(store.resolveFunction('chat', { contentMode: 'NSFW' }).promptPreset.id, 'builtin_private_chat_nsfw', '旧 SFW 默认提示词不得泄漏到 NSFW 绑定');
-    assert.equal(JSON.parse(store.exportJson()).schemaVersion, 11);
-});
-
-test('schema v3 迁移补齐提示词模式、历史跨模式绑定并升级到 v11', () => {
-    const legacySfw = prompt('legacy_sfw', '旧 SFW 提示词');
-    delete legacySfw.contentMode;
-    const legacyV3 = {
-        schema: 'yuelema.settings',
-        schemaVersion: 3,
-        connectionPresets: [connection('fast')],
-        promptPresets: [legacySfw],
-        defaults: { connectionPresetId: 'fast', promptPresetId: 'legacy_sfw' },
-        functionBindings: {
-            chat: { connectionPresetId: 'fast', promptPresetId: 'legacy_sfw' },
-        },
-        functionModeBindings: {
-            chat: {
-                SFW: { connectionPresetId: 'fast', promptPresetId: 'legacy_sfw' },
-                NSFW: { connectionPresetId: 'fast', promptPresetId: 'legacy_sfw' },
-            },
-        },
-        personalization: { enabled: true, keywordWeights: [] },
-    };
-    const store = createSettingsStore({ storage: createMemoryStorage() });
-    const migrated = store.importJson(JSON.stringify(legacyV3));
-
-    assert.equal(migrated.schemaVersion, 11);
-    assert.equal(migrated.promptPresets.find((preset) => preset.id === 'legacy_sfw').contentMode, 'SFW');
-    assert.equal(migrated.promptPresets.filter((preset) => preset.id.startsWith('builtin_')).length, 22);
-    assert.equal(store.resolveFunction('chat', { contentMode: 'SFW' }).promptPreset.id, 'legacy_sfw');
-    assert.equal(store.resolveFunction('chat', { contentMode: 'NSFW' }).promptPreset.id, 'builtin_private_chat_nsfw');
-});
-
-test('schema v6 migration seeds the dedicated group-chat and forum SFW/NSFW content presets without replacing an existing selection', () => {
-    const seedStore = createSettingsStore({ storage: createMemoryStorage() });
-    const legacyV6 = structuredClone(seedStore.load());
-    legacyV6.schemaVersion = 6;
-    legacyV6.personalization = { enabled: true, keywordWeights: [] };
-    legacyV6.promptPresets = legacyV6.promptPresets.filter((preset) => !['builtin_group_chat_sfw', 'builtin_group_chat_nsfw', 'builtin_forum_sfw', 'builtin_forum_nsfw'].includes(preset.id));
-    legacyV6.functionModeBindings.group_chat.SFW.promptPresetId = null;
-    legacyV6.functionModeBindings.group_chat.NSFW.promptPresetId = null;
-    legacyV6.functionModeBindings.forum.SFW.promptPresetId = null;
-    legacyV6.functionModeBindings.forum.NSFW.promptPresetId = null;
-    const store = createSettingsStore({ storage: createMemoryStorage() });
-    const migrated = store.importJson(JSON.stringify(legacyV6));
-    assert.equal(migrated.schemaVersion, 11);
-    assert.equal(store.resolveFunction('group_chat', { contentMode: 'SFW' }).promptPreset.id, 'builtin_group_chat_sfw');
-    assert.equal(store.resolveFunction('group_chat', { contentMode: 'NSFW' }).promptPreset.id, 'builtin_group_chat_nsfw');
-    assert.equal(store.resolveFunction('forum', { contentMode: 'SFW' }).promptPreset.id, 'builtin_forum_sfw');
-    assert.equal(store.resolveFunction('forum', { contentMode: 'NSFW' }).promptPreset.id, 'builtin_forum_nsfw');
-
-});
-
-test('schema v8 会一次性刷新十一个内置 NSFW 提示词，非内置自定义预设保持不变', () => {
-    const seedStore = createSettingsStore({ storage: createMemoryStorage() });
-    const legacyV8 = structuredClone(seedStore.load());
-    legacyV8.schemaVersion = 8;
-    legacyV8.promptPresets = legacyV8.promptPresets.map((preset) => (
-        preset.id.startsWith('builtin_') && preset.contentMode === 'NSFW'
-            ? { ...preset, content: '旧版 NSFW 仅允许克制的成年人表达。' }
-            : preset
-    ));
-    legacyV8.promptPresets.push({ ...prompt('custom_nsfw', '我的自定义 NSFW', 'NSFW'), content: '只属于用户的自定义 NSFW 提示词。' });
-
-    const store = createSettingsStore({ storage: createMemoryStorage() });
-    const migrated = store.importJson(JSON.stringify(legacyV8));
-    assert.equal(migrated.schemaVersion, 11);
-    const builtinNsfw = migrated.promptPresets.filter((preset) => preset.id.startsWith('builtin_') && preset.contentMode === 'NSFW');
-    assert.equal(builtinNsfw.length, 11);
-    for (const preset of builtinNsfw) {
-        assert.doesNotMatch(preset.content, /旧版 NSFW 仅允许克制/u);
-        assert.match(preset.content, /优先|默认主动|主要话题|完整保留/u);
-    }
-    assert.equal(migrated.promptPresets.find((preset) => preset.id === 'custom_nsfw').content, '只属于用户的自定义 NSFW 提示词。');
-});
-
-test('schema v10 的已保存设置会经 load 补齐专属服务 SFW/NSFW 预设和独立绑定，并回写为 v11', () => {
-    const storage = createMemoryStorage();
-    const seedStore = createSettingsStore({ storage });
-    const legacyV10 = structuredClone(seedStore.load());
-    legacyV10.schemaVersion = 10;
-    legacyV10.promptPresets = legacyV10.promptPresets.filter((preset) => !['builtin_service_profile_sfw', 'builtin_service_profile_nsfw'].includes(preset.id));
-    legacyV10.promptPresets.push({ ...prompt('custom_service_nsfw', '用户自定义服务 NSFW', 'NSFW'), content: '用户自定义服务提示词不得被迁移覆盖。' });
-    delete legacyV10.functionBindings.service_profile_generation;
-    delete legacyV10.functionModeBindings.service_profile_generation;
-    storage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(legacyV10));
-
-    const migrated = createSettingsStore({ storage }).load();
-    assert.equal(migrated.schemaVersion, 11);
-    assert.equal(migrated.promptPresets.length, 23);
-    assert.equal(migrated.promptPresets.find((preset) => preset.id === 'builtin_service_profile_sfw')?.contentMode, 'SFW');
-    assert.equal(migrated.promptPresets.find((preset) => preset.id === 'builtin_service_profile_nsfw')?.contentMode, 'NSFW');
-    assert.equal(migrated.promptPresets.find((preset) => preset.id === 'custom_service_nsfw')?.content, '用户自定义服务提示词不得被迁移覆盖。');
-    assert.equal(migrated.functionModeBindings.service_profile_generation.SFW.promptPresetId, 'builtin_service_profile_sfw');
-    assert.equal(migrated.functionModeBindings.service_profile_generation.NSFW.promptPresetId, 'builtin_service_profile_nsfw');
-    assert.equal(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 11, 'load 迁移后必须持久化回写 v11。');
-});
 test('提示词字段、纯文本大小限制与安全错误不会回显凭据', () => {
     assert.deepEqual(normalizePromptPreset(prompt('p')), prompt('p'));
     assert.throws(() => normalizePromptPreset({ ...prompt('p'), position: 'middle' }), errorCode('INVALID_PROMPT_PRESET'));

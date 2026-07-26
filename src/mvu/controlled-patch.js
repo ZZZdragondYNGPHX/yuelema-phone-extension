@@ -891,8 +891,6 @@ export function buildClearPrivateChatPatch(state, { sessionUid } = {}) {
     return success(operations);
 }
 
-/** Backwards-compatible name; the operation has always removed the session only. */
-export const buildDeletePrivateChatPatch = buildClearPrivateChatPatch;
 
 function validUidList(value) {
     return Array.isArray(value) && value.every(isNpcUid) && new Set(value).size === value.length;

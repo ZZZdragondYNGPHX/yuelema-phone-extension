@@ -342,32 +342,6 @@ test('my-page avatar is browser-local, while the public-profile editor no longer
     }
 });
 
-test('help popover is positioned below the question mark and clamped inside the viewport', () => {
-    const mounted = mountPhoneApp({
-        documentRef: miniDom.document, rootId: 'ylm-test-help-position',
-        actionBridge: { emit() {}, isPending() { return false; } },
-        settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
-    });
-    try {
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        const trigger = miniDom.document.querySelector('.yl-help-trigger');
-        const popover = miniDom.document.querySelector('.yl-help-popover');
-        const styles = new Map();
-        trigger.getBoundingClientRect = () => ({ left: 330, bottom: 100 });
-        popover.getBoundingClientRect = () => ({ width: 260, height: 100 });
-        popover.style = { setProperty(name, value) { styles.set(name, value); } };
-
-        click(trigger);
-
-        assert.equal(popover.hidden, false);
-        assert.equal(styles.get('top'), '108px');
-        assert.equal(styles.get('left'), '92px');
-        assert.equal(styles.get('max-height'), '524px');
-    } finally {
-        mounted.destroy();
-    }
-});
-
 test('operation dialogs always close and dismissed AI generations never reopen or leak errors', async () => {
     let next = deferred();
     const bridge = {

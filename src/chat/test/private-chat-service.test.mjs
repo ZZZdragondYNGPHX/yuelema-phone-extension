@@ -45,13 +45,6 @@ function response() {
     };
 }
 
-function legacyResponse() {
-    return {
-        reply: '晚上好，先聊聊彼此的周末？',
-        relationship: { 好感: 2, 信任: 1, 戒备: -2, 面基意愿: 0 },
-        sessionSummary: '双方从周末安排开始轻松聊天。',
-    };
-}
 
 function settingsStore() {
     return {
@@ -137,11 +130,9 @@ test('private chat requests replies and returns only validated multi-bubble data
     });
     assert.equal(result.ok, true);
     assert.deepEqual(result.response.replies, response().replies);
-    assert.equal(result.response.reply, '晚上好。 先聊聊彼此的周末？');
     assert.match(request.messages[0].content, /保持简短/);
     assert.match(request.messages[0].content, /"replies"/);
     assert.match(request.messages[0].content, /1-6/);
-    assert.match(request.messages[0].content, /不要输出旧版 reply 字段/);
     assert.doesNotMatch(JSON.stringify(request.messages), /绝不泄露|不得发送|实际年龄/);
     assert.deepEqual(current, before);
 });
@@ -168,15 +159,6 @@ test('NSFW core contract permits consensual adult chat without treating explicit
     assert.match(request.messages[0].content, /不得仅因内容成人化降低好感或信任、提高戒备/u);
     assert.match(request.messages[0].content, /明确的拒绝或撤回同意、已知边界冲突、胁迫、非自愿、隐私侵犯/u);
     assert.match(request.messages[0].content, /同意或边界不清时应先用线上文字澄清/u);
-});
-test('private chat accepts old single-reply model output as one canonical bubble', async () => {
-    const result = await generatePrivateChatReply({
-        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', settingsStore: settingsStore(),
-        llmClient: { async chat() { return { text: JSON.stringify(legacyResponse()) }; } },
-    });
-    assert.equal(result.ok, true);
-    assert.deepEqual(result.response.replies, [legacyResponse().reply]);
-    assert.equal(result.response.reply, legacyResponse().reply);
 });
 
 test('private chat summary uses its dedicated preset and returns only validated in-memory text and anchors', async () => {
@@ -217,7 +199,7 @@ test('private chat rejects unsafe multi-bubble model output without writes or so
     assert.deepEqual(current, before);
 });
 
-test('private chat patch remains compatible with the canonical response fallback', () => {
+test('private chat patch consumes the canonical multi-bubble response', () => {
     const current = state();
     const before = structuredClone(current);
     const built = buildPrivateChatPatch(current, { sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', response: response() });

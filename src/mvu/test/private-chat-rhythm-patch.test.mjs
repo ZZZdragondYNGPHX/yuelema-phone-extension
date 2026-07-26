@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildDeletePrivateChatPatch, buildPrivateChatPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import { buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildPrivateChatPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
 
 function state({ readThreshold = 55, blockThreshold = 90, relationship } = {}) {
     return {
@@ -106,16 +106,9 @@ test('clearing a matched private chat removes only the session and cancels the r
 test('clearing an already blocked chat preserves the block relationship', () => {
     const current = state({ relationship: { 状态: '已拉黑', 全局账号表现: 50, NPC专属匹配度: 70, 好感: 0, 信任: 0, 戒备: 100, 面基意愿: 0 } });
     current.会话.chat_1.状态 = '已拉黑';
-    assert.deepEqual(buildDeletePrivateChatPatch(current, { sessionUid: 'chat_1' }), { ok: true, value: [{ op: 'remove', path: '/会话/chat_1' }] });
-});
-
-
-test('legacy private-chat deletion builder remains an alias for clearPrivateChat', () => {
-    const current = state();
-    assert.deepEqual(
-        buildDeletePrivateChatPatch(current, { sessionUid: 'chat_1' }),
-        buildClearPrivateChatPatch(current, { sessionUid: 'chat_1' }),
-    );
+    const built = buildClearPrivateChatPatch(current, { sessionUid: 'chat_1' });
+    assert.deepEqual(built, { ok: true, value: [{ op: 'remove', path: '/会话/chat_1' }] });
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
 });
 
 test('deleteCharacter removes the complete character record and every controlled reference', () => {

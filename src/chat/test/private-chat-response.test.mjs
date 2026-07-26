@@ -18,24 +18,16 @@ function response(overrides = {}) {
     };
 }
 
-function legacyResponse(overrides = {}) {
-    return {
-        reply: '今晚方便聊聊吗？',
-        relationship: { 好感: 2, 信任: 1, 戒备: -1, 面基意愿: 0 },
-        ...overrides,
-    };
-}
 
 function expectCode(callback, code) {
     assert.throws(callback, error => error instanceof TypeError && error.code === code);
 }
 
-test('accepts preferred replies and returns an independent canonical clone with a legacy fallback', () => {
+test('accepts replies and returns an independent canonical clone', () => {
     const raw = response({ sessionSummary: '围绕周末咖啡面基进行了初步交流。' });
     const normalized = normalizePrivateChatResponse(raw);
     assert.deepEqual(normalized, {
         replies: ['今晚方便聊聊吗？', '我刚好有空。'],
-        reply: '今晚方便聊聊吗？ 我刚好有空。',
         relationship: raw.relationship,
         bondAssessment: { kind: 'none', intensity: 0 },
         sessionSummary: raw.sessionSummary,
@@ -51,18 +43,6 @@ test('accepts preferred replies and returns an independent canonical clone with 
     assert.deepEqual(normalizePrivateChatResponse(normalized), normalized);
 });
 
-test('normalizes legacy reply to one canonical bubble and permits only an equivalent compatibility fallback', () => {
-    const legacy = normalizePrivateChatResponse(legacyResponse());
-    assert.deepEqual(legacy.replies, ['今晚方便聊聊吗？']);
-    assert.equal(legacy.reply, '今晚方便聊聊吗？');
-
-    const compatible = normalizePrivateChatResponse(response({ reply: '今晚方便聊聊吗？ 我刚好有空。' }));
-    assert.deepEqual(compatible.replies, ['今晚方便聊聊吗？', '我刚好有空。']);
-    expectCode(
-        () => normalizePrivateChatResponse(response({ reply: '模型试图制造歧义' })),
-        'private_chat_response_reply_invalid',
-    );
-});
 
 test('accepts only the assessment categories allowed by the current content mode', () => {
     assert.deepEqual(
@@ -83,11 +63,12 @@ test('accepts only the assessment categories allowed by the current content mode
     );
 });
 
-test('rejects strings, arrays, nulls, missing reply forms, and unknown fields', () => {
+test('rejects strings, arrays, nulls, missing replies, legacy reply fields, and unknown fields', () => {
     expectCode(() => normalizePrivateChatResponse('{"reply":"hi"}'), 'private_chat_response_required');
     expectCode(() => normalizePrivateChatResponse([]), 'private_chat_response_required');
     expectCode(() => normalizePrivateChatResponse(null), 'private_chat_response_required');
     expectCode(() => normalizePrivateChatResponse({ relationship: {} }), 'private_chat_response_missing_field');
+    expectCode(() => normalizePrivateChatResponse({ reply: '旧格式', relationship: {} }), 'private_chat_response_unknown_field');
     expectCode(() => normalizePrivateChatResponse(response({ extra: true })), 'private_chat_response_unknown_field');
 });
 
@@ -101,7 +82,7 @@ test('strictly validates each reply bubble, array shape, and aggregate length li
     expectCode(() => normalizePrivateChatResponse(response({ replies: ['x'.repeat(MAX_PRIVATE_CHAT_REPLY_LENGTH + 1)] })), 'private_chat_response_reply_invalid');
     expectCode(() => normalizePrivateChatResponse(response({ replies: ['x'.repeat(300), 'y'.repeat(300)] })), 'private_chat_response_reply_invalid');
     assert.equal(
-        normalizePrivateChatResponse(response({ replies: ['x'.repeat(MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH)] })).reply.length,
+        normalizePrivateChatResponse(response({ replies: ['x'.repeat(MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH)] })).replies[0].length,
         MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH,
     );
 

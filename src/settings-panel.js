@@ -21,7 +21,6 @@ const FUNCTION_LABELS = Object.freeze({
     forum: '论坛',
     image_match: '图片匹配',
 });
-const LEGACY_FUNCTION_KEYS = new Set(['character_authoring']);
 const CONTENT_MODE_LABELS = Object.freeze({ SFW: 'SFW', NSFW: 'NSFW' });
 const PROMPT_BUNDLE_SCHEMA = 'yuelema.prompt-preset-bundle';
 const PROMPT_BUNDLE_VERSION = 1;
@@ -32,21 +31,14 @@ const MAX_PROMPT_ENTRIES_PER_PRESET = 48;
 const MAX_PROMPT_BUNDLE_BYTES = 512 * 1024;
 const DEFAULT_CONNECTION_MAX_TOKENS = 2_048;
 const PERSONALIZATION_NOTICE = Object.freeze([
-    '1.个性化内容推荐功能\n个性化内容推荐是指我们基于收集的信息，向您进行定制化内容的展现，如向您展现或推荐相关程度更高的视频内容、线下活动、信息流等。',
-    '2.我不喜欢推荐的内容怎么办?\n您有权自行控制和决策是否使用个性化内容推荐功能：\n1)当您对我们基于个性化内容推荐策略推送的具体信息不感兴趣或希望减少某类信息推荐时，您可以长按该内容，选择「不感兴趣」，我们会基于您的反馈调整策略。\n2)如果您不希望被推荐个性化的内容，可通过本页设置关闭“个性化内容推荐”。',
-    '3.关闭个性化内容推荐的效果是什么?\n当您选择关闭个性化内容推荐后，您将无法享受个性化内容推荐服务，我们会基于内容热度等非个性化因素向您展示内容，您可能会看到您不感兴趣甚至不喜欢的内容，您的使用体验可能会受到影响。\n个性化推荐将生效当前设备。',
+    '个性化推荐仅使用当前设备保存的关键词权重调整推荐，不会写入 MVU、聊天或角色资料。',
+    '可长按推荐选择「不感兴趣」，或在本页关闭个性化推荐。',
+    '关闭后改按非个性化因素展示，已保存的关键词不会被删除。',
 ]);
 
 function normalizeSettingsView(value) {
-    const aliases = new Map([
-        ['connection', 'connection'], ['connections', 'connection'], ['settings_connections', 'connection'],
-        ['prompt', 'prompt'], ['prompts', 'prompt'], ['settings_prompts', 'prompt'],
-        ['personalization', 'personalization'], ['privacy', 'personalization'], ['settings_personalization', 'personalization'],
-        ['image_generation', 'image_generation'], ['images_generation', 'image_generation'], ['settings_image_generation', 'image_generation'],
-        ['preference', 'preference'], ['preferences', 'preference'], ['personalization_preference', 'preference'],
-        ['all', 'all'],
-    ]);
-    return aliases.get(value ?? 'all') ?? 'all';
+    return new Set(['all', 'connection', 'prompt', 'personalization', 'image_generation', 'preference']).has(value)
+        ? value : 'all';
 }
 
 function normalizeContentMode(value) {
@@ -261,9 +253,9 @@ function readPromptBundle(rawJson) {
  * Builds the settings console. Connection configuration stays export-safe, while
  * API Keys live only in the separate browser-local key cache and are never shown.
  */
-export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender, onNavigate, section, view, contentMode }) {
+export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender, onNavigate, view, contentMode }) {
     const panel = element('section', { className: 'yl-settings-panel' });
-    const activeView = normalizeSettingsView(view ?? section);
+    const activeView = normalizeSettingsView(view);
     const activeContentMode = normalizeContentMode(contentMode);
     const navigate = typeof onNavigate === 'function' ? onNavigate : () => {};
     let settings;
@@ -272,7 +264,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
     } catch {
         panel.appendChild(element('p', {
             className: 'yl-phone-placeholder',
-            text: '本地设置无法读取。可清除本扩展的非机密设置后重新建立；已保存的 API Key 位于独立浏览器缓存，不会随设置导出或载入。',
+            text: '本地设置无法读取。可清除非机密设置后重建；独立浏览器缓存中的 API Key 不受影响。',
         }));
         panel.appendChild(actionButton('清除损坏的非机密设置', async () => {
             settingsStore.clear();
@@ -287,7 +279,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             element('h2', { text: '本地设置' }),
             element('p', {
                 className: 'yl-phone-page-description',
-                text: '连接、提示词和个性化内容推荐设置保存在当前浏览器；API Key 也只保存到此浏览器的独立缓存，不会进入导出、MVU 或角色卡。',
+                text: '设置仅保存在当前浏览器；API Key 位于独立缓存，不进入导出、MVU 或角色卡。',
             }),
             buildConnectionSection(settings),
             buildPromptSection(settings),
@@ -323,7 +315,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
             sectionHeading('⚡', '连接预设（OpenAI-compatible）'),
-            element('p', { className: 'yl-phone-page-description', text: '名称、Base URL、Model、传输方式、额度、超时和 API Key 都会保存在当前浏览器；Key 与可导出的连接设置分开，永不写入 MVU、角色卡、提示词或导出文件。Model 不再是拉取列表的前置条件。' }),
+            element('p', { className: 'yl-phone-page-description', text: '连接配置保存在当前浏览器；API Key 位于独立缓存，永不写入 MVU、角色卡、提示词或导出文件。可直接拉取模型列表。' }),
         ]);
         let activeId = null;
         let draftId = nextId('conn');
@@ -354,7 +346,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         section.appendChild(fields);
         const keyStatus = element('p', { className: 'yl-settings-summary', ariaLabel: 'API Key 缓存状态' });
         section.appendChild(keyStatus);
-        section.appendChild(element('p', { className: 'yl-settings-summary yl-transport-hint', text: '真流式可边接收边聚合；假流式兼容不支持 SSE 的接口，在完整响应到达后分段呈现。首页推荐刷新会至少申请 2048 Token，确保完整候选 JSON；最终仍受服务端最大输出与本地超时限制。' }));
+        section.appendChild(element('p', { className: 'yl-settings-summary yl-transport-hint', text: '真流式实时聚合；假流式在完整响应后分段呈现。推荐刷新至少申请 2048 Token，仍受服务端上限与本地超时限制。' }));
 
         const modelChoices = element('select', { className: 'yl-settings-control yl-model-choices', name: 'connection-model-choices', ariaLabel: '已拉取模型', hidden: true });
         listen(modelChoices, modelChoices, 'change', () => {
@@ -536,7 +528,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const section = element('section', { className: 'yl-settings-section yl-prompt-workbench' });
         append(section, [
             sectionHeading('⌘', '提示词预设条目树'),
-            element('p', { className: 'yl-phone-page-description', text: '预设作为根节点，插入位置作为分支，每个提示词条目作为叶节点。已预置推荐、私聊、角色创作、灵魂匹配和语音匹配的 SFW/NSFW 默认预设；“是否为 NSFW”决定它只会出现在对应模式的绑定列表中。' }),
+            element('p', { className: 'yl-phone-page-description', text: '预设按根节点、插入位置和条目组织；SFW/NSFW 预设只出现在对应模式的绑定列表中。' }),
         ]);
         let activeId = null;
         let entries = [];
@@ -802,7 +794,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             sectionHeading('◈', '生图设置'),
             element('p', {
                 className: 'yl-phone-page-description',
-                text: '生图只读取本页的非机密配置与独立浏览器 Key。角色绘图 DNA、AI 返回的场景结构与固定提示词会在生图边界按既定顺序组合；API Key 不会写入设置、MVU、提示词或导出文件。',
+                text: '生图只读取非机密配置与独立浏览器 Key；API Key 不会写入设置、MVU、提示词或导出文件。',
             }),
         ]);
 
@@ -891,7 +883,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             () => settingsStore.setImageGenerationSettings(formSettings()),
             '生图设置已保存；API Key 仍只保存在独立浏览器缓存。',
         ), signal, { name: 'image-generation-save' });
-        section.appendChild(element('p', { className: 'yl-image-generation-order-note', text: '正面提示词固定顺序：前置提示词 → core_dna → outfit_dna → AI 场景结构 → 后置提示词。负面提示词独立保持不变。' }));
+        section.appendChild(element('p', { className: 'yl-image-generation-order-note', text: '正面提示词：前置 → core_dna → outfit_dna → AI 场景 → 后置；负面提示词独立保持。' }));
         section.appendChild(save);
         return section;
     }
@@ -906,7 +898,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                 sectionHeading('✦', '个性化内容推荐管理'),
                 element('p', {
                     className: 'yl-phone-page-description',
-                    text: '此处保存当前设备的分模式关键词学习库。SFW 与 NSFW 各自独立学习、独立保存，切换模式后只会读取对应词库；不会改变模型连接、提示词或其他聊天/MVU 数据。',
+                    text: '保存当前设备的分模式关键词学习库；不会改变连接、提示词或聊天/MVU 数据。',
                 }),
             ]);
             const enabled = element('input', {
@@ -971,7 +963,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             sectionHeading('✦', '个性化内容偏好'),
             element('p', {
                 className: 'yl-phone-page-description',
-                text: '当前只编辑 ' + CONTENT_MODE_LABELS[selectedContentMode] + ' 模式的独立关键词词库；另一模式的关键词与权重不会显示或被改写。正权重会提高相关标签自然出现的概率，负权重会降低概率，0 表示尚未学习。AI 可自由生成新标签，成功后会自动以 0 收录。',
+                text: '仅编辑 ' + CONTENT_MODE_LABELS[selectedContentMode] + ' 词库；另一模式不受影响。正权重提高相关标签概率，负权重降低，0 表示尚未学习。',
             }),
         ]);
         if (!personalization.enabled) {
@@ -1071,7 +1063,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             sectionHeading('⇄', `${CONTENT_MODE_LABELS[selectedContentMode]} 模式预设与功能绑定`),
             element('p', {
                 className: 'yl-phone-page-description',
-                text: '当前只编辑 ' + CONTENT_MODE_LABELS[selectedContentMode] + ' 模式的功能绑定。切换内容模式后会自动显示另一套绑定；提示词选择器只显示标记为当前模式的预设，不会混入另一套。连接未单独绑定时仍可回退到默认连接。',
+                text: '仅编辑 ' + CONTENT_MODE_LABELS[selectedContentMode] + ' 功能绑定；提示词只显示当前模式预设，连接可回退到默认连接。',
             }),
         ]);
         const connectionOptions = [
@@ -1091,14 +1083,11 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         section.appendChild(defaultsFields);
         section.appendChild(actionButton('保存默认连接', async () => updateSettings(() => settingsStore.setDefaults({
             connectionPresetId: defaultConnection.value || null,
-            // 当前所有 AI 调用都带有 SFW/NSFW 模式，提示词只由下面的
-            // 模式绑定选择。保留旧通用值，避免破坏导入的历史设置。
             promptPresetId: snapshot.defaults.promptPresetId ?? null,
         }), '默认连接预设已保存。'), signal));
 
-        for (const functionKey of FUNCTION_KEYS.filter((key) => !LEGACY_FUNCTION_KEYS.has(key))) {
-            const binding = snapshot.functionModeBindings?.[functionKey]?.[selectedContentMode]
-                ?? snapshot.functionBindings[functionKey];
+        for (const functionKey of FUNCTION_KEYS.filter((key) => key !== 'character_authoring')) {
+            const binding = snapshot.functionModeBindings[functionKey][selectedContentMode];
             const row = element('section', { className: 'yl-settings-binding' });
             row.appendChild(element('strong', { text: FUNCTION_LABELS[functionKey] + ' · ' + CONTENT_MODE_LABELS[selectedContentMode] }));
             const connection = selectWithOptions(
@@ -1116,11 +1105,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             append(row, [field('连接', connection), field('提示词', prompt)]);
             row.appendChild(actionButton('保存此功能绑定', async () => updateSettings(() => {
                 const next = { connectionPresetId: connection.value || null, promptPresetId: prompt.value || null };
-                if (typeof settingsStore.bindFunctionForContentMode === 'function') {
-                    settingsStore.bindFunctionForContentMode(functionKey, selectedContentMode, next);
-                    return;
-                }
-                settingsStore.bindFunction(functionKey, next);
+                settingsStore.bindFunctionForContentMode(functionKey, selectedContentMode, next);
             }, `${FUNCTION_LABELS[functionKey]}的 ${CONTENT_MODE_LABELS[selectedContentMode]} 绑定已保存。`), signal, { secondary: true }));
             section.appendChild(row);
         }
@@ -1131,7 +1116,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const section = element('section', { className: 'yl-settings-section' });
         append(section, [
             sectionHeading('⇅', '提示词预设导入 / 导出'),
-            element('p', { className: 'yl-phone-page-description', text: '仅导入或导出全部提示词预设；不会包含 API Key、MVU 状态、聊天或角色隐私资料。导入会清理指向已不存在提示词预设的功能绑定。' }),
+            element('p', { className: 'yl-phone-page-description', text: '仅导入或导出提示词预设；不含 API Key、MVU、聊天或角色隐私资料。' }),
         ]);
         const json = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 8, name: 'prompt-preset-transfer-json', placeholder: '点击导出生成 JSON，或粘贴提示词预设 JSON 后导入', maxLength: MAX_PROMPT_BUNDLE_BYTES, ariaLabel: '提示词预设导入导出 JSON' });
         section.appendChild(json);
@@ -1155,8 +1140,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                     document.functionBindings[functionKey].promptPresetId = null;
                 }
                 for (const contentMode of CONTENT_MODES) {
-                    const binding = document.functionModeBindings?.[functionKey]?.[contentMode];
-                    if (binding && !availablePromptIds.has(binding.promptPresetId)) binding.promptPresetId = null;
+                    const binding = document.functionModeBindings[functionKey][contentMode];
+                    if (!availablePromptIds.has(binding.promptPresetId)) binding.promptPresetId = null;
                 }
             }
             settingsStore.importJson(JSON.stringify(document));

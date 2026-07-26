@@ -150,8 +150,3 @@ export function parseGroupLlmJson(raw, maxChars = 4_000) {
         return null;
     }
 }
-
-export function readEnabledPromptContent(promptPreset) {
-    if (!ownRecord(promptPreset) || ownData(promptPreset, 'enabled') !== true) return '';
-    return cleanGroupLlmText(ownData(promptPreset, 'content'), 12_000);
-}

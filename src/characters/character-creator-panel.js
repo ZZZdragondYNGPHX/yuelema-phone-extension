@@ -151,7 +151,6 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     const heroCopy = element('div', { className: 'yl-character-hero-copy' });
     heroCopy.appendChild(element('p', { className: 'yl-character-hero-eyebrow', text: 'CREATE A NEW CONNECTION' }));
     heroCopy.appendChild(element('h2', { className: 'yl-character-hero-title', text: '让下一次心动，从一份认真资料开始' }));
-    heroCopy.appendChild(element('p', { className: 'yl-character-hero-description', text: '写下 TA 会怎样介绍自己、期待怎样的相遇，以及哪些边界值得被尊重。这里始终是你的私人编辑草稿。' }));
     const heroTrust = element('div', { className: 'yl-character-hero-trust' });
     append(heroTrust, [
         element('span', { className: 'yl-character-trust-chip', text: '仅限明确成年人' }),
@@ -173,21 +172,20 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     const publicSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-public' });
     sectionHeading(publicSection, {
         step: '01', eyebrow: 'PUBLIC PROFILE', title: '先做一张让人愿意停留的心动名片',
-        description: '这些内容会组成推荐页上的公开资料。用自然、具体的表达，比堆砌完美人设更容易让人产生真实兴趣。',
     });
-    const identityGroup = fieldGroup(publicSection, '基本印象', '先用几项关键信息勾勒出 TA 的轮廓。', 'yl-character-field-grid yl-character-field-grid-two');
+    const identityGroup = fieldGroup(publicSection, '基本印象', '', 'yl-character-field-grid yl-character-field-grid-two');
     textField(identityGroup, '怎么称呼 TA', { name: 'public-昵称', required: true, placeholder: '例如：林夏' });
     textField(identityGroup, '公开年龄段', { name: 'public-年龄段', required: true, placeholder: '例如：25-29', hint: '页面展示年龄段；实际年龄在私密资料中单独校验。' });
     textField(identityGroup, '性别认同', { name: 'public-性别', required: true, placeholder: '例如：女 / 男 / 非二元' });
     textField(identityGroup, '期待遇见谁', { name: 'public-性取向', required: true, placeholder: '例如：双性恋 / 异性恋' });
 
-    const encounterGroup = fieldGroup(publicSection, '相遇坐标', '让推荐更像一次可能发生的相遇，而不是一份冷冰冰的档案。', 'yl-character-field-grid yl-character-field-grid-two');
+    const encounterGroup = fieldGroup(publicSection, '相遇坐标', '', 'yl-character-field-grid yl-character-field-grid-two');
     textField(encounterGroup, '所在城市', { name: 'public-城市', required: true, placeholder: '例如：上海' });
     textField(encounterGroup, '愿意相遇的距离', { name: 'public-距离范围', required: true, placeholder: '例如：10 km / 同城' });
     textField(encounterGroup, '这次想寻找什么', { name: 'public-寻找意图', required: true, placeholder: '例如：先聊天，再认真约会', className: 'yl-character-field-wide' });
     textField(encounterGroup, '一句让人想继续了解的介绍', { name: 'public-简介', required: true, rows: 3, placeholder: '写下日常里的小习惯、喜欢的相处方式，或最近正期待的一件事。', className: 'yl-character-field-wide' });
 
-    const tagsGroup = fieldGroup(publicSection, '心动关键词', '用逗号分隔。少而准确的关键词，比一长串标签更有记忆点。', 'yl-character-field-grid yl-character-field-grid-two yl-character-tags-group');
+    const tagsGroup = fieldGroup(publicSection, '心动关键词', '', 'yl-character-field-grid yl-character-field-grid-two yl-character-tags-group');
     const tagCopy = {
         兴趣标签: ['兴趣与爱好', '例如：电影, 咖啡, 城市漫步'],
         生活方式标签: ['生活节奏', '例如：夜猫子, 周末早起, 偶尔小酌'],
@@ -196,13 +194,12 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     };
     for (const key of TAG_KEYS) {
         const [label, placeholder] = tagCopy[key];
-        textField(tagsGroup, label, { name: `tag-${key}`, placeholder, hint: '可留空，多个关键词请用逗号分隔。' });
+        textField(tagsGroup, label, { name: `tag-${key}`, placeholder });
     }
 
     const avatarSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-avatar' });
     sectionHeading(avatarSection, {
         step: '02', eyebrow: 'PROFILE PHOTO', title: '选一张有故事感的头像',
-        description: '可以先用占位头像，也可以填写公开图片地址或选择本地图片。头像只负责第一眼，资料本身才决定是否想继续认识。',
     });
     const avatarLayout = element('div', { className: 'yl-character-avatar-layout' });
     const avatarSourceField = element('label', { className: 'yl-character-field yl-character-avatar-source' });
@@ -227,7 +224,6 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     const aiSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-ai' });
     sectionHeading(aiSection, {
         step: '02 · 可选', eyebrow: 'CREATIVE ASSISTANT', title: 'AI 补全 / 完整创作：还没想完整？让 AI 帮你补上灵感',
-        description: '两个入口都只会把结果放进编辑器草稿，不会自动登记、保存模板或生成头像。你可以像修改约会简介一样逐项检查后再决定。',
     });
     const aiChoices = element('div', { className: 'yl-character-ai-choices' });
     const completionCard = element('article', { className: 'yl-character-ai-choice yl-character-ai-choice-completion' });
@@ -313,7 +309,6 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     const importSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-import-card' });
     sectionHeading(importSection, {
         eyebrow: 'IMPORT / EXPORT', title: '导入或导出角色模板',
-        description: '粘贴 yuelema.character/v1 JSON。载入只会覆盖编辑器草稿，不会自动登记角色。',
     });
     const templateText = element('textarea', { name: 'character-template-json', rows: 6, placeholder: '在这里粘贴 yuelema.character/v1 JSON 模板' });
     templateText.className = 'yl-character-template-textarea';
