@@ -212,7 +212,7 @@ test('layout storage write failure silently preserves phone without rebuilding U
         assert.deepEqual(actionCalls, []);
     } finally { mounted.destroy(); }
 });
-test('layout changes preserve the CSS anchor before drag and clamp an already dragged panel to the new desktop size', async () => {
+test('desktop dragging remains clamped and switching back to phone restores centered geometry', async () => {
     const previousDefaultView = miniDom.document.defaultView;
     const previousDocumentElement = miniDom.document.documentElement;
     miniDom.document.defaultView = { innerWidth: 400, innerHeight: 300 };
@@ -239,20 +239,20 @@ test('layout changes preserve the CSS anchor before drag and clamp an already dr
         };
 
         click(toggle);
+        assert.equal(panel.dataset.uiLayout, 'desktop');
         assert.equal(styles.left, undefined, '未拖动时切换不得把 CSS right/bottom 锚点改成 left/top');
         assert.equal(styles.top, undefined);
-        click(toggle);
         header.dispatchEvent(pointerEvent('pointerdown', { pointerId: 71, clientX: 150, clientY: 80 }));
         header.dispatchEvent(pointerEvent('pointermove', { pointerId: 71, clientX: 260, clientY: 160 }));
         header.dispatchEvent(pointerEvent('pointerup', { pointerId: 71, clientX: 260, clientY: 160 }));
-        assert.equal(styles.left, '170px');
-        assert.equal(styles.top, '115px');
+        assert.equal(styles.left, '20px', '电脑端拖动应限制在当前 viewport 内，并保留 transform 偏移补偿');
+        assert.equal(styles.top, '45px');
 
         click(toggle);
         await flushUi();
-        assert.equal(panel.dataset.uiLayout, 'desktop');
-        assert.equal(styles.left, '20px', '电脑端变宽后应在 viewport 内重新 clamp，并保留 transform 偏移补偿');
-        assert.equal(styles.top, '45px');
+        assert.equal(panel.dataset.uiLayout, 'phone');
+        assert.equal(styles.left, undefined, '回到手机布局必须清除 desktop 的自定义拖动坐标');
+        assert.equal(styles.top, undefined);
     } finally {
         mounted.destroy();
         miniDom.document.defaultView = previousDefaultView;
@@ -876,13 +876,15 @@ test('launcher drag is wired into app-shell, suppresses the drag click, and keep
     }
 });
 
-test('phone header pointer drag clamps the panel, cancels cleanly, and ignores the close button', () => {
+test('desktop header pointer drag clamps the panel, cancels cleanly, and ignores the close button', () => {
     const previousDefaultView = miniDom.document.defaultView;
     const previousDocumentElement = miniDom.document.documentElement;
     miniDom.document.defaultView = { innerWidth: 400, innerHeight: 300 };
     miniDom.document.documentElement = { clientWidth: 400, clientHeight: 300 };
+    const storage = createMemoryStorage();
+    storage.setItem('yuelema.ui-layout/v1', 'desktop');
     const mounted = mountPhoneApp({
-        documentRef: miniDom.document, rootId: 'ylm-test-panel-drag',
+        documentRef: miniDom.document, rootId: 'ylm-test-panel-drag', uiLayoutStorage: storage,
         actionBridge: { emit() {}, isPending() { return false; } },
         settingsStore: null, llmClient: null, characterLibrary: null, readState: emptyReadResult,
     });
@@ -920,6 +922,39 @@ test('phone header pointer drag clamps the panel, cancels cleanly, and ignores t
         assert.equal(capture.captureCalls, captureCallsBeforeClose, '关闭按钮不得启动 header 拖动');
         click(close);
         assert.equal(panel.hidden, true);
+    } finally {
+        mounted.destroy();
+        miniDom.document.defaultView = previousDefaultView;
+        miniDom.document.documentElement = previousDocumentElement;
+    }
+});
+
+test('phone panel centers inside visualViewport and keeps the header non-draggable', () => {
+    const previousDefaultView = miniDom.document.defaultView;
+    const previousDocumentElement = miniDom.document.documentElement;
+    miniDom.document.defaultView = {
+        innerWidth: 720, innerHeight: 1280,
+        visualViewport: { offsetLeft: 24, offsetTop: 80, width: 360, height: 640, addEventListener() {} },
+    };
+    miniDom.document.documentElement = { clientWidth: 720, clientHeight: 1280 };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-phone-visual-viewport',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: emptyReadResult,
+    });
+    try {
+        const panel = miniDom.document.querySelector('.yl-phone-panel');
+        const header = miniDom.document.querySelector('.yl-phone-header');
+        assert.ok(panel && header);
+        const styles = installStyleRecorder(panel);
+        const capture = installPointerCaptureStub(header);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        assert.equal(styles['--yl-phone-viewport-left'], '24px');
+        assert.equal(styles['--yl-phone-viewport-top'], '80px');
+        assert.equal(styles['--yl-phone-viewport-width'], '360px');
+        assert.equal(styles['--yl-phone-viewport-height'], '640px');
+        header.dispatchEvent(pointerEvent('pointerdown', { pointerId: 17, pointerType: 'touch', clientX: 180, clientY: 120 }));
+        assert.equal(capture.captureCalls, 0, '手机布局不得把滚动手势当成窗口拖动');
     } finally {
         mounted.destroy();
         miniDom.document.defaultView = previousDefaultView;

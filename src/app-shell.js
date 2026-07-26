@@ -544,6 +544,28 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             height: Math.max(1, Number(view?.innerHeight || documentRef.documentElement?.clientHeight || 640)),
         };
     }
+    function phoneVisualViewport() {
+        const visualViewport = documentRef.defaultView?.visualViewport;
+        const width = Number(visualViewport?.width);
+        const height = Number(visualViewport?.height);
+        if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+            return {
+                left: Number.isFinite(Number(visualViewport.offsetLeft)) ? Number(visualViewport.offsetLeft) : 0,
+                top: Number.isFinite(Number(visualViewport.offsetTop)) ? Number(visualViewport.offsetTop) : 0,
+                width,
+                height,
+            };
+        }
+        return { left: 0, top: 0, ...viewportSize() };
+    }
+    function syncPhonePanelViewport() {
+        if (uiLayoutMode !== 'phone' || !panel.style?.setProperty) return;
+        const viewport = phoneVisualViewport();
+        panel.style.setProperty('--yl-phone-viewport-left', Math.round(viewport.left) + 'px');
+        panel.style.setProperty('--yl-phone-viewport-top', Math.round(viewport.top) + 'px');
+        panel.style.setProperty('--yl-phone-viewport-width', Math.max(1, Math.round(viewport.width)) + 'px');
+        panel.style.setProperty('--yl-phone-viewport-height', Math.max(1, Math.round(viewport.height)) + 'px');
+    }
     function clampPanelPosition(left, top, width, height) {
         const viewport = viewportSize();
         const margin = 0;
@@ -576,6 +598,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         uiLayoutMode = next;
         root.dataset.uiLayout = next;
         panel.dataset.uiLayout = next;
+        if (next === 'phone') {
+            clearPanelCustomPosition();
+            syncPhonePanelViewport();
+        }
     }
     function announceUiLayout(message) {
         uiLayoutStatus.textContent = '';
@@ -599,6 +625,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             : '已保留手机端界面。');
         clampCustomPanelPosition();
     }
+    function clearPanelCustomPosition() {
+        panelHasCustomPosition = false;
+        if (!panel.style?.removeProperty) return;
+        for (const property of ['left', 'top', 'right', 'bottom']) panel.style.removeProperty(property);
+    }
     function setPanelPosition(left, top) {
         if (!panel.style?.setProperty) return;
         panelHasCustomPosition = true;
@@ -616,7 +647,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return false;
     }
     function beginPanelDrag(event) {
-        if (!open || event?.isPrimary === false || (event?.pointerType === 'mouse' && Number(event.button) !== 0) || isHeaderControl(event?.target)) return;
+        if (uiLayoutMode === 'phone' || !open || event?.isPrimary === false || (event?.pointerType === 'mouse' && Number(event.button) !== 0) || isHeaderControl(event?.target)) return;
         const rect = typeof panel.getBoundingClientRect === 'function' ? panel.getBoundingClientRect() : null;
         const width = Number(rect?.width);
         const height = Number(rect?.height);
@@ -704,7 +735,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         root.classList.toggle('is-open', open);
         launcher.setAttribute('aria-pressed', String(open));
         launcher.setAttribute('aria-label', open ? '关闭约了吗小手机' : '打开约了吗小手机');
-        if (open) refreshState();
+        if (open) {
+            syncPhonePanelViewport();
+            refreshState();
+        }
         else {
             ctx.stopGroupAutoTimer();
             ctx.stopForumAutoTimer();
@@ -1442,8 +1476,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(root, documentRef, 'pointermove', movePanelDrag, abortController.signal);
     listen(root, documentRef, 'pointerup', endPanelDrag, abortController.signal);
     listen(root, documentRef, 'pointercancel', endPanelDrag, abortController.signal);
-    if (documentRef.defaultView?.addEventListener) {
-        listen(root, documentRef.defaultView, 'resize', () => clampCustomPanelPosition(), abortController.signal);
+    const windowRef = documentRef.defaultView;
+    const handleViewportChange = () => {
+        if (uiLayoutMode === 'phone') syncPhonePanelViewport();
+        else clampCustomPanelPosition();
+    };
+    if (windowRef?.addEventListener) listen(root, windowRef, 'resize', handleViewportChange, abortController.signal);
+    if (windowRef?.visualViewport?.addEventListener) {
+        listen(root, windowRef.visualViewport, 'resize', handleViewportChange, abortController.signal);
+        listen(root, windowRef.visualViewport, 'scroll', handleViewportChange, abortController.signal);
     }
     listen(operationDismiss, operationDismiss, 'click', hideOperationDialog, abortController.signal);
     listen(operationClose, operationClose, 'click', hideOperationDialog, abortController.signal);

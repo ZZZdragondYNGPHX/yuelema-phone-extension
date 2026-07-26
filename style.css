@@ -796,6 +796,11 @@
     font-family: var(--yl-font-body);
     /* 根层不吃事件，避免透明区域盖住宿主；子层恢复可交互 */
     pointer-events: none;
+    /* 打开时由 JS 更新为 visualViewport；这些值是无该 API 时的布局视口回退。 */
+    --yl-phone-viewport-left: 0px;
+    --yl-phone-viewport-top: 0px;
+    --yl-phone-viewport-width: 100vw;
+    --yl-phone-viewport-height: 100vh;
 }
 .yl-phone-extension > * { pointer-events: auto; }
 /* —— 悬浮球：56px，SVG logo，透明度呼吸替代大光环脉冲 —— */
@@ -1030,12 +1035,17 @@
 @media (max-width: 640px), (pointer: coarse) {
     .yl-phone-extension { right: max(10px, env(safe-area-inset-right)); bottom: max(10px, env(safe-area-inset-bottom)); }
     .yl-phone-extension[data-ui-layout="phone"] .yl-phone-panel {
+        /* 以 visualViewport 为可见边界居中：Termux/WebView 的布局视口可能大于实际屏幕。 */
         position: fixed;
-        right: max(8px, env(safe-area-inset-right));
-        bottom: max(8px, env(safe-area-inset-bottom));
-        width: min(100vw - 16px, 560px);
-        height: min(100dvh - 16px, 820px);
+        top: var(--yl-phone-viewport-top);
+        right: calc(100vw - var(--yl-phone-viewport-left) - var(--yl-phone-viewport-width));
+        bottom: calc(100vh - var(--yl-phone-viewport-top) - var(--yl-phone-viewport-height));
+        left: var(--yl-phone-viewport-left);
+        width: min(560px, calc(var(--yl-phone-viewport-width) - 16px));
+        height: min(820px, calc(var(--yl-phone-viewport-height) - 16px));
+        max-height: calc(var(--yl-phone-viewport-height) - 16px);
         min-height: 0;
+        margin: auto;
         border-radius: var(--yl-radius-sheet);
     }
     .yl-phone-extension[data-ui-layout="phone"] .yl-phone-drag-hint { display: none; }

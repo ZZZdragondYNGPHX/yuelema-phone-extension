@@ -231,6 +231,26 @@ test('粗指针增强不得替换显式 desktop 布局', () => {
     assert.doesNotMatch(coarse.body, /data-ui-layout="desktop"/u, '粗指针规则不得为 desktop 注入手机几何');
 });
 
+test('手机面板以实际可视视口居中且保留 8px 安全边界', () => {
+    const shell = section('shell');
+    const coarseIndex = shell.search(/@media\s*\(max-width:\s*640px\),\s*\(pointer:\s*coarse\)/u);
+    assert.notEqual(coarseIndex, -1, '缺少粗指针媒体块');
+    const coarse = balancedBlock(shell, shell.indexOf('{', coarseIndex), '粗指针媒体块');
+    const panel = blockAfter(coarse.body, '.yl-phone-extension[data-ui-layout="phone"] .yl-phone-panel');
+    assertDeclarations(panel, [
+        /top\s*:\s*var\(--yl-phone-viewport-top\)/u,
+        /left\s*:\s*var\(--yl-phone-viewport-left\)/u,
+        /right\s*:\s*calc\(100vw\s*-\s*var\(--yl-phone-viewport-left\)\s*-\s*var\(--yl-phone-viewport-width\)\)/u,
+        /bottom\s*:\s*calc\(100vh\s*-\s*var\(--yl-phone-viewport-top\)\s*-\s*var\(--yl-phone-viewport-height\)\)/u,
+        /width\s*:\s*min\(560px,\s*calc\(var\(--yl-phone-viewport-width\)\s*-\s*16px\)\)/u,
+        /height\s*:\s*min\(820px,\s*calc\(var\(--yl-phone-viewport-height\)\s*-\s*16px\)\)/u,
+        /max-height\s*:\s*calc\(var\(--yl-phone-viewport-height\)\s*-\s*16px\)/u,
+        /margin\s*:\s*auto/u,
+        /min-height\s*:\s*0/u,
+    ], '手机可视视口居中面板');
+    assert.doesNotMatch(panel, /(?:width|height)\s*:\s*min\(100(?:d)?v[wh]\s*-/u, '不得回归为缺少 calc() 的无效 min() 表达式');
+});
+
 test('设计系统 2.0 组件合同：Button/ListRow/Seg/Sheet/Empty/Skeleton/Badge 全部施样', () => {
     const components = section('components');
     const primary = blockAfter(components, '.yl-btn--primary');
