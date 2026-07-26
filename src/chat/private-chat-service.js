@@ -1,6 +1,6 @@
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
-import { normalizePrivateChatResponse, projectPrivateChatResponseError } from './private-chat-response.js';
+import { normalizePrivateChatResponse, projectPrivateChatResponseDiagnostic, projectPrivateChatResponseError } from './private-chat-response.js';
 import {
     DEFAULT_CHAT_SUMMARY_SETTINGS,
     listConversationSummaryRecords,
@@ -12,6 +12,104 @@ import {
 } from './conversation-summary.js';
 
 const MAX_MODEL_RESPONSE_CHARS = 8_000;
+
+/**
+ * 控制台诊断带出通道（阶段 77 安全控制台接线）。
+ *
+ * action-bridge（唯一 MVU 写入边界，禁改）会把服务失败收窄为
+ * `{ ok, status, code, message }`，丢弃其余字段；因此服务层在每次失败时把
+ * 纯数据诊断记录暂存在这里，由持有台账 handle 的页面层通过
+ * `consumePrivateChatDiagnostics` 一次性取走并经 buildErrorDetail 格式化进
+ * 控制台 detail。总结的多次重试会按发生顺序追加多条记录。
+ *
+ * 调用方合同硬线：记录只含阶段/错误码/HTTP 状态/字段名/期望摘要等，
+ * 绝不包含关系分数值、阈值数值、隐藏资料值、对话原文、提示词或凭据。
+ */
+const MAX_DIAGNOSTIC_TARGETS = 32;
+const MAX_DIAGNOSTIC_RECORDS_PER_TARGET = 6;
+const MAX_DIAGNOSTIC_TEXT_LENGTH = 300;
+const diagnosticsByTarget = new Map();
+
+function diagnosticText(value) {
+    if (typeof value !== 'string') return '';
+    const text = value.trim();
+    return text.length > MAX_DIAGNOSTIC_TEXT_LENGTH ? `${text.slice(0, MAX_DIAGNOSTIC_TEXT_LENGTH)}…` : text;
+}
+
+/**
+ * 控制台脱敏器会把 ≥32 字符的连续 [A-Za-z0-9+/=_-] token 视作疑似凭据并替换
+ * 为 [已脱敏]；超长错误码改用空格分词形式呈现，信息不丢也不触发误脱敏。
+ */
+function presentDiagnosticCode(code) {
+    const text = diagnosticText(typeof code === 'string' ? code : '');
+    if (!text) return '';
+    return text.length >= 32 ? text.split('_').join(' ') : text;
+}
+
+/** 把任意异常收敛成 buildErrorDetail 可直接消费的纯数据错误摘要。 */
+function describeDiagnosticError(error) {
+    if (!error || typeof error !== 'object') return null;
+    const record = {};
+    const name = diagnosticText(error.name);
+    const message = diagnosticText(error.message);
+    if (name) record.name = name;
+    if (message) record.message = message;
+    const code = presentDiagnosticCode(typeof error.code === 'string' ? error.code : '');
+    if (code) record.code = code;
+    const status = [error.status, error.statusCode, error.httpStatus].find((value) => Number.isInteger(value));
+    if (status !== undefined) record.status = status;
+    return Object.keys(record).length ? record : null;
+}
+
+/** 共享 LLM 客户端若带出响应片段（bodyExcerpt），折叠为“实际”摘要；缺失时优雅降级。 */
+function llmErrorActual(error) {
+    const excerpt = diagnosticText(error && typeof error === 'object' && typeof error.bodyExcerpt === 'string' ? error.bodyExcerpt : '');
+    return excerpt ? `响应片段：${excerpt}` : undefined;
+}
+
+function recordDiagnostic(kind, targetUid, record) {
+    const key = `${String(kind)}|${String(targetUid ?? '')}`;
+    if (!diagnosticsByTarget.has(key)) {
+        if (diagnosticsByTarget.size >= MAX_DIAGNOSTIC_TARGETS) {
+            const oldest = diagnosticsByTarget.keys().next().value;
+            diagnosticsByTarget.delete(oldest);
+        }
+        diagnosticsByTarget.set(key, []);
+    }
+    const records = diagnosticsByTarget.get(key);
+    if (records.length >= MAX_DIAGNOSTIC_RECORDS_PER_TARGET) records.shift();
+    const normalized = {};
+    for (const [field, value] of [
+        ['stage', diagnosticText(record.stage)],
+        ['code', presentDiagnosticCode(record.code)],
+        ['field', diagnosticText(record.field)],
+        ['expected', diagnosticText(record.expected)],
+        ['actual', diagnosticText(record.actual)],
+        ['hint', diagnosticText(record.hint)],
+    ]) {
+        if (value) normalized[field] = value;
+    }
+    normalized.error = record.error && typeof record.error === 'object' ? Object.freeze({ ...record.error }) : null;
+    records.push(Object.freeze(normalized));
+}
+
+/**
+ * 页面层（唯一持有台账 handle 的调用层）一次性取走并清空指定目标的诊断记录。
+ * kind 为 'private_chat' 或 'chat_summary'；返回冻结数组，可能为空。
+ */
+export function consumePrivateChatDiagnostics(kind, targetUid) {
+    const key = `${String(kind)}|${String(targetUid ?? '')}`;
+    const records = diagnosticsByTarget.get(key) ?? [];
+    diagnosticsByTarget.delete(key);
+    return Object.freeze([...records]);
+}
+
+/** 模型响应无法按 JSON 解析时的“实际”摘要：只报长度/类型，绝不带响应原文。 */
+function describeUnparsableResponse(raw) {
+    if (typeof raw !== 'string') return '非文本响应';
+    if (!raw.length) return '空响应';
+    return `响应长度 ${raw.length} 字符（非合法 JSON 对象或超出 ${MAX_MODEL_RESPONSE_CHARS} 字符上限）`;
+}
 const CHAT_SESSION_UID_PATTERN = /^chat_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const NPC_UID_PATTERN = /^npc_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]/u;
@@ -229,21 +327,42 @@ function parseResponseJson(raw) {
 export async function generatePrivateChatReply({ state, sessionUid, npcUid, playerMessage, settingsStore, llmClient, signal } = {}) {
     const summarySettings = readSummarySettings(settingsStore);
     const builtContext = buildPrivateChatContext({ state, sessionUid, npcUid, playerMessage, summaryEnabled: summarySettings.enabled });
-    if (!builtContext.ok) return { ok: false, code: builtContext.code, message: '当前会话不可继续发送消息。' };
-    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return { ok: false, code: 'private_chat_settings_unavailable', message: '私聊设置暂不可用。' };
-    if (!llmClient || typeof llmClient.chat !== 'function') return { ok: false, code: 'private_chat_llm_unavailable', message: '当前浏览器未提供私聊模型连接。' };
+    if (!builtContext.ok) {
+        recordDiagnostic('private_chat', sessionUid, { stage: '请求校验', code: builtContext.code, hint: '会话/角色状态或玩家消息未通过发送前校验' });
+        return { ok: false, code: builtContext.code, message: '当前会话不可继续发送消息。' };
+    }
+    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') {
+        recordDiagnostic('private_chat', sessionUid, { stage: '设置读取', code: 'private_chat_settings_unavailable', hint: '设置存储不可用，无法解析“聊天”功能绑定' });
+        return { ok: false, code: 'private_chat_settings_unavailable', message: '私聊设置暂不可用。' };
+    }
+    if (!llmClient || typeof llmClient.chat !== 'function') {
+        recordDiagnostic('private_chat', sessionUid, { stage: '连接检查', code: 'private_chat_llm_unavailable', hint: '浏览器侧未注入可用的模型客户端' });
+        return { ok: false, code: 'private_chat_llm_unavailable', message: '当前浏览器未提供私聊模型连接。' };
+    }
 
     let resolved;
     try { resolved = settingsStore.resolveFunction('chat', { contentMode: builtContext.context.contentMode }); }
-    catch { return { ok: false, code: 'private_chat_settings_invalid', message: '私聊预设无效，请检查设置。' }; }
-    if (!resolved.connectionPreset) return { ok: false, code: 'private_chat_connection_missing', message: '请先为“聊天”绑定连接预设或设置默认连接。' };
+    catch (error) {
+        recordDiagnostic('private_chat', sessionUid, { stage: '设置解析', code: 'private_chat_settings_invalid', error: describeDiagnosticError(error), hint: '“聊天”功能绑定解析抛出异常' });
+        return { ok: false, code: 'private_chat_settings_invalid', message: '私聊预设无效，请检查设置。' };
+    }
+    if (!resolved.connectionPreset) {
+        recordDiagnostic('private_chat', sessionUid, { stage: '连接检查', code: 'private_chat_connection_missing', field: 'chat', hint: '“聊天”功能未绑定连接预设，也没有默认连接' });
+        return { ok: false, code: 'private_chat_connection_missing', message: '请先为“聊天”绑定连接预设或设置默认连接。' };
+    }
 
     try {
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeMessages(builtContext.context, resolved.promptPreset), signal });
         const parsed = parseResponseJson(completion?.text);
-        if (!parsed) return { ok: false, code: 'private_chat_invalid_json', message: '快速模型没有返回可用的私聊回复；本条消息未写入。' };
+        if (!parsed) {
+            recordDiagnostic('private_chat', sessionUid, { stage: '响应解析', code: 'private_chat_invalid_json', expected: '合法 JSON 对象', actual: describeUnparsableResponse(completion?.text) });
+            return { ok: false, code: 'private_chat_invalid_json', message: '快速模型没有返回可用的私聊回复；本条消息未写入。' };
+        }
         return { ok: true, response: normalizePrivateChatResponse(parsed, { contentMode: builtContext.context.contentMode }), playerMessage: builtContext.context.playerMessage };
     } catch (error) {
+        const codecDiagnostic = projectPrivateChatResponseDiagnostic(error);
+        if (codecDiagnostic) recordDiagnostic('private_chat', sessionUid, { stage: '响应校验', ...codecDiagnostic });
+        else recordDiagnostic('private_chat', sessionUid, { stage: '模型请求', code: toPublicLlmError(error).code, error: describeDiagnosticError(error), actual: llmErrorActual(error) });
         try {
             const projected = projectPrivateChatResponseError(error);
             if (projected.code !== 'private_chat_response_invalid') return { ok: false, ...projected };
@@ -262,24 +381,46 @@ export async function generatePrivateChatSummary({ state, sessionUid, npcUid, su
             chat_summary_record_not_found: '这条总结记录已不存在。',
             chat_summary_source_expired: '原始聊天记录已不在当前会话缓存中，无法重新总结。',
         };
+        // 无待总结消息/记录不存在属于静默跳过路径，不产生失败诊断噪音。
+        if (!['chat_summary_no_pending_messages', 'chat_summary_record_not_found'].includes(built.code)) {
+            recordDiagnostic('chat_summary', sessionUid, { stage: '请求校验', code: built.code, hint: '总结目标会话/记录未通过校验' });
+        }
         return { ok: false, code: built.code, message: messages[built.code] || '当前会话暂时无法总结。' };
     }
-    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return { ok: false, code: 'chat_summary_settings_unavailable', message: '总结设置暂不可用。' };
-    if (!llmClient || typeof llmClient.chat !== 'function') return { ok: false, code: 'chat_summary_llm_unavailable', message: '当前浏览器未提供总结模型连接。' };
+    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') {
+        recordDiagnostic('chat_summary', sessionUid, { stage: '设置读取', code: 'chat_summary_settings_unavailable', hint: '设置存储不可用，无法解析“对话总结”功能绑定' });
+        return { ok: false, code: 'chat_summary_settings_unavailable', message: '总结设置暂不可用。' };
+    }
+    if (!llmClient || typeof llmClient.chat !== 'function') {
+        recordDiagnostic('chat_summary', sessionUid, { stage: '连接检查', code: 'chat_summary_llm_unavailable', hint: '浏览器侧未注入可用的模型客户端' });
+        return { ok: false, code: 'chat_summary_llm_unavailable', message: '当前浏览器未提供总结模型连接。' };
+    }
 
     let resolved;
     try { resolved = settingsStore.resolveFunction('chat_summary', { contentMode: built.context.contentMode }); }
-    catch { return { ok: false, code: 'chat_summary_settings_invalid', message: '总结预设无效，请检查设置。' }; }
-    if (!resolved.connectionPreset) return { ok: false, code: 'chat_summary_connection_missing', message: '请先为“对话总结”绑定连接预设或设置默认连接。' };
+    catch (error) {
+        recordDiagnostic('chat_summary', sessionUid, { stage: '设置解析', code: 'chat_summary_settings_invalid', error: describeDiagnosticError(error), hint: '“对话总结”功能绑定解析抛出异常' });
+        return { ok: false, code: 'chat_summary_settings_invalid', message: '总结预设无效，请检查设置。' };
+    }
+    if (!resolved.connectionPreset) {
+        recordDiagnostic('chat_summary', sessionUid, { stage: '连接检查', code: 'chat_summary_connection_missing', field: 'chat_summary', hint: '“对话总结”功能未绑定连接预设，也没有默认连接' });
+        return { ok: false, code: 'chat_summary_connection_missing', message: '请先为“对话总结”绑定连接预设或设置默认连接。' };
+    }
 
     try {
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeSummaryMessages(built.context, resolved.promptPreset), signal });
         const parsed = parseResponseJson(completion?.text);
         const summary = parsed ? normalizeGeneratedConversationSummary(parsed) : null;
-        if (!summary) return { ok: false, code: 'chat_summary_invalid_json', message: '总结模型没有返回可用的总结；本次不会覆盖已有记录。' };
+        if (!summary) {
+            recordDiagnostic('chat_summary', sessionUid, parsed
+                ? { stage: '响应校验', code: 'chat_summary_invalid_json', field: 'summary', expected: '仅含 summary 单字段、1-2400 字安全纯文本' }
+                : { stage: '响应解析', code: 'chat_summary_invalid_json', expected: '合法 JSON 对象', actual: describeUnparsableResponse(completion?.text) });
+            return { ok: false, code: 'chat_summary_invalid_json', message: '总结模型没有返回可用的总结；本次不会覆盖已有记录。' };
+        }
         return { ok: true, summary, source: built.source };
     } catch (error) {
         const publicError = toPublicLlmError(error);
+        recordDiagnostic('chat_summary', sessionUid, { stage: '模型请求', code: publicError.code, error: describeDiagnosticError(error), actual: llmErrorActual(error) });
         return { ok: false, code: publicError.code, message: publicError.message };
     }
 }

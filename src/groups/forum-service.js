@@ -1,7 +1,7 @@
 import { normalizeImageDirective } from '../images/image-directive.js';
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
-import { buildPublicGroupLlmContext, cleanGroupLlmText, isSafeGroupLlmOutput, parseGroupLlmJson, projectPublicPlayerProfile } from './group-llm-safety.js';
+import { buildPublicGroupLlmContext, cleanGroupLlmText, groupDiagnostic, groupResponseParseDiagnostic, isSafeGroupLlmOutput, parseGroupLlmJson, projectGroupLlmErrorDiagnostic, projectPublicPlayerProfile } from './group-llm-safety.js';
 import { buildGroupBrowseModel } from './group-discovery-service.js';
 import { FORUM_CHANNELS, forumChannelForTopic, groupForumProfileForModel, isKnownForumChannelTopic, normalizeGroupForumProfile, publicProfileToGroupForumProfile } from './group-forum-store.js';
 
@@ -80,12 +80,15 @@ export async function generateForumPostDraft({ state, groupUid, topic, settingsS
     try {
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeMessages(built.context, resolved.promptPreset), signal });
         const parsed = parseGroupLlmJson(unfenceJson(completion?.text));
-        if (!parsed) return failure('forum_invalid_json');
+        if (!parsed) return { ...failure('forum_invalid_json'), diagnostic: groupResponseParseDiagnostic(completion?.text) };
         const draft = normalizeForumPostDraft(parsed);
-        return draft ? Object.freeze({ ok: true, draft }) : failure('forum_response_invalid');
+        return draft ? Object.freeze({ ok: true, draft }) : {
+            ...failure('forum_response_invalid'),
+            diagnostic: groupDiagnostic({ stage: '响应校验', field: 'title/body', expected: '仅含 title（1-80 字）与 body（1-900 字）两个安全纯文本字段' }),
+        };
     } catch (error) {
         const publicError = toPublicLlmError(error);
-        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
+        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable, diagnostic: projectGroupLlmErrorDiagnostic(error) };
     }
 }
 
@@ -255,11 +258,15 @@ function communityContext(state) {
 
 /** Public-only context for the pull-to-refresh forum home call. */
 export function buildForumHomeRefreshContext({ state, existingTitles = [] } = {}) {
-    if (!ownRecord(state) || !Array.isArray(existingTitles) || existingTitles.length > 24) return updateFailure('forum_home_context_invalid');
+    if (!ownRecord(state) || !Array.isArray(existingTitles) || existingTitles.length > 24) {
+        return { ...updateFailure('forum_home_context_invalid'), diagnostic: groupDiagnostic({ stage: '上下文构建', field: 'existingTitles', expected: '状态可读且已有标题 ≤ 24 条', hint: '未调用模型' }) };
+    }
     const cleanTitles = [];
-    for (const title of existingTitles) {
+    for (const [index, title] of existingTitles.entries()) {
         const clean = cleanGroupLlmText(title, 120);
-        if (!clean || !isSafeGroupLlmOutput(clean, 120)) return updateFailure('forum_home_history_invalid');
+        if (!clean || !isSafeGroupLlmOutput(clean, 120)) {
+            return { ...updateFailure('forum_home_history_invalid'), diagnostic: groupDiagnostic({ stage: '上下文构建', field: `existingTitles[${index}]`, expected: '1-120 字安全纯文本标题', hint: '未调用模型' }) };
+        }
         cleanTitles.push(clean);
     }
     const community = communityContext(state);
@@ -282,18 +289,30 @@ export function buildForumHomeRefreshContext({ state, existingTitles = [] } = {}
  * the text safety scans are unchanged.
  */
 function normalizeForumHomeUpdate(value, knownPeople) {
-    if (!ownRecord(value)) return { code: 'forum_update_shape_invalid' };
+    const reject = (code, record = {}) => ({ code, diagnostic: groupDiagnostic({ stage: '响应校验', code, ...record }) });
+    if (!ownRecord(value)) return reject('forum_update_shape_invalid', { expected: '含 participants/posts 的 JSON 对象', actual: '非对象响应' });
     const participants = ownValue(value, 'participants') ?? [];
     const posts = ownValue(value, 'posts');
     if (!Array.isArray(participants) || participants.length > FORUM_CHANNELS.length || !Array.isArray(posts) || posts.length !== FORUM_CHANNELS.length) {
-        return { code: 'forum_update_shape_invalid' };
+        return reject('forum_update_shape_invalid', {
+            field: 'participants/posts',
+            expected: `posts 必须恰为 ${FORUM_CHANNELS.length} 篇（每频道一篇）、participants ≤ ${FORUM_CHANNELS.length}`,
+            actual: `participants ${Array.isArray(participants) ? participants.length + ' 条' : '非数组'}、posts ${Array.isArray(posts) ? posts.length + ' 篇' : '非数组'}`,
+        });
     }
     const names = new Set(knownPeople.map((profile) => String(profile.nickname).normalize('NFKC').toLowerCase()));
     const normalizedParticipants = [];
-    for (const participant of participants) {
+    for (const [index, participant] of participants.entries()) {
         let profile;
         try { profile = normalizeGroupForumProfile(completeForumParticipant(participant)); }
-        catch (error) { return { code: error?.code === 'NON_ADULT_PROFILE' ? 'forum_update_participant_underage' : 'forum_update_participant_invalid' }; }
+        catch (error) {
+            const underage = error?.code === 'NON_ADULT_PROFILE';
+            return reject(underage ? 'forum_update_participant_underage' : 'forum_update_participant_invalid', {
+                field: `participants[${index}]`,
+                actual: boundedText(ownValue(participant, 'nickname'), 80) || undefined,
+                hint: underage ? '临时角色 ageRange 缺少明确的成年写法（如“25-29岁”，数字均 ≥18）' : '临时角色公开资料字段无效',
+            });
+        }
         const key = profile.nickname.normalize('NFKC').toLowerCase();
         // A restated known person keeps the canonical community profile instead of failing the batch.
         if (names.has(key)) continue;
@@ -302,20 +321,26 @@ function normalizeForumHomeUpdate(value, knownPeople) {
     }
     const seenTopics = new Set();
     const normalizedPosts = [];
-    for (const post of posts) {
-        if (!ownRecord(post)) return { code: 'forum_update_post_invalid' };
+    for (const [index, post] of posts.entries()) {
+        if (!ownRecord(post)) return reject('forum_update_post_invalid', { field: `posts[${index}]`, expected: '帖子必须是 JSON 对象' });
         const author = boundedText(ownValue(post, 'author'), 80);
         const rawTopic = boundedText(ownValue(post, 'topic'), 80);
         const title = boundedText(ownValue(post, 'title'), 120);
         const body = boundedText(ownValue(post, 'body'), 1_200);
         const tags = normalizeDraftTags(ownValue(post, 'tags'));
-        if (!rawTopic || !isKnownForumChannelTopic(rawTopic)) return { code: 'forum_update_channel_invalid' };
+        if (!rawTopic || !isKnownForumChannelTopic(rawTopic)) {
+            return reject('forum_update_channel_invalid', { field: `posts[${index}].topic`, actual: rawTopic || '（空）', hint: '频道名必须精确等于固定频道名之一' });
+        }
         const topic = forumChannelForTopic(rawTopic).title;
-        if (seenTopics.has(topic)) return { code: 'forum_update_channel_invalid' };
-        if (!author || !names.has(author.normalize('NFKC').toLowerCase())) return { code: 'forum_update_author_unknown' };
+        if (seenTopics.has(topic)) {
+            return reject('forum_update_channel_invalid', { field: `posts[${index}].topic`, actual: topic, hint: '频道重复出帖，导致其他频道缺帖' });
+        }
+        if (!author || !names.has(author.normalize('NFKC').toLowerCase())) {
+            return reject('forum_update_author_unknown', { field: `posts[${index}].author`, actual: author || '（空）', hint: '作者昵称不在 knownPeople 或 participants 中' });
+        }
         if (!title || !body || tags === null
             || !isSafeGroupLlmOutput(topic, 80) || !isSafeGroupLlmOutput(title, 120) || !isSafeGroupLlmOutput(body, 1_200)) {
-            return { code: 'forum_update_post_invalid' };
+            return reject('forum_update_post_invalid', { field: `posts[${index}]`, hint: 'title/body/tags 超限、缺失或包含不允许的内容' });
         }
         seenTopics.add(topic);
         normalizedPosts.push(Object.freeze({ author, topic, title, body, tags: Object.freeze(tags) }));
@@ -357,14 +382,14 @@ export async function generateForumHomeRefresh({ state, existingTitles, refreshM
     try {
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeForumHomeMessages(built.context, resolved.promptPreset, refreshMode), signal });
         const parsed = parseGroupLlmJson(unfenceJson(completion?.text), FORUM_HOME_RESPONSE_MAX_CHARS);
-        if (!parsed) return updateFailure('forum_update_invalid_json');
+        if (!parsed) return { ...updateFailure('forum_update_invalid_json'), diagnostic: groupResponseParseDiagnostic(completion?.text, FORUM_HOME_RESPONSE_MAX_CHARS) };
         const result = normalizeForumHomeUpdate(parsed, built.context.knownPeople);
         return result.update
             ? Object.freeze({ ok: true, update: result.update, communityProfiles: built.context.knownPeople })
-            : updateFailure(result.code ?? 'forum_update_response_invalid');
+            : { ...updateFailure(result.code ?? 'forum_update_response_invalid'), diagnostic: result.diagnostic };
     } catch (error) {
         const publicError = toPublicLlmError(error);
-        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
+        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable, diagnostic: projectGroupLlmErrorDiagnostic(error) };
     }
 }
 
@@ -404,11 +429,15 @@ function normalizeExistingForumPostForContext(value, slot) {
 
 /** Public-only frame for updating every already cached forum post. It never carries IDs or private state. */
 export function buildForumExistingPostsUpdateContext({ state, posts } = {}) {
-    if (!ownRecord(state) || !Array.isArray(posts) || posts.length < 1 || posts.length > 80) return updateFailure('forum_existing_context_invalid');
+    if (!ownRecord(state) || !Array.isArray(posts) || posts.length < 1 || posts.length > 80) {
+        return { ...updateFailure('forum_existing_context_invalid'), diagnostic: groupDiagnostic({ stage: '上下文构建', field: 'posts', expected: '1-80 篇本地帖子数组', hint: '未调用模型' }) };
+    }
     const normalizedPosts = [];
     for (const [index, post] of posts.entries()) {
         const normalized = normalizeExistingForumPostForContext(post, index + 1);
-        if (!normalized) return updateFailure('forum_existing_context_invalid');
+        if (!normalized) {
+            return { ...updateFailure('forum_existing_context_invalid'), diagnostic: groupDiagnostic({ stage: '上下文构建', field: `posts[${index}]`, hint: '本地帖子字段/频道/作者资料未通过安全校验，未调用模型' }) };
+        }
         normalizedPosts.push(normalized);
     }
     return Object.freeze({ ok: true, context: Object.freeze({
@@ -418,23 +447,32 @@ export function buildForumExistingPostsUpdateContext({ state, posts } = {}) {
     }) });
 }
 
+/** 校验既有帖子批量更新。成功返回 { update }；失败返回 { diagnostic } 说明具体不合规 slot。 */
 function normalizeForumExistingPostsUpdate(value, expectedCount) {
-    if (!ownRecord(value) || Object.keys(value).sort().join(',') !== 'updates') return null;
+    const reject = (record) => ({ diagnostic: groupDiagnostic({ stage: '响应校验', ...record }) });
+    if (!ownRecord(value) || Object.keys(value).sort().join(',') !== 'updates') return reject({ field: 'updates', expected: '仅含 updates 单字段的 JSON 对象' });
     const updates = ownValue(value, 'updates');
-    if (!Array.isArray(updates) || updates.length !== expectedCount) return null;
+    if (!Array.isArray(updates) || updates.length !== expectedCount) {
+        return reject({ field: 'updates', expected: `恰含 ${expectedCount} 条（与现有帖子数一致）`, actual: Array.isArray(updates) ? `${updates.length} 条` : '非数组' });
+    }
     const slots = new Set();
     const normalized = [];
-    for (const item of updates) {
-        if (!ownRecord(item) || Object.keys(item).sort().join(',') !== 'body,slot,tags,title') return null;
+    for (const [index, item] of updates.entries()) {
+        if (!ownRecord(item) || Object.keys(item).sort().join(',') !== 'body,slot,tags,title') return reject({ field: `updates[${index}]`, expected: '仅含 slot/title/body/tags 字段的记录' });
         const slot = ownValue(item, 'slot');
         const title = boundedText(ownValue(item, 'title'), 120);
         const body = boundedText(ownValue(item, 'body'), 360);
         const tags = normalizeDraftTags(ownValue(item, 'tags'));
-        if (!Number.isInteger(slot) || slot < 1 || slot > expectedCount || slots.has(slot) || !title || !body || !isSafeGroupLlmOutput(title, 120) || !isSafeGroupLlmOutput(body, 360) || tags === null) return null;
+        if (!Number.isInteger(slot) || slot < 1 || slot > expectedCount || slots.has(slot)) {
+            return reject({ field: `updates[${index}].slot`, expected: `1..${expectedCount} 且不重复的整数`, actual: Number.isInteger(slot) ? String(slot) : '非整数' });
+        }
+        if (!title || !body || !isSafeGroupLlmOutput(title, 120) || !isSafeGroupLlmOutput(body, 360) || tags === null) {
+            return reject({ field: `updates[${index}]`, hint: 'title/body/tags 超限、缺失或包含不允许的内容' });
+        }
         slots.add(slot);
         normalized.push(Object.freeze({ slot, title, body, tags: Object.freeze(tags) }));
     }
-    return Object.freeze({ updates: Object.freeze(normalized) });
+    return { update: Object.freeze({ updates: Object.freeze(normalized) }) };
 }
 
 function makeForumExistingPostsMessages(context, promptPreset) {
@@ -467,13 +505,16 @@ export async function generateForumExistingPostsUpdate({ state, posts, binding, 
     try {
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeForumExistingPostsMessages(built.context, resolved.promptPreset), signal });
         // Up to 80 slots × (360-char body + title + tags) can legitimately exceed the shared 4000-char default.
-        const parsed = parseGroupLlmJson(unfenceJson(completion?.text), 4_000 + built.context.posts.length * 1_200);
-        if (!parsed) return updateFailure('forum_update_invalid_json');
-        const update = normalizeForumExistingPostsUpdate(parsed, built.context.posts.length);
-        return update ? Object.freeze({ ok: true, update }) : updateFailure('forum_update_response_invalid');
+        const maxChars = 4_000 + built.context.posts.length * 1_200;
+        const parsed = parseGroupLlmJson(unfenceJson(completion?.text), maxChars);
+        if (!parsed) return { ...updateFailure('forum_update_invalid_json'), diagnostic: groupResponseParseDiagnostic(completion?.text, maxChars) };
+        const normalized = normalizeForumExistingPostsUpdate(parsed, built.context.posts.length);
+        return normalized.update
+            ? Object.freeze({ ok: true, update: normalized.update })
+            : { ...updateFailure('forum_update_response_invalid'), diagnostic: normalized.diagnostic };
     } catch (error) {
         const publicError = toPublicLlmError(error);
-        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
+        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable, diagnostic: projectGroupLlmErrorDiagnostic(error) };
     }
 }
 
@@ -497,7 +538,9 @@ function normalizePostConversation(post, history) {
 
 export function buildForumPostUpdateContext({ state, post, history } = {}) {
     const normalizedPost = normalizePostConversation(post, history);
-    if (!normalizedPost) return updateFailure('forum_post_context_invalid');
+    if (!normalizedPost) {
+        return { ...updateFailure('forum_post_context_invalid'), diagnostic: groupDiagnostic({ stage: '上下文构建', field: 'post/history', hint: '帖子公开投影或讨论历史未通过安全校验，未调用模型' }) };
+    }
     return Object.freeze({ ok: true, context: Object.freeze({
         contentMode: state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW',
         playerPublicProfile: projectPublicPlayerProfile(state?.玩家),
@@ -505,34 +548,58 @@ export function buildForumPostUpdateContext({ state, post, history } = {}) {
     }) });
 }
 
+/** 校验帖内讨论更新。成功返回 { update }；失败返回 { diagnostic } 说明具体不合规点。 */
 function normalizeForumConversationUpdate(value, profiles) {
-    if (!ownRecord(value) || Object.keys(value).sort().join(',') !== 'messages,participants') return null;
+    const reject = (record) => ({ diagnostic: groupDiagnostic({ stage: '响应校验', ...record }) });
+    if (!ownRecord(value) || Object.keys(value).sort().join(',') !== 'messages,participants') {
+        return reject({ field: 'participants/messages', expected: '恰含 participants 与 messages 两个字段的 JSON 对象' });
+    }
     const participants = ownValue(value, 'participants');
     const messages = ownValue(value, 'messages');
-    if (!Array.isArray(participants) || participants.length > 3 || !Array.isArray(messages) || messages.length < 1 || messages.length > 8) return null;
+    if (!Array.isArray(participants) || participants.length > 3 || !Array.isArray(messages) || messages.length < 1 || messages.length > 8) {
+        return reject({
+            field: 'participants/messages',
+            expected: 'participants ≤ 3 且 messages 为 1-8 条的数组',
+            actual: `participants ${Array.isArray(participants) ? participants.length + ' 条' : '非数组'}、messages ${Array.isArray(messages) ? messages.length + ' 条' : '非数组'}`,
+        });
+    }
     const names = new Set(profiles.map((profile) => String(profile.nickname).normalize('NFKC').toLowerCase()));
     const normalizedParticipants = [];
-    for (const participant of participants) {
-        try {
-            const profile = normalizeGroupForumProfile(completeForumParticipant(participant));
-            const key = profile.nickname.normalize('NFKC').toLowerCase();
-            // A restated existing person keeps the canonical stored profile instead of failing the batch.
-            if (names.has(key)) continue;
-            names.add(key);
-            normalizedParticipants.push(profile);
-        } catch { return null; }
+    for (const [index, participant] of participants.entries()) {
+        let profile;
+        try { profile = normalizeGroupForumProfile(completeForumParticipant(participant)); }
+        catch (error) {
+            const underage = error?.code === 'NON_ADULT_PROFILE';
+            return reject({
+                field: `participants[${index}]`,
+                actual: boundedText(ownValue(participant, 'nickname'), 80) || undefined,
+                hint: underage ? '临时评论者 ageRange 缺少明确的成年写法（如“25-29岁”，数字均 ≥18）' : '临时评论者公开资料字段无效',
+            });
+        }
+        const key = profile.nickname.normalize('NFKC').toLowerCase();
+        // A restated existing person keeps the canonical stored profile instead of failing the batch.
+        if (names.has(key)) continue;
+        names.add(key);
+        normalizedParticipants.push(profile);
     }
     const normalizedMessages = [];
-    for (const message of messages) {
-        if (!ownRecord(message) || Object.keys(message).some((key) => !['speaker', 'text', 'imageDirective'].includes(key)) || !Object.hasOwn(message, 'speaker') || !Object.hasOwn(message, 'text')) return null;
+    for (const [index, message] of messages.entries()) {
+        if (!ownRecord(message) || Object.keys(message).some((key) => !['speaker', 'text', 'imageDirective'].includes(key)) || !Object.hasOwn(message, 'speaker') || !Object.hasOwn(message, 'text')) {
+            return reject({ field: `messages[${index}]`, expected: '仅含 speaker/text（可选 imageDirective）字段的记录' });
+        }
         const speaker = cleanGroupLlmText(ownValue(message, 'speaker'), 80);
         const text = cleanGroupLlmText(ownValue(message, 'text'), 480);
-        if (!speaker || !text || !isSafeGroupLlmOutput(text, 480) || !names.has(speaker.normalize('NFKC').toLowerCase())) return null;
+        if (!speaker) return reject({ field: `messages[${index}].speaker`, expected: '1-80 字纯文本昵称' });
+        if (!text || !isSafeGroupLlmOutput(text, 480)) return reject({ field: `messages[${index}].text`, expected: '1-480 字安全纯文本', hint: '文本超限或被安全扫描拒绝' });
+        if (!names.has(speaker.normalize('NFKC').toLowerCase())) return reject({ field: `messages[${index}].speaker`, actual: speaker, hint: '发言者不在帖子作者、已有参与者或 participants 名单中' });
         let imageDirective;
-        if (Object.hasOwn(message, 'imageDirective')) { try { imageDirective = normalizeImageDirective(ownValue(message, 'imageDirective')); } catch { return null; } }
+        if (Object.hasOwn(message, 'imageDirective')) {
+            try { imageDirective = normalizeImageDirective(ownValue(message, 'imageDirective')); }
+            catch { return reject({ field: `messages[${index}].imageDirective`, hint: '生图指令不符合白名单结构' }); }
+        }
         normalizedMessages.push(Object.freeze(imageDirective ? { speaker, text, imageDirective } : { speaker, text }));
     }
-    return Object.freeze({ participants: Object.freeze(normalizedParticipants), messages: Object.freeze(normalizedMessages) });
+    return { update: Object.freeze({ participants: Object.freeze(normalizedParticipants), messages: Object.freeze(normalizedMessages) }) };
 }
 
 function makeForumPostMessages(context, promptPreset) {
@@ -567,12 +634,14 @@ export async function generateForumPostConversationUpdate({ state, post, history
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeForumPostMessages(built.context, resolved.promptPreset), signal });
         // Up to 8 comments × 480 chars plus participant profiles can exceed the shared 4000-char default.
         const parsed = parseGroupLlmJson(unfenceJson(completion?.text), FORUM_CONVERSATION_RESPONSE_MAX_CHARS);
-        if (!parsed) return updateFailure('forum_update_invalid_json');
+        if (!parsed) return { ...updateFailure('forum_update_invalid_json'), diagnostic: groupResponseParseDiagnostic(completion?.text, FORUM_CONVERSATION_RESPONSE_MAX_CHARS) };
         const people = [built.context.post.author, ...built.context.post.participants];
-        const update = normalizeForumConversationUpdate(parsed, people);
-        return update ? Object.freeze({ ok: true, update }) : updateFailure('forum_update_response_invalid');
+        const normalized = normalizeForumConversationUpdate(parsed, people);
+        return normalized.update
+            ? Object.freeze({ ok: true, update: normalized.update })
+            : { ...updateFailure('forum_update_response_invalid'), diagnostic: normalized.diagnostic };
     } catch (error) {
         const publicError = toPublicLlmError(error);
-        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
+        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable, diagnostic: projectGroupLlmErrorDiagnostic(error) };
     }
 }

@@ -25,6 +25,18 @@ const IMAGE_CONVERSATION_KINDS = new Set(['private', 'group', 'forum']);
 const CONTENT_MODES = new Set(['SFW', 'NSFW']);
 const SERVICE_MODE_WRITE_KINDS = new Set(['advance_content_mode_gate', 'toggle_content_mode']);
 
+/**
+ * 2026-07-27 控制台诊断增强：把受控管线 build/validate 失败里的可选 detail/reason
+ * 原样带给调用层（仅字段路径与校验结论，绝无隐藏值、关系分或阈值数值）。
+ * 两个键都只在存在时附加，只读 code 的既有消费方不受影响。
+ */
+function rejectedFromBuild(built) {
+    const result = { ok: false, status: 'rejected', code: built.code };
+    if (typeof built.detail === 'string' && built.detail) result.detail = built.detail;
+    if (typeof built.reason === 'string' && built.reason) result.reason = built.reason;
+    return result;
+}
+
 function makePassiveCommand(kind, payload) {
     const safePayload = {};
     for (const [key, value] of Object.entries(payload ?? {})) {
@@ -165,7 +177,7 @@ export function createActionBridge({
 
             const command = SERVICE_MODE_WRITE_KINDS.has(kind) ? { kind } : { kind, npcUid };
             const built = buildControlledPatch(read.state, command);
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code, detail: built.detail };
+            if (!built.ok) return { ...rejectedFromBuild(built), detail: built.detail };
 
             const sessionOperation = kind === 'start_private_chat'
                 ? built.value.find((operation) => operation?.op === 'add' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}$/u.test(operation.path))
@@ -219,7 +231,7 @@ export function createActionBridge({
                 replacedNpcUid,
                 candidate: generated.candidate,
             });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
             if (applied.ok) seedGeneratedCandidateKeywords(settingsStore, secondRead.state, generated.candidate);
             return applied;
@@ -253,7 +265,7 @@ export function createActionBridge({
             const secondRead = readLatestState({ mvu: currentMvu });
             if (!secondRead.ok) return secondRead;
             const built = buildRecommendationInitialCandidatePatch(secondRead.state, { candidate: generated.candidate });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
             if (applied.ok) seedGeneratedCandidateKeywords(settingsStore, secondRead.state, generated.candidate);
             return applied;
@@ -285,7 +297,7 @@ export function createActionBridge({
             const built = buildPrivateChatPatch(secondRead.state, {
                 sessionUid, npcUid, playerMessage: generated.playerMessage, response: generated.response,
             });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             const interactionOutcome = built.value.some((operation) => operation?.op === 'replace'
                 && operation.path === '/会话/' + sessionUid + '/状态' && operation.value === '已拉黑')
                 ? 'blocked'
@@ -416,7 +428,7 @@ export function createActionBridge({
             const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
             const built = buildClearPrivateChatPatch(read.state, { sessionUid });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         } finally {
             pending.delete(key);
@@ -434,7 +446,7 @@ export function createActionBridge({
             const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
             const built = buildDeleteCharacterPatch(read.state, { npcUid });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         } finally {
             pending.delete(key);
@@ -488,7 +500,7 @@ export function createActionBridge({
             if (!secondRead.ok) return secondRead;
             const accepted = materialized.shouldEstablishSession === true;
             const built = buildCandidateMatchOutcomePatch(secondRead.state, { candidate: materialized.candidate, accepted });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             const roleOperation = built.value.find((operation) => operation?.op === 'add' && /^\/角色池\/npc_match_\d+$/u.test(operation.path));
             const sessionOperation = built.value.find((operation) => operation?.op === 'add' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}$/u.test(operation.path));
             const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
@@ -516,7 +528,7 @@ export function createActionBridge({
             const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
             const built = buildSoulMatchPreferencePatch(read.state, { draft });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         } finally {
             pending.delete(key);
@@ -576,11 +588,15 @@ export function createActionBridge({
                     force: true,
                 });
                 if (!summary?.ok) {
+                    // 总结总开关关闭时所有总结入口都不可操作，不能指引用户去“聊天总结”里重试。
+                    const summaryEnabled = chatSummarySettings().enabled === true;
                     return {
                         ok: false,
                         status: 'rejected',
                         code: 'meetup_summary_failed',
-                        message: summary?.message || '面基前的聊天总结未完成，请在“聊天总结”中重试后再继续。',
+                        message: summaryEnabled
+                            ? (summary?.message || '面基前的聊天总结未完成，请在“聊天总结”中重试后再继续。')
+                            : '面基前的聊天总结未完成：请先在“我的 → 设置 → 对话总结”开启总结并配置绑定后重试面基。',
                     };
                 }
                 forcedSummaryCount += 1;
@@ -588,7 +604,7 @@ export function createActionBridge({
                 if (!read.ok) return read;
             }
             const built = buildMeetupHandoffPatch(read.state, request);
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
             if (!applied.ok) return applied;
             const handoff = appendMeetupDraft(built.value.draft);
@@ -608,7 +624,7 @@ export function createActionBridge({
             const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
             const built = buildPlayerPublicProfilePatch(read.state, { profile });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         } finally {
             pending.delete(key);
@@ -819,7 +835,7 @@ export function createActionBridge({
                 return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
             }
             const built = buildServiceOrderHandoffPatch(read.state, { candidate, candidates, categoryId });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
             return applied.ok ? { ...applied, npcUid: built.value.npcUid, npcUids: built.value.npcUids, orderUid: built.value.orderUid } : applied;
         };
@@ -844,7 +860,7 @@ export function createActionBridge({
                 return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
             }
             const built = buildServiceOrderRepeatPatch(read.state, { sourceOrderUid });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
             return applied.ok ? { ...applied, npcUid: built.value.npcUid, orderUid: built.value.orderUid } : applied;
         };
@@ -866,7 +882,7 @@ export function createActionBridge({
             if (!read.ok) return read;
             if (expectedContentMode && read.state?.软件?.内容模式 !== expectedContentMode) return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
             const built = buildServiceOrderRebookPatch(read.state, { npcUid, npcUids, categoryId });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
             return applied.ok ? { ...applied, npcUid: built.value.npcUid, npcUids: built.value.npcUids, orderUid: built.value.orderUid } : applied;
         };
@@ -907,7 +923,7 @@ export function createActionBridge({
             const currentMvu = resolveMvu(mvu); const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
             const built = buildServiceHistoryRolesDeletionPatch(read.state, { npcUids });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         } finally { pending.delete(key); }
     }
@@ -940,7 +956,7 @@ export function createActionBridge({
                 return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
             }
             const built = build(read.state);
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             return applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         };
         try { return await serializeServiceModeWrite(execute); }
@@ -957,7 +973,7 @@ export function createActionBridge({
             const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
             const built = buildCharacterRegistrationPatch(read.state, { candidate });
-            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            if (!built.ok) return rejectedFromBuild(built);
             return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         } finally {
             pending.delete(key);

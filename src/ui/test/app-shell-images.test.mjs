@@ -124,6 +124,65 @@ test('首页候选卡背景和公开资料头像使用匹配图片，其他列�
 });
 
 
+test('SFW/NSFW 模式切换后不复用旧模式的匹配图片', async () => {
+    const NSFW_IMAGE_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const imagesByMode = {
+        SFW: Object.freeze({ id: 'image_sfw', source: Object.freeze({ kind: 'embedded', dataUrl: IMAGE_DATA_URL }), keywordWeights: Object.freeze([{ keyword: '夜景', weight: 5 }]) }),
+        NSFW: Object.freeze({ id: 'image_nsfw', source: Object.freeze({ kind: 'embedded', dataUrl: NSFW_IMAGE_DATA_URL }), keywordWeights: Object.freeze([{ keyword: '夜景', weight: 5 }]) }),
+    };
+    const calls = [];
+    const coordinator = {
+        async resolveImage(profile, options) {
+            const mode = options?.contentMode === 'NSFW' ? 'NSFW' : 'SFW';
+            calls.push(mode);
+            return imagesByMode[mode];
+        },
+        clearCache() {},
+    };
+    let mode = 'SFW';
+    const readModalState = () => {
+        const result = readResult();
+        result.state.软件.内容模式 = mode;
+        return result;
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document,
+        rootId: 'ylm-test-image-mode-switch',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null,
+        llmClient: null,
+        characterLibrary: null,
+        imageMatchCoordinator: coordinator,
+        readState: readModalState,
+    });
+    try {
+        await flushUi();
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await flushUi();
+        assert.equal(miniDom.document.querySelector('.yl-candidate-background-image')?.getAttribute('src'), IMAGE_DATA_URL);
+        assert.equal(calls.includes('SFW'), true);
+
+        mode = 'NSFW';
+        mounted.refreshState();
+        await flushUi();
+        assert.equal(calls.includes('NSFW'), true, '模式切换后必须以新模式重新请求选图');
+        assert.equal(
+            miniDom.document.querySelector('.yl-candidate-background-image')?.getAttribute('src'),
+            NSFW_IMAGE_DATA_URL,
+            'NSFW 模式不得复用 SFW 模式的匹配图片',
+        );
+
+        const callsBeforeSwitchBack = calls.length;
+        mode = 'SFW';
+        mounted.refreshState();
+        await flushUi();
+        assert.equal(miniDom.document.querySelector('.yl-candidate-background-image')?.getAttribute('src'), IMAGE_DATA_URL, '切回 SFW 恢复本模式的匹配图片');
+        assert.equal(calls.length, callsBeforeSwitchBack, '切回旧模式可复用该模式自己的缓存，不再重复请求');
+    } finally {
+        mounted.destroy();
+    }
+});
+
 test('图片管理设置按钮打开 image_match 预设绑定', async () => {
     const imageLibrary = createImageLibraryStore({ storage: createMemoryImageLibraryStorage() });
     const settingsStore = createSettingsStore({ storage: createMemoryStorage() });

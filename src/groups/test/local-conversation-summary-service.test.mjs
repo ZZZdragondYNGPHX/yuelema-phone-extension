@@ -38,3 +38,35 @@ test('local group/forum summary validates target, source and model output before
     });
     assert.equal(result.code, 'local_summary_response_invalid');
 });
+
+// —— 阶段 77：失败结果附带控制台诊断 ——
+
+test('local summary failures carry parse/validation diagnostics without echoing model text', async () => {
+    const target = { kind: 'group', title: '同城周末搭子' };
+    const messages = [{ floor: 1, sender: 'user', speaker: '我', content: '周末去哪玩？' }];
+    const run = (text) => generateLocalConversationSummary({
+        target, messages, contentMode: 'SFW',
+        settingsStore: { resolveFunction(key) { assert.equal(key, 'chat_summary'); return { connectionPreset: { id: 's', url: 'https://example.test/v1', model: 'm' }, promptPreset: null }; } },
+        llmClient: { async chat() { return { text }; } },
+    });
+
+    const unparsable = await run('SUMMARY_RAW_LEAK not json');
+    assert.equal(unparsable.code, 'local_summary_invalid_json');
+    assert.equal(unparsable.diagnostic.stage, '响应解析');
+    assert.match(unparsable.diagnostic.actual, /响应长度 \d+ 字符/u);
+    assert.doesNotMatch(JSON.stringify(unparsable.diagnostic), /SUMMARY_RAW_LEAK/u);
+
+    const invalid = await run(JSON.stringify({ summary: '', extra: 1 }));
+    assert.equal(invalid.code, 'local_summary_response_invalid');
+    assert.equal(invalid.diagnostic.field, 'summary');
+    assert.match(invalid.diagnostic.expected, /1-1600 字/u);
+
+    const badSource = await generateLocalConversationSummary({
+        target, messages: [{ floor: 0, sender: 'user', speaker: '我', content: '楼层非法。' }], contentMode: 'SFW',
+        settingsStore: { resolveFunction() { return { connectionPreset: { id: 's', url: 'https://example.test/v1', model: 'm' }, promptPreset: null }; } },
+        llmClient: { async chat() { throw new Error('must not be called'); } },
+    });
+    assert.equal(badSource.code, 'local_summary_source_invalid');
+    assert.equal(badSource.diagnostic.stage, '上下文构建');
+    assert.equal(badSource.diagnostic.field, 'messages[0]');
+});

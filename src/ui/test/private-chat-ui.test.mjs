@@ -553,6 +553,36 @@ test('timeline inserts a one-time system pill, time dividers over 10 minutes, an
     } finally { mounted.destroy(); }
 });
 
+test('timeline surfaces body-written meetup progress and refreshes when the meetup record reaches a terminal state', () => {
+    const result = readResult();
+    result.state.面基记录 = {
+        meetup_1: {
+            对象UID: 'npc_lin', 关系路线: '恋爱', 时间: '周六 19:00', 地点: '江边步道',
+            双方意图: '先散步再吃宵夜', 已确认边界: 'boundary-must-not-render', 待确认事项: '', 风险提示: '',
+            状态: '正文进行中', 正文结果摘要: '',
+        },
+    };
+    const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-chat-meetup-pill', actionBridge: { emit() {}, isPending() { return false; }, runPrivateChat() { return { ok: true }; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+
+        const timeline = miniDom.document.querySelector('.yl-chat-timeline');
+        assert.match(timeline.textContent, /面基（恋爱路线）：见面正在正文中进行/u, '进行中的面基显示进展 pill');
+        assert.doesNotMatch(timeline.textContent, /boundary-must-not-render/u, '已确认边界自由文本不进入聊天面');
+        assert.doesNotMatch(timeline.textContent, /见面小结/u, '未结束时不显示结果摘要');
+
+        // 正文回写终态 + 结果摘要后，VARIABLE_UPDATE_ENDED → refreshState 即可刷新展示。
+        result.state.面基记录.meetup_1.状态 = '已结束';
+        result.state.面基记录.meetup_1.正文结果摘要 = '散完步一起吃了宵夜，气氛比线上更自然，约好下周看展。';
+        mounted.refreshState();
+        const refreshed = miniDom.document.querySelector('.yl-chat-timeline');
+        assert.match(refreshed.textContent, /面基（恋爱路线）：见面已结束/u);
+        assert.match(refreshed.textContent, /见面小结：散完步一起吃了宵夜/u, '正文结果摘要作为见面小结展示');
+    } finally { mounted.destroy(); }
+});
+
 test('private chat deletion uses inline confirmation, clears draft, and returns to list', async () => {
     const result = readResult(); const calls = [];
     const bridge = { emit() {}, isPending() { return false; }, async clearPrivateChat(uid) { calls.push(uid); delete result.state.会话[uid]; return { ok: true }; }, async runPrivateChat() { return { ok: false }; } };
@@ -794,6 +824,96 @@ test('Phase 69: chat action lists are disclosures and Escape dismisses the send 
         assert.equal(miniDom.document.querySelector('.yl-chat-tool-menu'), null, 'Escape 应关闭发送工具栏');
         assert.equal(miniDom.document.querySelector('.yl-phone-panel').hidden, false, 'Escape 关闭工具栏时不得连带关闭小手机窗口');
         assert.equal(privateChatCalls, 0, '整个过程不得触发私聊发送');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+// —— 阶段 77：私聊/总结失败把脱敏诊断写入安全控制台 detail（message 仍为粗略文案）——
+
+test('a failed private-chat send records a console failure entry with sanitized diagnostic detail', async () => {
+    const bridge = {
+        emit() {},
+        isPending() { return false; },
+        runPrivateChat() {
+            return { ok: false, status: 'rejected', code: 'private_chat_connection_missing', message: '请先为“聊天”绑定连接预设或设置默认连接。' };
+        },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-private-chat-console-detail', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
+        input.value = '这句话不能进入控制台详情。';
+        input.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息'));
+        await flushUi();
+
+        const entry = mounted.operationActivity.snapshot().entries.find((item) => item.name === '私聊回复');
+        assert.ok(entry, '私聊发送必须在控制台留下条目');
+        assert.equal(entry.status, 'failure');
+        assert.equal(entry.message, '私聊回复未完成。', '界面摘要保持粗略友好文案');
+        assert.ok(entry.detail, '失败条目必须携带诊断 detail');
+        assert.match(entry.detail, /操作: 私聊回复/u);
+        assert.match(entry.detail, /错误码: private_chat_connection_missing/u);
+        /* 硬线：detail 不得含对话原文、关系数值/阈值或凭据样式 token */
+        assert.doesNotMatch(entry.detail, /这句话不能进入控制台详情/u);
+        assert.doesNotMatch(entry.detail, /好感|信任|戒备|阈值|Bearer|sk-/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('a failed automatic chat summary records attempts and error code in the console detail', async () => {
+    const settingsStore = createSettingsStore({ storage: createMemoryStorage() });
+    settingsStore.setChatSummarySettings({ enabled: true, interval: 2, retryLimit: 2 });
+    let privatePending = false;
+    const bridge = {
+        emit() {},
+        isPending(kind) { return kind === 'private_chat' && privatePending; },
+        runPrivateChat() {
+            privatePending = true;
+            return Promise.resolve().then(() => {
+                privatePending = false;
+                return { ok: true, summaryCheckRequested: true };
+            });
+        },
+        runPrivateChatSummary() {
+            return Promise.resolve({
+                ok: false, status: 'rejected', code: 'chat_summary_invalid_json',
+                message: '总结模型没有返回可用的总结；本次不会覆盖已有记录。', attempts: 3, failurePersisted: true, automatic: true,
+            });
+        },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-chat-summary-console-detail', actionBridge: bridge,
+        settingsStore, llmClient: null, characterLibrary: null, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
+        input.value = '触发一次自动总结。';
+        input.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息'));
+        await flushUi();
+
+        const summaryEntry = mounted.operationActivity.snapshot().entries.find((item) => item.name === '聊天总结');
+        assert.ok(summaryEntry, '自动总结必须在控制台留下条目');
+        assert.equal(summaryEntry.status, 'failure');
+        assert.equal(summaryEntry.message, '聊天总结未完成。');
+        assert.match(summaryEntry.detail, /共尝试 3 次后仍未完成/u);
+        assert.match(summaryEntry.detail, /错误码: chat_summary_invalid_json/u);
+        assert.doesNotMatch(summaryEntry.detail, /触发一次自动总结/u);
+        /* 私聊发送本身成功：其条目应为 success 且无 detail */
+        const chatEntry = mounted.operationActivity.snapshot().entries.find((item) => item.name === '私聊回复');
+        assert.equal(chatEntry.status, 'success');
+        assert.equal(chatEntry.detail, null);
     } finally {
         mounted.destroy();
     }

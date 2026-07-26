@@ -60,8 +60,25 @@ test('bounded transcript only trims an already summarized prefix and never drops
     assert.deepEqual(unsafe, { ok: false, code: 'private_chat_history_requires_summary', detail: '' });
 });
 
-test('read-without-reply stores the player message and a fixed system notice only', () => {
+test('a fresh match first message replies even when the model reports mild wariness', () => {
+    // 2026-07-27 校准回归防线：物化初值 20/10/15 + 默认阈值 55/90 的新会话，
+    // 首条消息即使带轻微负向增量也必须得到回复，而不是已读不回。
     const current = state();
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '你好，很高兴匹配到你',
+        response: response({ 好感: 1, 信任: 0, 戒备: 2, 面基意愿: 0 }),
+    });
+    assert.equal(built.ok, true);
+    const messages = built.value.filter((operation) => operation.path === '/会话/chat_1/最近消息/-');
+    assert.deepEqual(messages.map((operation) => operation.value.发送者), ['玩家', '角色', '角色']);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
+test('read-without-reply stores the player message and a fixed system notice only', () => {
+    const current = state({
+        relationship: { 状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70, 好感: 5, 信任: 5, 戒备: 40, 面基意愿: 0 },
+    });
+    current.会话.chat_1.对话层数 = 12;
     const built = buildPrivateChatPatch(current, {
         sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '这次说得不太合适',
         response: response({ 好感: -10, 信任: 0, 戒备: 5, 面基意愿: 0 }),
@@ -70,9 +87,42 @@ test('read-without-reply stores the player message and a fixed system notice onl
     const messages = built.value.filter((operation) => operation.path === '/会话/chat_1/最近消息/-');
     assert.deepEqual(messages.map((operation) => operation.value.发送者), ['玩家', '系统']);
     assert.equal(messages[1].value.内容, '对方已读，但暂时没有回复。');
-    assert.deepEqual(messages.map((operation) => operation.value.层数), [1, 1], '系统送达提示属于记录，但不应额外计入玩家/角色对话层数');
-    assert.equal(built.value.at(-1).value, 1);
+    assert.deepEqual(messages.map((operation) => operation.value.层数), [13, 13], '系统送达提示属于记录，但不应额外计入玩家/角色对话层数');
+    assert.equal(built.value.at(-1).value, 13);
     assert.equal(built.value.some((operation) => operation.path === '/会话/chat_1/长期摘要'), false);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
+test('positive deltas walk a strained chat back out of read-without-reply', () => {
+    const current = state({
+        relationship: { 状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70, 好感: 5, 信任: 5, 戒备: 60, 面基意愿: 0 },
+    });
+    current.会话.chat_1.对话层数 = 12;
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '前几天是我不好，想认真道个歉',
+        response: response({ 好感: 6, 信任: 6, 戒备: -8, 面基意愿: 0 }),
+    });
+    assert.equal(built.ok, true);
+    const messages = built.value.filter((operation) => operation.path === '/会话/chat_1/最近消息/-');
+    assert.deepEqual(messages.map((operation) => operation.value.发送者), ['玩家', '角色', '角色']);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
+test('early conversation grace downgrades a first-message block to read-without-reply', () => {
+    // 生成侧失准（开局压力已超过拉黑阈值）时，宽限期内绝不允许直接拉黑。
+    const current = state({
+        relationship: { 状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70, 好感: 20, 信任: 10, 戒备: 60, 面基意愿: 0 },
+        readThreshold: 50,
+        blockThreshold: 70,
+    });
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '在吗？',
+        response: response({ 好感: -10, 信任: -10, 戒备: 10, 面基意愿: 0 }),
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path === '/会话/chat_1/状态'), false);
+    const messages = built.value.filter((operation) => operation.path === '/会话/chat_1/最近消息/-');
+    assert.deepEqual(messages.map((operation) => operation.value.发送者), ['玩家', '系统']);
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
 });
 
@@ -82,6 +132,7 @@ test('block outcome atomically closes the session, records the block list and su
         readThreshold: 50,
         blockThreshold: 80,
     });
+    current.会话.chat_1.对话层数 = 12;
     const built = buildPrivateChatPatch(current, { sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '继续发消息', response: response() });
     assert.equal(built.ok, true);
     assert.equal(built.value.some((operation) => operation.path === '/会话/chat_1/状态' && operation.value === '已拉黑'), true);

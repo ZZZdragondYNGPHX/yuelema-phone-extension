@@ -75,6 +75,37 @@ test('SFW 内置提示词只用一句话表达日常社交尺度，不再携带�
     }
 });
 
+test('SFW 内置提示词升级为恋爱 App 质感的指导式文案（v15 基线）', () => {
+    const GUIDANCE_BASELINE = {
+        [BUILTIN_PROMPT_PRESET_IDS.recommendationSfw]: [/使用痕迹/, /钩子/, /套话|AI 腔/, /基础匹配硬条件/],
+        [BUILTIN_PROMPT_PRESET_IDS.privateChatSfw]: [/有自己生活的真人/, /浪漫张力/, /直球/, /不应因此降温/],
+        [BUILTIN_PROMPT_PRESET_IDS.groupChatSfw]: [/有辨识度/, /有来有回/, /长在自己人设上/, /圆桌会议/],
+        [BUILTIN_PROMPT_PRESET_IDS.forumSfw]: [/像真人写的/, /情绪温度/, /有来有回/, /拉开差异/],
+        [BUILTIN_PROMPT_PRESET_IDS.chatSummarySfw]: [/温度而非流水账/, /关键瞬间/, /话头|悬念/, /接住上次的气氛/],
+        [BUILTIN_PROMPT_PRESET_IDS.characterCompletionSfw]: [/咬合/, /本人口吻/, /套话/],
+        [BUILTIN_PROMPT_PRESET_IDS.characterAuthoringSfw]: [/反差/, /小缺点/, /钩子/, /纵深/],
+        [BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw]: [/临时恋人|生活搭子/, /卖点/, /陪伴项目/, /流水线话术/],
+        [BUILTIN_PROMPT_PRESET_IDS.soulMatchSfw]: [/同一类人/, /具体词优于空泛词/],
+        [BUILTIN_PROMPT_PRESET_IDS.voiceMatchSfw]: [/纯关键词驱动/, /相处画面/, /具体词优于空泛词/],
+        [BUILTIN_PROMPT_PRESET_IDS.imageMatchSfw]: [/画面词/, /生活抓拍感/, /互相印证/],
+    };
+    const presets = presetsByMode('SFW');
+    assert.equal(Object.keys(GUIDANCE_BASELINE).length, presets.length, '每个 SFW 预设都必须有文案指导基线');
+    for (const preset of presets) {
+        for (const pattern of GUIDANCE_BASELINE[preset.id]) {
+            assert.match(preset.content, pattern, `${preset.id} 缺少文案指导：${pattern}`);
+        }
+        assert.match(preset.content, /明确成年|成年人/, `${preset.id} 缺少成年边界`);
+        assert.ok(preset.content.length <= 12_000, `${preset.id} 超出提示词长度上限`);
+    }
+    // 与功能语义对齐的关键条款抽查。
+    const byId = new Map(createBuiltinPromptPresets().map((preset) => [preset.id, preset]));
+    assert.match(byId.get(BUILTIN_PROMPT_PRESET_IDS.voiceMatchSfw).content, /不读取、不考虑、不假设玩家的性别、性取向/, '描述匹配必须保持纯关键词驱动、不读玩家资料');
+    assert.match(byId.get(BUILTIN_PROMPT_PRESET_IDS.recommendationSfw).content, /性别与性取向必须服从程序给出的基础匹配硬条件/, '推荐刷新必须尊重候选人性别硬条件');
+    assert.match(byId.get(BUILTIN_PROMPT_PRESET_IDS.privateChatSfw).content, /只要尊重已知边界，就不是冒犯/, '私聊必须带 SFW 版友好直白宽容条款');
+    assert.match(byId.get(BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw).content, /租借陪伴服务者/, '约伴 SFW 必须是租借伴侣式日常/恋爱陪伴定位');
+});
+
 test('NSFW 内置提示词以自愿成年人的主动线上成人表达为默认', () => {
     for (const preset of presetsByMode('NSFW')) {
         assert.match(preset.content, /明确成年|所有人物必须明确成年|明确成年的/, `${preset.id} 缺少成年边界`);
@@ -128,6 +159,53 @@ test('NSFW 推荐人物预设不再把普通社交或含糊成人标签当作默
     assert.match(preset.content, /不把普通饭搭子或轻社交当作默认/);
     assert.match(preset.content, /至少一个公开标签应直接给出成人向特征/);
     assert.doesNotMatch(preset.content, /只能克制地放在允许的公开/u);
+});
+
+test('候选生成类内置预设带阈值人设映射与三层资料互相印证指导', () => {
+    const byId = new Map(createBuiltinPromptPresets().map((preset) => [preset.id, preset]));
+    const candidateGeneratingIds = [
+        BUILTIN_PROMPT_PRESET_IDS.recommendationSfw,
+        BUILTIN_PROMPT_PRESET_IDS.recommendationNsfw,
+        BUILTIN_PROMPT_PRESET_IDS.characterCompletionSfw,
+        BUILTIN_PROMPT_PRESET_IDS.characterCompletionNsfw,
+        BUILTIN_PROMPT_PRESET_IDS.characterAuthoringSfw,
+        BUILTIN_PROMPT_PRESET_IDS.characterAuthoringNsfw,
+        BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw,
+        BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw,
+    ];
+    for (const id of candidateGeneratingIds) {
+        const content = byId.get(id).content;
+        assert.match(content, /容忍度/u, `${id} 缺少阈值容忍度语义`);
+        assert.match(content, /彻底断联/u, `${id} 缺少拉黑底线语义`);
+        assert.match(content, /至少高 20/u, `${id} 缺少拉黑与已读不回的间距指导`);
+        assert.match(content, /不低于 60/u, `${id} 缺少拉黑下限指导`);
+        assert.match(content, /互相印证/u, `${id} 缺少三层资料互相印证要求`);
+        assert.match(content, /公开年龄段内/u, `${id} 缺少实际年龄与公开年龄段一致性要求`);
+    }
+    // 真机已发案例：角色先发露骨暗示、玩家对等回应却被秒拉黑。NSFW 生成预设
+    // 必须带“对等回应须有同级容忍”的一致性条款。
+    for (const id of [
+        BUILTIN_PROMPT_PRESET_IDS.recommendationNsfw,
+        BUILTIN_PROMPT_PRESET_IDS.characterCompletionNsfw,
+        BUILTIN_PROMPT_PRESET_IDS.characterAuthoringNsfw,
+        BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw,
+    ]) {
+        assert.match(byId.get(id).content, /对等.{0,6}(?:热度|直白)的回应/u, `${id} 缺少对等回应容忍条款`);
+        assert.match(byId.get(id).content, /秒拉黑|因顾客回应自己主动挑起的话题而拉黑/u, `${id} 缺少禁止秒拉黑条款`);
+    }
+    // 阈值-初值联动（代码级校验：初始戒备 ≤ 40、已读不回阈值 ≥ 开局压力 + 15）
+    // 需要在推荐 / 完整创作 / 约伴服务的生成预设里有对应的一句提示。
+    for (const id of [
+        BUILTIN_PROMPT_PRESET_IDS.recommendationSfw,
+        BUILTIN_PROMPT_PRESET_IDS.recommendationNsfw,
+        BUILTIN_PROMPT_PRESET_IDS.characterAuthoringSfw,
+        BUILTIN_PROMPT_PRESET_IDS.characterAuthoringNsfw,
+        BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw,
+        BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw,
+    ]) {
+        assert.match(byId.get(id).content, /初始戒备不要超过 40/u, `${id} 缺少初始戒备上限提示`);
+        assert.match(byId.get(id).content, /开局互动压力之上留出足够安全边际/u, `${id} 缺少已读不回阈值安全边际提示`);
+    }
 });
 
 test('NSFW 内置提示词仍保留同意、隐私、线上边界和现实行动硬限制', () => {

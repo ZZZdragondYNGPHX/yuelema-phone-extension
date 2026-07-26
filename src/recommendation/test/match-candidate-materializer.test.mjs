@@ -96,3 +96,46 @@ test('materialized match candidate accepts adult public tags in both modes since
         '偏好翘臀，也喜欢独立电影。',
     );
 });
+
+test('物化器按生成人设标签三档映射压力阈值，匹配分闸门阈值保持固定', () => {
+    const tolerant = draft();
+    tolerant.profile.性格标签 = ['开朗'];
+    const tolerantResult = materializeCandidateMatchDraft(tolerant);
+    assert.equal(tolerantResult.candidate.已读不回阈值, 60);
+    assert.equal(tolerantResult.candidate.拉黑阈值, 95);
+
+    const guarded = draft();
+    guarded.profile.沟通风格标签 = ['慢热'];
+    const guardedResult = materializeCandidateMatchDraft(guarded);
+    assert.equal(guardedResult.candidate.已读不回阈值, 50);
+    assert.equal(guardedResult.candidate.拉黑阈值, 80);
+
+    const mixed = draft();
+    mixed.profile.性格标签 = ['开朗', '敏感'];
+    const mixedResult = materializeCandidateMatchDraft(mixed);
+    assert.equal(mixedResult.candidate.已读不回阈值, 55);
+    assert.equal(mixedResult.candidate.拉黑阈值, 90);
+
+    const neutralResult = materializeCandidateMatchDraft(draft());
+    assert.equal(neutralResult.candidate.已读不回阈值, 55);
+    assert.equal(neutralResult.candidate.拉黑阈值, 90);
+
+    for (const result of [tolerantResult, guardedResult, mixedResult, neutralResult]) {
+        // 拒绝/取消匹配阈值是本地匹配分闸门，人设映射不得改动它们的语义。
+        assert.equal(result.candidate.拒绝阈值, 50);
+        assert.equal(result.candidate.取消匹配阈值, 75);
+        // 三档都必须满足生成约束：拉黑 ≥60 且高于已读不回。
+        assert.ok(result.candidate.拉黑阈值 >= 60);
+        assert.ok(result.candidate.拉黑阈值 > result.candidate.已读不回阈值);
+    }
+});
+
+test('本地物化失败先登记控制台诊断再原样上抛', async () => {
+    const { consumeRecommendationDiagnostics } = await import('../recommendation-diagnostics.js');
+    consumeRecommendationDiagnostics('candidate_match');
+    assert.throws(() => materializeCandidateMatchDraft({ profile: null, drawing: null, explanation: '' }));
+    const diagnostics = consumeRecommendationDiagnostics('candidate_match', { code: 'candidate_match_response_invalid' });
+    assert.ok(diagnostics, '物化失败必须登记诊断');
+    assert.equal(diagnostics.stage, '本地物化（草稿转完整候选）');
+    assert.match(diagnostics.actual, /校验未通过|本地物化失败/u);
+});

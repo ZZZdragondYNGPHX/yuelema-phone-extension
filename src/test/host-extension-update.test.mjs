@@ -4,12 +4,14 @@ import assert from 'node:assert/strict';
 import {
     HOST_EXTENSION_DIRECTORY,
     HOST_EXTENSION_IS_GLOBAL,
+    HOST_MESSAGE_MAX_LENGTH,
     HostExtensionUpdateError,
     UPDATE_ENDPOINT,
     VERSION_ENDPOINT,
     checkAndUpdateHostExtension,
     createHostExtensionUpdater,
     projectHostExtensionUpdateError,
+    sanitizeHostMessage,
 } from '../host-extension-update.js';
 
 function jsonResponse(body, { status = 200 } = {}) {
@@ -141,20 +143,98 @@ test('fails safely when the injected transport or request-header factory is unav
     );
 });
 
-test('maps non-2xx and thrown transport failures to fixed safe errors with optional status only', async () => {
+test('maps non-2xx and thrown transport failures to fixed safe messages while carrying status, phase and sanitized host text', async () => {
     await assert.rejects(
         () => checkAndUpdateHostExtension({
             getRequestHeaders: hostHeaders,
-            transport: async () => ({ ok: false, status: 503, json: async () => ({ message: 'PRIVATE_BACKEND_BODY' }) }),
+            transport: async () => ({
+                ok: false,
+                status: 500,
+                text: async () => 'Internal Server Error. Check the server logs for more details.',
+                json: async () => ({ message: 'PRIVATE_BACKEND_BODY' }),
+            }),
         }),
-        (error) => assertSafeError(error, 'request_failed_http', 503),
+        (error) => {
+            assertSafeError(error, 'request_failed_http', 500);
+            assert.equal(error.phase, 'version');
+            assert.equal(error.hostMessage, 'Internal Server Error. Check the server logs for more details.');
+            return true;
+        },
+    );
+    // text() 缺失时退回 json() 序列化；两者都不可读则只保留状态码。
+    await assert.rejects(
+        () => checkAndUpdateHostExtension({
+            getRequestHeaders: hostHeaders,
+            transport: async () => ({ ok: false, status: 503, json: async () => ({ message: 'backend detail' }) }),
+        }),
+        (error) => {
+            assertSafeError(error, 'request_failed_http', 503);
+            assert.match(error.hostMessage, /backend detail/u);
+            return true;
+        },
+    );
+    await assert.rejects(
+        () => checkAndUpdateHostExtension({
+            getRequestHeaders: hostHeaders,
+            transport: async () => ({ ok: false, status: 502, text: async () => { throw new Error('SECRET_BODY_READ_FAILURE'); } }),
+        }),
+        (error) => {
+            assertSafeError(error, 'request_failed_http', 502);
+            assert.equal(error.hostMessage, undefined);
+            return true;
+        },
     );
     await assert.rejects(
         () => checkAndUpdateHostExtension({
             getRequestHeaders: hostHeaders,
             transport: async () => { throw new Error('SECRET_CONNECTION_DETAIL'); },
         }),
-        (error) => assertSafeError(error, 'request_failed'),
+        (error) => {
+            assertSafeError(error, 'request_failed');
+            assert.equal(error.phase, 'version');
+            assert.equal(error.hostMessage, undefined);
+            return true;
+        },
+    );
+});
+
+test('update-phase failures report phase "update" with the host explanation for the failed git pull', async () => {
+    await assert.rejects(
+        () => checkAndUpdateHostExtension({
+            getRequestHeaders: hostHeaders,
+            async transport(endpoint) {
+                if (endpoint === VERSION_ENDPOINT) return jsonResponse({ isUpToDate: false, currentBranchName: 'main', currentCommitHash: 'abc1234' });
+                return {
+                    ok: false,
+                    status: 500,
+                    text: async () => 'Internal Server Error. Check the server logs for more details.',
+                };
+            },
+        }),
+        (error) => {
+            assertSafeError(error, 'request_failed_http', 500);
+            assert.equal(error.phase, 'update');
+            assert.match(error.hostMessage, /Internal Server Error/u);
+            return true;
+        },
+    );
+});
+
+test('host failure text is sanitized: control chars stripped, credential-like content redacted, length capped', async () => {
+    assert.equal(sanitizeHostMessage('line1\r\nline2\u0000tab\u0009end'), 'line1 line2 tab end');
+    const redacted = sanitizeHostMessage('Authorization: Bearer abc.DEF-123 token=super-secret-value sk-abcdefghijklmnop rest');
+    assert.doesNotMatch(redacted, /abc\.DEF-123|super-secret-value|sk-abcdefghijklmnop/u);
+    assert.match(redacted, /已脱敏/u);
+    const longRandom = 'A'.repeat(64);
+    assert.doesNotMatch(sanitizeHostMessage(`prefix ${longRandom} suffix`), /A{40}/u);
+    const capped = sanitizeHostMessage(`${'宿主说明'.repeat(200)}`);
+    assert.ok(capped.length <= HOST_MESSAGE_MAX_LENGTH + 1);
+    assert.match(capped, /…$/u);
+    assert.equal(sanitizeHostMessage(42), '');
+    // Windows 安装路径可以原样保留（不是凭据），便于用户定位目录。
+    assert.equal(
+        sanitizeHostMessage('Directory does not exist at D:\\SillyTavern\\data\\default-user\\extensions\\yuelema-phone-extension'),
+        'Directory does not exist at D:\\SillyTavern\\data\\default-user\\extensions\\yuelema-phone-extension',
     );
 });
 
@@ -179,9 +259,21 @@ test('rejects malformed JSON and invalid version or update response structures w
     );
 });
 
-test('safe error projection excludes arbitrary backend messages while preserving explicit HTTP status', () => {
+test('safe error projection keeps the fixed message while exposing status, phase and sanitized host text', () => {
     const projected = projectHostExtensionUpdateError(new HostExtensionUpdateError('request_failed_http', { status: 401 }));
     assert.deepEqual(projected, { code: 'request_failed_http', message: '宿主扩展更新请求失败。', status: 401 });
+    const detailed = projectHostExtensionUpdateError(new HostExtensionUpdateError('request_failed_http', {
+        status: 500,
+        hostMessage: 'Internal Server Error. Check the server logs for more details.',
+        phase: 'update',
+    }));
+    assert.deepEqual(detailed, {
+        code: 'request_failed_http',
+        message: '宿主扩展更新请求失败。',
+        status: 500,
+        hostMessage: 'Internal Server Error. Check the server logs for more details.',
+        phase: 'update',
+    });
     const unknown = projectHostExtensionUpdateError(new Error('PRIVATE_BACKEND_BODY SECRET'));
     assert.deepEqual(unknown, { code: 'unknown_error', message: '检查扩展更新时发生未知错误。' });
     assert.doesNotMatch(JSON.stringify(unknown), /PRIVATE|BACKEND|SECRET/i);

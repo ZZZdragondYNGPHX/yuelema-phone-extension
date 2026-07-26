@@ -7,6 +7,7 @@ import {
     MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH,
     MAX_PRIVATE_CHAT_SESSION_SUMMARY_LENGTH,
     normalizePrivateChatResponse,
+    projectPrivateChatResponseDiagnostic,
     projectPrivateChatResponseError,
 } from '../private-chat-response.js';
 
@@ -144,4 +145,38 @@ test('projects stable safe errors without exposing model source or underlying er
         code: 'private_chat_response_invalid',
         message: '私聊回复无效。',
     });
+});
+
+// —— 阶段 77：控制台诊断投影 ——
+
+test('codec errors carry a value-free diagnostic that projects for the safety console', () => {
+    try {
+        normalizePrivateChatResponse(response({ relationship: { 好感: 88, 信任: 1, 戒备: 0, 面基意愿: 0 } }));
+        assert.fail('必须抛出关系增量校验错误');
+    } catch (error) {
+        const diagnostic = projectPrivateChatResponseDiagnostic(error);
+        assert.equal(diagnostic.code, 'private_chat_response_relationship_invalid');
+        assert.equal(diagnostic.field, 'relationship.好感');
+        assert.match(diagnostic.expected, /-10\.\.10/u);
+        // 硬线：模型增量数值绝不出现在诊断里
+        assert.doesNotMatch(JSON.stringify(diagnostic), /88/u);
+    }
+    try {
+        normalizePrivateChatResponse(response({ bondAssessment: { kind: 'romantic_desire', intensity: 1 } }), { contentMode: 'SFW' });
+        assert.fail('必须抛出白名单校验错误');
+    } catch (error) {
+        const diagnostic = projectPrivateChatResponseDiagnostic(error);
+        assert.equal(diagnostic.field, 'bondAssessment.kind');
+        assert.match(diagnostic.expected, /none\/friendly\/romantic_flirt/u);
+        assert.equal(diagnostic.actual, 'romantic_desire');
+    }
+    try {
+        normalizePrivateChatResponse(response({ replies: ['ok', '<b>bad</b>'] }));
+        assert.fail('必须抛出回复格式错误');
+    } catch (error) {
+        const diagnostic = projectPrivateChatResponseDiagnostic(error);
+        assert.equal(diagnostic.field, 'replies[1]');
+    }
+    // 非本校验器错误不产生诊断
+    assert.equal(projectPrivateChatResponseDiagnostic(new Error('other')), null);
 });

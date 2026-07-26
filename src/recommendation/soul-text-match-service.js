@@ -4,6 +4,13 @@ import { renderPromptPreset } from '../settings/prompt-compiler.js';
 import { extractExplicitAgeNumbers, normalizeDrawingDna, normalizeGeneratedPublicProfile } from './candidate.js';
 import { DRAWING_DNA_RULES } from './drawing-dna-rules.js';
 import { scoreHeartCardCompatibility, scoreKeywordOnlyCandidateMatch, scoreLocalCandidateMatch } from './match-scoring.js';
+import {
+    RECOMMENDATION_DIAGNOSTIC_SCOPES,
+    clearRecommendationDiagnostics,
+    describeModelResponseForDiagnostics,
+    recordRecommendationDiagnostics,
+    snapshotErrorForDiagnostics,
+} from './recommendation-diagnostics.js';
 
 // Real providers return the same candidate payload family as
 // recommendation-refresh (full drawing DNA plus profile), so the response
@@ -804,37 +811,75 @@ function safeModelFailure(kind) {
     };
 }
 
+const CANDIDATE_MATCH_DIAGNOSTIC_SCOPE = RECOMMENDATION_DIAGNOSTIC_SCOPES.candidateMatch;
+
+function draftDiagnosticScope(kind) {
+    return kind === 'soul'
+        ? RECOMMENDATION_DIAGNOSTIC_SCOPES.soulMatchDraft
+        : RECOMMENDATION_DIAGNOSTIC_SCOPES.textMatchDraft;
+}
+
 async function generateMatchDraft({ kind, state, settingsStore, llmClient, signal }) {
     const errorMessages = kind === 'soul' ? SOUL_MATCH_ERROR_MESSAGES : TEXT_MATCH_ERROR_MESSAGES;
     const functionKey = kind === 'soul' ? 'soul_match' : 'text_match';
     const prefix = `${kind}_match`;
-    if (!ownPlainRecord(state)) return { ok: false, code: `${prefix}_state_invalid`, message: errorMessages[`${prefix}_state_invalid`] };
-    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return { ok: false, code: `${prefix}_settings_unavailable`, message: errorMessages[`${prefix}_settings_unavailable`] };
-    if (!llmClient || typeof llmClient.chat !== 'function') return { ok: false, code: `${prefix}_llm_unavailable`, message: errorMessages[`${prefix}_llm_unavailable`] };
+    const scope = draftDiagnosticScope(kind);
+    const failWithDiagnostics = (code, diagnostics = {}) => {
+        recordRecommendationDiagnostics(scope, { code, ...diagnostics });
+        return { ok: false, code, message: errorMessages[code] ?? errorMessages[`${prefix}_response_invalid`] };
+    };
+    clearRecommendationDiagnostics(scope);
+    if (!ownPlainRecord(state)) return failWithDiagnostics(`${prefix}_state_invalid`, { stage: '前置检查', hint: '软件状态快照不可用' });
+    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return failWithDiagnostics(`${prefix}_settings_unavailable`, { stage: '前置检查', hint: '设置存储未注入或不可用' });
+    if (!llmClient || typeof llmClient.chat !== 'function') return failWithDiagnostics(`${prefix}_llm_unavailable`, { stage: '前置检查', hint: '未注入可用的 LLM 客户端' });
 
     const context = buildSoulTextMatchContext(state);
     let resolved;
     try {
         resolved = settingsStore.resolveFunction(functionKey, { contentMode: context.contentMode });
-    } catch {
-        return { ok: false, code: `${prefix}_settings_invalid`, message: errorMessages[`${prefix}_settings_invalid`] };
+    } catch (error) {
+        return failWithDiagnostics(`${prefix}_settings_invalid`, {
+            stage: '解析功能绑定', error: snapshotErrorForDiagnostics(error),
+            hint: `检查“${functionKey}”功能的连接与提示词绑定设置`,
+        });
     }
     if (!resolved?.connectionPreset) {
-        return { ok: false, code: `${prefix}_connection_missing`, message: errorMessages[`${prefix}_connection_missing`] };
+        return failWithDiagnostics(`${prefix}_connection_missing`, {
+            stage: '解析功能绑定', field: `${functionKey}.connectionPreset`,
+            hint: '未绑定连接预设且无默认连接',
+        });
     }
 
+    let stage = '请求匹配模型';
     try {
         const messages = kind === 'soul' ? makeSoulMessages(context, resolved.promptPreset) : makeTextMessages(context, resolved.promptPreset);
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages, signal });
+        stage = '解析模型响应';
         const parsed = parseResponseJson(completion?.text);
-        if (!parsed) return { ok: false, code: `${prefix}_invalid_json`, message: errorMessages[`${prefix}_invalid_json`] };
+        if (!parsed) {
+            return failWithDiagnostics(`${prefix}_invalid_json`, {
+                stage, expected: '单个完整的草稿 JSON 对象',
+                actual: describeModelResponseForDiagnostics(completion?.text, MAX_MODEL_RESPONSE_CHARS),
+            });
+        }
+        stage = '草稿结构校验';
         const draft = kind === 'soul' ? normalizeSoulMatchDraft(parsed) : normalizeTextMatchDraft(parsed);
         return Object.freeze({ ok: true, draft });
     } catch (error) {
         if (error instanceof TypeError && typeof error.code === 'string' && error.code.startsWith(`${kind}_match_response_`)) {
+            recordRecommendationDiagnostics(scope, {
+                code: `${prefix}_response_invalid`, stage: '草稿结构校验',
+                actual: `草稿校验未通过（${error.code}）`,
+                hint: '模型输出未满足草稿结构合同；可重试或调整提示词预设',
+            });
             return safeModelFailure(kind);
         }
         const publicError = toPublicLlmError(error);
+        recordRecommendationDiagnostics(scope, {
+            code: publicError.code, stage,
+            error: snapshotErrorForDiagnostics(error) ?? snapshotErrorForDiagnostics(publicError),
+            hint: publicError.retryable ? '该错误可重试' : undefined,
+        });
         return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
     }
 }
@@ -849,7 +894,10 @@ export async function generateTextMatchDraft({ state, settingsStore, llmClient, 
     return generateMatchDraft({ kind: 'text', state, settingsStore, llmClient, signal });
 }
 
-function candidateFailure(code) {
+function candidateFailure(code, diagnostics) {
+    if (diagnostics && typeof diagnostics === 'object') {
+        recordRecommendationDiagnostics(CANDIDATE_MATCH_DIAGNOSTIC_SCOPE, { code, ...diagnostics });
+    }
     return { ok: false, code, message: CANDIDATE_MATCH_ERROR_MESSAGES[code] || CANDIDATE_MATCH_ERROR_MESSAGES.candidate_match_response_invalid };
 }
 
@@ -875,15 +923,25 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
     // `text` is a transition alias for the existing action-bridge kind. New UI
     // should use `voice`; both select the text_match function binding.
     const normalizedMode = mode === 'text' ? 'voice' : mode;
-    if (!['soul', 'voice'].includes(normalizedMode)) return candidateFailure('candidate_match_mode_invalid');
-    if (!ownPlainRecord(state)) return candidateFailure('candidate_match_state_invalid');
-    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return candidateFailure('candidate_match_settings_unavailable');
-    if (!llmClient || typeof llmClient.chat !== 'function') return candidateFailure('candidate_match_llm_unavailable');
+    clearRecommendationDiagnostics(CANDIDATE_MATCH_DIAGNOSTIC_SCOPE);
+    if (!['soul', 'voice'].includes(normalizedMode)) return candidateFailure('candidate_match_mode_invalid', { stage: '参数校验', field: 'mode', expected: 'soul 或 voice/text' });
+    if (!ownPlainRecord(state)) return candidateFailure('candidate_match_state_invalid', { stage: '前置检查', hint: '软件状态快照不可用' });
+    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return candidateFailure('candidate_match_settings_unavailable', { stage: '前置检查', hint: '设置存储未注入或不可用' });
+    if (!llmClient || typeof llmClient.chat !== 'function') return candidateFailure('candidate_match_llm_unavailable', { stage: '前置检查', hint: '未注入可用的 LLM 客户端' });
     const local = readSavedLocalKeywordWeights(settingsStore, state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW');
-    if (!local.ok) return candidateFailure(local.code);
+    if (!local.ok) {
+        return candidateFailure(local.code, {
+            stage: '读取本地关键词偏好', field: 'personalization.keywordWeightsByMode',
+            hint: '本地个性化关键词不可用或格式无效；仅报字段名，不含权重值明细',
+        });
+    }
     const keywordOnly = normalizedMode === 'voice';
     const normalizedVoiceText = keywordOnly ? cleanVoiceText(voiceText) : null;
-    if (keywordOnly && !normalizedVoiceText) return candidateFailure('candidate_match_voice_text_invalid');
+    if (keywordOnly && !normalizedVoiceText) {
+        return candidateFailure('candidate_match_voice_text_invalid', {
+            stage: '参数校验', field: 'voiceText', expected: '1–800 字符、无控制字符与 HTML 的描述文本',
+        });
+    }
 
     const functionKey = normalizedMode === 'soul' ? 'soul_match' : 'text_match';
     const context = keywordOnly
@@ -892,11 +950,20 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
     let resolved;
     try {
         resolved = settingsStore.resolveFunction(functionKey, { contentMode: context.contentMode });
-    } catch {
-        return candidateFailure('candidate_match_settings_invalid');
+    } catch (error) {
+        return candidateFailure('candidate_match_settings_invalid', {
+            stage: '解析功能绑定', error: snapshotErrorForDiagnostics(error),
+            hint: `检查“${functionKey}”功能的连接与提示词绑定设置`,
+        });
     }
-    if (!resolved?.connectionPreset) return candidateFailure('candidate_match_connection_missing');
+    if (!resolved?.connectionPreset) {
+        return candidateFailure('candidate_match_connection_missing', {
+            stage: '解析功能绑定', field: `${functionKey}.connectionPreset`,
+            hint: '未绑定连接预设且无默认连接',
+        });
+    }
 
+    let stage = keywordOnly ? '第一阶段：描述关键词提取' : '候选资料生成';
     try {
         let effectiveKeywordWeights = local.keywordWeights;
         if (keywordOnly) {
@@ -906,9 +973,15 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
                 signal,
             });
             const voiceRaw = parseResponseJson(voiceCompletion?.text);
-            if (!voiceRaw) return candidateFailure('candidate_match_invalid_json');
+            if (!voiceRaw) {
+                return candidateFailure('candidate_match_invalid_json', {
+                    stage: `${stage}（解析响应）`, expected: '单个完整的 keywordWeights JSON 对象',
+                    actual: describeModelResponseForDiagnostics(voiceCompletion?.text, MAX_MODEL_RESPONSE_CHARS),
+                });
+            }
             const voiceDraft = normalizeVoiceKeywordWeightDraft(voiceRaw);
             effectiveKeywordWeights = mergeMatchKeywordWeights(local.keywordWeights, voiceDraft.keywordWeights);
+            stage = '第二阶段：候选资料生成';
         }
         const candidateContext = keywordOnly
             ? buildKeywordOnlyMatchContext(state, effectiveKeywordWeights)
@@ -919,7 +992,12 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
             signal,
         });
         const raw = parseResponseJson(completion?.text);
-        if (!raw) return candidateFailure('candidate_match_invalid_json');
+        if (!raw) {
+            return candidateFailure('candidate_match_invalid_json', {
+                stage: `${stage}（解析响应）`, expected: '单个完整的候选公开资料 JSON 对象',
+                actual: describeModelResponseForDiagnostics(completion?.text, MAX_MODEL_RESPONSE_CHARS),
+            });
+        }
         const normalizedDraft = normalizeCandidateMatchDraft(raw, { contentMode: candidateContext.contentMode });
         if (!keywordOnly) {
             const compatibility = scoreHeartCardCompatibility(candidateContext.playerPublicProfile, normalizedDraft.profile);
@@ -928,14 +1006,29 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
             if (!compatibility.eligible
                 || (requiresConfirmedBidirectionalCompatibility(candidateContext.playerPublicProfile) && !hasConfirmedCompatibility)
                 || (requiredGender && compactGender(normalizedDraft.profile.性别) !== requiredGender)) {
-                return candidateFailure('candidate_match_basic_compatibility_invalid');
+                return candidateFailure('candidate_match_basic_compatibility_invalid', {
+                    stage: '本地硬条件校验', field: 'profile.性别 / profile.性取向',
+                    expected: requiredGender ? `候选公开性别精确为「${requiredGender}」且双向相容` : '与玩家公开性别/性取向双向相容',
+                    hint: '模型生成的角色不满足公开硬条件，可重试',
+                });
             }
         }
         const locallyScored = createLocallyScoredCandidateDraft(normalizedDraft, candidateContext, { keywordOnly });
         return Object.freeze({ ok: true, draft: locallyScored.draft, evaluation: locallyScored.evaluation });
     } catch (error) {
-        if (candidateResponseFailure(error)) return candidateFailure('candidate_match_response_invalid');
+        if (candidateResponseFailure(error)) {
+            return candidateFailure('candidate_match_response_invalid', {
+                stage: `${stage}（草稿校验）`,
+                actual: `草稿校验未通过（${error.code}）`,
+                hint: '模型输出未满足公开资料结构合同；可重试或调整提示词预设',
+            });
+        }
         const publicError = toPublicLlmError(error);
+        recordRecommendationDiagnostics(CANDIDATE_MATCH_DIAGNOSTIC_SCOPE, {
+            code: publicError.code, stage,
+            error: snapshotErrorForDiagnostics(error) ?? snapshotErrorForDiagnostics(publicError),
+            hint: publicError.retryable ? '该错误可重试' : undefined,
+        });
         return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
     }
 }

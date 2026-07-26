@@ -179,7 +179,15 @@ function normalizeTemplate(codec, input) {
         return codec.importCharacterTemplate(serialized);
     } catch (error) {
         if (error instanceof CharacterTemplateLibraryError) throw error;
-        fail(projectCodecError(error));
+        // 2026-07-27 控制台诊断增强：库层 code/message 不变；仅额外携带 codec 的稳定
+        // 错误码与字段路径结论（不含导入文本、隐藏值或数值），供控制台详情展示。
+        const failure = new CharacterTemplateLibraryError(projectCodecError(error));
+        const codecCode = typeof error?.code === 'string' && error.code ? error.code : '';
+        const fieldCode = typeof error?.detailCode === 'string' && error.detailCode ? error.detailCode : '';
+        if (codecCode || fieldCode) {
+            failure.detail = [codecCode ? `模板校验错误码: ${codecCode}` : '', fieldCode ? `字段/结论: ${fieldCode}` : ''].filter(Boolean).join('；');
+        }
+        throw failure;
     }
 }
 

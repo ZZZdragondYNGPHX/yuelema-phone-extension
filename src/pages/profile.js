@@ -5,6 +5,7 @@
 // 专属服务开关等安全逻辑全部原样保留。
 import { append, element, listen } from '../dom.js';
 import { avatarImageSource } from '../player-avatar-store.js';
+import { buildErrorDetail } from '../ui/operation-activity.js';
 import { describeActionFailure } from '../ui-model.js';
 import { createUiIcon } from '../ui/icon.js';
 import { createButton } from '../ui/button.js';
@@ -12,6 +13,7 @@ import { createEmptyState } from '../ui/empty-state.js';
 import { SERVICE_UNLOCK_STORAGE_KEY } from './shared.js';
 
 const RECENT_RELEASE_NOTES = Object.freeze([
+    'v1.0.0：正式版。安全控制台失败详情、广场底部追加、扩展应用内更新与全量 SFW 预设升级。',
     'v0.1.37：约伴服务重构、逐人同意与受控归档。',
     'v0.1.34：对话生图接口、绘图 DNA 与窄屏交互。',
     'v0.1.33：移动端面基、NSFW 合意合同与收藏语义修正。',
@@ -224,7 +226,7 @@ export function createProfilePage(ctx) {
             element('strong', { text: settings.enabled ? '自动总结已开启' : '自动总结已关闭' }),
             element('p', { text: settings.enabled
                 ? `每 ${settings.interval} 楼自动整理一次，失败后最多重试 ${settings.retryLimit} 次；群聊与帖子总结只保存在浏览器本地。`
-                : '关闭时私聊会把当前已保存的完整聊天记录交给私聊模型；群聊与帖子也不会自动整理。下方两个入口会保持不可操作。' }),
+                : '关闭后私聊模型会收到当前保留的完整聊天记录（最多保留 240 条，更早内容不会进入模型）；群聊与帖子也不会自动整理。下方两个入口会保持不可操作。' }),
         ]);
         const switchLabel = element('label', { className: 'yl-switch yl-chat-summary-switch' });
         const toggle = element('input', { type: 'checkbox', checked: settings.enabled, ariaLabel: '自动对话总结开关' });
@@ -477,7 +479,7 @@ export function createProfilePage(ctx) {
     function buildOperationConsole() {
         const section = element('section', { className: 'yl-operation-console' });
         const toolbar = element('div', { className: 'yl-operation-console-toolbar' });
-        toolbar.appendChild(element('p', { text: '只保留本次小手机会话的公开状态，不持久化，也不显示密钥、内部标识、补丁或原始模型内容。' }));
+        toolbar.appendChild(element('p', { text: '只保留本次小手机会话的运行记录，不持久化；失败详情经脱敏后可在条目内展开查看，密钥与隐私数值永不显示。' }));
         const clear = element('button', { className: 'yl-settings-button', type: 'button', text: '清空显示记录', ariaLabel: '清空控制台显示记录' });
         listen(clear, clear, 'click', () => { ctx.operationActivity.clear(); ctx.renderPage(); }, ctx.abortController.signal);
         toolbar.appendChild(clear);
@@ -537,15 +539,23 @@ export function createProfilePage(ctx) {
         const operationToken = ctx.showRomanceLoading('发起心动私聊', '正在等待对方回应……');
         ctx.renderPage();
         let result;
+        let thrown = null;
         try { result = await ctx.actionBridge.runMvuAction('start_private_chat', candidate.uid); }
-        catch { result = { ok: false }; }
+        catch (error) { result = { ok: false }; thrown = error; }
         if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) {
             ctx.operationActivity.dismiss(activityHandle, '提示已关闭，结果未展示。');
             return;
         }
         if (!result?.ok) {
             const message = result?.message || describeActionFailure(result) || '私聊邀请未完成，请稍后再试。';
-            ctx.operationActivity.fail(activityHandle, '私聊邀请未完成，请稍后再试。');
+            // 2026-07-27 控制台诊断增强：界面提示保持粗略；错误码 / 校验路径结论 / reason 只进 detail。
+            // 32+ 连续 ASCII token 会被控制台脱敏器整体抹除，长错误码按下划线注入空格保住可读性。
+            const rawCode = typeof result?.code === 'string' ? result.code : '';
+            const displayCode = rawCode.length >= 32 ? rawCode.replaceAll('_', '_ ').trim() : rawCode;
+            const specifics = [result?.reason, result?.detail].filter((item) => typeof item === 'string' && item).join('；');
+            ctx.operationActivity.fail(activityHandle, '私聊邀请未完成，请稍后再试。', {
+                detail: buildErrorDetail(thrown ?? { code: displayCode, message: specifics }, { operation: '收藏主动私聊', stage: '受控 MVU 写入' }),
+            });
             ctx.showRomanceResult({ title: '邀请未送达', message }, operationToken);
             ctx.refreshState();
             return;

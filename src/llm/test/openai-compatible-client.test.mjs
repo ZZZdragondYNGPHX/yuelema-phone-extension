@@ -256,6 +256,88 @@ streamController.abort();
 await rejectsCode(() => streamCancelled, 'CANCELLED');
 assert.equal(cancelledReader, true);
 
+/* 诊断增强字段（只增不改）：code/message 语义保持不变，附加 status/bodyExcerpt/
+   contentType/streamCharacters/receivedBytes 供安全控制台 detail 复用。 */
+const diagServerClient = createOpenAICompatibleClient({
+    async fetchImpl() {
+        return {
+            ok: false, status: 502,
+            headers: { get: () => 'application/json' },
+            async text() { return '{"error":"upstream broke","api_key":"sk-secret1234567890abcd"}'; },
+        };
+    },
+});
+await assert.rejects(
+    () => diagServerClient.chat({ preset, messages: [{ role: 'user', content: 'x' }] }),
+    (error) => error.code === 'SERVER_ERROR'
+        && error.status === 502
+        && typeof error.bodyExcerpt === 'string'
+        && error.bodyExcerpt.includes('upstream broke')
+        && !error.bodyExcerpt.includes('sk-secret')
+        && error.bodyExcerpt.includes('[已脱敏]')
+        && !error.message.includes('upstream broke'),
+);
+
+const diagHttpClient = createOpenAICompatibleClient({
+    async fetchImpl() { return jsonResponse({ error: 'route not found' }, { status: 404 }); },
+});
+await assert.rejects(
+    () => diagHttpClient.chat({ preset, messages: [{ role: 'user', content: 'x' }] }),
+    (error) => error.code === 'HTTP_ERROR' && error.status === 404 && error.bodyExcerpt.includes('route not found'),
+);
+
+const diagNonJsonClient = createOpenAICompatibleClient({
+    async fetchImpl() {
+        const encoder = new TextEncoder();
+        return {
+            ok: true, status: 200,
+            headers: { get: () => 'application/json' },
+            body: new ReadableStream({
+                start(controller) { controller.enqueue(encoder.encode('oops not json {')); controller.close(); },
+            }),
+        };
+    },
+});
+await assert.rejects(
+    () => diagNonJsonClient.chat({ preset, messages: [{ role: 'user', content: 'x' }] }),
+    (error) => error.code === 'NON_JSON_RESPONSE'
+        && error.bodyExcerpt.includes('oops not json')
+        && !error.message.includes('oops not json'),
+);
+
+const diagWrongTypeClient = createOpenAICompatibleClient({
+    async fetchImpl() { return sseResponse([], { contentType: 'application/json' }); },
+});
+await assert.rejects(
+    () => diagWrongTypeClient.chat({ preset: streamPreset, messages: [{ role: 'user', content: 'x' }] }),
+    (error) => error.code === 'NON_STREAM_RESPONSE' && error.contentType.includes('application/json'),
+);
+
+const diagStreamClient = createOpenAICompatibleClient({
+    async fetchImpl() {
+        return sseResponse([
+            'data: {"choices":[{"delta":{"content":"ab"}}]}\n',
+            'data: %%%broken-frame%%%\n',
+        ]);
+    },
+});
+await assert.rejects(
+    () => diagStreamClient.chat({ preset: streamPreset, messages: [{ role: 'user', content: 'x' }] }),
+    (error) => error.code === 'INVALID_STREAM_RESPONSE'
+        && error.streamCharacters === 2
+        && Number.isInteger(error.receivedBytes)
+        && error.bodyExcerpt.includes('%%%broken-frame%%%')
+        && !error.message.includes('broken-frame'),
+);
+
+const diagTooLargeClient = createOpenAICompatibleClient({
+    async fetchImpl() { return sseResponse([new Uint8Array(MAX_RESPONSE_BYTES + 1)]); },
+});
+await assert.rejects(
+    () => diagTooLargeClient.chat({ preset: streamPreset, messages: [{ role: 'user', content: 'x' }] }),
+    (error) => error.code === 'RESPONSE_TOO_LARGE' && error.receivedBytes > MAX_RESPONSE_BYTES,
+);
+
 clearPersistentKeys();
 clearSessionKeys();
 assert.equal(hasSessionKey(preset.id), false);

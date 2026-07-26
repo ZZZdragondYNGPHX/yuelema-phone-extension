@@ -90,7 +90,13 @@ test('group chat omits unsafe preset entries and projects existing client errors
         llmClient: { async chat(input) { request = input; throw new YueLeMaLlmError('HTTP_429', '模型服务繁忙，请稍后再试。', { status: 429, retryable: true }); } },
     });
     assert.doesNotMatch(JSON.stringify(request.messages), /api_key=never-send/);
-    assert.deepEqual(result, { ok: false, code: 'HTTP_429', message: '模型服务繁忙，请稍后再试。', retryable: true });
+    const { diagnostic, ...projected } = result;
+    assert.deepEqual(projected, { ok: false, code: 'HTTP_429', message: '模型服务繁忙，请稍后再试。', retryable: true });
+    // 阶段 77：失败结果附带控制台诊断（读到什么字段带什么），供页面层格式化 detail。
+    assert.equal(diagnostic.stage, '模型请求');
+    assert.equal(diagnostic.error.status, 429);
+    assert.equal(diagnostic.error.code, 'HTTP_429');
+    assert.equal(diagnostic.error.name, 'YueLeMaLlmError');
 });
 
 function localProfile(nickname, overrides = {}) {
@@ -141,4 +147,35 @@ test('group conversation update rejects minor temporary people and arbitrary mod
         });
         assert.equal(result.code, 'group_update_response_invalid');
     }
+});
+
+// —— 阶段 77：失败结果附带控制台诊断（成员校验/安全拒绝的具体项）——
+
+test('group update failures carry field-level diagnostics for unknown speakers and duplicate participants', async () => {
+    const group = { scope: 'local', name: '同城周末搭子', description: '公开活动交流。', members: [localProfile('林澈')] };
+    const history = { summaries: [], messages: [{ sender: 'user', speaker: '我', content: '今天聊什么？' }] };
+    const run = (payload) => generateGroupChatUpdate({
+        state: state(), group, history, settingsStore: { resolveFunction: resolved },
+        llmClient: { async chat() { return { text: typeof payload === 'string' ? payload : JSON.stringify(payload) }; } },
+    });
+
+    const unknownSpeaker = await run({ participants: [], messages: [{ speaker: '路人甲', text: '公开消息。' }] });
+    assert.equal(unknownSpeaker.code, 'group_update_response_invalid');
+    assert.equal(unknownSpeaker.diagnostic.stage, '响应校验');
+    assert.equal(unknownSpeaker.diagnostic.field, 'messages[0].speaker');
+    assert.equal(unknownSpeaker.diagnostic.actual, '路人甲');
+
+    const duplicate = await run({ participants: [localProfile('林澈')], messages: [{ speaker: '林澈', text: '公开消息。' }] });
+    assert.equal(duplicate.diagnostic.field, 'participants[0].nickname');
+    assert.match(duplicate.diagnostic.hint, /重复/u);
+
+    const underage = await run({ participants: [localProfile('新人', { ageRange: '17岁' })], messages: [{ speaker: '新人', text: '公开消息。' }] });
+    assert.equal(underage.diagnostic.field, 'participants[0]');
+    assert.match(underage.diagnostic.hint, /成年年龄段/u);
+
+    const unparsable = await run('GROUP_RAW_LEAK not json');
+    assert.equal(unparsable.code, 'group_update_invalid_json');
+    assert.equal(unparsable.diagnostic.stage, '响应解析');
+    assert.match(unparsable.diagnostic.actual, /响应长度 \d+ 字符/u);
+    assert.doesNotMatch(JSON.stringify(unparsable.diagnostic), /GROUP_RAW_LEAK/u);
 });

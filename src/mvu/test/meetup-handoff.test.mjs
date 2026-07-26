@@ -243,3 +243,39 @@ test('meetup bridge force-summarizes pending chat through MVU before it writes t
     assert.equal(calls.filter(([name]) => name === 'parse').length, 2, '应先写入总结、再写入面基记录');
     assert.equal('click' in textarea, false);
 });
+
+test('meetup forced-summary failure message distinguishes a disabled summary switch from an ordinary retryable failure', async () => {
+    const pendingState = matchedState();
+    pendingState.会话.chat_1.最近消息 = [{ 消息UID: 'm_1', 发送者: '玩家', 内容: '我们约周六见。', 时间: '', 层数: 1 }];
+    pendingState.会话.chat_1.对话层数 = 1;
+    pendingState.会话.chat_1.总结 = { 已总结消息UID: '', 总结序号: 0, 记录: [], 状态: '空闲', 失败原因: '', 目标总结UID: '', 尝试次数: 0 };
+    const makeBridge = (enabled) => createActionBridge({
+        documentRef: { querySelector: () => null },
+        mvu: {
+            events: { VARIABLE_UPDATE_ENDED: 'variable_update_ended' },
+            getMvuData() { return { stat_data: structuredClone(pendingState) }; },
+            async parseMessage() { throw new Error('总结失败时不得进入 MVU 写入'); },
+            async replaceMvuData() {},
+        },
+        eventEmit: async () => {},
+        settingsStore: {
+            getChatSummarySettings() { return { enabled, interval: 2, retryLimit: 0 }; },
+            resolveFunction() {
+                return { connectionPreset: { id: 'summary', url: 'https://example.test/v1', model: 'summary' }, promptPreset: { enabled: true, content: '只记录已明确的内容。' } };
+            },
+        },
+        llmClient: { async chat() { return { text: '不是合法总结 JSON' }; } },
+    });
+
+    // 总开关关闭时所有总结入口都不可操作，必须指引先开启设置，而不是去灰掉的“聊天总结”重试。
+    const closed = await makeBridge(false).runMeetupHandoff(request());
+    assert.equal(closed.ok, false);
+    assert.equal(closed.code, 'meetup_summary_failed');
+    assert.match(closed.message, /请先在“我的 → 设置 → 对话总结”开启总结并配置绑定后重试面基/u);
+
+    // 已开启但本次失败：保留原有的重试指引语义，不出现“请先开启”的误导。
+    const open = await makeBridge(true).runMeetupHandoff(request());
+    assert.equal(open.ok, false);
+    assert.equal(open.code, 'meetup_summary_failed');
+    assert.doesNotMatch(open.message, /开启总结/u);
+});

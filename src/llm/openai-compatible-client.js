@@ -11,7 +11,15 @@ export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 export const TRANSPORT_MODES = Object.freeze(['json', 'stream', 'pseudo_stream']);
 const TRANSPORT_MODE_SET = new Set(TRANSPORT_MODES);
 
-/** 可安全显示给 UI 的请求错误；永不携带 API Key、请求头、响应体或原始异常。 */
+/**
+ * 可安全显示给 UI 的请求错误；message 永不携带 API Key、请求头、响应体或原始异常。
+ * 为安全控制台的诊断详情追加的只增字段（均为可选，不改变既有 code/message 语义）：
+ * - bodyExcerpt：响应体前 ~200 字符摘要，入库前已经过本模块粗脱敏（凭据样式
+ *   token 一律替换为 [已脱敏]）；台账 sanitizeDiagnosticDetail 仍会兜底。
+ * - contentType：响应 Content-Type 摘要（协商失败类错误）。
+ * - streamCharacters：SSE 断流/失败时已累计的回复字符数（断流位置）。
+ * - receivedBytes：失败时已接收的响应字节数（超限/断流诊断）。
+ */
 export class YueLeMaLlmError extends Error {
     constructor(code, message, details = {}) {
         super(message);
@@ -19,7 +27,61 @@ export class YueLeMaLlmError extends Error {
         this.code = code;
         this.status = Number.isInteger(details.status) ? details.status : undefined;
         this.retryable = Boolean(details.retryable);
+        if (typeof details.bodyExcerpt === 'string' && details.bodyExcerpt) this.bodyExcerpt = details.bodyExcerpt;
+        if (typeof details.contentType === 'string' && details.contentType) this.contentType = details.contentType;
+        if (Number.isInteger(details.streamCharacters)) this.streamCharacters = details.streamCharacters;
+        if (Number.isInteger(details.receivedBytes)) this.receivedBytes = details.receivedBytes;
     }
+}
+
+const ERROR_BODY_EXCERPT_MAX_CHARS = 200;
+// C0 控制字符与 DEL；用 fromCharCode 构造避免源码内嵌控制字符。
+const EXCERPT_NON_PRINTABLE_PATTERN = new RegExp(
+    `[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]+`,
+    'gu',
+);
+
+/** 诊断摘要粗脱敏：压平空白、替换凭据样式 token、截断到 ~200 字符。 */
+function redactForExcerpt(text) {
+    let value = String(text ?? '').replace(EXCERPT_NON_PRINTABLE_PATTERN, ' ').replace(/\s+/gu, ' ').trim();
+    value = value.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, '[已脱敏]');
+    value = value.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, '[已脱敏]');
+    value = value.replace(/\b(api[_-]?key|apikey|authorization|access[_-]?token|token|secret|password|credential)\b\s*["']?\s*[:=]\s*[^\s,;"']+/giu, '$1: [已脱敏]');
+    value = value.replace(/[A-Za-z0-9+/=_-]{32,}/gu, '[已脱敏]');
+    if (value.length > ERROR_BODY_EXCERPT_MAX_CHARS) value = `${value.slice(0, ERROR_BODY_EXCERPT_MAX_CHARS)}…`;
+    return value;
+}
+
+/** 尽力而为地读取错误响应体的前 ~200 字符摘要；任何读取失败都静默返回空串。 */
+async function readErrorBodyExcerpt(response, abortScope) {
+    try {
+        if (typeof response?.text === 'function') {
+            const text = await waitForAbortable(response.text(), abortScope.signal);
+            return redactForExcerpt(typeof text === 'string' ? text.slice(0, 2048) : '');
+        }
+        const reader = response?.body?.getReader?.();
+        if (reader) {
+            try {
+                const { value } = await waitForAbortable(reader.read(), abortScope.signal);
+                if (value instanceof Uint8Array) {
+                    return redactForExcerpt(new TextDecoder().decode(value.subarray(0, 2048)));
+                }
+            } finally {
+                try { await reader.cancel?.(); } catch { /* no-op */ }
+                try { reader.releaseLock?.(); } catch { /* no-op */ }
+            }
+            return '';
+        }
+        if (typeof response?.json === 'function') {
+            const payload = await waitForAbortable(response.json(), abortScope.signal);
+            let serialized;
+            try { serialized = JSON.stringify(payload); } catch { serialized = ''; }
+            return redactForExcerpt(String(serialized ?? '').slice(0, 2048));
+        }
+    } catch {
+        // 摘要只是诊断增强，绝不影响主错误的抛出路径。
+    }
+    return '';
 }
 
 function fail(code, message, details) {
@@ -160,7 +222,7 @@ function responseByteLength(value) {
 
 function assertResponseSize(byteLength) {
     if (byteLength > MAX_RESPONSE_BYTES) {
-        fail('RESPONSE_TOO_LARGE', '模型响应超过安全大小限制，请缩短输出后重试。');
+        fail('RESPONSE_TOO_LARGE', '模型响应超过安全大小限制，请缩短输出后重试。', { receivedBytes: byteLength });
     }
 }
 
@@ -220,14 +282,19 @@ async function readResponseBodyText(response, abortScope) {
 async function parseJsonResponse(response, abortScope) {
     const contentType = getContentType(response).toLowerCase();
     if (contentType && !contentType.includes('application/json') && !contentType.includes('+json')) {
-        fail('NON_JSON_RESPONSE', '接口返回的不是 JSON，无法继续处理。');
+        const bodyExcerpt = await readErrorBodyExcerpt(response, abortScope);
+        fail('NON_JSON_RESPONSE', '接口返回的不是 JSON，无法继续处理。', {
+            contentType: redactForExcerpt(contentType), bodyExcerpt,
+        });
     }
     const bodyText = await readResponseBodyText(response, abortScope);
     if (bodyText !== null) {
         try {
             return JSON.parse(bodyText);
         } catch {
-            fail('NON_JSON_RESPONSE', '接口返回的不是有效 JSON，无法继续处理。');
+            fail('NON_JSON_RESPONSE', '接口返回的不是有效 JSON，无法继续处理。', {
+                bodyExcerpt: redactForExcerpt(bodyText),
+            });
         }
     }
     try {
@@ -243,12 +310,12 @@ async function parseJsonResponse(response, abortScope) {
     }
 }
 
-function throwForHttpStatus(response) {
+function throwForHttpStatus(response, bodyExcerpt = '') {
     const status = Number(response?.status);
-    if (status === 401) fail('AUTH_FAILED', '接口认证失败，请检查此浏览器保存的 API Key。', { status });
-    if (status === 429) fail('RATE_LIMITED', '接口请求过于频繁，请稍后重试。', { status, retryable: true });
-    if (status >= 500 && status <= 599) fail('SERVER_ERROR', '模型服务暂时不可用，请稍后重试。', { status, retryable: true });
-    fail('HTTP_ERROR', `接口请求失败（HTTP ${Number.isInteger(status) ? status : '未知'}）。`, { status });
+    if (status === 401) fail('AUTH_FAILED', '接口认证失败，请检查此浏览器保存的 API Key。', { status, bodyExcerpt });
+    if (status === 429) fail('RATE_LIMITED', '接口请求过于频繁，请稍后重试。', { status, retryable: true, bodyExcerpt });
+    if (status >= 500 && status <= 599) fail('SERVER_ERROR', '模型服务暂时不可用，请稍后重试。', { status, retryable: true, bodyExcerpt });
+    fail('HTTP_ERROR', `接口请求失败（HTTP ${Number.isInteger(status) ? status : '未知'}）。`, { status, bodyExcerpt });
 }
 
 function normalizeMessage(message) {
@@ -335,10 +402,17 @@ function extractDeltaText(payload) {
 async function parseSseCompletion(response, abortScope, onDelta) {
     const contentType = getContentType(response).toLowerCase();
     if (contentType && !contentType.includes('text/event-stream')) {
-        fail('NON_STREAM_RESPONSE', '接口未返回兼容的流式响应。');
+        const bodyExcerpt = await readErrorBodyExcerpt(response, abortScope);
+        fail('NON_STREAM_RESPONSE', '接口未返回兼容的流式响应。', {
+            contentType: redactForExcerpt(contentType), bodyExcerpt,
+        });
     }
     const reader = response?.body?.getReader?.();
-    if (!reader) fail('NON_STREAM_RESPONSE', '当前接口或运行环境未提供可读取的流式响应。');
+    if (!reader) {
+        fail('NON_STREAM_RESPONSE', '当前接口或运行环境未提供可读取的流式响应。', {
+            contentType: contentType ? redactForExcerpt(contentType) : undefined,
+        });
+    }
     const decoder = new TextDecoder();
     let buffer = '';
     let byteLength = 0;
@@ -360,7 +434,11 @@ async function parseSseCompletion(response, abortScope, onDelta) {
         try {
             payload = JSON.parse(data);
         } catch {
-            fail('INVALID_STREAM_RESPONSE', '流式响应格式无效，无法继续处理。');
+            fail('INVALID_STREAM_RESPONSE', '流式响应格式无效，无法继续处理。', {
+                bodyExcerpt: redactForExcerpt(data),
+                streamCharacters: text.length,
+                receivedBytes: byteLength,
+            });
         }
         const delta = extractDeltaText(payload);
         if (!delta) return;
@@ -374,7 +452,9 @@ async function parseSseCompletion(response, abortScope, onDelta) {
                     abortScope.signal,
                 );
             } catch {
-                fail('STREAM_CONSUMER_FAILED', '流式回复显示未完成，请稍后重试。');
+                fail('STREAM_CONSUMER_FAILED', '流式回复显示未完成，请稍后重试。', {
+                    streamCharacters: text.length,
+                });
             }
         }
     };
@@ -386,7 +466,11 @@ async function parseSseCompletion(response, abortScope, onDelta) {
                 readerEnded = true;
                 break;
             }
-            if (!(value instanceof Uint8Array)) fail('INVALID_STREAM_RESPONSE', '流式响应数据格式无效。');
+            if (!(value instanceof Uint8Array)) {
+                fail('INVALID_STREAM_RESPONSE', '流式响应数据格式无效。', {
+                    streamCharacters: text.length, receivedBytes: byteLength,
+                });
+            }
             byteLength += value.byteLength;
             assertResponseSize(byteLength);
             buffer += decoder.decode(value, { stream: true });
@@ -411,7 +495,11 @@ async function parseSseCompletion(response, abortScope, onDelta) {
         try { reader.releaseLock?.(); } catch { /* no-op */ }
     }
 
-    if (!text.trim()) fail('INVALID_COMPLETION', '模型流式响应未包含可用文本。');
+    if (!text.trim()) {
+        fail('INVALID_COMPLETION', '模型流式响应未包含可用文本。', {
+            streamCharacters: text.length, receivedBytes: byteLength,
+        });
+    }
     return Object.freeze({
         text,
         source: 'delta.content',
@@ -466,7 +554,7 @@ export function createOpenAICompatibleClient({ fetchImpl } = {}) {
                 }
                 fail('NETWORK_ERROR', '无法连接模型服务，请检查 URL、网络或跨域配置。', { retryable: true });
             }
-            if (!response?.ok) throwForHttpStatus(response);
+            if (!response?.ok) throwForHttpStatus(response, await readErrorBodyExcerpt(response, abortScope));
             try {
                 return await responseParser(response, abortScope);
             } catch (error) {

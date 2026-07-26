@@ -9,7 +9,7 @@ function adultCandidate() {
         仅好友资料: { 关系状态: '单身', 边界与偏好: '尊重拒绝。' },
         隐藏资料: { 实际年龄: 28, 私人备注: '对临时失约敏感。' },
         偏好与边界: '先确认边界。', 拒绝阈值: 35, 已读不回阈值: 55, 取消匹配阈值: 75, 拉黑阈值: 90,
-        与玩家关系: { 状态: '陌生', 全局账号表现: 68, NPC专属匹配度: 72, 好感: 0, 信任: 0, 戒备: 20, 面基意愿: 0 },
+        与玩家关系: { 状态: '陌生', 全局账号表现: 68, NPC专属匹配度: 72, 好感: 0, 信任: 0, 戒备: 10, 面基意愿: 0 },
     };
 }
 
@@ -302,6 +302,11 @@ test('invalid user-authored character never enters the MVU write pipeline', asyn
     assert.equal(result.ok, false);
     assert.deepEqual(calls.map(([name]) => name), ['get']);
     assert.deepEqual(data.stat_data, initialState);
+    // 2026-07-27 控制台诊断增强：受控管线的可选 reason 由 action-bridge 原样带出，
+    // 只含字段路径与校验结论，绝不含隐藏资料的具体数值。
+    assert.equal(result.code, 'character_registration_candidate_invalid');
+    assert.equal(result.reason, '成年人校验未通过：字段 隐藏资料.实际年龄');
+    assert.equal(JSON.stringify(result).includes('16'), false);
 });
 
 
@@ -346,10 +351,11 @@ test('private chat returns read_without_reply after the local rhythm builder sup
             仅好友资料: { 关系状态: '单身', 边界与偏好: '先确认意愿。' },
             隐藏资料: { 实际年龄: 24, 私人备注: '不得发送' },
             偏好与边界: '', 拒绝阈值: 0, 已读不回阈值: 55, 取消匹配阈值: 80, 拉黑阈值: 90,
-            与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0 },
+            // 2026-07-27 节奏校准修复后，已读不回需要真实恶化：使用已紧张的关系并越过开局宽限层数。
+            与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 5, 信任: 5, 戒备: 40, 面基意愿: 0 },
         },
     };
-    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' } };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -378,7 +384,8 @@ test('private chat returns blocked only after the controlled patch atomically bl
             与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 0, 信任: 0, 戒备: 90, 面基意愿: 0 },
         },
     };
-    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' } };
+    // 拉黑只在开局宽限层数之外仍持续恶化/不改善时触发。
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -529,6 +536,17 @@ test('service-order bridge rejects a changed expected mode before it builds or w
     assert.equal(result.ok, false);
     assert.equal(result.code, 'service_order_mode_changed');
     assert.deepEqual(calls.map(([name]) => name), ['get']);
+
+    // 2026-07-27 控制台诊断增强：build 层的候选级 reason 由桥接原样带出（候选序号 +
+    // 字段路径 + 结论），且绝不包含隐藏资料的具体数值；MVU 未发生任何写入。
+    const minor = adultCandidate();
+    minor.隐藏资料.实际年龄 = 17;
+    const candidateFailure = await bridge.runServiceOrderHandoff({ candidate: minor, categoryId: 'girl_shuren', expectedContentMode: 'SFW' });
+    assert.equal(candidateFailure.ok, false);
+    assert.equal(candidateFailure.code, 'service_order_candidate_invalid');
+    assert.equal(candidateFailure.reason, '候选[1] 成年人校验未通过：字段 隐藏资料.实际年龄');
+    assert.equal(JSON.stringify(candidateFailure).includes('17'), false);
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get'], 'reason 增强不得引入任何 parse/replace 写入');
 });
 
 test('mode toggles wait for a service-order transaction instead of reading the same MVU snapshot', async () => {

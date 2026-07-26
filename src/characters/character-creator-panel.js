@@ -1,5 +1,6 @@
 import { append, element, listen } from '../dom.js';
 import { createAvatarView } from '../ui/avatar-view.js';
+import { buildErrorDetail } from '../ui/operation-activity.js';
 import { createUiIcon } from '../ui/icon.js';
 import { CHARACTER_TEMPLATE_FORMAT, importCharacterTemplate, projectCharacterTemplateError } from './character-template-codec.js';
 import { avatarAcceptAttribute, compressLocalAvatar, projectAvatarError } from './avatar-codec.js';
@@ -144,8 +145,43 @@ function safeLibraryMessage(error) {
  * The editor may show the current private draft because the player owns it; normal
  * recommendation cards remain public-projection-only in app-shell/ui-model.
  */
-export function buildCharacterCreatorPanel({ documentRef, actionBridge, characterLibrary, signal, contentMode = 'SFW', onFeedback, onRegistered, onConfigureFeature = null, importAvatarFromUrl = null }) {
+export function buildCharacterCreatorPanel({ documentRef, actionBridge, characterLibrary, signal, contentMode = 'SFW', onFeedback, onRegistered, onConfigureFeature = null, importAvatarFromUrl = null, operationActivity = null }) {
     const section = element('section', { className: 'yl-phone-empty-actions yl-character-editor yl-character-creator' });
+
+    /* —— 安全控制台接线（2026-07-27）——
+     * operationActivity 为可选注入；缺省时全部静默跳过，面板行为与既有完全一致。
+     * 界面提示（onFeedback 文案）保持原有粗略文案不变；具体失败原因只进 detail，
+     * 且 detail 只携带错误码、字段名/路径与校验结论——绝无 API Key、隐藏资料值、
+     * 关系分或阈值数值，detail 入账时还会再经 sanitizeDiagnosticDetail 脱敏。 */
+    const activity = operationActivity && typeof operationActivity.start === 'function' ? operationActivity : null;
+    function startActivity(name, message) {
+        if (!activity) return null;
+        try { return activity.start(name, message); } catch { return null; }
+    }
+    function settleActivity(kind, handle, message, detail) {
+        if (!activity || !handle) return;
+        try { activity[kind](handle, message, { detail: detail ?? null }); } catch { /* 控制台不可用时绝不影响功能路径 */ }
+    }
+    /** 32+ 连续 ASCII token 会被控制台脱敏器视作凭据整体抹除；给长错误码按下划线注入空格保住可读性。 */
+    function displayCode(code) {
+        const text = typeof code === 'string' ? code : '';
+        return text.length >= 32 ? text.replaceAll('_', '_ ').trim() : text;
+    }
+    /** 把服务层失败结果（code/message/reason/detail/status）压成一条脱敏详情。 */
+    function failureDetail(source, context) {
+        try {
+            if (source && typeof source === 'object' && !(source instanceof Error)) {
+                const specifics = [source.message, source.reason, source.detail]
+                    .filter((item) => typeof item === 'string' && item).join('；');
+                return buildErrorDetail({
+                    message: specifics,
+                    code: displayCode(source.code),
+                    status: Number.isInteger(source.status) ? source.status : undefined,
+                }, context);
+            }
+            return buildErrorDetail(source ?? null, context);
+        } catch { return null; }
+    }
 
     const hero = element('article', { className: 'yl-character-hero' });
     const heroCopy = element('div', { className: 'yl-character-hero-copy' });
@@ -321,12 +357,12 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         description: '0–100 的数值用于表达角色在不同负面互动下的反应门槛。它们不是公开标签，也不会替代剧情中的具体沟通与判断。',
     });
     const thresholdBody = collapsibleBody(thresholdSection, thresholdHeading, '互动节奏');
-    const thresholdGrid = fieldGroup(thresholdBody, '关系反应阈值', '数值越低，代表越早对相应行为作出反应。', 'yl-character-field-grid yl-character-field-grid-four yl-character-threshold-grid');
+    const thresholdGrid = fieldGroup(thresholdBody, '关系反应阈值', '从人设推导这四个数值并保持内在一致：数值越高越难触发对应反应。外向包容的人整体偏高，敏感高戒备的人偏低，但不该低到一言不合就断联。AI 生成的新角色会强制要求拉黑阈值不低于 60 且高于已读不回阈值。', 'yl-character-field-grid yl-character-field-grid-four yl-character-threshold-grid');
     const thresholdHints = {
-        拒绝阈值: '何时会明确表达不适或拒绝。',
-        已读不回阈值: '何时会因长期无回应调整态度。',
-        取消匹配阈值: '何时会结束当前匹配关系。',
-        拉黑阈值: '何时会彻底停止联系。',
+        拒绝阈值: '何时会明确表达不适或拒绝；越高代表对契合度越挑剔。',
+        已读不回阈值: '对负面互动压力的容忍线，越过便已读不回；越高越能忍。',
+        取消匹配阈值: '何时会结束当前匹配关系；越高越难走到这一步。',
+        拉黑阈值: '彻底断联的心理底线；建议比已读不回阈值至少高 20，且不低于 60。',
     };
     for (const key of THRESHOLD_KEYS) textField(thresholdGrid, key, { name: `threshold-${key}`, type: 'number', value: String(baseCandidate()[key]), min: 0, max: 100, required: true, inputMode: 'numeric', hint: thresholdHints[key] });
 
@@ -544,14 +580,24 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         const instruction = isCompletion ? cleanText(completionInstruction.value) : cleanText(creativeBrief.value);
         if (!instruction) { onFeedback(isCompletion ? '请先填写补全说明；当前草稿未改变。' : '请先填写完整创作说明；当前草稿未改变。'); return; }
         button.disabled = true;
+        const operationName = isCompletion ? 'AI 补全' : 'AI 完整创作';
+        const activityHandle = startActivity(operationName, isCompletion ? '正在生成公开资料补全草稿……' : '正在生成完整角色草稿……');
         onFeedback(isCompletion ? '正在生成公开资料补全草稿；不会自动登记。' : '正在生成完整角色草稿；不会自动登记。');
         try {
             const result = await (isCompletion
                 ? method({ publicProfile: publicProfileFromForm(form), instruction, contentMode, signal })
                 : method({ creativeBrief: instruction, signal }));
-            if (!result?.ok || !result?.candidate) { onFeedback(isCompletion ? 'AI 补全未生成可用草稿；当前草稿未改变。' : 'AI 完整创作未生成可用草稿；当前草稿未改变。'); return; }
+            if (!result?.ok || !result?.candidate) {
+                settleActivity('fail', activityHandle, '角色草稿未生成。', failureDetail(result, { operation: operationName, stage: '模型生成与校验' }));
+                onFeedback(isCompletion ? 'AI 补全未生成可用草稿；当前草稿未改变。' : 'AI 完整创作未生成可用草稿；当前草稿未改变。');
+                return;
+            }
+            settleActivity('succeed', activityHandle, '角色草稿已载入编辑器。');
             adoptAiCandidate(result.candidate, isCompletion ? 'AI 补全草稿已载入编辑器；请检查私有层、边界和阈值后再登记。' : 'AI 完整创作草稿已载入编辑器；请检查全部字段后再登记。');
-        } catch { onFeedback('AI 角色创作未完成；当前草稿未改变。'); }
+        } catch (error) {
+            settleActivity('fail', activityHandle, '角色草稿未生成。', failureDetail(error, { operation: operationName, stage: '调用角色创作桥接' }));
+            onFeedback('AI 角色创作未完成；当前草稿未改变。');
+        }
         finally { button.disabled = false; }
     }
 
@@ -592,8 +638,19 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
             avatarNote.textContent = localAvatar ? '已导入已压缩的本地头像。' : '已导入头像设置。';
             updatePreview();
             onFeedback('模板已通过完整成年人和结构校验；请检查草稿后再登记。');
-        } catch (error) { onFeedback(projectCharacterTemplateError(error).message); }
+        } catch (error) {
+            const projected = projectCharacterTemplateError(error);
+            settleActivity('fail', startActivity('模板载入', '正在校验角色模板……'), '角色模板未通过校验。',
+                failureDetail({ code: projected.code, detail: projected.detail }, { operation: '模板载入编辑器', stage: '模板结构与成年人校验' }));
+            onFeedback(projected.message);
+        }
     }, signal);
+
+    /** 本地模板库失败仅补控制台详情（错误码 + 可选的字段结论）；界面文案不变。 */
+    function reportLibraryFailure(operation, error) {
+        settleActivity('fail', startActivity('本地模板库', '正在处理本地角色模板……'), '本地角色模板操作未完成。',
+            failureDetail({ code: typeof error?.code === 'string' ? error.code : '', detail: typeof error?.detail === 'string' ? error.detail : '' }, { operation, stage: '本地模板库' }));
+    }
 
     listen(saveDraftButton, saveDraftButton, 'click', () => {
         try {
@@ -602,6 +659,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
             onFeedback('当前角色草稿已保存到本地模板库，尚未登记到当前聊天。');
         } catch (error) {
             const code = typeof error?.code === 'string' ? error.code : '';
+            reportLibraryFailure('保存当前草稿到本地模板库', /^[A-Z0-9_]+$/u.test(code) ? error : { code: projectCharacterTemplateError(error).code, detail: projectCharacterTemplateError(error).detail });
             onFeedback(/^[A-Z0-9_]+$/u.test(code) ? safeLibraryMessage(error) : projectCharacterTemplateError(error).message);
         }
     }, signal);
@@ -612,7 +670,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
             else characterLibrary?.importTemplate?.(templateText.value);
             renderLibrary();
             onFeedback('角色模板已校验并导入本地模板库，当前聊天变量未改变。');
-        } catch (error) { onFeedback(safeLibraryMessage(error)); }
+        } catch (error) { reportLibraryFailure('导入单个模板到本地库', error); onFeedback(safeLibraryMessage(error)); }
     }, signal);
 
     listen(importLibraryButton, importLibraryButton, 'click', () => {
@@ -621,7 +679,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
             const result = characterLibrary.importLibraryJson(templateText.value, { mode: 'merge' });
             renderLibrary();
             onFeedback('已合并导入 ' + result.importedCount + ' 条角色模板；当前聊天变量未改变。');
-        } catch (error) { onFeedback(safeLibraryMessage(error)); }
+        } catch (error) { reportLibraryFailure('合并导入整个模板库', error); onFeedback(safeLibraryMessage(error)); }
     }, signal);
 
     for (const [button, includeAvatar] of [[exportLibraryWithAvatarButton, true], [exportLibraryTextOnlyButton, false]]) {
@@ -640,16 +698,31 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         try {
             const template = templateFromEditor();
             submit.disabled = true;
+            const activityHandle = startActivity('角色登记', '正在校验并登记角色……');
             Promise.resolve(actionBridge.registerCharacter(template.character)).then((result) => {
                 submit.disabled = false;
-                if (!result?.ok) { onFeedback('角色未登记：MVU 当前不可写入或资料未通过最终校验。'); return; }
+                if (!result?.ok) {
+                    settleActivity('fail', activityHandle, '角色未登记到当前聊天。', failureDetail(result, { operation: '角色登记', stage: '受控写入前校验' }));
+                    onFeedback('角色未登记：MVU 当前不可写入或资料未通过最终校验。');
+                    return;
+                }
+                settleActivity('succeed', activityHandle, '角色已登记到当前聊天。');
                 if (saveLocal.checked && characterLibrary) {
-                    try { characterLibrary.importTemplate(template); renderLibrary(); } catch (error) { onFeedback(`角色已登记，但本地保存失败：${safeLibraryMessage(error)}`); onRegistered?.(); return; }
+                    try { characterLibrary.importTemplate(template); renderLibrary(); } catch (error) { reportLibraryFailure('登记后保存本地模板', error); onFeedback(`角色已登记，但本地保存失败：${safeLibraryMessage(error)}`); onRegistered?.(); return; }
                 }
                 onFeedback('角色已通过成年人校验并登记到当前聊天。');
                 onRegistered?.();
-            }).catch(() => { submit.disabled = false; onFeedback('角色登记未完成，未展示底层错误。'); });
-        } catch (error) { onFeedback(projectCharacterTemplateError(error).message); }
+            }).catch((error) => {
+                submit.disabled = false;
+                settleActivity('fail', activityHandle, '角色未登记到当前聊天。', failureDetail(error, { operation: '角色登记', stage: '调用受控写入边界' }));
+                onFeedback('角色登记未完成，未展示底层错误。');
+            });
+        } catch (error) {
+            const projected = projectCharacterTemplateError(error);
+            settleActivity('fail', startActivity('角色登记', '正在校验并登记角色……'), '角色未登记到当前聊天。',
+                failureDetail({ code: projected.code, detail: projected.detail }, { operation: '角色登记', stage: '编辑器模板校验' }));
+            onFeedback(projected.message);
+        }
     }, signal);
 
     renderLibrary();

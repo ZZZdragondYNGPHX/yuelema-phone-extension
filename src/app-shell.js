@@ -10,7 +10,8 @@ import { createImageManagerPanel } from './images/image-manager-panel.js';
 import { formatImageDirective } from './images/image-directive.js';
 import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createUnreadBadge } from './ui/badge.js';
-import { createOperationActivity } from './ui/operation-activity.js';
+import { buildErrorDetail, createOperationActivity } from './ui/operation-activity.js';
+import { projectHostExtensionUpdateError } from './host-extension-update.js';
 import { createUiIcon } from './ui/icon.js';
 import { createRomanceHearts } from './ui/romance-hearts.js';
 import { createMediaState } from './ui/media-state.js';
@@ -26,7 +27,7 @@ import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
 
-const UI_VERSION = '0.1.37';
+const UI_VERSION = '1.0.0';
 const UI_LAYOUT_STORAGE_KEY = 'yuelema.ui-layout/v1';
 const LAUNCHER_POSITION_STORAGE_KEY = 'yuelema.launcher-position/v1';
 const PHONE_PANEL_POSITION_STORAGE_KEY = 'yuelema.phone-panel-position/v1';
@@ -989,13 +990,20 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         ctx.syncForumAutoTimer();
     }
     function scheduleServiceOrderCompletion() {
-        const order = Array.isArray(currentView?.serviceOrders) ? currentView.serviceOrders.find((item) => item?.mode === currentView.mode && item?.completionReady === true && item.status === '进行中') : null;
+        const orders = Array.isArray(currentView?.serviceOrders) ? currentView.serviceOrders : [];
+        const isTerminal = (item) => item?.status === '已完成' || item?.status === '已取消';
+        // 主链：正文写满合法结束条件的进行中订单 → 受控完成+归档+终态删除。
+        // 兜底：活动表中的终态订单（正文违规直写终态或此前 finalize 失败）→ 补记本地历史后移除。
+        const order = orders.find((item) => item?.mode === currentView.mode && item?.completionReady === true && item.status === '进行中')
+            ?? orders.find((item) => item?.mode === currentView.mode && isTerminal(item)) ?? null;
         if (!order || serviceOrderMutationPendingId || scheduledServiceCompletionOrderId === order.id) return;
         scheduledServiceCompletionOrderId = order.id;
         queueMicrotask(async () => {
             try {
                 const latest = Array.isArray(currentView?.serviceOrders) ? currentView.serviceOrders.find((item) => item?.id === order.id && item?.mode === currentView.mode) : null;
-                if (!isDestroyed && latest?.mode === currentView.mode && latest?.completionReady === true && latest.status === '进行中' && !serviceOrderMutationPendingId) await ctx.archiveAndFinalizeServiceOrder(latest, '已完成');
+                if (isDestroyed || !latest || latest.mode !== currentView.mode || serviceOrderMutationPendingId) return;
+                if (latest.completionReady === true && latest.status === '进行中') await ctx.archiveAndFinalizeServiceOrder(latest, '已完成');
+                else if (isTerminal(latest)) await ctx.recoverTerminalServiceOrder(latest);
             } finally { if (scheduledServiceCompletionOrderId === order.id) scheduledServiceCompletionOrderId = ''; }
         });
     }
@@ -1029,23 +1037,29 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         extensionUpdatePending = true;
         renderPage();
+        // 运行控制台台账：界面提示保持粗略，完整脱敏详情落在「我的 → 运行记录」。
+        const activityHandle = operationActivity.start('扩展更新', '正在检查扩展新版本。');
         const operationToken = beginOperationDialog({
             state: 'loading',
             visual: 'connecting',
             title: '正在检查扩展更新',
-            message: '正在通过酒馆更新服务检查并应用可用更新…',
+            message: `当前版本 v${UI_VERSION}。正在通过酒馆更新服务检查并应用可用更新…`,
         });
         try {
             const result = await extensionUpdater.checkAndUpdate();
+            const outcome = result?.outcome;
+            if (outcome === 'up_to_date') operationActivity.succeed(activityHandle, '扩展已是最新版本。');
+            else if (outcome === 'updated') operationActivity.succeed(activityHandle, '扩展已更新，等待重新载入酒馆页面。');
+            else operationActivity.fail(activityHandle, '酒馆更新服务返回了无法识别的结果。');
             if (isDestroyed || !open || activePage !== 'about') return;
-            if (result?.outcome === 'up_to_date') {
+            if (outcome === 'up_to_date') {
                 updateOperationDialog(operationToken, {
                     state: 'success',
                     visual: 'accepted',
                     title: '当前已是最新版本',
-                    message: '无需更新扩展。',
+                    message: `v${UI_VERSION} 已是最新版本，无需更新。`,
                 });
-            } else if (result?.outcome === 'updated') {
+            } else if (outcome === 'updated') {
                 updateOperationDialog(operationToken, {
                     state: 'success',
                     visual: 'accepted',
@@ -1061,15 +1075,37 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 });
             }
         } catch (error) {
+            // 错误透明化（2026-07-27 真机反馈）：弹窗展示固定安全文案 + HTTP 状态
+            // 与脱敏后的宿主说明，完整诊断（含阶段与错误码）落运行控制台。
+            const projected = projectHostExtensionUpdateError(error);
+            const stageLabel = projected.phase === 'update' ? '应用更新阶段' : projected.phase === 'version' ? '检查版本阶段' : '';
+            operationActivity.fail(activityHandle, '检查或更新扩展未完成。', {
+                detail: buildErrorDetail(error, {
+                    operation: '检查并更新扩展',
+                    stage: stageLabel || undefined,
+                    hint: projected.hostMessage ? `宿主说明 ${projected.hostMessage}` : undefined,
+                }),
+            });
             if (!isDestroyed && open && activePage === 'about') {
-                const nonGitInstallation = error?.code === 'not_git_installation';
+                let message;
+                if (projected.code === 'not_git_installation') {
+                    message = '此扩展不是 Git 安装，无法应用内更新；请在酒馆原生扩展管理中以 Git 方式重新安装。';
+                } else {
+                    const hostMessage = projected.hostMessage && projected.hostMessage.length > 160
+                        ? `${projected.hostMessage.slice(0, 160)}…`
+                        : projected.hostMessage;
+                    const lines = [projected.message];
+                    if (projected.status) lines.push(`宿主返回 HTTP ${projected.status}${stageLabel ? `（${stageLabel}）` : ''}。`);
+                    else if (stageLabel) lines.push(`失败发生在${stageLabel}。`);
+                    if (hostMessage) lines.push(`宿主说明：${hostMessage}`);
+                    lines.push('完整诊断见「我的 → 运行记录」。');
+                    message = lines.join(' ');
+                }
                 updateOperationDialog(operationToken, {
                     state: 'failure',
                     visual: 'failure',
                     title: '更新未完成',
-                    message: nonGitInstallation
-                        ? '此扩展不是 Git 安装，无法应用内更新。'
-                        : '检查或更新扩展失败；请在酒馆原生扩展管理中查看详情。',
+                    message,
                 });
             }
         } finally {
@@ -1124,7 +1160,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function imageProfileKey(candidate) {
         const profile = imageMatchProfile(candidate);
         if (!profile) return '';
-        try { return JSON.stringify(profile); } catch { return ''; }
+        // 选图缓存按内容模式隔离：SFW/NSFW 各自绑定不同提示词预设，
+        // 模式切换后旧模式的匹配结果不得复用（切回时各自缓存仍有效）。
+        const mode = currentView?.mode === 'NSFW' ? 'NSFW' : 'SFW';
+        try { return `${mode} ${JSON.stringify(profile)}`; } catch { return ''; }
     }
     function imageSourceUrl(record) {
         // Coordinators may be injected by the host. Re-normalize at the final DOM
@@ -1317,7 +1356,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         return beginOperationDialog(presentation);
     }
-    function createOperationFeedbackHandler({ ai = false } = {}) {
+    // logActivity=false 供自带细粒度台账接线的面板使用（如角色创作面板），避免同一操作在控制台出现粗细两条。
+    function createOperationFeedbackHandler({ ai = false, logActivity = ai } = {}) {
         let operationToken = null;
         let activityHandle = null;
         return (message) => {
@@ -1328,7 +1368,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 if (operationToken === null) {
                     if (ai) {
                         operationToken = showAiLoading(text);
-                        activityHandle = operationActivity.start('AI 操作', 'AI 处理中……');
+                        if (logActivity) activityHandle = operationActivity.start('AI 操作', 'AI 处理中……');
                     } else operationToken = setFeedback(text);
                 } else setFeedback(text, operationToken);
                 return;
@@ -1472,6 +1512,67 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (groupRoomAction) row.appendChild(groupRoomAction);
         return row;
     }
+    /* —— 控制台诊断详情（2026-07-27 裁决：界面提示保持粗略，控制台完整显示脱敏后的具体报错）——
+     * detail 在 operation-activity.js 入账时已经过 sanitizeDiagnosticDetail 脱敏；
+     * 这里只负责展示：textContent 渲染 + CSS pre-wrap，绝不使用 innerHTML。 */
+    const expandedConsoleDetailKeys = new Set();
+    function copyDiagnosticDetail(detailText) {
+        const payload = String(detailText ?? '');
+        try {
+            const clipboard = globalThis.navigator?.clipboard;
+            if (clipboard && typeof clipboard.writeText === 'function') {
+                const pending = clipboard.writeText(payload);
+                if (pending && typeof pending.catch === 'function') pending.catch(() => { /* 剪贴板权限被拒时静默 */ });
+                return;
+            }
+        } catch { /* 剪贴板 API 不可用时走 execCommand 降级 */ }
+        try {
+            const fallback = element('textarea', { value: payload, ariaLabel: '诊断详情复制缓冲区' });
+            documentRef.body?.appendChild?.(fallback);
+            fallback.select?.();
+            documentRef.execCommand?.('copy');
+            fallback.remove?.();
+        } catch { /* execCommand 复制失败同样静默 */ }
+    }
+    function decorateOperationConsoleDetails(section) {
+        const snapshot = operationActivity.snapshot();
+        const cards = Array.from(section.querySelectorAll?.('.yl-operation-console-entry') ?? []);
+        if (!snapshot.entries.length || cards.length !== snapshot.entries.length) return section;
+        const liveKeys = new Set();
+        snapshot.entries.forEach((entry, index) => {
+            const detailText = typeof entry.detail === 'string' && entry.detail ? entry.detail : '';
+            if (!detailText) return;
+            const key = `${entry.startedAt}|${entry.name}|${index}`;
+            liveKeys.add(key);
+            const expanded = expandedConsoleDetailKeys.has(key);
+            const card = cards[index];
+            const controls = element('div', { className: 'yl-operation-console-detail-controls' });
+            const toggle = element('button', {
+                className: 'yl-operation-console-detail-toggle', type: 'button',
+                text: expanded ? '收起详情' : '详情', ariaLabel: expanded ? '收起诊断详情' : '展开诊断详情',
+            });
+            toggle.setAttribute('aria-expanded', String(expanded));
+            const copyButton = element('button', { className: 'yl-operation-console-detail-copy', type: 'button', text: '复制详情', ariaLabel: '复制诊断详情' });
+            const detailBlock = element('div', { className: 'yl-operation-console-detail', text: detailText, hidden: !expanded });
+            listen(toggle, toggle, 'click', () => {
+                const nextExpanded = detailBlock.hidden;
+                detailBlock.hidden = !nextExpanded;
+                toggle.textContent = nextExpanded ? '收起详情' : '详情';
+                toggle.setAttribute('aria-label', nextExpanded ? '收起诊断详情' : '展开诊断详情');
+                toggle.setAttribute('aria-expanded', String(nextExpanded));
+                if (nextExpanded) expandedConsoleDetailKeys.add(key);
+                else expandedConsoleDetailKeys.delete(key);
+            }, abortController.signal);
+            listen(copyButton, copyButton, 'click', () => copyDiagnosticDetail(detailText), abortController.signal);
+            append(controls, [toggle, copyButton]);
+            card.appendChild(controls);
+            card.appendChild(detailBlock);
+        });
+        for (const key of expandedConsoleDetailKeys) {
+            if (!liveKeys.has(key)) expandedConsoleDetailKeys.delete(key);
+        }
+        return section;
+    }
     function renderPage() {
         ctx.cancelForumPullInteractions();
         imageManagerPanel?.dispose?.();
@@ -1508,7 +1609,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'service_hub') page.appendChild(ctx.buildServiceHubPage());
         else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images', 'settings_image_generation'].includes(activePage)) page.appendChild(buildSettingsDetail());
         else if (activePage === 'settings_preferences') page.appendChild(ctx.buildPreferenceSettingsPage());
-        else if (activePage === 'settings_console') page.appendChild(ctx.buildOperationConsole());
+        else if (activePage === 'settings_console') page.appendChild(decorateOperationConsoleDetails(ctx.buildOperationConsole()));
         else if (activePage === 'settings_chat_summary') page.appendChild(ctx.buildChatSummarySettingsHome());
         else if (activePage === 'settings_chat_summary_config') page.appendChild(ctx.buildChatSummaryConfigPage());
         else if (activePage === 'settings_chat_summary_history') page.appendChild(ctx.buildChatSummaryHistoryPage());
@@ -1541,7 +1642,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return buildCharacterCreatorPanel({
             documentRef, actionBridge, characterLibrary, signal: abortController.signal,
             contentMode: currentView.mode,
-            onFeedback: createOperationFeedbackHandler({ ai: true }),
+            operationActivity,
+            onFeedback: createOperationFeedbackHandler({ ai: true, logActivity: false }),
             onConfigureFeature: (feature) => openFeatureBinding([feature], feature.title + '设置'),
             onRegistered: () => { refreshState(); setActivePage('profile'); },
             // 链接导入 = 一次性下载字节 → 既有本地压缩/签名链 → embedded data URL；URL 本身不保存。
@@ -1810,6 +1912,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     renderPage();
     return Object.freeze({
         refreshState,
+        // 诊断接缝：安全控制台的内存台账（不持久化）。宿主与测试可注入条目，detail 已在台账层脱敏。
+        operationActivity,
         destroy() { cancelPhoneNavHold(); clearPhoneNavClickSuppression(); ctx.cancelChatToolLongPress(); ctx.clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; invalidateServiceProfileGeneration(); invalidateServiceOrderOperations(); ctx.stopGroupAutoTimer(); ctx.stopForumAutoTimer(); ctx.cancelForumPullInteractions(); ctx.clearSummaryToast(); hideOperationDialog(); ctx.closeGroupMemberPicker(); ctx.closeGroupAutoDialog(); ctx.closeForumSettingsDialog(); ctx.resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); dialogController.dispose(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }

@@ -1,4 +1,4 @@
-# 约了吗小手机 v0.1.37（阶段 58 约伴服务重构与受控归档）
+# 约了吗小手机 v1.0.0（正式版）
 
 这是现代现实都市「约了吗」MVU 角色卡的配套 SillyTavern UI 扩展。软件层承担推荐、线上短文本私聊、匹配、群组浏览、角色创作与面基约定；现实见面、约会及复杂长文本剧情仍由酒馆正文推进。
 
@@ -86,7 +86,7 @@ readLatestState → build…Patch → validateControlledPatchAgainstState
 1. 在 SillyTavern 的扩展管理页选择“安装扩展”，输入 Git URL：`https://github.com/ZZZdragondYNGPHX/yuelema-phone-extension.git`。
 2. 安装完成后重载 SillyTavern，确认“约了吗小手机”已启用。此扩展声明最低版本为 **SillyTavern v1.18.0**，以使用已核对的 `activate / disable / delete` lifecycle hooks。
 3. 后续版本从同一 Git 仓库更新，不再把本地工作树手工同步到 SillyTavern 安装副本。
-4. 在角色管理页面导入 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v0.1.37.json`，并为这张卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。
+4. 在角色管理页面导入 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v1.0.0.json`，并为这张卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。
 5. 首次使用时在“我的 → 设置”配置 OpenAI-compatible 连接预设、提示词预设和功能绑定；输入 API Key 后点击“保存连接预设”会将它保存到当前浏览器并立即可用，不必再额外点模型拉取按钮。禁用、删除或页面卸载只清理内存镜像；下次打开会按同一连接预设自动恢复。Key 不会进入设置导出、MVU、角色卡、提示词、日志或错误面板；需要移除时点击“删除当前已保存 API Key”。
 
 ## 本地验证（2026-07-25）

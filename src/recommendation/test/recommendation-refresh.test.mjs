@@ -9,7 +9,7 @@ function adultCandidate() {
         仅好友资料: { 关系状态: '单身', 边界与偏好: '尊重拒绝。' },
         隐藏资料: { 实际年龄: 28, 私人备注: '对临时失约敏感。' },
         偏好与边界: '先确认边界。', 拒绝阈值: 35, 已读不回阈值: 55, 取消匹配阈值: 75, 拉黑阈值: 90,
-        与玩家关系: { 状态: '陌生', 全局账号表现: 68, NPC专属匹配度: 72, 好感: 0, 信任: 0, 戒备: 20, 面基意愿: 0 },
+        与玩家关系: { 状态: '陌生', 全局账号表现: 68, NPC专属匹配度: 72, 好感: 0, 信任: 0, 戒备: 10, 面基意愿: 0 },
     };
 }
 
@@ -337,4 +337,74 @@ test('fast recommender rejects an unknown candidate orientation when the player 
     });
     assert.equal(result.ok, false);
     assert.equal(result.code, 'recommendation_basic_compatibility_invalid');
+});
+
+/* 安全控制台诊断寄存器接线（阶段：控制台详细报错） */
+
+test('LLM 请求失败会在诊断寄存器登记 HTTP 状态与已脱敏摘要，且为一次性消费', async () => {
+    const { YueLeMaLlmError } = await import('../../llm/openai-compatible-client.js');
+    const { consumeRecommendationDiagnostics } = await import('../recommendation-diagnostics.js');
+    const llmClient = {
+        async chat() {
+            throw new YueLeMaLlmError('SERVER_ERROR', '模型服务暂时不可用，请稍后重试。', {
+                status: 502, retryable: true, bodyExcerpt: 'upstream gateway error',
+            });
+        },
+    };
+    const result = await generateRecommendationCandidate({ state: state(), settingsStore, llmClient });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'SERVER_ERROR');
+    const diagnostics = consumeRecommendationDiagnostics('recommendation_refresh', { code: 'SERVER_ERROR' });
+    assert.ok(diagnostics, '失败必须登记诊断');
+    assert.equal(diagnostics.stage, '请求快速模型');
+    assert.equal(diagnostics.error.status, 502);
+    assert.equal(diagnostics.error.name, 'YueLeMaLlmError');
+    assert.equal(diagnostics.error.bodyExcerpt.includes('upstream gateway error'), true);
+    assert.equal(JSON.stringify(diagnostics).includes('sk-'), false);
+    assert.equal(consumeRecommendationDiagnostics('recommendation_refresh'), null, '诊断必须一次性消费');
+});
+
+test('解析失败登记响应形态描述；连接缺失登记绑定字段；成功路径不留残余诊断', async () => {
+    const { consumeRecommendationDiagnostics } = await import('../recommendation-diagnostics.js');
+    const invalidJson = await generateRecommendationCandidate({
+        state: state(), settingsStore,
+        llmClient: { async chat() { return { text: '这是一段自然语言，绝不是 JSON。' }; } },
+    });
+    assert.equal(invalidJson.code, 'recommendation_invalid_json');
+    const parseDiagnostics = consumeRecommendationDiagnostics('recommendation_refresh', { code: 'recommendation_invalid_json' });
+    assert.equal(parseDiagnostics.stage, '解析模型响应');
+    assert.match(parseDiagnostics.expected, /JSON/u);
+    assert.match(parseDiagnostics.actual, /响应共 \d+ 字符/u);
+
+    const missing = await generateRecommendationCandidate({
+        state: state(), settingsStore: { resolveFunction: () => ({}) },
+        llmClient: { async chat() { return { text: '{}' }; } },
+    });
+    assert.equal(missing.code, 'recommendation_connection_missing');
+    const missingDiagnostics = consumeRecommendationDiagnostics('recommendation_refresh', { code: 'recommendation_connection_missing' });
+    assert.equal(missingDiagnostics.field, 'recommendation_refresh.connectionPreset');
+
+    const success = await generateRecommendationCandidate({
+        state: state(), settingsStore,
+        llmClient: { async chat() { return { text: JSON.stringify(adultCandidate()) }; } },
+    });
+    assert.equal(success.ok, true);
+    assert.equal(consumeRecommendationDiagnostics('recommendation_refresh'), null, '成功路径必须清空寄存器');
+});
+
+test('候选校验失败只登记字段路径与原因，不携带隐藏层字段值', async () => {
+    const { consumeRecommendationDiagnostics } = await import('../recommendation-diagnostics.js');
+    const invalid = adultCandidate();
+    invalid.隐藏资料.实际年龄 = 16;
+    const result = await generateRecommendationCandidate({
+        state: state(), settingsStore,
+        llmClient: { async chat() { return { text: JSON.stringify(invalid) }; } },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, '隐藏资料.实际年龄:integer_out_of_range');
+    const diagnostics = consumeRecommendationDiagnostics('recommendation_refresh', { code: result.code });
+    assert.equal(diagnostics.stage, '候选结构与成年人校验');
+    assert.equal(diagnostics.field, '隐藏资料.实际年龄');
+    assert.match(diagnostics.actual, /integer_out_of_range/u);
+    assert.equal(JSON.stringify(diagnostics).includes('16'), false, '诊断不得携带隐藏字段的具体值');
 });

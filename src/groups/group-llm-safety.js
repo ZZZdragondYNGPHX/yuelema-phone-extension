@@ -156,3 +156,72 @@ export function parseGroupLlmJson(raw, maxChars = 4_000) {
         return null;
     }
 }
+
+// —— 控制台诊断辅助（阶段 77 安全控制台接线）——
+// 群聊/论坛/本地总结服务在失败结果上附带 `diagnostic` 纯数据记录，由持有台账
+// handle 的页面层经 buildErrorDetail 格式化进控制台 detail。记录只含阶段/错误码/
+// HTTP 状态/字段路径/期望摘要与模型输出不合规点，绝不含隐藏资料值、关系分或凭据。
+const MAX_GROUP_DIAGNOSTIC_TEXT_LENGTH = 300;
+
+function groupDiagnosticText(value) {
+    if (typeof value !== 'string') return '';
+    const text = value.trim();
+    return text.length > MAX_GROUP_DIAGNOSTIC_TEXT_LENGTH ? `${text.slice(0, MAX_GROUP_DIAGNOSTIC_TEXT_LENGTH)}…` : text;
+}
+
+/**
+ * 控制台脱敏器会把 ≥32 字符的连续 [A-Za-z0-9+/=_-] token 视作疑似凭据并替换
+ * 为 [已脱敏]；超长错误码改用空格分词形式呈现，信息不丢也不触发误脱敏。
+ */
+export function presentGroupDiagnosticCode(code) {
+    const text = groupDiagnosticText(typeof code === 'string' ? code : '');
+    if (!text) return '';
+    return text.length >= 32 ? text.split('_').join(' ') : text;
+}
+
+/** 组装冻结的诊断记录；空字段剔除，文本统一截断。 */
+export function groupDiagnostic(record = {}) {
+    const normalized = {};
+    for (const [key, value] of [
+        ['stage', groupDiagnosticText(record.stage)],
+        ['code', presentGroupDiagnosticCode(record.code)],
+        ['field', groupDiagnosticText(record.field)],
+        ['expected', groupDiagnosticText(record.expected)],
+        ['actual', groupDiagnosticText(record.actual)],
+        ['hint', groupDiagnosticText(record.hint)],
+    ]) {
+        if (value) normalized[key] = value;
+    }
+    if (record.error && typeof record.error === 'object') normalized.error = Object.freeze({ ...record.error });
+    return Object.freeze(normalized);
+}
+
+/**
+ * 把共享 LLM 客户端抛出的异常收敛为诊断记录：读到什么字段就带什么
+ * （name/message/code/status/bodyExcerpt），字段缺失时优雅降级。
+ */
+export function projectGroupLlmErrorDiagnostic(error, stage = '模型请求') {
+    const summary = {};
+    if (error && typeof error === 'object') {
+        const name = groupDiagnosticText(error.name);
+        const message = groupDiagnosticText(error.message);
+        if (name) summary.name = name;
+        if (message) summary.message = message;
+        const code = presentGroupDiagnosticCode(typeof error.code === 'string' ? error.code : '');
+        if (code) summary.code = code;
+        const status = [error.status, error.statusCode, error.httpStatus].find((value) => Number.isInteger(value));
+        if (status !== undefined) summary.status = status;
+    }
+    const excerpt = groupDiagnosticText(error && typeof error === 'object' && typeof error.bodyExcerpt === 'string' ? error.bodyExcerpt : '');
+    return groupDiagnostic({
+        stage,
+        actual: excerpt ? `响应片段：${excerpt}` : '',
+        error: Object.keys(summary).length ? summary : undefined,
+    });
+}
+
+/** 模型响应无法解析为受限 JSON 时的“实际”摘要：只报长度/类型，不带原文。 */
+export function groupResponseParseDiagnostic(raw, maxChars = 4_000) {
+    const actual = typeof raw !== 'string' ? '非文本响应' : (raw.length === 0 ? '空响应' : `响应长度 ${raw.length} 字符（非合法 JSON 对象或超出 ${maxChars} 字符上限）`);
+    return groupDiagnostic({ stage: '响应解析', expected: '合法 JSON 对象', actual });
+}

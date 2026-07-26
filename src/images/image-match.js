@@ -1,3 +1,5 @@
+import { renderPromptPreset } from '../settings/prompt-compiler.js';
+
 const PUBLIC_SCALAR_FIELDS = Object.freeze([
     '昵称', '年龄段', '性别', '性取向', '城市', '距离范围', '寻找意图', '简介',
 ]);
@@ -351,15 +353,49 @@ export function buildImageMatchContextText(candidatePublicProfile, allowedKeywor
     ].join('\n');
 }
 
-export function buildImageMatchPrompt(candidatePublicProfile, allowedKeywords) {
+/**
+ * The output contract is a fixed, non-overridable tail of the system message.
+ * Bound prompt presets may only steer subject matter and picking preference;
+ * the strict JSON shape stays enforced by this hardcoded text plus the parser.
+ */
+export const IMAGE_MATCH_SYSTEM_CONTRACT_TEXT = [
+    '你是图片关键词匹配器。只根据给定候选人的公开资料，在允许关键词词表中评估适用程度。',
+    '只输出一个严格 JSON 对象，根对象必须且仅能含 keywordWeights。',
+    'keywordWeights 必须是数组；每项必须且仅能含 keyword、weight。',
+    'keyword 必须逐字来自允许词表且不可重复；weight 必须是 -5 到 5 的整数。',
+    '不得输出图片 ID、图片地址、UID、关系数据、隐藏资料、仅好友资料、Patch、密钥、解释、Markdown 或其他文本。',
+].join('\n');
+
+function renderSafePromptPreset(promptPreset) {
+    if (!isPlainRecord(promptPreset)) return { before: '', after: '' };
+    try {
+        return renderPromptPreset(promptPreset);
+    } catch {
+        return { before: '', after: '' };
+    }
+}
+
+/**
+ * Fingerprints a bound prompt preset for cache invalidation. The value covers
+ * the preset id plus the rendered before/after texts, so switching presets or
+ * editing preset content always changes the fingerprint. No bound preset at
+ * all maps to the stable `prompt:none`.
+ */
+export function createImageMatchPromptPresetFingerprint(promptPreset) {
+    if (!isPlainRecord(promptPreset)) return 'prompt:none';
+    const rendered = renderSafePromptPreset(promptPreset);
+    const id = typeof promptPreset.id === 'string' ? promptPreset.id : '';
+    return `prompt:v1:${stableHash(JSON.stringify([id, rendered.before, rendered.after]))}`;
+}
+
+export function buildImageMatchPrompt(candidatePublicProfile, allowedKeywords, promptPreset = null) {
     const contextText = buildImageMatchContextText(candidatePublicProfile, allowedKeywords);
+    const preset = renderSafePromptPreset(promptPreset);
     const systemText = [
-        '你是图片关键词匹配器。只根据给定候选人的公开资料，在允许关键词词表中评估适用程度。',
-        '只输出一个严格 JSON 对象，根对象必须且仅能含 keywordWeights。',
-        'keywordWeights 必须是数组；每项必须且仅能含 keyword、weight。',
-        'keyword 必须逐字来自允许词表且不可重复；weight 必须是 -5 到 5 的整数。',
-        '不得输出图片 ID、图片地址、UID、关系数据、隐藏资料、仅好友资料、Patch、密钥、解释、Markdown 或其他文本。',
-    ].join('\n');
+        preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
+        preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        IMAGE_MATCH_SYSTEM_CONTRACT_TEXT,
+    ].filter(Boolean).join('\n\n');
     return Object.freeze({
         contextText,
         messages: Object.freeze([

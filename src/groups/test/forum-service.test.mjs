@@ -127,6 +127,32 @@ test('forum home refresh only consumes public community context and returns loca
     assert.doesNotMatch(JSON.stringify(request.messages), /玩家隐藏资料|成员隐藏资料|不得进入论坛/u);
 });
 
+test('forum home refresh append mode shares the eight-channel contract, keeps old titles forbidden, and rejects unknown modes', async () => {
+    let request;
+    const result = await generateForumHomeRefresh({
+        state: state(), existingTitles: ['已有的旧帖标题'], refreshMode: 'append', settingsStore: { resolveFunction: settings },
+        llmClient: { async chat(input) { request = input; return { text: JSON.stringify({ participants: [], posts: forumRefreshPosts('许青') }) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.update.posts.length, 8, '追加模式与替换共用同一份八频道各一篇合同');
+    assert.match(request.messages[0].content, /底部追加刷新，程序会保留旧本地帖子并追加新帖子/u);
+    assert.match(request.messages[1].content, /已有的旧帖标题/u, '追加模式必须把现有标题作为不可重复清单交给模型');
+
+    let called = false;
+    const invalidMode = await generateForumHomeRefresh({
+        state: state(), existingTitles: [], refreshMode: 'sideways', settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { called = true; return { text: '{}' }; } },
+    });
+    assert.equal(invalidMode.code, 'forum_home_context_invalid');
+    assert.equal(called, false, '未知刷新模式不得调用模型');
+
+    const partial = await generateForumHomeRefresh({
+        state: state(), existingTitles: [], refreshMode: 'append', settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ participants: [], posts: forumRefreshPosts('许青').slice(0, 5) }) }; } },
+    });
+    assert.equal(partial.code, 'forum_update_shape_invalid', '追加模式下缺频道的批次同样整批拒绝');
+});
+
 test('forum home refresh rejects a model batch that omits or duplicates a fixed channel', async () => {
     const incomplete = await generateForumHomeRefresh({
         state: state(), existingTitles: [], settingsStore: { resolveFunction: settings },
@@ -273,4 +299,77 @@ test('opened forum posts use forum binding for local comment updates and reject 
         llmClient: { async chat() { return { text: JSON.stringify({ participants: [localProfile('未成年人', { ageRange: '17岁' })], messages: [{ speaker: '未成年人', text: '不应显示。' }] }) }; } },
     });
     assert.equal(rejected.code, 'forum_update_response_invalid');
+});
+
+// —— 阶段 77：失败结果附带控制台诊断（错误码 + 具体不合规点，永不引用模型正文原文）——
+
+test('forum home refresh failures name the offending channel, author, or participant in their diagnostic', async () => {
+    const posts = () => forumRefreshPosts('许青');
+
+    const unknownChannel = await generateForumHomeRefresh({
+        state: state(), existingTitles: [], settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { const batch = posts(); batch[2] = { ...batch[2], topic: '月亮频道' }; return { text: JSON.stringify({ participants: [], posts: batch }) }; } },
+    });
+    assert.equal(unknownChannel.code, 'forum_update_channel_invalid');
+    assert.equal(unknownChannel.diagnostic.stage, '响应校验');
+    assert.equal(unknownChannel.diagnostic.field, 'posts[2].topic');
+    assert.equal(unknownChannel.diagnostic.actual, '月亮频道');
+
+    const duplicated = await generateForumHomeRefresh({
+        state: state(), existingTitles: [], settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { const batch = posts(); batch[7] = { ...batch[0], title: '重复频道' }; return { text: JSON.stringify({ participants: [], posts: batch }) }; } },
+    });
+    assert.equal(duplicated.diagnostic.field, 'posts[7].topic');
+    assert.match(duplicated.diagnostic.hint, /频道重复出帖/u);
+
+    const unknownAuthor = await generateForumHomeRefresh({
+        state: state(), existingTitles: [], settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { const batch = posts(); batch[1] = { ...batch[1], author: '陌生访客' }; return { text: JSON.stringify({ participants: [], posts: batch }) }; } },
+    });
+    assert.equal(unknownAuthor.code, 'forum_update_author_unknown');
+    assert.equal(unknownAuthor.diagnostic.field, 'posts[1].author');
+    assert.equal(unknownAuthor.diagnostic.actual, '陌生访客');
+
+    const underage = await generateForumHomeRefresh({
+        state: state(), existingTitles: [], settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ participants: [localProfile('小雾', { ageRange: '20代' })], posts: posts() }) }; } },
+    });
+    assert.equal(underage.code, 'forum_update_participant_underage');
+    assert.equal(underage.diagnostic.field, 'participants[0]');
+    assert.match(underage.diagnostic.hint, /成年写法/u);
+});
+
+test('forum post conversation and existing-post update failures carry slot/speaker level diagnostics', async () => {
+    const post = {
+        topic: '今日心情', title: '午后的一点松弛', body: '忙完手头的事情，给自己买了一杯喜欢的饮料。', tags: ['日常'],
+        author: localProfile('许青'), participants: [], messages: [], summaries: [], summaryStatus: '空闲',
+    };
+    const unknownSpeaker = await generateForumPostConversationUpdate({
+        state: state(), post, history: { summaries: [], messages: [{ sender: 'user', speaker: '我', content: '大家好呀。' }] },
+        settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ participants: [], messages: [{ speaker: '幽灵用户', text: '公开评论。' }] }) }; } },
+    });
+    assert.equal(unknownSpeaker.code, 'forum_update_response_invalid');
+    assert.equal(unknownSpeaker.diagnostic.field, 'messages[0].speaker');
+    assert.equal(unknownSpeaker.diagnostic.actual, '幽灵用户');
+    assert.match(unknownSpeaker.diagnostic.hint, /不在帖子作者、已有参与者或 participants 名单中/u);
+
+    const badSlot = await generateForumExistingPostsUpdate({
+        state: state(), posts: [{ ...post, id: 'p1', createdAt: '' }],
+        settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ updates: [{ slot: 4, title: '新标题', body: '新内容。', tags: [] }] }) }; } },
+    });
+    assert.equal(badSlot.code, 'forum_update_response_invalid');
+    assert.equal(badSlot.diagnostic.field, 'updates[0].slot');
+    assert.equal(badSlot.diagnostic.actual, '4');
+
+    const unparsable = await generateForumPostConversationUpdate({
+        state: state(), post, history: { summaries: [], messages: [{ sender: 'user', speaker: '我', content: '大家好呀。' }] },
+        settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: 'FORUM_RAW_LEAK not json' }; } },
+    });
+    assert.equal(unparsable.code, 'forum_update_invalid_json');
+    assert.equal(unparsable.diagnostic.stage, '响应解析');
+    assert.match(unparsable.diagnostic.actual, /响应长度 \d+ 字符/u);
+    assert.doesNotMatch(JSON.stringify(unparsable.diagnostic), /FORUM_RAW_LEAK/u);
 });

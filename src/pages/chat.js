@@ -3,11 +3,13 @@
 // 气泡 class 家族（yl-chat-timeline / yl-time-divider / yl-system-pill /
 // yl-msg-group--self|--peer / yl-bubble / yl-bubble-time / yl-bubble-name）为跨代理合同，
 // 社区群聊室将逐字复用；CSS 定义在 style.css 的 chat 子区。
+import { consumePrivateChatDiagnostics } from '../chat/private-chat-service.js';
 import { append, element, listen } from '../dom.js';
 import { describeActionFailure, parseChatMessageTime } from '../ui-model.js';
 import { createBottomSheet } from '../ui/bottom-sheet.js';
 import { createEmptyState } from '../ui/empty-state.js';
 import { createUiIcon } from '../ui/icon.js';
+import { buildErrorDetail } from '../ui/operation-activity.js';
 
 const CHAT_TOOL_LONG_PRESS_MS = 460;
 const CHAT_TIME_DIVIDER_GAP_MS = 10 * 60 * 1000;
@@ -27,6 +29,45 @@ function readChatContextCollapsed() {
 function persistChatContextCollapsed(collapsed) {
     try { chatContextStorageOrNull()?.setItem(CHAT_CONTEXT_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0'); }
     catch { /* 本地偏好写入失败时静默降级为本次会话内存行为 */ }
+}
+
+// 控制台脱敏器会把 ≥32 字符的连续 token 视作疑似凭据并替换为 [已脱敏]；
+// 超长错误码改用空格分词呈现，避免误脱敏（与服务层 presentDiagnosticCode 同规则）。
+function presentActivityCode(code) {
+    const text = String(code ?? '').trim().slice(0, 120);
+    if (!text) return '';
+    return text.length >= 32 ? text.split('_').join(' ') : text;
+}
+
+/**
+ * 汇总一次私聊域失败的控制台 detail：取走服务层带出的逐次尝试诊断记录并
+ * 逐条经 buildErrorDetail 格式化（自动脱敏）；服务层没有记录（例如受控
+ * Patch/状态读取失败只回错误码）时退化为“结果错误码 + 尝试次数”摘要。
+ * 界面 message 不受影响，仍是粗略友好文案。
+ */
+function buildChatFailureDetail({ operation, kind, sessionUid, result }) {
+    const records = consumePrivateChatDiagnostics(kind, sessionUid);
+    const sections = [];
+    for (const record of records) {
+        const text = buildErrorDetail(record.error ?? null, {
+            operation, stage: record.stage, code: record.code, field: record.field,
+            expected: record.expected, actual: record.actual, hint: record.hint,
+        });
+        if (text) sections.push(text);
+    }
+    const numbered = sections.length > 1 ? sections.map((text, index) => `第 ${index + 1} 次尝试\n${text}`) : sections;
+    const resultCode = presentActivityCode(result?.code);
+    if (!numbered.length) {
+        const fallback = buildErrorDetail(null, { operation, code: resultCode, hint: '服务层未提供更细的诊断记录' });
+        if (fallback) numbered.push(fallback);
+    } else if (resultCode && !records.some((record) => record.code === resultCode)) {
+        // 例如受控 Patch 校验/写入失败：错误码来自桥接层，没有对应的服务端诊断。
+        const bridgeLine = buildErrorDetail(null, { operation, stage: '受控写入或状态读取', code: resultCode });
+        if (bridgeLine) numbered.push(bridgeLine);
+    }
+    const header = Number.isInteger(result?.attempts) && result.attempts > 1 ? [`共尝试 ${result.attempts} 次后仍未完成`] : [];
+    const detail = [...header, ...numbered].join('\n\n');
+    return detail || null;
 }
 
 export function createChatPage(ctx) {
@@ -288,6 +329,22 @@ export function createChatPage(ctx) {
         return pill;
     }
     /**
+     * 面基进展 pill：只消费 ui-model 投影出的最新面基记录（状态/路线/正文结果摘要），
+     * 正文回写状态或摘要后经 VARIABLE_UPDATE_ENDED → refreshState 自动刷新；绝不回写任何状态。
+     */
+    function appendMeetupProgressPills(timeline, session) {
+        const meetups = Array.isArray(session.meetups) ? session.meetups : [];
+        const meetup = meetups.length ? meetups[meetups.length - 1] : null;
+        if (!meetup || meetup.status === '提议') return;
+        const statusText = meetup.status === '待发送' ? '行动草稿已生成，等待你在正文亲自发送'
+            : meetup.status === '正文进行中' ? '见面正在正文中进行'
+                : meetup.status === '已结束' ? '见面已结束' : '见面已取消';
+        timeline.appendChild(buildSystemPill(`面基（${meetup.route}路线）：${statusText}`, meetup.time));
+        if ((meetup.status === '已结束' || meetup.status === '已取消') && meetup.resultSummary) {
+            timeline.appendChild(buildSystemPill(`见面小结：${meetup.resultSummary}`));
+        }
+    }
+    /**
      * 消息时间线（§7.2.3–7.2.5）：>10 分钟插时间分隔 pill；同发送者连续气泡合并成组，
      * 组内仅首条显示头像+昵称、时间只作组尾角标；对方=卡面色、自己=品牌渐变白字。
      */
@@ -302,6 +359,7 @@ export function createChatPage(ctx) {
             readStore?.markIntroSeen?.(session.sessionUid);
             timeline.appendChild(buildSystemPill('线上短消息只保存在当前设备的这份聊天里；重要面基安排请在正文中再次确认。'));
         }
+        appendMeetupProgressPills(timeline, session);
         if (!session.messages.length) {
             timeline.appendChild(createEmptyState({
                 documentRef: ctx.documentRef,
@@ -450,16 +508,38 @@ export function createChatPage(ctx) {
             return;
         }
         if (ctx.actionBridge.isPending?.('chat_summary', session.sessionUid)) return;
+        const activityHandle = ctx.operationActivity.start('聊天总结', automatic ? '正在自动整理本次私聊……' : '正在总结当前私聊……');
+        let bridgeError = null;
         let request;
         try {
             request = ctx.actionBridge.runPrivateChatSummary({ sessionUid: session.sessionUid, npcUid: session.npcUid, summaryUid, automatic });
-        } catch {
+        } catch (error) {
+            bridgeError = error;
             request = Promise.resolve({ ok: false, code: 'chat_summary_failed', message: '聊天总结未完成，请稍后重试。' });
         }
         if (!automatic) ctx.renderPage();
         let result;
-        try { result = await request; } catch { result = { ok: false, code: 'chat_summary_failed', message: '聊天总结未完成，请稍后重试。' }; }
+        try { result = await request; } catch (error) { bridgeError = error; result = { ok: false, code: 'chat_summary_failed', message: '聊天总结未完成，请稍后重试。' }; }
         ctx.refreshState();
+        const settleSummaryActivity = () => {
+            if (result?.ok) {
+                consumePrivateChatDiagnostics('chat_summary', session.sessionUid);
+                ctx.operationActivity.succeed(activityHandle, '聊天总结已保存。');
+                return;
+            }
+            if (result?.silent || result?.code === 'ui_action_pending') {
+                consumePrivateChatDiagnostics('chat_summary', session.sessionUid);
+                ctx.operationActivity.dismiss(activityHandle, '总结条件未满足，本次已静默跳过。');
+                return;
+            }
+            let detail = buildChatFailureDetail({ operation: '聊天总结', kind: 'chat_summary', sessionUid: session.sessionUid, result });
+            if (bridgeError) {
+                const bridgeDetail = buildErrorDetail(bridgeError, { operation: '聊天总结', stage: '桥接调用' });
+                if (bridgeDetail) detail = detail ? `${detail}\n\n${bridgeDetail}` : bridgeDetail;
+            }
+            ctx.operationActivity.fail(activityHandle, '聊天总结未完成。', { detail });
+        };
+        settleSummaryActivity();
         if (automatic) {
             if (result?.silent || result?.code === 'ui_action_pending') return;
             if (isPrivateChatVisible(session.sessionUid)) {
@@ -728,15 +808,30 @@ export function createChatPage(ctx) {
             && ctx.activePage === 'private_chat'
             && ctx.activeMessageSessionUid === session.sessionUid
             && ctx.privateChatRequestGeneration === requestGeneration;
+        const activityHandle = ctx.operationActivity.start('私聊回复', '正在生成私聊回复……');
+        let bridgeError = null;
         let request;
         try { request = ctx.actionBridge.runPrivateChat({ sessionUid: session.sessionUid, npcUid: session.npcUid, playerMessage }); }
-        catch { request = Promise.resolve({ ok: false }); }
+        catch (error) { bridgeError = error; request = Promise.resolve({ ok: false }); }
         // The bridge marks the exact session pending synchronously before its first await.
         // Re-rendering now gives the composer an inline, non-blocking reply state.
         ctx.renderPage();
         let result;
         try { result = await request; }
-        catch { result = { ok: false }; }
+        catch (error) { bridgeError = error; result = { ok: false }; }
+        if (result?.ok) {
+            consumePrivateChatDiagnostics('private_chat', session.sessionUid);
+            ctx.operationActivity.succeed(activityHandle, '私聊回复已完成。');
+        } else if (result?.code === 'ui_action_pending') {
+            ctx.operationActivity.dismiss(activityHandle, '相同会话的发送正在进行，本次请求已忽略。');
+        } else {
+            let detail = buildChatFailureDetail({ operation: '私聊回复', kind: 'private_chat', sessionUid: session.sessionUid, result });
+            if (bridgeError) {
+                const bridgeDetail = buildErrorDetail(bridgeError, { operation: '私聊回复', stage: '桥接调用' });
+                if (bridgeDetail) detail = detail ? `${detail}\n\n${bridgeDetail}` : bridgeDetail;
+            }
+            ctx.operationActivity.fail(activityHandle, '私聊回复未完成。', { detail });
+        }
         if (result?.ok) {
             ctx.chatDrafts.delete(session.sessionUid);
             for (const item of Array.isArray(result.imageDirectives) ? result.imageDirectives : []) {

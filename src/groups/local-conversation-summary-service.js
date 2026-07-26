@@ -6,7 +6,7 @@
  */
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
-import { cleanGroupLlmText, isSafeGroupLlmOutput, parseGroupLlmJson } from './group-llm-safety.js';
+import { cleanGroupLlmText, groupDiagnostic, groupResponseParseDiagnostic, isSafeGroupLlmOutput, parseGroupLlmJson, projectGroupLlmErrorDiagnostic } from './group-llm-safety.js';
 
 const ERROR_MESSAGES = Object.freeze({
     local_summary_target_invalid: '当前本地对话暂不可总结。',
@@ -35,20 +35,29 @@ function ownValue(value, key) {
 }
 
 export function buildLocalConversationSummaryContext({ target, messages, contentMode = 'SFW' } = {}) {
-    if (!ownRecord(target) || Object.keys(target).some((key) => !['kind', 'title'].includes(key))) return failure('local_summary_target_invalid');
+    const contextFailure = (code, record) => ({ ...failure(code), diagnostic: groupDiagnostic({ stage: '上下文构建', hint: '未调用模型', ...record }) });
+    if (!ownRecord(target) || Object.keys(target).some((key) => !['kind', 'title'].includes(key))) {
+        return contextFailure('local_summary_target_invalid', { field: 'target', expected: '仅含 kind/title 字段的记录' });
+    }
     const kind = ownValue(target, 'kind');
     const title = cleanGroupLlmText(ownValue(target, 'title'), 120);
-    if (!['group', 'post'].includes(kind) || !title) return failure('local_summary_target_invalid');
-    if (!Array.isArray(messages) || messages.length < 1 || messages.length > 80) return failure('local_summary_source_invalid');
+    if (!['group', 'post'].includes(kind) || !title) {
+        return contextFailure('local_summary_target_invalid', { field: 'target', expected: 'kind 为 group/post 且 title 为 1-120 字纯文本' });
+    }
+    if (!Array.isArray(messages) || messages.length < 1 || messages.length > 80) {
+        return contextFailure('local_summary_source_invalid', { field: 'messages', expected: '1-80 条待总结消息数组', actual: Array.isArray(messages) ? `${messages.length} 条` : '非数组' });
+    }
     const normalizedMessages = [];
-    for (const message of messages) {
-        if (!ownRecord(message) || Object.keys(message).some((key) => !['floor', 'sender', 'speaker', 'content'].includes(key))) return failure('local_summary_source_invalid');
+    for (const [index, message] of messages.entries()) {
+        if (!ownRecord(message) || Object.keys(message).some((key) => !['floor', 'sender', 'speaker', 'content'].includes(key))) {
+            return contextFailure('local_summary_source_invalid', { field: `messages[${index}]`, expected: '仅含 floor/sender/speaker/content 字段的记录' });
+        }
         const floor = ownValue(message, 'floor');
         const sender = ownValue(message, 'sender');
         const speaker = cleanGroupLlmText(ownValue(message, 'speaker'), 80);
         const content = cleanGroupLlmText(ownValue(message, 'content'), 600);
         if (!Number.isInteger(floor) || floor < 1 || !['user', 'member'].includes(sender) || !speaker || !content || !isSafeGroupLlmOutput(content, 600)) {
-            return failure('local_summary_source_invalid');
+            return contextFailure('local_summary_source_invalid', { field: `messages[${index}]`, hint: '楼层/发送者/文本未通过安全校验' });
         }
         normalizedMessages.push(Object.freeze({ floor, sender, speaker, content }));
     }
@@ -103,11 +112,14 @@ export async function generateLocalConversationSummary({ target, messages, conte
     try {
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeMessages(built.context, resolved.promptPreset), signal });
         const parsed = parseGroupLlmJson(completion?.text);
-        if (!parsed) return failure('local_summary_invalid_json');
+        if (!parsed) return { ...failure('local_summary_invalid_json'), diagnostic: groupResponseParseDiagnostic(completion?.text) };
         const summary = normalizeSummary(parsed);
-        return summary ? Object.freeze({ ok: true, summary }) : failure('local_summary_response_invalid');
+        return summary ? Object.freeze({ ok: true, summary }) : {
+            ...failure('local_summary_response_invalid'),
+            diagnostic: groupDiagnostic({ stage: '响应校验', field: 'summary', expected: '仅含 summary 单字段、1-1600 字安全纯文本' }),
+        };
     } catch (error) {
         const publicError = toPublicLlmError(error);
-        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
+        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable, diagnostic: projectGroupLlmErrorDiagnostic(error) };
     }
 }

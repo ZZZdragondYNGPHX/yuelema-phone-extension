@@ -346,11 +346,22 @@ export async function applyControlledPatch({
     const oldStateSnapshot = cloneJsonValue(oldData.stat_data);
     const eventOldData = { ...oldData, stat_data: oldStateSnapshot };
 
+    // 控制台诊断增强：reason（可选、仅字段路径与校验结论）随失败结果原样上抛。
     const stateValidation = validateControlledPatchAgainstState(oldStateSnapshot, patch);
-    if (!stateValidation.ok) return { ok: false, status: 'rejected', code: stateValidation.code, detail: stateValidation.detail };
+    if (!stateValidation.ok) {
+        return {
+            ok: false, status: 'rejected', code: stateValidation.code, detail: stateValidation.detail,
+            ...(typeof stateValidation.reason === 'string' && stateValidation.reason ? { reason: stateValidation.reason } : {}),
+        };
+    }
 
     const wrapped = buildUpdateVariable(patch);
-    if (!wrapped.ok) return { ok: false, status: 'rejected', code: wrapped.code, detail: wrapped.detail };
+    if (!wrapped.ok) {
+        return {
+            ok: false, status: 'rejected', code: wrapped.code, detail: wrapped.detail,
+            ...(typeof wrapped.reason === 'string' && wrapped.reason ? { reason: wrapped.reason } : {}),
+        };
+    }
 
     const parseInput = cloneMvuDataForParse(oldData);
     if (!isPlainRecord(parseInput) || !isPlainRecord(parseInput.stat_data)) {

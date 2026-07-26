@@ -22,7 +22,7 @@ function adultCandidate() {
         仅好友资料: { 关系状态: '单身', 边界与偏好: '尊重拒绝。' },
         隐藏资料: { 实际年龄: 28, 私人备注: '仅新角色自己的本地私密设定。' },
         偏好与边界: '先确认边界。', 拒绝阈值: 35, 已读不回阈值: 55, 取消匹配阈值: 75, 拉黑阈值: 90,
-        与玩家关系: { 状态: '陌生', 全局账号表现: 68, NPC专属匹配度: 72, 好感: 0, 信任: 0, 戒备: 20, 面基意愿: 0 },
+        与玩家关系: { 状态: '陌生', 全局账号表现: 68, NPC专属匹配度: 72, 好感: 0, 信任: 0, 戒备: 10, 面基意愿: 0 },
     };
 }
 
@@ -162,7 +162,7 @@ test('service profile generation resolves only its dedicated binding and keeps p
         assert.equal(serialized.includes(forbidden), false);
     }
 });
-test('invalid or underage model result is a generic safe no-result without raw validation detail', async () => {
+test('invalid or underage model result keeps the generic message; detail names the field only, never the hidden value', async () => {
     const underage = adultCandidate();
     underage.隐藏资料.实际年龄 = 17;
     const result = await generateCharacterAuthoringCandidate({
@@ -173,7 +173,52 @@ test('invalid or underage model result is a generic safe no-result without raw v
         ok: false,
         code: 'character_authoring_response_invalid',
         message: '模型返回的完整角色草稿未通过成年人或结构校验；当前草稿未改变。',
+        detail: '成年人校验未通过：字段 隐藏资料.实际年龄',
     });
+    // 控制台合同：detail 只允许字段路径与结论，绝不允许隐藏资料的具体数值。
+    assert.equal(JSON.stringify(result).includes('17'), false);
+
+    const badStructure = adultCandidate();
+    delete badStructure.仅好友资料;
+    const structural = await generateCharacterAuthoringCandidate({
+        creativeBrief: '创作成年人。', contentMode: 'SFW', playerPublicProfile: playerPublicProfile(), settingsStore: settingsStore(),
+        llmClient: { async chat() { return { text: JSON.stringify(badStructure) }; } },
+    });
+    assert.equal(structural.ok, false);
+    assert.equal(structural.code, 'character_authoring_response_invalid');
+    assert.match(structural.detail, /^模型输出结构校验未通过：/u);
+});
+
+test('careless rhythm thresholds from the model are rejected; system prompt carries the hard threshold rules', async () => {
+    const lazyThresholds = adultCandidate();
+    lazyThresholds.已读不回阈值 = 55;
+    lazyThresholds.拉黑阈值 = 40;
+    let request;
+    const result = await generateCharacterAuthoringCandidate({
+        creativeBrief: '创作成年人。', contentMode: 'SFW', playerPublicProfile: playerPublicProfile(), settingsStore: settingsStore(),
+        llmClient: { async chat(value) { request = value; return { text: JSON.stringify(lazyThresholds) }; } },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'character_authoring_response_invalid');
+    assert.match(result.detail, /拉黑阈值/u);
+    // detail 只含字段名与错误码，绝不含阈值数值。
+    assert.equal(JSON.stringify(result).includes('40'), false);
+    assert.equal(JSON.stringify(result).includes('55'), false);
+
+    const system = request.messages.find((message) => message.role === 'system').content;
+    assert.match(system, /拉黑阈值不得低于 60/u);
+    assert.match(system, /必须大于已读不回阈值/u);
+
+    const inverted = adultCandidate();
+    inverted.已读不回阈值 = 95;
+    inverted.拉黑阈值 = 90;
+    const invertedResult = await generateServiceProfileCandidate({
+        creativeBrief: '创作明确成年的服务角色。', contentMode: 'NSFW', playerPublicProfile: playerPublicProfile(), settingsStore: settingsStore(),
+        llmClient: { async chat() { return { text: JSON.stringify(inverted) }; } },
+    });
+    assert.equal(invertedResult.ok, false);
+    assert.equal(invertedResult.code, 'character_authoring_response_invalid');
+    assert.match(invertedResult.detail, /拉黑阈值/u);
 });
 
 test('invalid input and missing binding fail before calling the model with a safe projected error', async () => {
@@ -187,6 +232,7 @@ test('invalid input and missing binding fail before calling the model with a saf
         ok: false,
         code: 'character_authoring_input_invalid',
         message: '待补全的公开资料或说明无效；当前草稿未改变。',
+        detail: '输入校验未通过：创作/补全说明为空、超长（>1200 字符）、含控制字符或 HTML，或公开上下文结构无效',
     });
 
     const missing = await generateCharacterAuthoringCandidate({
@@ -199,6 +245,7 @@ test('invalid input and missing binding fail before calling the model with a saf
         ok: false,
         code: 'character_authoring_connection_missing',
         message: '请先为“角色创作”绑定连接预设或设置默认连接。',
+        detail: '功能「character_full_authoring」在 SFW 模式下未绑定连接预设，也没有可用的默认连接',
     });
 });
 

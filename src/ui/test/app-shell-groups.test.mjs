@@ -486,7 +486,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             click(version());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /当前版本：0.1.37/u);
+            assert.match(dialog.textContent, /当前版本：1.0.0/u);
         }
         const modeEntry = miniDom.document.querySelector('[name="about-content-mode-entry"]');
         assert.ok(modeEntry, '连续五次版本信息后应显示内容模式隐藏入口');
@@ -504,7 +504,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
             assert.match(dialog.textContent, /最近三次更新/u);
-            assert.match(dialog.textContent, /v0.1.37/u);
+            assert.match(dialog.textContent, /v1.0.0/u);
         }
         const serviceEntry = miniDom.document.querySelector('[name="about-service-entry"]');
         assert.ok(serviceEntry, '连续五次更新日志后应显示专属服务入口');
@@ -682,6 +682,45 @@ test('service completion stays mode-scoped and stages only after returning to th
         mounted.refreshState();
         await flushUi();
         assert.equal(calls.stage, 1, 'the same completed order must never be archived twice');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('a terminal order written directly by the body text is staged locally and finalized without a fake transition', async () => {
+    const serviceState = {
+        软件: { 内容模式: 'SFW' },
+        角色池: { npc_service_1: adultCharacter('林澈') },
+        服务订单: {
+            service_1: {
+                角色UID: 'npc_service_1', 角色UID列表: ['npc_service_1'], 内容模式: 'SFW', 服务分类: 'girl_shuren', 服务主题: '熟人商品：与林澈的文字协商',
+                状态: '已完成', 发起时间: '待正文确认', 开始时间: '正文第 2 轮', 结束时间: '正文第 9 轮', 结束摘要: '正文直写的结束摘要，无现实信息。', 已确认边界: '已确认边界',
+                合法结束条件: { 已满足: false, 摘要: '', 记录时间: '' },
+            },
+        },
+    };
+    const calls = { stage: 0, complete: 0, finalize: 0, archived: 0 };
+    const historyStore = {
+        list() { return []; },
+        stage(order, { status }) { calls.stage += 1; assert.equal(order.id, 'service_1'); assert.equal(status, '已完成'); return { localId: 'history_service_1' }; },
+        markArchived(localId) { calls.archived += 1; assert.equal(localId, 'history_service_1'); return true; },
+    };
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        async runServiceOrderComplete() { calls.complete += 1; return { ok: true }; },
+        async runServiceOrderFinalize({ orderUid }) { calls.finalize += 1; assert.equal(orderUid, 'service_1'); delete serviceState.服务订单.service_1; return { ok: true }; },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-service-terminal-recovery', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, serviceOrderHistoryStore: historyStore, readState: () => ({ ok: true, state: serviceState }),
+    });
+    try {
+        mounted.refreshState();
+        await flushUi();
+        assert.deepEqual(calls, { stage: 1, complete: 0, finalize: 1, archived: 1 }, 'the fallback must archive and delete without invoking the completion transition');
+        mounted.refreshState();
+        await flushUi();
+        assert.deepEqual(calls, { stage: 1, complete: 0, finalize: 1, archived: 1 }, 'a finalized order must not be recovered twice');
     } finally {
         mounted.destroy();
     }
@@ -1124,6 +1163,86 @@ test('forum top refresh replaces old posts and bottom loading appends posts only
     }
 });
 
+test('forum bottom append keeps the scroll anchor, shows bottom progress, lands new posts at the feed end and reports success', async () => {
+    const previousSetTimeout = globalThis.setTimeout;
+    const previousClearTimeout = globalThis.clearTimeout;
+    const timers = [];
+    globalThis.setTimeout = (callback, delay) => {
+        const timer = { callback, delay, cleared: false };
+        timers.push(timer);
+        return timer;
+    };
+    globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
+    const oldProfile = { nickname: '旧作者', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '编辑', interests: ['阅读'], presence: '在线', matchRate: null };
+    const freshProfile = { ...oldProfile, nickname: '新作者', occupation: '策展人' };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    await groupForumStore.addForumRefresh({ communityProfiles: [], update: { participants: [oldProfile], posts: forumRefreshPosts('旧作者') } });
+    let releaseRefresh = null;
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-append-scroll',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            generateForumHomeRefresh(request) {
+                assert.equal(request.refreshMode, 'append');
+                return new Promise((resolve) => {
+                    releaseRefresh = () => resolve({
+                        ok: true, communityProfiles: [],
+                        update: { participants: [freshProfile], posts: forumRefreshPosts('新作者').map((post) => ({ ...post, title: `追加：${post.title}` })) },
+                    });
+                });
+            },
+        }, settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('广场');
+        const content = miniDom.document.querySelector('.yl-phone-content');
+        Object.defineProperties(content, {
+            clientHeight: { value: 100, configurable: true },
+            scrollHeight: { value: 500, configurable: true },
+            scrollTop: { value: 0, writable: true, configurable: true },
+        });
+        // 模拟真实浏览器：清空滚动容器时 scrollTop 会塌缩回 0（renderPage 的 content.replaceChildren）。
+        const originalReplaceChildren = content.replaceChildren.bind(content);
+        content.replaceChildren = (...nodes) => { content.scrollTop = 0; return originalReplaceChildren(...nodes); };
+        content.scrollTop = 400;
+        content.dispatchEvent(wheel(100));
+        content.dispatchEvent(wheel(100));
+        timers.at(-1).callback();
+        await flushUi();
+        assert.ok(releaseRefresh, '到底部的滚轮手势必须触发追加请求');
+        assert.equal(content.scrollTop, 400, '进行中必须停留在底部追加区，而不是跳回顶部');
+        const surface = miniDom.document.querySelector('.yl-forum-home');
+        const appendIndicator = surface.querySelector('.yl-forum-append-indicator');
+        assert.ok(appendIndicator.classList.contains('is-refreshing'), '追加进行中必须点亮底部指示');
+        assert.match(appendIndicator.textContent, /正在追加广场帖子/u);
+        assert.ok(surface.querySelector('.yl-skeleton'), '追加进行中必须在帖子流末尾渲染骨架屏');
+        releaseRefresh();
+        await flushUi();
+        await flushUi();
+        assert.equal(content.scrollTop, 400, '追加完成后必须保持原滚动位置');
+        const snapshot = await groupForumStore.snapshot();
+        assert.equal(snapshot.posts.length, 16, '追加必须保留八篇旧帖并新增八篇');
+        assert.deepEqual(
+            snapshot.posts.slice(8).map((post) => post.title),
+            forumRefreshPosts('新作者').map((post) => `追加：${post.title}`),
+            '新帖子必须按合同顺序追加在本地列表末尾',
+        );
+        const titles = miniDom.document.querySelectorAll('.yl-post-title').map((node) => node.textContent);
+        assert.equal(titles.length, 16);
+        assert.match(titles.at(-1), /^追加：/u, '帖子流底部渲染的最后一张卡必须来自追加批次');
+        assert.doesNotMatch(titles[0], /^追加：/u, '旧帖子必须仍然排在帖子流顶部');
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+        assert.equal(dialog.hidden, false, '追加成功必须给出可见提示');
+        assert.match(dialog.textContent, /已保留旧帖子，并在广场底部追加八个频道的新帖子/u);
+    } finally {
+        mounted.destroy();
+        globalThis.setTimeout = previousSetTimeout;
+        globalThis.clearTimeout = previousClearTimeout;
+    }
+});
+
 test('late service-order handoff after close preserves the MVU result without filling the body draft', async () => {
     const state = { 软件: { 内容模式: 'SFW' }, 推荐: { 当前队列: [], 临时候选池: {} }, 角色池: {}, 服务订单: {}, 系统: { UID计数器: { 角色: 0, 服务订单: 0 } } };
     let resolveHandoff;
@@ -1504,6 +1623,95 @@ test('P2-C: group chat room reuses the contract bubble classes with stable per-s
             assert.ok(again, '重进房间后发言人昵称仍应渲染');
             assert.equal(again.className.split(/\s+/u).includes(tone), true, '重渲染后 tone 类保持稳定');
         }
+    } finally {
+        mounted.destroy();
+    }
+});
+
+// —— 阶段 77：群组/论坛域失败把服务层带出的诊断写入安全控制台 detail（message 保持粗略文案）——
+
+test('forum home refresh failure surfaces the service diagnostic in the operation console detail', async () => {
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-console-detail',
+        actionBridge: {
+            emit() {},
+            isPending() { return false; },
+            async generateForumHomeRefresh() {
+                return {
+                    ok: false,
+                    code: 'forum_update_channel_invalid',
+                    message: '论坛更新的频道名缺失、重复或不在固定频道列表中，已丢弃。',
+                    diagnostic: { stage: '响应校验', field: 'posts[2].topic', actual: '月亮频道', hint: '频道名必须精确等于固定频道名之一' },
+                };
+            },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('广场');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '刷新帖子'));
+        await flushUi();
+
+        const entry = mounted.operationActivity.snapshot().entries.find((item) => item.name === '广场刷新');
+        assert.ok(entry, '广场刷新必须在控制台留下条目');
+        assert.equal(entry.status, 'failure');
+        assert.equal(entry.message, '广场未刷新。', '界面摘要保持粗略友好文案');
+        assert.ok(entry.detail, '失败条目必须携带诊断 detail');
+        assert.match(entry.detail, /操作: 广场刷新/u);
+        assert.match(entry.detail, /阶段: 响应校验/u);
+        assert.match(entry.detail, /错误码: forum_update_channel_invalid/u);
+        assert.match(entry.detail, /字段: posts\[2\]\.topic/u);
+        assert.match(entry.detail, /实际: 月亮频道/u);
+        assert.doesNotMatch(entry.detail, /Bearer|sk-|阈值/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('group room update failure formats HTTP status from the service diagnostic into the console detail', async () => {
+    const profile = {
+        nickname: '许青', ageRange: '25-29', gender: '女', city: '杭州', mbti: 'ENFP', zodiac: '双鱼座', occupation: '插画师', interests: ['书店'], presence: '在线', matchRate: null,
+    };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    await groupForumStore.createGroup({ name: '控制台诊断群', members: [profile] });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-group-console-detail',
+        actionBridge: {
+            emit() {},
+            isPending() { return false; },
+            async generateGroupConversationUpdate() {
+                return {
+                    ok: false,
+                    code: 'SERVER_ERROR',
+                    message: '模型服务暂时不可用，请稍后重试。',
+                    retryable: true,
+                    diagnostic: { stage: '模型请求', error: { name: 'YueLeMaLlmError', message: '模型服务暂时不可用，请稍后重试。', code: 'SERVER_ERROR', status: 502 } },
+                };
+            },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('群聊');
+        click(groupRow('控制台诊断群'));
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入群消息');
+        assert.ok(input, '群聊房间应有输入栏');
+        input.value = '这句群消息原文不进控制台。';
+        input.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送群消息'));
+        await flushUi();
+
+        const entry = mounted.operationActivity.snapshot().entries.find((item) => item.name === '聊天群更新');
+        assert.ok(entry, '聊天群更新必须在控制台留下条目');
+        assert.equal(entry.status, 'failure');
+        assert.equal(entry.message, '聊天群更新未完成。');
+        assert.match(entry.detail, /错误类型: YueLeMaLlmError/u);
+        assert.match(entry.detail, /HTTP 状态: 502/u);
+        assert.match(entry.detail, /错误码: SERVER_ERROR/u);
+        assert.doesNotMatch(entry.detail, /这句群消息原文不进控制台/u);
     } finally {
         mounted.destroy();
     }

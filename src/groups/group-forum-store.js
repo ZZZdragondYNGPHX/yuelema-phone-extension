@@ -967,7 +967,11 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
                     author, participants, messages: [], summaries: [],
                     summaryStatus: { status: 'idle', startFloor: 0, endFloor: 0, message: '' }, createdAt: nowTimestamp(now),
                 };
-                next.posts.unshift(post);
+                // Top replacement keeps the feed newest-first; bottom append must
+                // land after every retained old post so the new batch really shows
+                // up at the end of the feed instead of silently moving to the top.
+                if (replace) next.posts.unshift(post);
+                else next.posts.push(post);
                 created.push(post);
             }
             await commit(next);
@@ -975,7 +979,7 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
         });
     }
 
-    /** Bottom loading appends a fresh fixed five-channel batch while retaining all old posts and summaries. */
+    /** Bottom loading appends a fresh fixed per-channel batch after all retained old posts and their summaries. */
     async function addForumRefresh(input = {}) {
         return saveForumRefresh({ ...input, replace: false });
     }

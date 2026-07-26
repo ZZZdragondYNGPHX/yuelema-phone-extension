@@ -4,7 +4,7 @@
 
 ## 允许持久化的内容
 
-`settings-store.js` 管理版本化数据（当前 `schema: "yuelema.settings"`、`schemaVersion: 14`；v11/v12/v13 在加载/导入时就地迁移，仅刷新内置提示词文案——v12 为内容尺度调整，v13 为 NSFW 内置预设写入具体情色写作指导，v14 把「语音匹配」内置预设改名为「描述匹配」（`builtin_voice_match_*` ID 与用户绑定保持不变）；自定义预设逐字保留）：
+`settings-store.js` 管理版本化数据（当前 `schema: "yuelema.settings"`、`schemaVersion: 15`；v11/v12/v13/v14 在加载/导入时就地迁移，仅刷新内置提示词文案——v12 为内容尺度调整，v13 为 NSFW 内置预设写入具体情色写作指导，v14 把「语音匹配」内置预设改名为「描述匹配」（`builtin_voice_match_*` ID 与用户绑定保持不变），v15 为 SFW 内置预设全量质量升级（NSFW 文案逐字不变、ID 与绑定不变）；自定义预设逐字保留）：
 
 - 非机密连接预设：`id`、`name`、`url`、`model`、`temperature`、`maxTokens`、`timeoutMs`、`transportMode`；
 - 提示词预设及其条目数据，以及每个预设明确的 `contentMode: "SFW" | "NSFW"` 标记；

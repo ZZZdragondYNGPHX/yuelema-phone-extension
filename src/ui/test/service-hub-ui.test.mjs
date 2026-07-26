@@ -372,6 +372,47 @@ test('自动结单：合法结束条件就绪的进行中订单走完成→归�
     }
 });
 
+test('终态兜底：活动表中的终态订单先补记本地历史再 finalize；进行中或模式不符时不动', async () => {
+    const calls = [];
+    const bridge = {
+        async runServiceOrderComplete({ orderUid }) { calls.push(['complete', orderUid]); return { ok: true }; },
+        async runServiceOrderFinalize({ orderUid }) { calls.push(['finalize', orderUid]); return { ok: true }; },
+        appendMeetupDraft() { return { ok: true }; },
+    };
+    const terminalOrder = {
+        id: 'service_1', mode: 'SFW', status: '已完成', category: '熟人商品',
+        topic: '熟人商品：与林澄的文字协商', summary: '正文直写的结束摘要。', initiatedAt: '待正文确认',
+        startedAt: '玩家已确认接单', endedAt: '订单已完成',
+        profiles: [{ 昵称: '林澄' }], roleUids: ['npc_service_1'], completionReady: false,
+    };
+    const staged = [];
+    const archived = [];
+    const harness = createHarness({ bridge, orders: [terminalOrder], activeTab: 'orders' });
+    const { ctx, page } = harness;
+    ctx.serviceOrderHistoryStore = {
+        list: () => [],
+        stage: (source, options) => { staged.push([source.id, options.status, options.summary]); return { localId: 'history_service_1' }; },
+        markArchived: (localId) => { archived.push(localId); return true; },
+        remove: () => true,
+    };
+    try {
+        // 进行中订单不属于兜底范围：直接忽略，不写本地历史也不发 MVU 请求。
+        await page.recoverTerminalServiceOrder({ ...terminalOrder, status: '进行中' });
+        // 模式不符的终态订单也不动，避免跨模式伪造本地历史。
+        await page.recoverTerminalServiceOrder({ ...terminalOrder, mode: 'NSFW' });
+        assert.deepEqual(calls, []);
+        assert.deepEqual(staged, []);
+
+        // 正文违规直写的终态订单：补记本地历史 → finalize 删除 → 标记归档；绝不调用 complete 伪造状态迁移。
+        await page.recoverTerminalServiceOrder(terminalOrder);
+        assert.deepEqual(staged, [['service_1', '已完成', '正文直写的结束摘要。']]);
+        assert.deepEqual(calls, [['finalize', 'service_1']]);
+        assert.deepEqual(archived, ['history_service_1']);
+    } finally {
+        harness.destroy();
+    }
+});
+
 test('进行中订单详情：重新填入成交提示词不含边界草稿也不暴露 UID，且绝不自动发送', () => {
     const dealDrafts = [];
     const bridge = { appendMeetupDraft(draft) { dealDrafts.push(String(draft ?? '')); return { ok: true }; } };
@@ -467,6 +508,122 @@ test('精选 tab：发布面板折叠于底部，分类卡横排选择不再自�
         assert.ok(container.querySelector('[name="service-published-open-girl_shuren"]'));
         click(toggle());
         assert.equal(toggle().getAttribute('aria-expanded'), 'false');
+    } finally {
+        harness.destroy();
+    }
+});
+
+// —— 2026-07-27 安全控制台接线断言：约伴域失败在控制台留下脱敏 detail ——
+const { createOperationActivity } = await import('../operation-activity.js');
+
+function createConsoleHarness({ bridge = {} } = {}) {
+    const container = miniDom.document.createElement('div');
+    miniDom.document.body.appendChild(container);
+    const operationActivity = createOperationActivity();
+    const ctx = {
+        documentRef: miniDom.document,
+        root: container,
+        abortController: new AbortController(),
+        currentView: { mode: 'SFW', serviceOrders: [], serviceOrderIssues: [] },
+        actionBridge: bridge,
+        operationActivity,
+        serviceOrderHistoryStore: { list: () => [], stage: () => ({ localId: 'history_stage_1' }), markArchived: () => true, remove: () => true },
+        serviceLocalProfiles: [],
+        serviceGenerationBatches: new Map(),
+        selectedServiceProfileIds: new Set(),
+        serviceBoundaryDrafts: new Map(),
+        serviceXpSearchDraft: '',
+        serviceXpSearchApplied: '',
+        activeServiceHubTab: 'featured',
+        activeServiceCategoryId: 'girl_shuren',
+        interactionGeneration: 0,
+        serviceProfileSequence: 0,
+        serviceGenerationBatchSequence: 0,
+        serviceOrderOperationEpoch: 0,
+        serviceProfileGenerationPending: false,
+        serviceProfileGenerationAbortController: null,
+        serviceProfileHandoffPendingId: '',
+        serviceOrderRepeatPendingId: '',
+        serviceOrderMutationPendingId: '',
+        isDestroyed: false,
+        canAppendServiceExperienceDraft: () => true,
+        refreshState: () => {},
+        setFeedback: (message, token = null) => token ?? { id: 1 },
+        renderPage: () => {},
+    };
+    const page = createServicePage(ctx);
+    const destroy = () => { ctx.isDestroyed = true; ctx.abortController.abort(); container.remove(); };
+    return { ctx, page, operationActivity, destroy };
+}
+
+test('三席生成失败：控制台条目 fail 且 detail 含逐席错误码，不含密钥或阈值数值', async () => {
+    const harness = createConsoleHarness({
+        bridge: {
+            async generateServiceProfileDraft() {
+                return { ok: false, code: 'HTTP_ERROR', message: '接口请求失败（HTTP 503）。', detail: '错误码: HTTP_ERROR\nHTTP 状态: 503', retryable: false };
+            },
+        },
+    });
+    try {
+        await harness.page.generateLocalServiceProfiles('girl_shuren');
+        const entries = harness.operationActivity.snapshot().entries;
+        const entry = entries.find((item) => item.name === '约伴三席生成');
+        assert.ok(entry, '三席生成必须在控制台留下条目');
+        assert.equal(entry.status, 'failure');
+        assert.ok(entry.detail, 'fail 时 detail 必须非空');
+        assert.match(entry.detail, /第 1 席（第 1 次）/u);
+        assert.match(entry.detail, /HTTP_ERROR/u);
+        assert.doesNotMatch(entry.detail, /sk-|Bearer/u);
+    } finally {
+        harness.destroy();
+    }
+});
+
+test('移除损坏订单失败：detail 透传受控管线 reason 与错误码，界面文案不变', async () => {
+    const harness = createConsoleHarness({
+        bridge: {
+            async repairServiceOrder() {
+                return { ok: false, status: 'rejected', code: 'service_order_repair_invalid', reason: '该服务订单不存在或不是对象' };
+            },
+        },
+    });
+    try {
+        await harness.page.repairServiceOrderIssue({ id: 'service_bad' });
+        const entry = harness.operationActivity.snapshot().entries.find((item) => item.name === '移除损坏订单');
+        assert.ok(entry, '修复失败必须在控制台留下条目');
+        assert.equal(entry.status, 'failure');
+        assert.match(entry.detail, /service_order_repair_invalid/u);
+        assert.match(entry.detail, /该服务订单不存在或不是对象/u);
+    } finally {
+        harness.destroy();
+    }
+});
+
+test('确认成交失败：detail 携带边界字段级 reason；成功路径条目为 success 且不阻断原链路', async () => {
+    let startCalls = 0;
+    const harness = createConsoleHarness({
+        bridge: {
+            async runServiceOrderStart() {
+                startCalls += 1;
+                return startCalls === 1
+                    ? { ok: false, status: 'rejected', code: 'service_order_start_invalid', reason: '结构化边界校验未通过：字段 NPC明确同意：尚有参与者未逐人确认' }
+                    : { ok: true, status: 'committed' };
+            },
+            appendMeetupDraft: () => ({ ok: true }),
+        },
+    });
+    try {
+        const order = { id: 'service_1', mode: 'SFW', status: '待确认', category: '熟人商品', profiles: [{ 昵称: '林澈' }] };
+        await harness.page.startServiceOrder(order);
+        const failed = harness.operationActivity.snapshot().entries.find((item) => item.name === '确认成交');
+        assert.equal(failed.status, 'failure');
+        assert.match(failed.detail, /service_order_start_invalid/u);
+        assert.match(failed.detail, /NPC明确同意/u);
+
+        await harness.page.startServiceOrder(order);
+        const succeeded = harness.operationActivity.snapshot().entries.find((item) => item.name === '确认成交' && item.status === 'success');
+        assert.ok(succeeded, '成功路径必须落成 success 条目');
+        assert.equal(startCalls, 2, '控制台接线不得改变 runServiceOrderStart 调用链');
     } finally {
         harness.destroy();
     }

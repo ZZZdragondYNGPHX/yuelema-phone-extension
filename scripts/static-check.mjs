@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '0.1.37') fail('manifest.version 必须与扩展版本 0.1.37 统一');
+if (manifest.version !== '1.0.0') fail('manifest.version 必须与扩展版本 1.0.0 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -121,7 +121,7 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '0.1.37'")) fail('关于软件 UI_VERSION 必须与扩展版本 0.1.37 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.0.0'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.0 统一（必须位于壳层 app-shell.js）');
 const index = await readFile(resolve(root, 'index.js'), 'utf8');
 const hostExtensionUpdater = await readFile(resolve(root, 'src/host-extension-update.js'), 'utf8');
 if (!hostExtensionUpdater.includes("HOST_EXTENSION_DIRECTORY = 'yuelema-phone-extension'") || !hostExtensionUpdater.includes("VERSION_ENDPOINT = '/api/extensions/version'") || !hostExtensionUpdater.includes("UPDATE_ENDPOINT = '/api/extensions/update'")) fail('宿主扩展更新器必须固定约了吗目录与原生检查/更新端点');
@@ -269,8 +269,19 @@ const avatarView = await readFile(resolve(root, 'src/ui/avatar-view.js'), 'utf8'
 const operationActivity = await readFile(resolve(root, 'src/ui/operation-activity.js'), 'utf8');
 if (!avatarView.includes('createAvatarView') || !avatarView.includes('safeAvatarImageSource')) fail('缺少五类头像的安全图片视图');
 if (!operationActivity.includes('createOperationActivity') || !operationActivity.includes('OPERATION_ACTIVITY_MAX_ENTRIES')) fail('缺少安全运行控制台活动记录器');
+// 2026-07-27 用户裁决：控制台 detail 允许技术细节（HTTP 状态、错误码、校验失败字段等），
+// 但必须经 sanitizeDiagnosticDetail 黑名单脱敏（Key/Bearer/长 base64/URL query 等一律 [已脱敏]）；
+// 界面提示 message 仍走 assertSafeText 严格白名单。以下断言防止 detail 路径绕过脱敏器回归。
+if (!operationActivity.includes('export function sanitizeDiagnosticDetail') || !operationActivity.includes('export function buildErrorDetail') || !operationActivity.includes('OPERATION_ACTIVITY_MAX_DETAIL_LENGTH')) fail('缺少控制台诊断详情脱敏器、格式化器或长度上限导出');
+if (!/function normalizeDetail\([\s\S]{0,240}?sanitizeDiagnosticDetail\(/u.test(operationActivity)) fail('normalizeDetail 必须调用 sanitizeDiagnosticDetail 作为 detail 入账唯一通道');
+if (!/entry\.detail\s*=\s*normalizeDetail\(/u.test(operationActivity)) fail('update 路径的 detail 写入必须经 normalizeDetail 脱敏');
+if (/entry\.detail\s*=(?!\s*normalizeDetail\()/u.test(operationActivity)) fail('禁止绕过 normalizeDetail 直写 entry.detail');
+if (!operationActivity.includes("detail: options && typeof options === 'object' ? normalizeDetail(options.detail) : null")) fail('start 路径的 detail 初始化必须经 normalizeDetail 脱敏');
+if (!operationActivity.includes("REDACTED_MARK = '[已脱敏]'") || !operationActivity.includes('sk-') || !operationActivity.includes('Bearer')) fail('脱敏器必须覆盖 sk- token、Bearer 与统一 [已脱敏] 替换标记');
+if (!operationActivity.includes('sanitizeUrlForDetail')) fail('脱敏器必须剥离 URL 的 query/userinfo，仅保留 origin+路径');
 if (!appShell.includes("'settings_console'") || !appShell.includes("visual: 'connecting'") || !appShell.includes("'accepted'") || !appShell.includes("'declined'") || !appShell.includes("'failure'")) fail('缺少设置控制台或恋爱匹配动画状态接线');
-console.log('✓ 私聊更多菜单、角色删除、恋爱动画、安全控制台与五类头像接线');
+if (!appShellCore.includes('decorateOperationConsoleDetails') || !appShellCore.includes('yl-operation-console-detail-toggle') || !appShellCore.includes('复制详情') || !appShellCore.includes('copyDiagnosticDetail')) fail('缺少控制台诊断详情展开/收起与复制接线');
+console.log('✓ 私聊更多菜单、角色删除、恋爱动画、安全控制台（详情经脱敏展示）与五类头像接线');
 
 const imageLibrary = await readFile(resolve(root, 'src/images/image-library-store.js'), 'utf8');
 const imageMatch = await readFile(resolve(root, 'src/images/image-match.js'), 'utf8');
@@ -295,7 +306,7 @@ const imageGenerationClient = await readFile(resolve(root, 'src/llm/image-genera
 const drawingDnaRules = await readFile(resolve(root, 'src/recommendation/drawing-dna-rules.js'), 'utf8');
 if (!index.includes('createImageGenerationClient') || !actionBridge.includes('generateConversationImage')) fail('缺少生图客户端注入或对话生图桥接');
 if (!appShell.includes("'settings_image_generation'") || !appShell.includes('buildConversationImageControls') || !appShell.includes('buildImageDirectiveCard') || !appShell.includes('generateConversationImage')) fail('缺少生图设置路由、会话开关或结构化指令 UI 接线');
-if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 14') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema 或逐会话自动生图隔离');
+if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 15') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema 或逐会话自动生图隔离');
 if (!settingsPanel.includes('buildImageGenerationSection') || !settingsPanel.includes('positivePrefix') || !settingsPanel.includes('negativePrompt')) fail('缺少生图固定正负提示词设置界面');
 if (!imageDirective.includes('composeImagePrompt') || !imageDirective.includes('coreDna') || !imageDirective.includes('outfitDna')) fail('缺少固定顺序的绘图 DNA 提示词组合器');
 if (!imageGenerationClient.includes('requireSessionKey') || !imageGenerationClient.includes('fetchImpl') || !imageGenerationClient.includes('readResponseBytes') || !imageGenerationClient.includes('MAX_IMAGE_BYTES') || imageGenerationClient.includes("kind: 'url'")) fail('缺少注入式生图客户端、独立 Key、有界图片响应读取或仍允许 UI 远程图片 URL');

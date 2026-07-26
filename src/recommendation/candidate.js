@@ -1,4 +1,5 @@
 import { DEFAULT_DRAWING_DNA } from './drawing-dna-rules.js';
+import { computeInteractionPressure } from '../chat/interaction-rhythm.js';
 /**
  * Strictly validates one LLM-generated recommendation candidate before it can
  * enter MVU state. This module deliberately does not assign a UID: the caller
@@ -75,7 +76,7 @@ export const COMPLETE_CANDIDATE_OUTPUT_CONTRACT = Object.freeze([
     '根对象必须且仅能含：成人验证、公开资料、仅好友资料、隐藏资料、绘图、偏好与边界、拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值、与玩家关系。成人验证必须是布尔值 true。',
     '公开资料必须且仅能含：昵称、头像引用、年龄段、性别、性取向、城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签、沟通风格标签。前九项是字符串（头像引用可为空字符串，其余不得为空）；后四项都是字符串数组，每个数组放 0–2 个短标签。年龄段必须明确为成年人，不能出现任何小于 18 的年龄。',
     '仅好友资料必须且仅能含：关系状态、边界与偏好；两项都是非空字符串。隐藏资料必须且仅能含：实际年龄、私人备注；实际年龄是 18–120 的整数，私人备注是可为空的字符串。绘图必须且仅能含 core_dna、outfit_dna，两项都是英文绘图标签字符串；core_dna 首次生成后永久锁定，outfit_dna 仅随明确换装更新。',
-    '偏好与边界是可为空的字符串。拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值都必须是 0–100 的整数。',
+    '偏好与边界是可为空的字符串。拒绝阈值、已读不回阈值、取消匹配阈值、拉黑阈值都必须是 0–100 的整数，且必须从该角色的性格标签、沟通风格与戒备心推导，不得随手填数：已读不回阈值与拉黑阈值代表 TA 对负面互动压力的容忍度（数值越高越难触发），拉黑是彻底断联的心理底线；拒绝阈值与取消匹配阈值代表 TA 对契合度的挑剔程度（数值越高越挑剔）。硬性要求：拉黑阈值不得低于 60，且必须大于已读不回阈值。',
     '与玩家关系必须且仅能含：状态、全局账号表现、NPC专属匹配度、好感、信任、戒备、面基意愿、友情值、心动值、欲望值。状态固定为“陌生”；其余九项都必须是 0–100 的整数；友情值、心动值、欲望值必须填写为 0。',
     '只在对应层级填写这些内部资料：公开资料不得夹带仅好友资料、隐藏资料或关系数值；内部资料不会直接展示给玩家。',
 ]);
@@ -179,6 +180,43 @@ function normalizeTags(value, path) {
 function normalizeInteger(value, path, low, high) {
     if (!Number.isInteger(value) || value < low || value > high) fail(`${path}:integer_out_of_range`);
     return value;
+}
+
+// 阶段 56（阈值人设化）：仅对“新生成”的候选执行的宽松合理性约束。语义与
+// COMPLETE_CANDIDATE_OUTPUT_CONTRACT 的硬性要求一致——拉黑是彻底断联的心理
+// 底线，必须高于已读不回阈值且不低于 60，防止模型随手填出“一言不合秒拉黑”
+// 的极端值；具体人设映射（外向包容偏高、敏感高戒备偏低）交给提示词预设。
+const MIN_GENERATED_BLOCK_THRESHOLD = 60;
+// 阈值-初值联动（同样仅新生成路径）：初始戒备封顶 40，且已读不回阈值必须
+// 高出按节奏公式（陌生基线 30，见 src/chat/interaction-rhythm.js 的
+// computeInteractionPressure）算出的开局压力至少 15 点安全边际，防止模型给
+// 出“开局即触线”的初值/阈值组合（第一条消息就已读不回的真机死局）。
+const MAX_GENERATED_INITIAL_GUARD = 40;
+const MIN_GENERATED_OPENING_PRESSURE_MARGIN = 15;
+
+/**
+ * Resolves whether generated-rhythm-threshold sanity rules apply. Default
+ * follows requirePersonalName because that flag marks exactly the freshly
+ * AI-generated candidate paths (fast recommendation, match materializer, and
+ * their controlled-patch whitelist round-trips). User-authored registration,
+ * template imports, and service orders sourced from the local library keep the
+ * legacy 0–100 range so existing stored characters never need migration.
+ */
+function resolveRhythmEnforcement(options, requirePersonalName) {
+    if (options !== null && typeof options === 'object' && Object.hasOwn(options, 'enforceRhythmConsistency')) {
+        return options.enforceRhythmConsistency === true;
+    }
+    return requirePersonalName;
+}
+
+function assertGeneratedRhythmThresholds(candidate) {
+    if (candidate.拉黑阈值 < MIN_GENERATED_BLOCK_THRESHOLD) fail('拉黑阈值:generated_below_minimum');
+    if (candidate.拉黑阈值 <= candidate.已读不回阈值) fail('拉黑阈值:generated_not_above_read_without_reply');
+    if (candidate.与玩家关系.戒备 > MAX_GENERATED_INITIAL_GUARD) fail('戒备:generated_above_maximum');
+    const openingPressure = computeInteractionPressure(candidate.与玩家关系);
+    if (openingPressure === null || candidate.已读不回阈值 < openingPressure + MIN_GENERATED_OPENING_PRESSURE_MARGIN) {
+        fail('已读不回阈值:generated_below_opening_pressure');
+    }
 }
 
 function normalizeContentMode(value) {
@@ -322,6 +360,7 @@ export function normalizeGeneratedCandidate(input, options) {
             拉黑阈值: normalizeInteger(ownData(input, '拉黑阈值', '候选人'), '拉黑阈值', 0, 100),
             与玩家关系: normalizeRelationship(ownData(input, '与玩家关系', '候选人')),
         };
+        if (resolveRhythmEnforcement(options, requirePersonalName)) assertGeneratedRhythmThresholds(candidate);
         CANDIDATE_MODE_BY_OBJECT.set(candidate, contentMode);
         return candidate;
     } catch (error) {

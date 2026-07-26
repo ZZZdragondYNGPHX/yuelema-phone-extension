@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    IMAGE_MATCH_SYSTEM_CONTRACT_TEXT,
     buildImageMatchContextText,
     buildImageMatchPrompt,
     createImageLibraryRevision,
     createImageMatchCacheKey,
     createImageMatchProfileFingerprint,
+    createImageMatchPromptPresetFingerprint,
     parseImageMatchLlmResponse,
     selectBestImageMatch,
     selectBestImageMatchFromKeywordWeights,
@@ -181,6 +183,88 @@ test('standalone LLM request rejects secret-bearing presets and never calls the 
     assert.equal(result.ok, false);
     assert.equal(result.code, 'image_match_connection_invalid');
     assert.equal(called, false);
+});
+
+function promptPresetFixture(contentMode, content) {
+    return {
+        id: contentMode === 'NSFW' ? 'builtin_image_match_nsfw' : 'builtin_image_match_sfw',
+        name: `内置·图片匹配·${contentMode}`,
+        contentMode,
+        content,
+        position: 'before_character_definition',
+        enabled: true,
+        depth: 4,
+        order: 100,
+    };
+}
+
+const SFW_PRESET_TEXT = 'SFW选图倾向：生活抓拍感优于影楼摆拍感。';
+const NSFW_PRESET_TEXT = 'NSFW选图倾向：优先使用词表内已有的性感露骨关键词。';
+
+test('SFW/NSFW 提示词预设内容进入 system 消息且输出合同保持为不可覆盖尾部', () => {
+    const systems = [];
+    for (const [contentMode, presetText] of [['SFW', SFW_PRESET_TEXT], ['NSFW', NSFW_PRESET_TEXT]]) {
+        const prompt = buildImageMatchPrompt(profile, ['艺术', '夜生活'], promptPresetFixture(contentMode, presetText));
+        const system = prompt.messages[0].content;
+        assert.equal(prompt.messages[0].role, 'system');
+        assert.equal(system.includes(presetText), true, `${contentMode} 预设内容应进入 system 消息`);
+        assert.equal(system.endsWith(IMAGE_MATCH_SYSTEM_CONTRACT_TEXT), true, '输出合同必须是 system 消息的固定尾部');
+        assert.equal(system.indexOf(presetText) < system.indexOf('只输出一个严格 JSON 对象'), true, '预设内容必须位于输出合同之前');
+        // 预设只影响 system 题材段，user 上下文仍是纯公开资料投影+词表。
+        assert.equal(prompt.messages[1].content.includes(presetText), false);
+        systems.push(system);
+    }
+    assert.notEqual(systems[0], systems[1], 'SFW 与 NSFW 预设注入后的 system 消息必须可区分');
+});
+
+test('未绑定或已停用提示词预设时 system 消息与现状完全一致', () => {
+    const bare = buildImageMatchPrompt(profile, ['艺术']).messages[0].content;
+    assert.equal(bare, IMAGE_MATCH_SYSTEM_CONTRACT_TEXT);
+    const disabled = { ...promptPresetFixture('SFW', SFW_PRESET_TEXT), enabled: false };
+    assert.equal(buildImageMatchPrompt(profile, ['艺术'], disabled).messages[0].content, IMAGE_MATCH_SYSTEM_CONTRACT_TEXT);
+    assert.equal(buildImageMatchPrompt(profile, ['艺术'], null).messages[0].content, IMAGE_MATCH_SYSTEM_CONTRACT_TEXT);
+});
+
+test('提示词预设指纹稳定，切换或改动预设即变化', () => {
+    assert.equal(createImageMatchPromptPresetFingerprint(null), 'prompt:none');
+    assert.equal(createImageMatchPromptPresetFingerprint(undefined), 'prompt:none');
+    const sfw = promptPresetFixture('SFW', SFW_PRESET_TEXT);
+    const same = createImageMatchPromptPresetFingerprint(sfw);
+    assert.equal(createImageMatchPromptPresetFingerprint({ ...sfw }), same);
+    assert.notEqual(createImageMatchPromptPresetFingerprint({ ...sfw, content: `${SFW_PRESET_TEXT}（修订）` }), same);
+    assert.notEqual(createImageMatchPromptPresetFingerprint({ ...sfw, id: 'user_custom_image_match' }), same);
+    assert.notEqual(createImageMatchPromptPresetFingerprint(promptPresetFixture('NSFW', NSFW_PRESET_TEXT)), same);
+});
+
+test('service 把提示词预设传入请求，秘密字段预设降级为无预设请求', async () => {
+    const requests = [];
+    const llmClient = { async chat(input) {
+        requests.push(input);
+        return { text: JSON.stringify({ keywordWeights: [{ keyword: '艺术', weight: 5 }] }) };
+    } };
+    const connectionPreset = { id: 'image-match', url: 'https://api.example.test/v1', model: 'model' };
+
+    const withPreset = await matchImageForPublicProfile({
+        candidatePublicProfile: profile,
+        imageRecords: images,
+        connectionPreset,
+        promptPreset: promptPresetFixture('NSFW', NSFW_PRESET_TEXT),
+        llmClient,
+    });
+    assert.equal(withPreset.source, 'llm');
+    assert.equal(requests[0].messages[0].content.includes(NSFW_PRESET_TEXT), true);
+    assert.equal(requests[0].messages[0].content.endsWith(IMAGE_MATCH_SYSTEM_CONTRACT_TEXT), true);
+
+    const withSecretPreset = await matchImageForPublicProfile({
+        candidatePublicProfile: profile,
+        imageRecords: images,
+        connectionPreset,
+        promptPreset: { ...promptPresetFixture('SFW', SFW_PRESET_TEXT), apiKey: 'preset-secret' },
+        llmClient,
+    });
+    assert.equal(withSecretPreset.source, 'llm');
+    assert.equal(requests[1].messages[0].content, IMAGE_MATCH_SYSTEM_CONTRACT_TEXT);
+    assert.equal(JSON.stringify(requests[1].messages).includes('preset-secret'), false);
 });
 
 

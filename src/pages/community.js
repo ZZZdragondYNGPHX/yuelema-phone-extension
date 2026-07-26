@@ -11,6 +11,7 @@ import { createSegmentedControl } from '../ui/segmented-control.js';
 import { createEmptyState } from '../ui/empty-state.js';
 import { createSkeleton } from '../ui/skeleton.js';
 import { createTagChip } from '../ui/badge.js';
+import { buildErrorDetail } from '../ui/operation-activity.js';
 import { buildWaitCaptions } from './shared.js';
 
 const FORUM_PULL_THRESHOLD = 88;
@@ -39,6 +40,42 @@ const COMMUNITY_TABS = Object.freeze([
 const GROUP_TIME_DIVIDER_GAP_MS = 10 * 60 * 1000;
 const NAME_TONE_COUNT = 6;
 const POST_EXPAND_THRESHOLD = 120;
+
+// 控制台脱敏器会把 ≥32 字符的连续 token 视作疑似凭据并替换为 [已脱敏]；
+// 超长错误码改用空格分词呈现，避免误脱敏（与服务层 presentGroupDiagnosticCode 同规则）。
+function presentConsoleCode(code) {
+    const text = String(code ?? '').trim().slice(0, 120);
+    if (!text) return '';
+    return text.length >= 32 ? text.split('_').join(' ') : text;
+}
+
+/**
+ * 群聊/论坛/本地总结失败的控制台 detail：优先使用服务层带出的 `diagnostic`
+ * 纯数据记录（阶段/字段路径/期望/实际/HTTP 状态），桥接调用本身抛异常时
+ * 直接格式化该异常；两者都没有时退化为“结果错误码”摘要。
+ * 界面 message 不变，仍是粗略友好文案。
+ */
+function communityFailureDetail(operation, result, caughtError = null) {
+    const diagnostic = result && typeof result === 'object' && result.diagnostic && typeof result.diagnostic === 'object' ? result.diagnostic : null;
+    const errorSource = caughtError ?? diagnostic?.error ?? null;
+    // buildErrorDetail 已从 errorSource 打印其自带错误码；context 只补充不同的结果错误码，避免重复行。
+    let contextCode = presentConsoleCode(result?.code) || presentConsoleCode(diagnostic?.code);
+    if (contextCode && errorSource && presentConsoleCode(errorSource.code) === contextCode) contextCode = '';
+    return buildErrorDetail(errorSource, {
+        operation,
+        stage: caughtError ? '桥接调用' : diagnostic?.stage,
+        code: contextCode || undefined,
+        field: diagnostic?.field,
+        expected: diagnostic?.expected,
+        actual: diagnostic?.actual,
+        hint: diagnostic?.hint,
+    });
+}
+
+/** 本地缓存写入失败（groupForumStore 抛异常）的控制台 detail。 */
+function localCacheFailureDetail(operation, error) {
+    return buildErrorDetail(error, { operation, stage: '本地缓存写入' });
+}
 
 function communityTabStorageOrNull() {
     try {
@@ -431,6 +468,7 @@ export function createCommunityPage(ctx) {
         if (!group || !ctx.actionBridge.generateGroupConversationUpdate || ctx.actionBridge.isPending?.('group_chat_update', cacheKey)) return;
         const activity = ctx.operationActivity.start('聊天群自动更新', '正在按设定时间更新当前聊天群。');
         let result;
+        let bridgeError = null;
         try {
             result = await ctx.actionBridge.generateGroupConversationUpdate({
                 group,
@@ -439,13 +477,13 @@ export function createCommunityPage(ctx) {
                 binding: localBindingForMode(groupConversation(group).bindings),
             });
         }
-        catch { result = { ok: false }; }
+        catch (error) { bridgeError = error; result = { ok: false }; }
         if (ctx.isDestroyed || generation !== ctx.groupAutoGeneration || ctx.activeGroupCacheKey !== cacheKey) {
             ctx.operationActivity.dismiss(activity, '聊天群已离开，自动更新结果未展示。');
             return;
         }
         if (!result?.ok || !result.update) {
-            ctx.operationActivity.fail(activity, '聊天群自动更新未完成。');
+            ctx.operationActivity.fail(activity, '聊天群自动更新未完成。', { detail: communityFailureDetail('聊天群自动更新', result, bridgeError) });
             return;
         }
         try {
@@ -454,8 +492,8 @@ export function createCommunityPage(ctx) {
             ctx.operationActivity.succeed(activity, '聊天群已按设定时间自动更新。');
             if (ctx.open && ctx.activePage === 'group_chat_room' && ctx.activeGroupCacheKey === cacheKey) ctx.renderPage();
             void maybeRunLocalAutomaticSummary({ kind: 'group', id: cacheKey, title: group.name });
-        } catch {
-            ctx.operationActivity.fail(activity, '聊天群自动更新未保存到本地缓存。');
+        } catch (error) {
+            ctx.operationActivity.fail(activity, '聊天群自动更新未保存到本地缓存。', { detail: localCacheFailureDetail('聊天群自动更新', error) });
         }
     }
     function closeForumSettingsDialog() {
@@ -565,14 +603,15 @@ export function createCommunityPage(ctx) {
         if (!posts.length || !ctx.actionBridge.generateForumExistingPostsUpdate || ctx.actionBridge.isPending?.('forum_existing_update', '')) return;
         const activity = ctx.operationActivity.start('社区广场自动更新', '正在更新所有已存在的本地帖子，不会生成新帖子。');
         let result;
+        let bridgeError = null;
         try { result = await ctx.actionBridge.generateForumExistingPostsUpdate({ posts, binding: localBindingForMode(forumAutoSettings().postBindings) }); }
-        catch { result = { ok: false }; }
+        catch (error) { bridgeError = error; result = { ok: false }; }
         if (ctx.isDestroyed || generation !== ctx.forumAutoGeneration || ctx.activePage !== 'group_forum') {
             ctx.operationActivity.dismiss(activity, '社区广场已离开，自动更新结果未展示。');
             return;
         }
         if (!result?.ok || !result.update) {
-            ctx.operationActivity.fail(activity, '社区广场自动更新未完成。');
+            ctx.operationActivity.fail(activity, '社区广场自动更新未完成。', { detail: communityFailureDetail('社区广场自动更新', result, bridgeError) });
             return;
         }
         try {
@@ -580,8 +619,8 @@ export function createCommunityPage(ctx) {
             await syncGroupForumSnapshot({ rerender: false });
             ctx.operationActivity.succeed(activity, '已更新所有现有本地帖子；没有生成新帖子。');
             if (ctx.open && ctx.activePage === 'group_forum' && generation === ctx.forumAutoGeneration) ctx.renderPage();
-        } catch {
-            ctx.operationActivity.fail(activity, '社区广场自动更新没有保存到本地缓存。');
+        } catch (error) {
+            ctx.operationActivity.fail(activity, '社区广场自动更新没有保存到本地缓存。', { detail: localCacheFailureDetail('社区广场自动更新', error) });
         }
     }
     function buildGroupListActionButton() {
@@ -901,6 +940,7 @@ export function createCommunityPage(ctx) {
         const activity = ctx.operationActivity.start('聊天群更新', '正在生成群友的本地更新。');
         ctx.renderPage();
         let result;
+        let bridgeError = null;
         try {
             result = await ctx.actionBridge.generateGroupConversationUpdate({
                 group,
@@ -909,17 +949,21 @@ export function createCommunityPage(ctx) {
                 binding: localBindingForMode(groupConversation(group).bindings),
             });
         }
-        catch { result = { ok: false }; }
+        catch (error) { bridgeError = error; result = { ok: false }; }
         if (ctx.isDestroyed || ctx.activeGroupCacheKey !== group.cacheKey) { ctx.operationActivity.dismiss(activity, '聊天群已离开，更新结果未展示。'); return; }
         if (!result?.ok || !result.update) {
-            ctx.operationActivity.fail(activity, '聊天群更新未完成。'); ctx.setFeedback(result?.message || '聊天群更新未完成，请稍后重试。'); ctx.renderPage(); return;
+            ctx.operationActivity.fail(activity, '聊天群更新未完成。', { detail: communityFailureDetail('聊天群更新', result, bridgeError) });
+            ctx.setFeedback(result?.message || '聊天群更新未完成，请稍后重试。'); ctx.renderPage(); return;
         }
         try {
             await ctx.groupForumStore?.appendGroupModelUpdate?.({ key: group.cacheKey, title: group.name, update: result.update, members: group.members });
             await syncGroupForumSnapshot({ rerender: false });
             ctx.operationActivity.succeed(activity, '聊天群已更新到本地缓存。'); ctx.renderPage();
             void maybeRunLocalAutomaticSummary({ kind: 'group', id: group.cacheKey, title: group.name });
-        } catch { ctx.operationActivity.fail(activity, '聊天群更新没有保存到本地缓存。'); ctx.setFeedback('聊天群更新没有保存到本地缓存。'); }
+        } catch (error) {
+            ctx.operationActivity.fail(activity, '聊天群更新没有保存到本地缓存。', { detail: localCacheFailureDetail('聊天群更新', error) });
+            ctx.setFeedback('聊天群更新没有保存到本地缓存。');
+        }
     }
     function forumIsAtTop(surface) {
         const contentTop = Number(ctx.content?.scrollTop);
@@ -1189,10 +1233,20 @@ export function createCommunityPage(ctx) {
     async function runForumHomeRefresh({ mode = 'replace' } = {}) {
         if (ctx.forumRefreshing || !ctx.actionBridge.generateForumHomeRefresh || ctx.actionBridge.isPending?.('forum_home_refresh', '')) return;
         if (!['replace', 'append'].includes(mode)) return;
-        ctx.forumRefreshing = true; ctx.forumRefreshMode = mode; ctx.renderPage();
         const replacing = mode === 'replace';
+        // 追加模式滚动合同：renderPage 会重建滚动容器（content.replaceChildren 后浏览器把
+        // scrollTop 归零）。这里记住手势发生时的位置：进行中把底部“正在追加”指示与骨架屏
+        // 滚入视野；完成或失败后回到原位置——新帖子固定追加在列表末尾，正好从原底部继续向下排。
+        const appendAnchorTop = replacing ? 0 : Math.max(0, Number(ctx.content?.scrollTop) || 0);
+        const restoreAppendScroll = ({ toAppendZone = false } = {}) => {
+            if (replacing || !ctx.content) return;
+            const bottom = (Number(ctx.content.scrollHeight) || 0) - (Number(ctx.content.clientHeight) || 0);
+            ctx.content.scrollTop = toAppendZone ? Math.max(appendAnchorTop, bottom) : appendAnchorTop;
+        };
+        ctx.forumRefreshing = true; ctx.forumRefreshMode = mode; ctx.renderPage(); restoreAppendScroll({ toAppendZone: true });
         const activity = ctx.operationActivity.start('广场刷新', replacing ? '正在替换旧帖子并刷新全部八个频道。' : '正在保留旧帖子并追加全部八个频道。');
         let result;
+        let bridgeError = null;
         try {
             result = await ctx.actionBridge.generateForumHomeRefresh({
                 existingTitles: replacing ? [] : socialPosts().slice(0, 24).map((post) => post.title),
@@ -1200,18 +1254,24 @@ export function createCommunityPage(ctx) {
                 binding: localBindingForMode(forumAutoSettings().channelBindings),
             });
         }
-        catch { result = { ok: false }; }
+        catch (error) { bridgeError = error; result = { ok: false }; }
         ctx.forumRefreshing = false; ctx.forumRefreshMode = '';
         if (ctx.isDestroyed || ctx.activePage !== 'group_forum') { ctx.operationActivity.dismiss(activity, '社区广场已离开，刷新结果未展示。'); return; }
         if (!result?.ok || !result.update) {
-            ctx.operationActivity.fail(activity, '广场未刷新。'); ctx.setFeedback(result?.message || '广场刷新未完成，请稍后重试。'); ctx.renderPage(); return;
+            ctx.operationActivity.fail(activity, '广场未刷新。', { detail: communityFailureDetail('广场刷新', result, bridgeError) });
+            ctx.setFeedback(result?.message || '广场刷新未完成，请稍后重试。'); ctx.renderPage(); restoreAppendScroll(); return;
         }
         try {
             const saveRefresh = replacing ? ctx.groupForumStore?.replaceForumPosts : ctx.groupForumStore?.addForumRefresh;
             await saveRefresh?.({ update: result.update, communityProfiles: result.communityProfiles ?? [] });
             await syncGroupForumSnapshot({ rerender: false });
-            ctx.operationActivity.succeed(activity, replacing ? '旧帖子已替换为新的五频道帖子。' : '新帖子已追加到本地缓存。'); ctx.renderPage(); syncForumAutoTimer();
-        } catch { ctx.operationActivity.fail(activity, '广场更新没有保存到本地缓存。'); ctx.setFeedback('广场更新没有保存到本地缓存。'); ctx.renderPage(); }
+            ctx.operationActivity.succeed(activity, replacing ? '旧帖子已替换为八个频道的新帖子。' : '新帖子已追加到广场底部。');
+            if (!replacing) ctx.setFeedback('已保留旧帖子，并在广场底部追加八个频道的新帖子。');
+            ctx.renderPage(); restoreAppendScroll(); syncForumAutoTimer();
+        } catch (error) {
+            ctx.operationActivity.fail(activity, '广场更新没有保存到本地缓存。', { detail: localCacheFailureDetail('广场刷新', error) });
+            ctx.setFeedback('广场更新没有保存到本地缓存。'); ctx.renderPage(); restoreAppendScroll();
+        }
     }
     // §8.2-4：评论列表 ListRow 变体——头像 + 昵称/相对时间 + 文本（替代旧论坛气泡）。
     function buildForumCommentRow(post, message) {
@@ -1287,6 +1347,7 @@ export function createCommunityPage(ctx) {
         if (!ctx.actionBridge.generateForumPostConversationUpdate || ctx.actionBridge.isPending?.('forum_post_update', post.id)) return;
         const activity = ctx.operationActivity.start('论坛帖子更新', '正在生成帖子下的本地讨论。'); ctx.renderPage();
         let result;
+        let bridgeError = null;
         try {
             result = await ctx.actionBridge.generateForumPostConversationUpdate({
                 postId: post.id,
@@ -1295,16 +1356,20 @@ export function createCommunityPage(ctx) {
                 binding: localBindingForMode(forumAutoSettings().postBindings),
             });
         }
-        catch { result = { ok: false }; }
+        catch (error) { bridgeError = error; result = { ok: false }; }
         if (ctx.isDestroyed || ctx.activeForumPostId !== post.id) { ctx.operationActivity.dismiss(activity, '帖子已离开，更新结果未展示。'); return; }
         if (!result?.ok || !result.update) {
-            ctx.operationActivity.fail(activity, '论坛帖子更新未完成。'); ctx.setFeedback(result?.message || '论坛帖子更新未完成，请稍后重试。'); ctx.renderPage(); return;
+            ctx.operationActivity.fail(activity, '论坛帖子更新未完成。', { detail: communityFailureDetail('论坛帖子更新', result, bridgeError) });
+            ctx.setFeedback(result?.message || '论坛帖子更新未完成，请稍后重试。'); ctx.renderPage(); return;
         }
         try {
             await ctx.groupForumStore?.appendForumModelUpdate?.({ postId: post.id, update: result.update });
             await syncGroupForumSnapshot({ rerender: false }); ctx.operationActivity.succeed(activity, '论坛帖子已更新到本地缓存。'); ctx.renderPage();
             void maybeRunLocalAutomaticSummary({ kind: 'post', id: post.id, title: post.title });
-        } catch { ctx.operationActivity.fail(activity, '论坛帖子更新没有保存到本地缓存。'); ctx.setFeedback('论坛帖子更新没有保存到本地缓存。'); }
+        } catch (error) {
+            ctx.operationActivity.fail(activity, '论坛帖子更新没有保存到本地缓存。', { detail: localCacheFailureDetail('论坛帖子更新', error) });
+            ctx.setFeedback('论坛帖子更新没有保存到本地缓存。');
+        }
     }
     function localConversationForTarget(target) {
         if (!target) return null;
@@ -1339,25 +1404,41 @@ export function createCommunityPage(ctx) {
         const source = localSummarySource(conversation, summaryId);
         if (!source.messages.length) { if (!automatic) ctx.setFeedback('当前没有可整理的群聊或帖子消息。'); return; }
         ctx.localSummaryBusy = true;
-        const retryLimit = automatic ? ctx.chatSummarySettings().retryLimit : 0;
+        const activity = ctx.operationActivity.start('本地对话总结', automatic ? '正在自动整理本地群聊或帖子记录。' : '正在总结本地群聊或帖子记录。');
+        // 与私聊手动总结语义一致：手动触发同样按设置的 retryLimit 重试。
+        const retryLimit = ctx.chatSummarySettings().retryLimit;
+        const attemptDetails = [];
         let result = null;
         for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
+            let bridgeError = null;
             try { result = await ctx.actionBridge.generateLocalGroupForumSummary({ target, messages: source.messages }); }
-            catch { result = { ok: false }; }
+            catch (error) { bridgeError = error; result = { ok: false }; }
             if (result?.ok && result.summary) break;
+            const attemptDetail = communityFailureDetail('本地对话总结', result, bridgeError);
+            if (attemptDetail) attemptDetails.push(attemptDetail);
         }
+        const failureDetail = () => (attemptDetails.length > 1
+            ? attemptDetails.map((text, index) => `第 ${index + 1} 次尝试\n${text}`).join('\n\n')
+            : (attemptDetails[0] ?? null));
         try {
             if (result?.ok && result.summary) {
                 await ctx.groupForumStore.saveConversationSummary({ target: { kind: target.kind, id: target.id }, summaryId, startFloor: source.startFloor, endFloor: source.endFloor, content: result.summary });
                 await syncGroupForumSnapshot({ rerender: false });
+                ctx.operationActivity.succeed(activity, '本地对话总结已保存。');
                 if (!automatic) ctx.setFeedback('本地聊天总结已保存。');
             } else {
                 const message = result?.message || '本次总结未完成，请稍后重试。';
                 await ctx.groupForumStore.failConversationSummary({ target: { kind: target.kind, id: target.id }, startFloor: source.startFloor, endFloor: source.endFloor, message });
                 await syncGroupForumSnapshot({ rerender: false });
+                ctx.operationActivity.fail(activity, '本地对话总结未完成。', { detail: failureDetail() });
                 if (!automatic) ctx.setFeedback(message);
             }
-        } catch { if (!automatic) ctx.setFeedback('本地聊天总结没有保存。'); }
+        } catch (error) {
+            const writeDetail = localCacheFailureDetail('本地对话总结', error);
+            const combined = [failureDetail(), writeDetail].filter(Boolean).join('\n\n') || null;
+            ctx.operationActivity.fail(activity, '本地对话总结没有保存到本地缓存。', { detail: combined });
+            if (!automatic) ctx.setFeedback('本地聊天总结没有保存。');
+        }
         finally {
             ctx.localSummaryBusy = false;
             if (!ctx.isDestroyed && ctx.open && ((target.kind === 'group' && ctx.activeGroupCacheKey === target.id) || (target.kind === 'post' && ctx.activeForumPostId === target.id) || ctx.activePage === 'settings_chat_summary_history')) ctx.renderPage();

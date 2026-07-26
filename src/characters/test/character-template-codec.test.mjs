@@ -200,13 +200,27 @@ test('projects all thrown errors to stable user-safe information', () => {
     try { importCharacterTemplate(template({ kind: 'embedded', dataUrl: 'data:image/png;base64,PHNjcmlwdD5zZWNyZXQ8L3NjcmlwdD4=' })); }
     catch (error) { thrown = error; }
     const projected = projectCharacterTemplateError(thrown);
-    assert.deepEqual(projected, { code: 'template_avatar_invalid', message: '头像资料不符合安全格式。' });
+    assert.deepEqual(projected, {
+        code: 'template_avatar_invalid',
+        message: '头像资料不符合安全格式。',
+        detail: '模板校验错误码: template_avatar_invalid',
+    });
     assert.equal(JSON.stringify(projected).includes('secret'), false);
     assert.equal(thrown.message.includes('secret'), false);
 
     assert.deepEqual(projectCharacterTemplateError(new Error('raw secret')), {
-        code: 'template_invalid', message: '角色模板无效。',
+        code: 'template_invalid', message: '角色模板无效。', detail: '模板校验错误码: template_invalid',
     });
+
+    // 控制台诊断增强：角色层校验失败时，detail 附带候选校验的字段路径结论（不含导入文本或数值）。
+    let characterThrown;
+    const badCharacter = template();
+    badCharacter.character = { ...badCharacter.character, 成人验证: false };
+    try { importCharacterTemplate(badCharacter); } catch (error) { characterThrown = error; }
+    const characterProjected = projectCharacterTemplateError(characterThrown);
+    assert.equal(characterProjected.code, 'template_character_invalid');
+    assert.equal(characterProjected.message, '角色资料未通过完整成年人和结构校验。');
+    assert.equal(characterProjected.detail, '模板校验错误码: template_character_invalid；字段/结论: 成人验证:not_verified');
 });
 
 test('normalizeEmbeddedAvatarDataUrl verifies signatures, enforces the size bound, and normalizes case', () => {

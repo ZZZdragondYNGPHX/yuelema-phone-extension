@@ -8,16 +8,18 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 14;
+export const SETTINGS_SCHEMA_VERSION = 15;
 // v12 rewrote the stock built-in prompt preset copy (阶段 55 内容尺度调整)，
 // v13 enriched the NSFW stock copy with concrete erotic-writing guidance,
 // v14 renamed the「语音匹配」stock presets to「描述匹配」(display name and
 // prompt copy only; the persisted builtin_voice_match_* IDs and every user
-// binding that references them stay unchanged, so no binding remap is needed).
-// A stored v11–v13 document therefore upgrades in place: stock builtin_*
+// binding that references them stay unchanged, so no binding remap is needed),
+// v15 upgraded the SFW stock copy to dating-app-quality writing guidance
+// (NSFW stock copy stays byte-identical; all preset IDs and bindings keep).
+// A stored v11–v14 document therefore upgrades in place: stock builtin_*
 // prompt presets are refreshed to the current copy, user-created presets are
 // kept verbatim. Versions before 11 stay rejected, matching the v11 cleanup.
-const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13]);
+const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14]);
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -209,8 +211,9 @@ function cleanContentMode(value) {
 
 
 /**
- * v11–v13 documents keep stock prompt-preset IDs whose source copy changed in
- * a later schema (v12 尺度调整、v13 NSFW 写作指导、v14 语音匹配→描述匹配 改名).
+ * v11–v14 documents keep stock prompt-preset IDs whose source copy changed in
+ * a later schema (v12 尺度调整、v13 NSFW 写作指导、v14 语音匹配→描述匹配 改名、
+ * v15 SFW 文案全量质量升级).
  * Refresh only those stock IDs once during the schema upgrade; user-created
  * prompt IDs (and stock presets the user deleted) remain untouched.
  */
@@ -631,8 +634,8 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         } catch {
             fail('INVALID_IMPORT_JSON', '设置 JSON 无法解析。');
         }
-        // Persist only a normalized current v14 document; an upgradeable
-        // v11–v13 document is migrated (stock prompt copy refreshed) inside
+        // Persist only a normalized current v15 document; an upgradeable
+        // v11–v14 document is migrated (stock prompt copy refreshed) inside
         // normalize.
         return persist(parsed);
     }

@@ -6,6 +6,10 @@
 // 分数与同频理由只做展示：数据仅来自 action-bridge 返回值与公开资料投影，绝不请求或渲染非公开字段。
 import { append, element, listen } from '../dom.js';
 import { describeActionFailure } from '../ui-model.js';
+import {
+    RECOMMENDATION_DIAGNOSTIC_SCOPES,
+    formatRecommendationFailureDetail,
+} from '../recommendation/recommendation-diagnostics.js';
 import { createButton } from '../ui/button.js';
 import { createEmptyState } from '../ui/empty-state.js';
 import { createListRow } from '../ui/list-row.js';
@@ -16,6 +20,17 @@ import { HEART_PATH, createRomanceHearts } from '../ui/romance-hearts.js';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const SERVICE_BANNER_STORAGE_KEY = 'yuelema.match-service-banner-dismissed/v1';
 const MATCH_PROGRESS_CAPTIONS = Object.freeze(['正在感应频率…', '正在比对公开关键词…', '正在等待对方回应…']);
+
+/**
+ * 匹配失败的控制台 detail：优先消费服务层寄存的诊断（两阶段各自的 HTTP/
+ * 解析/校验失败、本地物化失败等），退化时仅凭结果码组装；界面文案不变。
+ */
+function candidateMatchFailureDetail({ result, error, operation, stage }) {
+    return formatRecommendationFailureDetail({
+        scope: RECOMMENDATION_DIAGNOSTIC_SCOPES.candidateMatch,
+        result, error, operation, stage,
+    });
+}
 const SCORE_RING_RADIUS = 30;
 const SCORE_RING_CIRCUMFERENCE = 2 * Math.PI * SCORE_RING_RADIUS;
 
@@ -382,8 +397,9 @@ export function createMatchPage(ctx) {
         matchPendingMode = mode;
         ctx.renderPage();
         let result;
+        let caughtError = null;
         try { result = await ctx.actionBridge.runCandidateMatch(mode, { voiceText: ctx.voiceMatchText }); }
-        catch { result = { ok: false }; }
+        catch (error) { caughtError = error; result = { ok: false }; }
         matchPendingMode = '';
         if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) {
             ctx.operationActivity.dismiss(activityHandle, '提示已关闭，结果未展示。');
@@ -391,7 +407,9 @@ export function createMatchPage(ctx) {
         }
         if (!result?.ok) {
             const message = safeMatchNarrative(result?.message || describeActionFailure(result), modeLabel + '未生成可用结果，请稍后再试。');
-            ctx.operationActivity.fail(activityHandle, modeLabel + '未完成，请稍后再试。');
+            ctx.operationActivity.fail(activityHandle, modeLabel + '未完成，请稍后再试。', {
+                detail: candidateMatchFailureDetail({ result, error: caughtError, operation: modeLabel, stage: '候选匹配生成' }),
+            });
             matchResult = { outcome: 'failure', mode, score: null, reasons: [], profile: null, npcUid: '', sessionUid: '', message };
             if (ctx.activePage === pageAtStart) ctx.renderPage();
             return;
@@ -399,7 +417,11 @@ export function createMatchPage(ctx) {
         const score = Number.isFinite(result.matchScore) ? Math.round(result.matchScore) : null;
         if (result.matchOutcome === 'declined') {
             ctx.refreshState();
-            ctx.operationActivity.fail(activityHandle, modeLabel + '未匹配成功。');
+            ctx.operationActivity.fail(activityHandle, modeLabel + '未匹配成功。', {
+                detail: candidateMatchFailureDetail({
+                    result: { code: 'match_declined' }, operation: modeLabel, stage: '本地评估',
+                }),
+            });
             matchResult = {
                 outcome: 'declined', mode, score, reasons: [], profile: null, npcUid: '', sessionUid: '',
                 message: safeMatchNarrative(result.explanation, '这次没有对上互动频率，对方婉拒了。先把心意留在这里，稍后再试试。'),
@@ -411,7 +433,13 @@ export function createMatchPage(ctx) {
             || (!result.matchOutcome && Boolean(result.npcUid && result.sessionUid));
         if (!accepted || !result.npcUid || !result.sessionUid) {
             ctx.refreshState();
-            ctx.operationActivity.fail(activityHandle, modeLabel + '结果缺少可用会话。');
+            ctx.operationActivity.fail(activityHandle, modeLabel + '结果缺少可用会话。', {
+                detail: candidateMatchFailureDetail({
+                    result, operation: modeLabel, stage: '结果落地',
+                }) ?? candidateMatchFailureDetail({
+                    result: { code: 'match_result_incomplete' }, operation: modeLabel, stage: '结果落地',
+                }),
+            });
             matchResult = { outcome: 'failure', mode, score: null, reasons: [], profile: null, npcUid: '', sessionUid: '', message: '匹配结果缺少可用会话，本次没有进入消息。' };
             if (ctx.activePage === pageAtStart) ctx.renderPage();
             return;

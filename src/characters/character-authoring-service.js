@@ -180,26 +180,61 @@ function parseCandidateJson(raw) {
     }
 }
 
-function invalidResult(errors, key) {
-    return { ok: false, code: `character_authoring_${key}`, message: errors[key] };
+function invalidResult(errors, key, detail = '') {
+    // 2026-07-27 控制台诊断增强：detail 仅在非空时附加；界面 message 保持原有粗略文案。
+    // detail 只允许错误码、字段名/路径与校验结论——绝不包含 API Key、隐藏资料层字段值、
+    // 关系分或阈值数值，也不包含整段提示词或请求体。
+    const result = { ok: false, code: `character_authoring_${key}`, message: errors[key] };
+    if (typeof detail === 'string' && detail) result.detail = detail;
+    return result;
 }
 
 function normalizeContentMode(value) {
     return value === 'NSFW' ? 'NSFW' : 'SFW';
 }
 
+// candidate.js 的成年相关稳定错误码（仅字段路径 + 结论，不含任何数值）。
+const ADULT_VALIDATION_CODE_PATTERN = /^(?:成人验证:|公开资料\.年龄段:underage$|隐藏资料\.实际年龄:)/u;
+
+/** 把候选校验 TypeError 的稳定错误码翻译成不含隐藏值的诊断结论。 */
+function candidateValidationDetail(error) {
+    const code = typeof error?.code === 'string' && error.code ? error.code : 'invalid_input';
+    if (ADULT_VALIDATION_CODE_PATTERN.test(code)) {
+        return `成年人校验未通过：字段 ${code.split(':')[0]}`;
+    }
+    return `模型输出结构校验未通过：${code}`;
+}
+
+/**
+ * 汇总共享 LLM 客户端异常的可诊断字段；客户端未提供的字段一律优雅降级省略。
+ * 硬线：UNKNOWN_ERROR（非客户端投影的原始异常）不产生任何 detail——原始 message
+ * 可能包含 Key 或响应原文，永远不进入诊断详情；此时返回空串。
+ */
+function llmFailureDetail(error, publicError) {
+    if (!publicError?.code || publicError.code === 'UNKNOWN_ERROR') return '';
+    const lines = [];
+    if (typeof error?.name === 'string' && error.name) lines.push(`错误类型: ${error.name}`);
+    lines.push(`错误码: ${publicError.code}`);
+    if (Number.isInteger(publicError.status)) lines.push(`HTTP 状态: ${publicError.status}`);
+    if (typeof publicError.message === 'string' && publicError.message) lines.push(`错误信息: ${publicError.message.slice(0, 200)}`);
+    const excerpt = typeof error?.bodyExcerpt === 'string' ? error.bodyExcerpt.trim() : '';
+    if (excerpt) lines.push(`响应摘录: ${excerpt.slice(0, 200)}`);
+    if (publicError.retryable) lines.push('提示: 该错误可稍后重试');
+    return lines.join('\n');
+}
+
 async function generateCandidate({ errors, context, contentMode, settingsStore, llmClient, signal, makeMessages, functionKey }) {
-    if (!context) return invalidResult(errors, 'input_invalid');
-    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return invalidResult(errors, 'settings_unavailable');
-    if (!llmClient || typeof llmClient.chat !== 'function') return invalidResult(errors, 'llm_unavailable');
+    if (!context) return invalidResult(errors, 'input_invalid', '输入校验未通过：创作/补全说明为空、超长（>1200 字符）、含控制字符或 HTML，或公开上下文结构无效');
+    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return invalidResult(errors, 'settings_unavailable', '设置存储不可用（settingsStore.resolveFunction 缺失）');
+    if (!llmClient || typeof llmClient.chat !== 'function') return invalidResult(errors, 'llm_unavailable', '宿主未注入模型客户端（llmClient.chat 缺失）');
 
     let resolved;
     try {
         resolved = settingsStore.resolveFunction(functionKey, { contentMode: normalizeContentMode(contentMode) });
-    } catch {
-        return invalidResult(errors, 'settings_invalid');
+    } catch (error) {
+        return invalidResult(errors, 'settings_invalid', `解析功能绑定「${functionKey}」时出错${typeof error?.message === 'string' && error.message ? `：${error.message.slice(0, 160)}` : ''}`);
     }
-    if (!resolved?.connectionPreset) return invalidResult(errors, 'connection_missing');
+    if (!resolved?.connectionPreset) return invalidResult(errors, 'connection_missing', `功能「${functionKey}」在 ${normalizeContentMode(contentMode)} 模式下未绑定连接预设，也没有可用的默认连接`);
 
     try {
         const completion = await llmClient.chat({
@@ -208,15 +243,24 @@ async function generateCandidate({ errors, context, contentMode, settingsStore, 
             signal,
         });
         const parsed = parseCandidateJson(completion?.text);
-        if (!parsed) return invalidResult(errors, 'invalid_json');
-        const candidate = normalizeGeneratedCandidate(parsed, { contentMode: normalizeContentMode(contentMode) });
+        if (!parsed) {
+            const length = typeof completion?.text === 'string' ? completion.text.length : 0;
+            return invalidResult(errors, 'invalid_json', `模型输出不是单个有效 JSON 对象（本次输出 ${length} 字符；要求 2–${MAX_MODEL_RESPONSE_CHARS} 字符，可带 json 代码围栏）`);
+        }
+        // enforceRhythmConsistency：AI 补全/完整创作/约伴服务生成的都是新角色，
+        // 必须满足生成阈值合理性约束（拉黑 ≥60 且高于已读不回）；手动登记与模板
+        // 导入不走这里，存量数据不受影响。
+        const candidate = normalizeGeneratedCandidate(parsed, { contentMode: normalizeContentMode(contentMode), enforceRhythmConsistency: true });
         // Generated or supplied avatar references must never be adopted by an AI draft.
         candidate.公开资料.头像引用 = '';
         return { ok: true, candidate };
     } catch (error) {
-        if (error instanceof TypeError && typeof error.code === 'string') return invalidResult(errors, 'response_invalid');
+        if (error instanceof TypeError && typeof error.code === 'string') return invalidResult(errors, 'response_invalid', candidateValidationDetail(error));
         const publicError = toPublicLlmError(error);
-        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
+        const failure = { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
+        const detail = llmFailureDetail(error, publicError);
+        if (detail) failure.detail = detail;
+        return failure;
     }
 }
 

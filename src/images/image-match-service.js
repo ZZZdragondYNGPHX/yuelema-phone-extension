@@ -59,6 +59,7 @@ export async function requestImageMatchKeywordWeights({
     imageRecords,
     llmClient,
     connectionPreset,
+    promptPreset = null,
     signal,
     maxTokens = DEFAULT_MAX_TOKENS,
 } = {}) {
@@ -81,8 +82,15 @@ export async function requestImageMatchKeywordWeights({
         return Object.freeze({ ok: false, code: 'image_match_request_invalid', keywordWeights: null });
     }
 
+    // A prompt preset only steers subject matter. A malformed or secret-bearing
+    // record degrades to the presetless prompt instead of failing the match.
+    const safePromptPreset = promptPreset && typeof promptPreset === 'object'
+        && !Array.isArray(promptPreset) && !containsSecretField(promptPreset)
+        ? promptPreset
+        : null;
+
     try {
-        const prompt = buildImageMatchPrompt(base.profile, base.allowedKeywords);
+        const prompt = buildImageMatchPrompt(base.profile, base.allowedKeywords, safePromptPreset);
         const completion = await llmClient.chat({
             preset: connectionPreset,
             messages: prompt.messages,
@@ -107,6 +115,7 @@ export async function matchImageForPublicProfile({
     imageRecords,
     llmClient = null,
     connectionPreset = null,
+    promptPreset = null,
     signal,
     maxTokens = DEFAULT_MAX_TOKENS,
 } = {}) {
@@ -139,6 +148,7 @@ export async function matchImageForPublicProfile({
         imageRecords: base.images,
         llmClient,
         connectionPreset,
+        promptPreset,
         signal,
         maxTokens,
     });

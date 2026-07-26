@@ -43,7 +43,7 @@ function completeAdultCandidate() {
             NPC专属匹配度: 72,
             好感: 0,
             信任: 0,
-            戒备: 20,
+            戒备: 10,
             面基意愿: 0,
             友情值: 0,
             心动值: 0,
@@ -205,6 +205,87 @@ test('generation contract requires all three bond fields with zero defaults', ()
     const contract = COMPLETE_CANDIDATE_OUTPUT_CONTRACT.join('\n');
     assert.match(contract, /友情值、心动值、欲望值/u);
     assert.match(contract, /必须填写为 0/u);
+});
+
+test('generation contract states persona-derived threshold semantics and the hard block-threshold rules', () => {
+    const contract = COMPLETE_CANDIDATE_OUTPUT_CONTRACT.join('\n');
+    assert.match(contract, /性格标签、沟通风格与戒备心推导/u);
+    assert.match(contract, /彻底断联的心理底线/u);
+    assert.match(contract, /拉黑阈值不得低于 60/u);
+    assert.match(contract, /必须大于已读不回阈值/u);
+});
+
+test('freshly generated candidates enforce rhythm-threshold sanity while legacy paths keep the plain range', () => {
+    // requirePersonalName 标记“新 AI 生成”路径，默认启用阈值合理性约束。
+    const lowBlock = completeAdultCandidate();
+    lowBlock.已读不回阈值 = 20;
+    lowBlock.拉黑阈值 = 45;
+    assert.throws(
+        () => normalizeGeneratedCandidate(lowBlock, { requirePersonalName: true }),
+        error => error instanceof TypeError && error.code === '拉黑阈值:generated_below_minimum',
+    );
+    // 无标记（手动登记、模板导入、服务订单等存量路径）保持 0–100 宽范围。
+    assert.equal(normalizeGeneratedCandidate(lowBlock).拉黑阈值, 45);
+
+    const inverted = completeAdultCandidate();
+    inverted.已读不回阈值 = 80;
+    inverted.拉黑阈值 = 70;
+    assert.throws(
+        () => normalizeGeneratedCandidate(inverted, { enforceRhythmConsistency: true }),
+        error => error instanceof TypeError && error.code === '拉黑阈值:generated_not_above_read_without_reply',
+    );
+    assert.equal(normalizeGeneratedCandidate(inverted).拉黑阈值, 70);
+
+    const equalThresholds = completeAdultCandidate();
+    equalThresholds.已读不回阈值 = 60;
+    equalThresholds.拉黑阈值 = 60;
+    assert.throws(
+        () => normalizeGeneratedCandidate(equalThresholds, { enforceRhythmConsistency: true }),
+        error => error instanceof TypeError && error.code === '拉黑阈值:generated_not_above_read_without_reply',
+    );
+
+    // 显式关闭优先于 requirePersonalName 推导的默认值。
+    assert.equal(
+        normalizeGeneratedCandidate(inverted, { requirePersonalName: true, enforceRhythmConsistency: false }).拉黑阈值,
+        70,
+    );
+
+    // 合规组合在启用约束时原样通过。
+    const compliant = completeAdultCandidate();
+    assert.equal(normalizeGeneratedCandidate(compliant, { requirePersonalName: true }).拉黑阈值, 90);
+});
+
+test('freshly generated candidates enforce the guard cap and the opening-pressure margin; legacy paths stay unrestricted', () => {
+    // 开局压力公式与 src/chat/interaction-rhythm.js 的 computeInteractionPressure
+    // 一致（陌生基线 30）：pressure = 戒备 + max(0, 30-好感)/2 + max(0, 30-信任)/2。
+    // 初始戒备 41 超过上限 40。
+    const highGuard = completeAdultCandidate();
+    highGuard.与玩家关系.戒备 = 41;
+    highGuard.已读不回阈值 = 88;
+    assert.throws(
+        () => normalizeGeneratedCandidate(highGuard, { requirePersonalName: true }),
+        error => error instanceof TypeError && error.code === '戒备:generated_above_maximum',
+    );
+    // 无标记的存量路径（手动登记、模板导入、服务订单）不受限。
+    assert.equal(normalizeGeneratedCandidate(highGuard).与玩家关系.戒备, 41);
+
+    // 戒备 30、好感/信任 0 → 开局压力 60，需要已读不回阈值 ≥ 75；70 边际不足。
+    const thinMargin = completeAdultCandidate();
+    thinMargin.与玩家关系.戒备 = 30;
+    thinMargin.已读不回阈值 = 70;
+    assert.throws(
+        () => normalizeGeneratedCandidate(thinMargin, { enforceRhythmConsistency: true }),
+        error => error instanceof TypeError && error.code === '已读不回阈值:generated_below_opening_pressure',
+    );
+    assert.equal(normalizeGeneratedCandidate(thinMargin).已读不回阈值, 70);
+
+    // 恰好满足 pressure + 15 的组合在启用约束时通过。
+    const exactMargin = completeAdultCandidate();
+    exactMargin.与玩家关系.戒备 = 30;
+    exactMargin.已读不回阈值 = 75;
+    const normalized = normalizeGeneratedCandidate(exactMargin, { requirePersonalName: true });
+    assert.equal(normalized.已读不回阈值, 75);
+    assert.equal(normalized.与玩家关系.戒备, 30);
 });
 
 test('legacy seven-key relationship input is upgraded with zeroed bond fields', () => {

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPrivateChatContext, generatePrivateChatReply, generatePrivateChatSummary } from '../private-chat-service.js';
+import { YueLeMaLlmError } from '../../llm/openai-compatible-client.js';
+import { buildPrivateChatContext, consumePrivateChatDiagnostics, generatePrivateChatReply, generatePrivateChatSummary } from '../private-chat-service.js';
 import { buildPrivateChatPatch, validateControlledPatchAgainstState } from '../../mvu/controlled-patch.js';
 
 function state() {
@@ -227,3 +228,99 @@ test('private chat patch rejects unsafe or stale operations before parse', () =>
     assert.equal(buildPrivateChatPatch(stale, { sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', response: response() }).ok, false);
 });
 
+
+// —— 阶段 77：安全控制台诊断带出通道 ——
+
+test('llm transport failures leave a consumable diagnostic with stage, code and HTTP status', async () => {
+    consumePrivateChatDiagnostics('private_chat', 'chat_1');
+    const result = await generatePrivateChatReply({
+        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', settingsStore: settingsStore(),
+        llmClient: { async chat() { throw new YueLeMaLlmError('SERVER_ERROR', '模型服务暂时不可用，请稍后重试。', { status: 502, retryable: true }); } },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'SERVER_ERROR');
+    const records = consumePrivateChatDiagnostics('private_chat', 'chat_1');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].stage, '模型请求');
+    assert.equal(records[0].code, 'SERVER_ERROR');
+    assert.equal(records[0].error.status, 502);
+    assert.equal(records[0].error.name, 'YueLeMaLlmError');
+    // 消费即清空
+    assert.equal(consumePrivateChatDiagnostics('private_chat', 'chat_1').length, 0);
+});
+
+test('relationship delta violations report only the field name and range, never the model value', async () => {
+    consumePrivateChatDiagnostics('private_chat', 'chat_1');
+    const result = await generatePrivateChatReply({
+        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', settingsStore: settingsStore(),
+        llmClient: { async chat() { return { text: JSON.stringify({ ...response(), relationship: { 好感: 97, 信任: 1, 戒备: 0, 面基意愿: 0 } }) }; } },
+    });
+    assert.equal(result.code, 'private_chat_response_relationship_invalid');
+    const records = consumePrivateChatDiagnostics('private_chat', 'chat_1');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].stage, '响应校验');
+    assert.equal(records[0].field, 'relationship.好感');
+    assert.match(records[0].expected, /-10\.\.10/u);
+    // 硬线：模型给的越界增量数值绝不进入诊断记录
+    assert.doesNotMatch(JSON.stringify(records), /97/u);
+    // 超长错误码按空格分词呈现，避免控制台脱敏器把它当作凭据 token
+    assert.equal(records[0].code, 'private chat response relationship invalid');
+});
+
+test('bondAssessment whitelist violations name the field and allowed kinds without conversation text', async () => {
+    consumePrivateChatDiagnostics('private_chat', 'chat_1');
+    const sfwState = state();
+    sfwState.软件.内容模式 = 'SFW';
+    const result = await generatePrivateChatReply({
+        state: sfwState, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', settingsStore: settingsStore(),
+        llmClient: { async chat() { return { text: JSON.stringify({ ...response(), bondAssessment: { kind: 'sexual_desire', intensity: 2 } }) }; } },
+    });
+    assert.equal(result.code, 'private_chat_response_relationship_invalid');
+    const records = consumePrivateChatDiagnostics('private_chat', 'chat_1');
+    assert.equal(records[0].field, 'bondAssessment.kind');
+    assert.match(records[0].expected, /SFW 白名单/u);
+    assert.equal(records[0].actual, 'sexual_desire');
+    assert.doesNotMatch(JSON.stringify(records), /晚上好/u);
+});
+
+test('unparsable model output records only response length, never the raw text', async () => {
+    consumePrivateChatDiagnostics('private_chat', 'chat_1');
+    const result = await generatePrivateChatReply({
+        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', settingsStore: settingsStore(),
+        llmClient: { async chat() { return { text: 'MODEL_RAW_LEAK not json' }; } },
+    });
+    assert.equal(result.code, 'private_chat_invalid_json');
+    const records = consumePrivateChatDiagnostics('private_chat', 'chat_1');
+    assert.equal(records[0].stage, '响应解析');
+    assert.match(records[0].actual, /响应长度 \d+ 字符/u);
+    assert.doesNotMatch(JSON.stringify(records), /MODEL_RAW_LEAK/u);
+});
+
+test('missing chat connection preset leaves a connection-stage diagnostic', async () => {
+    consumePrivateChatDiagnostics('private_chat', 'chat_1');
+    const result = await generatePrivateChatReply({
+        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好',
+        settingsStore: { resolveFunction() { return { connectionPreset: null, promptPreset: null }; } },
+        llmClient: { async chat() { throw new Error('must not be called'); } },
+    });
+    assert.equal(result.code, 'private_chat_connection_missing');
+    const records = consumePrivateChatDiagnostics('private_chat', 'chat_1');
+    assert.equal(records[0].stage, '连接检查');
+    assert.equal(records[0].code, 'private_chat_connection_missing');
+});
+
+test('summary retries accumulate one diagnostic per attempt under the chat_summary scope', async () => {
+    consumePrivateChatDiagnostics('chat_summary', 'chat_1');
+    const runFailing = () => generatePrivateChatSummary({
+        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', settingsStore: summarySettingsStore(),
+        llmClient: { async chat() { throw new YueLeMaLlmError('TIMEOUT', '模型请求超时，请稍后重试。', { retryable: true }); } },
+    });
+    await runFailing();
+    await runFailing();
+    const records = consumePrivateChatDiagnostics('chat_summary', 'chat_1');
+    assert.equal(records.length, 2);
+    assert.equal(records[0].code, 'TIMEOUT');
+    assert.equal(records[1].stage, '模型请求');
+    // 私聊与总结两个作用域互不串扰
+    assert.equal(consumePrivateChatDiagnostics('private_chat', 'chat_1').length, 0);
+});

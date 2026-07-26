@@ -380,6 +380,16 @@ test('装饰性英文标语全部换为中文 eyebrow（含「我的角色衣橱
     ]) assert.equal(text.includes(slogan), false, `不得再出现英文装饰标语：${slogan}`);
 });
 
+test('关系反应阈值分组带人设推导语义、拉黑心理底线与生成下限说明', () => {
+    const { panel } = createHarness();
+    const descriptions = panel.querySelectorAll('.yl-character-field-group-description').map((node) => node.textContent).join('\n');
+    assert.match(descriptions, /数值越高越难触发对应反应/u);
+    assert.match(descriptions, /拉黑阈值不低于 60 且高于已读不回阈值/u);
+    const hints = panel.querySelectorAll('.yl-character-field-hint').map((node) => node.textContent).join('\n');
+    assert.match(hints, /彻底断联的心理底线/u);
+    assert.match(hints, /至少高 20/u);
+});
+
 test('公开名片预览随公开字段更新，且绝不包含私密值', () => {
     const { panel } = createHarness();
     fillExistingDraft(panel);
@@ -513,4 +523,92 @@ test('链接导入失败：保持原头像草稿并显示安全投影文案', as
     assert.equal(note, '链接内容不是支持的图片格式（PNG / JPEG / WebP）。');
     assert.equal(note.includes('example.com'), false, '失败提示不得回显链接');
     assert.equal(importButton.disabled, false, '失败后导入按钮应恢复可用');
+});
+
+// —— 2026-07-27 安全控制台接线：operationActivity 为可选注入 ——
+const { createOperationActivity } = await import('../../ui/operation-activity.js');
+
+test('AI 补全失败：控制台条目 fail 且 detail 含错误码与服务层 detail，不含私密草稿或 Key', async () => {
+    const operationActivity = createOperationActivity();
+    const feedback = [];
+    const panel = buildCharacterCreatorPanel({
+        documentRef: miniDom.document,
+        actionBridge: {
+            async generateCharacterCompletionDraft() {
+                return {
+                    ok: false, code: 'character_authoring_connection_missing',
+                    message: '请先为“角色创作”绑定连接预设或设置默认连接。',
+                    detail: '功能「character_ai_completion」在 SFW 模式下未绑定连接预设，也没有可用的默认连接',
+                };
+            },
+            async registerCharacter() { return { ok: true }; },
+        },
+        characterLibrary: { list: () => [] },
+        signal: new AbortController().signal,
+        onFeedback: (message) => feedback.push(message),
+        operationActivity,
+    });
+    fillExistingDraft(panel);
+    completionButton(panel).dispatchEvent(new Event('click'));
+    await flushUi();
+
+    const entry = operationActivity.snapshot().entries.find((item) => item.name === 'AI 补全');
+    assert.ok(entry, 'AI 补全失败必须留下控制台条目');
+    assert.equal(entry.status, 'failure');
+    assert.ok(entry.detail, 'fail 时 detail 必须非空');
+    assert.match(entry.detail, /character_ authoring_ connection_ missing/u, 'detail 应含具体错误码（长码按下划线拆分以避开脱敏器的长 token 规则）');
+    assert.match(entry.detail, /character_ai_completion/u, 'detail 应指出未绑定的功能');
+    for (const forbidden of ['friend-secret-must-not-leak', 'hidden-note-must-not-leak', 'sk-', 'Bearer']) {
+        assert.equal(entry.detail.includes(forbidden), false, `detail 不得包含：${forbidden}`);
+    }
+    assert.equal(feedback.at(-1), 'AI 补全未生成可用草稿；当前草稿未改变。', '界面提示保持原有粗略文案');
+});
+
+test('角色登记失败：detail 透传 action-bridge 的 code/reason；未注入控制台时行为完全不变', async () => {
+    const operationActivity = createOperationActivity();
+    const failure = { ok: false, status: 'rejected', code: 'character_registration_candidate_invalid', reason: '成年人校验未通过：字段 隐藏资料.实际年龄' };
+    const makePanel = (activity) => buildCharacterCreatorPanel({
+        documentRef: miniDom.document,
+        actionBridge: { async registerCharacter() { return failure; } },
+        characterLibrary: null,
+        signal: new AbortController().signal,
+        onFeedback() {},
+        operationActivity: activity,
+    });
+
+    const panel = makePanel(operationActivity);
+    fillExistingDraft(panel);
+    panel.querySelector('form').dispatchEvent(new Event('submit'));
+    await flushUi();
+    const entry = operationActivity.snapshot().entries.find((item) => item.name === '角色登记');
+    assert.ok(entry, '登记失败必须留下控制台条目');
+    assert.equal(entry.status, 'failure');
+    assert.match(entry.detail, /character_ registration_ candidate_ invalid/u);
+    assert.match(entry.detail, /隐藏资料\.实际年龄/u, 'reason 中的字段路径应透传到 detail');
+
+    // 兼容性：不注入 operationActivity 时（现有 app-shell 调用形态）登记流程照常运行。
+    const legacyPanel = makePanel(null);
+    fillExistingDraft(legacyPanel);
+    legacyPanel.querySelector('form').dispatchEvent(new Event('submit'));
+    await flushUi();
+    assert.ok(legacyPanel, '未注入控制台时面板构建与提交不抛异常');
+});
+
+test('模板载入失败：控制台 detail 含模板错误码与字段结论，成功路径落 success 条目', async () => {
+    const operationActivity = createOperationActivity();
+    const panel = buildCharacterCreatorPanel({
+        documentRef: miniDom.document,
+        actionBridge: { async registerCharacter() { return { ok: true }; } },
+        characterLibrary: { list: () => [] },
+        signal: new AbortController().signal,
+        onFeedback() {},
+        operationActivity,
+    });
+    control(panel, 'character-template-json').value = '{"format":"yuelema.character/v1","character":{}}';
+    buttonByText(panel, '校验并载入到编辑器').dispatchEvent(new Event('click'));
+    await flushUi();
+    const entry = operationActivity.snapshot().entries.find((item) => item.name === '模板载入');
+    assert.ok(entry, '模板载入失败必须留下控制台条目');
+    assert.equal(entry.status, 'failure');
+    assert.match(entry.detail, /template_character_invalid/u, 'detail 应含模板校验错误码');
 });

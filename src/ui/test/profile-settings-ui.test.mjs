@@ -371,3 +371,48 @@ test('「偏好」设置页承载浏览器本地布局切换且不进 MVU', () =
         mounted.destroy();
     }
 });
+
+// —— 2026-07-27 安全控制台接线断言：说明文案 + 收藏主动私聊失败详情 ——
+test('控制台说明句改为「脱敏后可展开查看」，收藏私聊失败在控制台留下含错误码的脱敏 detail', async () => {
+    const favoriteRead = () => {
+        const result = readyReadResult();
+        result.state.推荐.收藏角色UID = ['npc_1'];
+        return result;
+    };
+    const mounted = mount('yl-root-console-detail', {
+        readState: favoriteRead,
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async runMvuAction() {
+                return { ok: false, status: 'rejected', code: 'npc_adult_verification_failed', reason: '成年人校验未通过：字段 成人验证' };
+            },
+        },
+    });
+    try {
+        openProfile();
+        click(buttonByPage('favorites'));
+        const start = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发起私聊');
+        assert.ok(start, '收藏卡应有发起私聊按钮');
+        click(start);
+        for (let index = 0; index < 6; index += 1) await new Promise((resolve) => setImmediate(resolve));
+
+        click(navButton('profile'));
+        click(buttonByPage('settings_console'));
+        const consoleText = miniDom.document.querySelector('.yl-operation-console').textContent;
+        assert.match(consoleText, /失败详情经脱敏后可在条目内展开查看/u, '控制台说明句应如实描述脱敏详情能力');
+        assert.match(consoleText, /密钥与隐私数值永不显示/u);
+        assert.doesNotMatch(consoleText, /不显示密钥、内部标识、补丁或原始模型内容/u, '旧的说明句应被替换');
+
+        const entryCard = miniDom.document.querySelectorAll('.yl-operation-console-entry').find((node) => node.textContent.includes('收藏主动私聊'));
+        assert.ok(entryCard, '收藏私聊失败应留下控制台条目');
+        assert.equal(entryCard.dataset.status, 'failure');
+        const toggle = entryCard.querySelector('.yl-operation-console-detail-toggle');
+        assert.ok(toggle, '失败条目应提供详情展开控件');
+        const detailBlock = entryCard.querySelector('.yl-operation-console-detail');
+        assert.match(detailBlock.textContent, /npc_adult_verification_failed/u, 'detail 应含具体错误码');
+        assert.match(detailBlock.textContent, /成年人校验未通过：字段 成人验证/u, 'detail 应透传受控管线 reason');
+        assert.doesNotMatch(detailBlock.textContent, /sk-|Bearer|阈值 \d/u, 'detail 不得包含密钥或阈值数值');
+    } finally {
+        mounted.destroy();
+    }
+});

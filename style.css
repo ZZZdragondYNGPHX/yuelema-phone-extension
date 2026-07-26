@@ -710,6 +710,46 @@
 .yl-console-entry[data-status="success"] .yl-console-status, .yl-operation-activity-card[data-status="success"] .yl-operation-activity-status, .yl-operation-console-entry[data-status="success"] .yl-operation-console-status { border-color: color-mix(in srgb, var(--yl-success) 40%, transparent); color: var(--yl-success); background: color-mix(in srgb, var(--yl-success) 12%, transparent); }
 .yl-console-entry[data-status="failure"] .yl-console-status, .yl-operation-activity-card[data-status="failure"] .yl-operation-activity-status, .yl-operation-console-entry[data-status="failure"] .yl-operation-console-status { border-color: color-mix(in srgb, var(--yl-danger) 44%, transparent); color: var(--yl-danger); background: color-mix(in srgb, var(--yl-danger) 12%, transparent); }
 .yl-console-entry time, .yl-operation-activity-card time, .yl-operation-console-entry time, .yl-operation-console-time { grid-column: 2 / -1; color: var(--yl-text-2); font-size: var(--yl-type-xs); }
+/* —— 控制台诊断详情：展开/收起 + 复制（detail 已在台账层脱敏，textContent 渲染） —— */
+.yl-operation-console-detail-controls { grid-column: 2 / -1; display: flex; align-items: center; gap: var(--yl-space-2); }
+.yl-operation-console-detail-toggle, .yl-operation-console-detail-copy {
+    padding: 3px 10px;
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-pill);
+    color: var(--yl-text-2);
+    background: var(--yl-surface-2);
+    font-size: var(--yl-type-xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.yl-operation-console-detail-toggle:hover, .yl-operation-console-detail-copy:hover {
+    color: var(--yl-text);
+    border-color: var(--yl-border-strong);
+    background: var(--yl-surface-3);
+}
+.yl-operation-console-detail-toggle[aria-expanded="true"] {
+    border-color: color-mix(in srgb, var(--yl-accent-2) 44%, transparent);
+    color: var(--yl-accent-2);
+    background: var(--yl-accent-2-soft);
+}
+.yl-operation-console-detail {
+    grid-column: 2 / -1;
+    max-height: 180px;
+    overflow: auto;
+    padding: var(--yl-space-2) var(--yl-space-3);
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-card);
+    color: var(--yl-text-2);
+    background: var(--yl-surface-2);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: var(--yl-type-xs);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    user-select: text;
+}
 /* —— 通用反馈条 / 占位 / 空态（旧组件保持在册） —— */
 .yl-phone-feedback {
     margin-top: var(--yl-space-1);
@@ -2919,6 +2959,34 @@
 .yl-hidden-feature-entry:disabled { cursor: default; opacity: .74; }
 .yl-service-unlock-entry { border-color: color-mix(in srgb, var(--yl-accent-2) 44%, transparent); color: var(--yl-accent-2); background: var(--yl-accent-2-soft); box-shadow: none; }
 .yl-about-safety-note { padding: 0 3px; }
+/* 关于页「检查并更新扩展」主操作卡：品牌渐变图标章 + accent 描边，
+   与普通目录行拉开主次；忙碌态用图标旋转与呼吸减淡表达，
+   与「更新服务不可用」的灰化禁用态区分（后者沿用 .yl-center-entry:disabled）。 */
+.yl-about-page [name="about-extension-update"] {
+    border-color: color-mix(in srgb, var(--yl-accent) 34%, transparent);
+    background: linear-gradient(135deg, var(--yl-accent-soft) 0%, var(--yl-surface) 62%);
+}
+.yl-about-page [name="about-extension-update"]:hover {
+    border-color: color-mix(in srgb, var(--yl-accent) 52%, transparent);
+    background: linear-gradient(135deg, color-mix(in srgb, var(--yl-accent) 14%, var(--yl-surface)) 0%, var(--yl-surface-2) 62%);
+}
+.yl-about-page [name="about-extension-update"] > span:first-child {
+    width: 42px;
+    height: 42px;
+    color: var(--yl-on-accent);
+    background: var(--yl-grad);
+    box-shadow: var(--yl-glow-brand);
+}
+.yl-about-page [name="about-extension-update"] strong { font-weight: 700; }
+.yl-about-page [name="about-extension-update"] span:nth-child(3) { line-height: 1.5; }
+.yl-about-page [name="about-extension-update"][aria-busy="true"] {
+    cursor: progress;
+    filter: none;
+    opacity: .86;
+}
+.yl-about-page [name="about-extension-update"][aria-busy="true"] .yl-about-entry-svg {
+    animation: yl-spin 1s linear infinite;
+}
 /* luxe 皮肤：服务台整域深色 + 金 */
 .yl-service-hub { color: var(--yl-luxe-text); }
 .yl-service-hub :is(.yl-service-card, .yl-service-hero) {

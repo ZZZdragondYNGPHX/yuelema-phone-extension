@@ -4,6 +4,10 @@
 // D2 滑卡手势本轮不做（仅保留卡片 transform 结构）、D3 撤销不做。
 import { append, element, listen } from '../dom.js';
 import { describeActionFailure } from '../ui-model.js';
+import {
+    RECOMMENDATION_DIAGNOSTIC_SCOPES,
+    formatRecommendationFailureDetail,
+} from '../recommendation/recommendation-diagnostics.js';
 import { createUiIcon } from '../ui/icon.js';
 import { createMediaState } from '../ui/media-state.js';
 import { createEmptyState } from '../ui/empty-state.js';
@@ -15,6 +19,18 @@ const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorit
 const DISCOVER_WAIT_CAPTIONS = Object.freeze(['正在为你物色下一位…', '翻看今天的新面孔…', '比对你们聊得来的话题…', '把关中：只见成年人…']);
 const DISCOVER_WAIT_SHIFT_TEXT = '还在精挑细选…这一位值得多等几秒';
 const ACTION_ICON_NAMES = Object.freeze({ like: 'action_like', refresh: 'action_next', favorite: 'action_favorite', unfavorite: 'action_favorite', start_private_chat: 'action_chat', dislike: 'action_dislike' });
+
+/**
+ * 首页推荐失败的控制台 detail：优先消费服务层寄存的诊断（HTTP 状态、
+ * 解析/校验字段等），退化时仅凭结果码与粗略 message 组装；界面 message
+ * 保持粗略友好，技术细节只进 detail。
+ */
+function recommendationFailureDetail({ result, error, stage }) {
+    return formatRecommendationFailureDetail({
+        scope: RECOMMENDATION_DIAGNOSTIC_SCOPES.recommendationRefresh,
+        result, error, operation: '首页推荐', stage,
+    });
+}
 
 export function createDiscoverPage(ctx) {
     function buildMetaBadges(candidate) {
@@ -225,12 +241,17 @@ export function createDiscoverPage(ctx) {
         const operationToken = ctx.showAiLoading('正在生成首位候选人，请稍候…');
         ctx.setFeedback('正在生成下一位候选人…', operationToken); ctx.renderPage();
         let result;
+        let caughtError = null;
         try { result = await ctx.actionBridge.runRecommendationInitialCandidate(); }
-        catch { result = { ok: false }; }
+        catch (error) { caughtError = error; result = { ok: false }; }
         ctx.refreshing = false;
         const message = result?.ok ? '已通过成年人校验，首位候选人已加入队列。' : (result?.message || describeActionFailure(result));
         if (result?.ok) ctx.operationActivity.succeed(activityHandle, '首位候选人已通过成年人校验并加入队列。');
-        else ctx.operationActivity.fail(activityHandle, '首位候选人未生成，请稍后再试。');
+        else {
+            ctx.operationActivity.fail(activityHandle, '首位候选人未生成，请稍后再试。', {
+                detail: recommendationFailureDetail({ result, error: caughtError, stage: '空池首位候选生成' }),
+            });
+        }
         ctx.setFeedback(message, operationToken);
         ctx.showAiResult(Boolean(result?.ok), message || '候选人未生成，请稍后重试。', operationToken);
         ctx.refreshState();
@@ -244,14 +265,19 @@ export function createDiscoverPage(ctx) {
         const operationToken = isRefresh ? ctx.showAiLoading('正在生成下一位候选人，请稍候…') : ctx.setFeedback('正在保存操作…');
         ctx.setFeedback(isRefresh ? '正在生成下一位候选人…' : '正在保存操作…', operationToken); ctx.renderPage();
         let result;
+        let caughtError = null;
         try {
             if (isRefresh) result = typeof ctx.actionBridge.runRecommendationRefresh === 'function' ? await ctx.actionBridge.runRecommendationRefresh(npcUid) : { ok: false, message: '刷新候选人生成功能尚未就绪。' };
             else result = await ctx.actionBridge.runMvuAction(kind, npcUid);
-        } catch { result = { ok: false }; }
+        } catch (error) { caughtError = error; result = { ok: false }; }
         if (!result?.ok) {
             ctx.refreshing = false;
             const message = result?.message || describeActionFailure(result);
-            if (refreshActivityHandle) ctx.operationActivity.fail(refreshActivityHandle, '下一位候选人未生成，请稍后再试。');
+            if (refreshActivityHandle) {
+                ctx.operationActivity.fail(refreshActivityHandle, '下一位候选人未生成，请稍后再试。', {
+                    detail: recommendationFailureDetail({ result, error: caughtError, stage: '刷新生成下一位候选' }),
+                });
+            }
             ctx.setFeedback(message, operationToken);
             if (isRefresh) ctx.showAiResult(false, message || '候选人未生成，请稍后重试。', operationToken);
             ctx.refreshState();
@@ -277,11 +303,15 @@ export function createDiscoverPage(ctx) {
         ctx.showAiLoading('正在生成下一位候选人，请稍候…', operationToken);
         ctx.setFeedback('正在生成下一位候选人…', operationToken); ctx.renderPage();
         let nextResult;
-        try { nextResult = await ctx.actionBridge.runRecommendationInitialCandidate(); } catch { nextResult = { ok: false }; }
+        let nextCaughtError = null;
+        try { nextResult = await ctx.actionBridge.runRecommendationInitialCandidate(); }
+        catch (error) { nextCaughtError = error; nextResult = { ok: false }; }
         ctx.refreshing = false;
         if (!nextResult?.ok) {
             const reason = nextResult?.message || describeActionFailure(nextResult) || '未知错误';
-            ctx.operationActivity.fail(nextActivityHandle, '下一位候选人未生成，请稍后再试。');
+            ctx.operationActivity.fail(nextActivityHandle, '下一位候选人未生成，请稍后再试。', {
+                detail: recommendationFailureDetail({ result: nextResult, error: nextCaughtError, stage: '反馈保存后生成下一位候选' }),
+            });
             const message = `${savedLabel}，但下一位候选人生成失败：${reason}`;
             ctx.setFeedback(message, operationToken);
             ctx.showAiResult(false, message, operationToken);

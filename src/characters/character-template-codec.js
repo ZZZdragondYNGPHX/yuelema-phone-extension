@@ -184,10 +184,15 @@ export function normalizeAvatarReference(input) {
 function normalizeCharacter(character) {
     try {
         return normalizeGeneratedCandidate(character);
-    } catch {
+    } catch (error) {
         // Candidate validation errors identify implementation fields. Template UI only
         // needs one stable public code and must never display imported source text.
-        fail('template_character_invalid');
+        // 2026-07-27 控制台诊断增强：把候选校验的稳定错误码（仅字段路径 + 结论，
+        // 不含任何导入文本或数值）以 detailCode 附加在模板错误上，供控制台详情使用；
+        // 面向界面的 code/message 完全不变。
+        const failure = validationError('template_character_invalid');
+        if (typeof error?.code === 'string' && error.code) failure.detailCode = error.code;
+        throw failure;
     }
 }
 
@@ -245,8 +250,11 @@ export function exportCharacterTemplate(input, { includeAvatar = true } = {}) {
 /** Returns a UI-safe, stable projection without retaining raw imported content. */
 export function projectCharacterTemplateError(error) {
     const code = isCodecError(error) ? error.code : 'template_invalid';
+    const detailCode = isCodecError(error) && typeof error.detailCode === 'string' && error.detailCode ? error.detailCode : '';
     return Object.freeze({
         code,
         message: USER_MESSAGES[code] ?? USER_MESSAGES.template_invalid,
+        // 控制台诊断专用：仅错误码与字段路径结论，不含导入文本；无更细信息时为空串。
+        detail: detailCode ? `模板校验错误码: ${code}；字段/结论: ${detailCode}` : `模板校验错误码: ${code}`,
     });
 }

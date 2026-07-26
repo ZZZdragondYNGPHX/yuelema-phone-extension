@@ -721,3 +721,129 @@ test('candidate generation rejects an unknown candidate orientation when player 
     assert.equal(result.ok, false);
     assert.equal(result.code, 'candidate_match_basic_compatibility_invalid');
 });
+
+/* 安全控制台诊断寄存器接线（阶段：控制台详细报错） */
+
+test('候选匹配的 LLM 失败按阶段登记 HTTP 状态与摘要，成功路径清空寄存器', async () => {
+    const { YueLeMaLlmError } = await import('../../llm/openai-compatible-client.js');
+    const { consumeRecommendationDiagnostics } = await import('../recommendation-diagnostics.js');
+    const failing = {
+        async chat() {
+            throw new YueLeMaLlmError('RATE_LIMITED', '接口请求过于频繁，请稍后重试。', {
+                status: 429, retryable: true, bodyExcerpt: 'rate limit exceeded',
+            });
+        },
+    };
+    const soulFailure = await generateCandidateMatchDraft({
+        mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'), llmClient: failing,
+    });
+    assert.equal(soulFailure.ok, false);
+    assert.equal(soulFailure.code, 'RATE_LIMITED');
+    const soulDiagnostics = consumeRecommendationDiagnostics('candidate_match', { code: 'RATE_LIMITED' });
+    assert.equal(soulDiagnostics.stage, '候选资料生成');
+    assert.equal(soulDiagnostics.error.status, 429);
+    assert.equal(soulDiagnostics.error.bodyExcerpt.includes('rate limit exceeded'), true);
+    assert.equal(soulDiagnostics.hint, '该错误可重试');
+
+    const voiceFailure = await generateCandidateMatchDraft({
+        mode: 'voice', voiceText: '想遇到喜欢电影的人',
+        state: state(), settingsStore: candidateSettingsStore('text_match'), llmClient: failing,
+    });
+    assert.equal(voiceFailure.ok, false);
+    const voiceDiagnostics = consumeRecommendationDiagnostics('candidate_match', { code: 'RATE_LIMITED' });
+    assert.equal(voiceDiagnostics.stage, '第一阶段：描述关键词提取');
+
+    const success = await generateCandidateMatchDraft({
+        mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'),
+        llmClient: { async chat() { return { text: JSON.stringify(candidateRaw()) }; } },
+    });
+    assert.equal(success.ok, true);
+    assert.equal(consumeRecommendationDiagnostics('candidate_match'), null, '成功路径必须清空寄存器');
+});
+
+test('两阶段各自的解析失败与硬条件失败登记可定位的阶段与不合规点', async () => {
+    const { consumeRecommendationDiagnostics } = await import('../recommendation-diagnostics.js');
+    const proseLlm = { async chat() { return { text: '抱歉，我只想聊聊天。' }; } };
+    const stageOne = await generateCandidateMatchDraft({
+        mode: 'voice', voiceText: '想遇到喜欢电影的人',
+        state: state(), settingsStore: candidateSettingsStore('text_match'), llmClient: proseLlm,
+    });
+    assert.equal(stageOne.code, 'candidate_match_invalid_json');
+    const stageOneDiagnostics = consumeRecommendationDiagnostics('candidate_match', { code: 'candidate_match_invalid_json' });
+    assert.equal(stageOneDiagnostics.stage, '第一阶段：描述关键词提取（解析响应）');
+    assert.match(stageOneDiagnostics.expected, /keywordWeights/u);
+    assert.match(stageOneDiagnostics.actual, /响应共 \d+ 字符/u);
+
+    let calls = 0;
+    const stageTwoLlm = {
+        async chat() {
+            calls += 1;
+            if (calls === 1) return { text: JSON.stringify(voiceKeywordRaw()) };
+            return { text: '第二阶段返回了散文。' };
+        },
+    };
+    const stageTwo = await generateCandidateMatchDraft({
+        mode: 'voice', voiceText: '想遇到喜欢电影的人',
+        state: state(), settingsStore: candidateSettingsStore('text_match'), llmClient: stageTwoLlm,
+    });
+    assert.equal(stageTwo.code, 'candidate_match_invalid_json');
+    const stageTwoDiagnostics = consumeRecommendationDiagnostics('candidate_match', { code: 'candidate_match_invalid_json' });
+    assert.equal(stageTwoDiagnostics.stage, '第二阶段：候选资料生成（解析响应）');
+
+    const incompatible = candidateRaw();
+    incompatible.profile.性取向 = '异性恋';
+    incompatible.profile.性别 = '女';
+    const hardConditionState = state();
+    hardConditionState.玩家.公开资料.性别 = '女';
+    hardConditionState.玩家.公开资料.性取向 = '异性恋';
+    const hardCondition = await generateCandidateMatchDraft({
+        mode: 'soul', state: hardConditionState, settingsStore: candidateSettingsStore('soul_match'),
+        llmClient: { async chat() { return { text: JSON.stringify(incompatible) }; } },
+    });
+    assert.equal(hardCondition.code, 'candidate_match_basic_compatibility_invalid');
+    const hardConditionDiagnostics = consumeRecommendationDiagnostics('candidate_match', { code: 'candidate_match_basic_compatibility_invalid' });
+    assert.equal(hardConditionDiagnostics.stage, '本地硬条件校验');
+    assert.match(hardConditionDiagnostics.field, /profile\.性别/u);
+});
+
+test('草稿校验失败与连接缺失都登记诊断；灵魂/文字草稿服务同样接线', async () => {
+    const { consumeRecommendationDiagnostics } = await import('../recommendation-diagnostics.js');
+    const badDraft = candidateRaw();
+    badDraft.profile.昵称 = '摄影师';
+    const invalidDraft = await generateCandidateMatchDraft({
+        mode: 'soul', state: state(), settingsStore: candidateSettingsStore('soul_match'),
+        llmClient: { async chat() { return { text: JSON.stringify(badDraft) }; } },
+    });
+    assert.equal(invalidDraft.code, 'candidate_match_response_invalid');
+    const invalidDraftDiagnostics = consumeRecommendationDiagnostics('candidate_match', { code: 'candidate_match_response_invalid' });
+    assert.match(invalidDraftDiagnostics.stage, /草稿校验/u);
+    assert.match(invalidDraftDiagnostics.actual, /校验未通过/u);
+
+    const missingConnection = await generateCandidateMatchDraft({
+        mode: 'soul', state: state(),
+        settingsStore: {
+            snapshot: () => ({ personalization: { keywordWeightsByMode: { SFW: [], NSFW: [] } } }),
+            resolveFunction: () => ({ connectionPreset: null, promptPreset: null }),
+        },
+        llmClient: { async chat() { return { text: '{}' }; } },
+    });
+    assert.equal(missingConnection.code, 'candidate_match_connection_missing');
+    const missingDiagnostics = consumeRecommendationDiagnostics('candidate_match', { code: 'candidate_match_connection_missing' });
+    assert.equal(missingDiagnostics.field, 'soul_match.connectionPreset');
+
+    const soulDraftFailure = await generateSoulMatchDraft({
+        state: state(), settingsStore: settingsStore('soul_match'),
+        llmClient: { async chat() { return { text: '不是 JSON 的回答' }; } },
+    });
+    assert.equal(soulDraftFailure.code, 'soul_match_invalid_json');
+    const soulDraftDiagnostics = consumeRecommendationDiagnostics('soul_match_draft', { code: 'soul_match_invalid_json' });
+    assert.equal(soulDraftDiagnostics.stage, '解析模型响应');
+
+    const textDraftFailure = await generateTextMatchDraft({
+        state: state(), settingsStore: settingsStore('text_match'),
+        llmClient: { async chat() { return { text: JSON.stringify({ filters: { 城市: ['上海'] }, explanation: '读取隐藏资料后筛选。' }) }; } },
+    });
+    assert.equal(textDraftFailure.code, 'text_match_response_invalid');
+    const textDraftDiagnostics = consumeRecommendationDiagnostics('text_match_draft', { code: 'text_match_response_invalid' });
+    assert.match(textDraftDiagnostics.actual, /text_match_response_/u);
+});

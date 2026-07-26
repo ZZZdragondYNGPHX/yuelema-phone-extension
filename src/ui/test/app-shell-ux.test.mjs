@@ -1703,3 +1703,231 @@ test('P2-B: match/discover animation classes stay under the global reduced-motio
     /* reduced-motion 下文案轮播静态回退：首条文案保持可见 */
     assert.match(stylesheet, /\.yl-match-captions span:first-child \{ opacity: 1; \}/u, '文案轮播必须有 reduced-motion 静态回退');
 });
+
+test('console entries with sanitized detail expose collapse/expand and copy controls', async () => {
+    const { buildErrorDetail } = await import('../operation-activity.js');
+    const copied = [];
+    const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: { clipboard: { writeText(text) { copied.push(text); return Promise.resolve(); } } },
+    });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-console-detail',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        const failing = mounted.operationActivity.start('灵魂匹配', '灵魂匹配中……');
+        mounted.operationActivity.fail(failing, '匹配未成功，请稍后再试。', {
+            detail: buildErrorDetail(new Error('上游响应无法解析'), { httpStatus: 502, hint: '上游网关错误，可稍后重试' }),
+        });
+        const plain = mounted.operationActivity.start('描述匹配', '正在寻找合拍的描述……');
+        mounted.operationActivity.succeed(plain, '描述匹配成功。');
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '运行记录'));
+
+        const consolePage = miniDom.document.querySelector('.yl-operation-console');
+        assert.ok(consolePage, '控制台页面必须渲染');
+        const cards = consolePage.querySelectorAll('.yl-operation-console-entry');
+        assert.equal(cards.length, 2);
+
+        /* 无 detail 的条目不得出现详情控件 */
+        const successCard = cards.find((card) => card.dataset.status === 'success');
+        assert.equal(successCard.querySelector('.yl-operation-console-detail-toggle'), null);
+        assert.equal(successCard.querySelector('.yl-operation-console-detail'), null);
+
+        /* 失败条目：详情默认收起，textContent 渲染完整脱敏诊断 */
+        const failureCard = cards.find((card) => card.dataset.status === 'failure');
+        const toggle = failureCard.querySelector('.yl-operation-console-detail-toggle');
+        const copyButton = failureCard.querySelector('.yl-operation-console-detail-copy');
+        const detailBlock = failureCard.querySelector('.yl-operation-console-detail');
+        assert.ok(toggle, '有 detail 的条目必须提供展开按钮');
+        assert.ok(copyButton, '有 detail 的条目必须提供复制按钮');
+        assert.ok(detailBlock, '详情块必须存在');
+        assert.equal(detailBlock.hidden, true, '详情默认收起');
+        assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+        assert.match(detailBlock.textContent, /错误类型: Error/u);
+        assert.match(detailBlock.textContent, /HTTP 状态: 502/u);
+        assert.match(detailBlock.textContent, /提示: 上游网关错误，可稍后重试/u);
+        assert.equal(detailBlock.childNodes.length, 0, '详情必须为纯 textContent，无子节点标记');
+
+        click(toggle);
+        assert.equal(detailBlock.hidden, false, '点击后展开');
+        assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+        assert.equal(toggle.textContent, '收起详情');
+
+        click(copyButton);
+        assert.equal(copied.length, 1);
+        assert.match(copied[0], /HTTP 状态: 502/u);
+        assert.equal(copied[0], detailBlock.textContent, '复制内容与展示的脱敏详情一致');
+
+        click(toggle);
+        assert.equal(detailBlock.hidden, true, '再次点击收起');
+        assert.equal(toggle.textContent, '详情');
+
+        /* 摘要 message 仍是粗略文案：详情技术信息只在 detail 块内 */
+        assert.match(failureCard.textContent, /匹配未成功，请稍后再试。/u);
+    } finally {
+        mounted.destroy();
+        if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+        else delete globalThis.navigator;
+    }
+});
+
+test('console detail copy falls back to execCommand and stays silent without any clipboard', async () => {
+    const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {} });
+    const execCalls = [];
+    miniDom.document.execCommand = (command) => {
+        execCalls.push([command, miniDom.document.body.childNodes.at(-1)?.value ?? '']);
+        return true;
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-console-detail-fallback',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        const handle = mounted.operationActivity.start('AI 操作', 'AI 处理中……');
+        mounted.operationActivity.fail(handle, 'AI 操作未完成，请稍后再试。', { detail: '错误码: upstream_timeout\nHTTP 状态: 504' });
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '运行记录'));
+        const copyButton = miniDom.document.querySelector('.yl-operation-console-detail-copy');
+        assert.ok(copyButton);
+        click(copyButton);
+        assert.equal(execCalls.length, 1);
+        assert.equal(execCalls[0][0], 'copy');
+        assert.equal(execCalls[0][1], '错误码: upstream_timeout\nHTTP 状态: 504');
+
+        /* execCommand 也不可用时保持静默，不抛错 */
+        delete miniDom.document.execCommand;
+        click(copyButton);
+    } finally {
+        mounted.destroy();
+        delete miniDom.document.execCommand;
+        if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+        else delete globalThis.navigator;
+    }
+});
+
+/* —— 阶段 74 修复：关于页「检查并更新扩展」——
+   失败弹窗必须给出具体原因（HTTP 状态 + 脱敏宿主说明），完整诊断落运行控制台；
+   加载态反映在入口按钮 aria-busy / disabled 上。 —— */
+
+test('extension update failure surfaces HTTP status and host text in the dialog and full detail in the run console', async () => {
+    const { HostExtensionUpdateError } = await import('../../host-extension-update.js');
+    const gate = deferred();
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-extension-update-failure',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null,
+        extensionUpdater: { checkAndUpdate: () => gate.promise }, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        click(buttonByText('关于软件'));
+        const updateEntry = () => miniDom.document.querySelector('[name="about-extension-update"]');
+        assert.ok(updateEntry(), '关于页应提供检查并更新扩展入口');
+        assert.equal(updateEntry().disabled, false);
+        assert.equal(updateEntry().getAttribute('aria-busy'), 'false');
+        click(updateEntry());
+
+        /* 检查中的加载态：入口忙碌 + 弹窗 loading 展示当前版本 */
+        assert.equal(updateEntry().disabled, true, '检查期间入口应禁用防止重复触发');
+        assert.equal(updateEntry().getAttribute('aria-busy'), 'true');
+        assert.match(updateEntry().textContent, /正在检查并更新/u);
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+        assert.equal(dialog.hidden, false);
+        assert.equal(dialog.dataset.state, 'loading');
+        assert.match(dialog.textContent, /正在检查扩展更新/u);
+        assert.match(dialog.textContent, /当前版本 v1\.0\.0/u, 'loading 弹窗应展示当前版本');
+
+        gate.reject(new HostExtensionUpdateError('request_failed_http', {
+            status: 500,
+            hostMessage: 'Internal Server Error. Check the server logs for more details.',
+            phase: 'update',
+        }));
+        await flushUi();
+
+        assert.equal(dialog.hidden, false);
+        assert.equal(dialog.dataset.state, 'failure');
+        assert.match(dialog.textContent, /宿主扩展更新请求失败/u);
+        assert.match(dialog.textContent, /HTTP 500/u, '失败弹窗必须展示 HTTP 状态');
+        assert.match(dialog.textContent, /应用更新阶段/u, '失败弹窗必须指明失败阶段');
+        assert.match(dialog.textContent, /Internal Server Error\. Check the server logs/u, '失败弹窗必须展示宿主说明');
+        assert.match(dialog.textContent, /运行记录/u, '失败弹窗应指向运行控制台详情');
+        assert.doesNotMatch(dialog.textContent, /请在酒馆原生扩展管理中查看详情/u, '不得再退回吞错的兜底文案');
+        assert.equal(updateEntry().disabled, false, '失败后入口应恢复可用');
+        assert.equal(updateEntry().getAttribute('aria-busy'), 'false');
+
+        /* 完整诊断落运行控制台：阶段、错误码、HTTP 状态与宿主说明 */
+        click(buttonByPage('profile'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '运行记录'));
+        const consoleEntry = miniDom.document.querySelectorAll('.yl-operation-console-entry').find((node) => node.textContent.includes('扩展更新'));
+        assert.ok(consoleEntry, '运行控制台应有扩展更新条目');
+        assert.equal(consoleEntry.dataset.status, 'failure');
+        assert.match(consoleEntry.textContent, /检查或更新扩展未完成。/u);
+        const detailBlock = consoleEntry.querySelector('.yl-operation-console-detail');
+        assert.ok(detailBlock, '失败条目应携带诊断详情');
+        assert.match(detailBlock.textContent, /操作: 检查并更新扩展/u);
+        assert.match(detailBlock.textContent, /阶段: 应用更新阶段/u);
+        assert.match(detailBlock.textContent, /错误码: request_failed_http/u);
+        assert.match(detailBlock.textContent, /HTTP 状态: 500/u);
+        assert.match(detailBlock.textContent, /宿主说明 Internal Server Error/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('extension update success states show the current version and non-git installs get a dedicated explanation', async () => {
+    const { HostExtensionUpdateError } = await import('../../host-extension-update.js');
+    let result = Promise.resolve({ outcome: 'up_to_date' });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-extension-update-success',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null,
+        extensionUpdater: { checkAndUpdate: () => result }, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        click(buttonByText('关于软件'));
+        const updateEntry = () => miniDom.document.querySelector('[name="about-extension-update"]');
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+
+        click(updateEntry());
+        await flushUi();
+        assert.equal(dialog.hidden, false);
+        assert.equal(dialog.dataset.state, 'success');
+        assert.match(dialog.textContent, /当前已是最新版本/u);
+        assert.match(dialog.textContent, /v1\.0\.0 已是最新版本/u, '最新结果应展示当前版本号');
+
+        result = Promise.resolve({ outcome: 'updated' });
+        click(updateEntry());
+        await flushUi();
+        assert.equal(dialog.dataset.state, 'success');
+        assert.match(dialog.textContent, /更新已完成/u);
+        assert.match(dialog.textContent, /重新载入酒馆页面/u);
+
+        result = Promise.reject(new HostExtensionUpdateError('not_git_installation', { phase: 'version' }));
+        click(updateEntry());
+        await flushUi();
+        assert.equal(dialog.dataset.state, 'failure');
+        assert.match(dialog.textContent, /不是 Git 安装/u);
+        assert.match(dialog.textContent, /以 Git 方式重新安装/u);
+        assert.doesNotMatch(dialog.textContent, /请在酒馆原生扩展管理中查看详情/u);
+
+        /* 运行控制台按次记录：最新 / 已更新 各一条成功 */
+        const entries = mounted.operationActivity.snapshot().entries.filter((entry) => entry.name === '扩展更新');
+        assert.equal(entries.length, 3);
+        assert.equal(entries.filter((entry) => entry.status === 'success').length, 2);
+        assert.equal(entries.filter((entry) => entry.status === 'failure').length, 1);
+    } finally {
+        mounted.destroy();
+    }
+});

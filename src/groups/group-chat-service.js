@@ -1,7 +1,7 @@
 import { normalizeImageDirective } from '../images/image-directive.js';
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
-import { buildPublicGroupLlmContext, cleanGroupLlmText, groupContentModeInstruction, isSafeGroupLlmData, isSafeGroupLlmOutput, normalizeGroupContentMode, parseGroupLlmJson, projectPublicPlayerProfile } from './group-llm-safety.js';
+import { buildPublicGroupLlmContext, cleanGroupLlmText, groupContentModeInstruction, groupDiagnostic, groupResponseParseDiagnostic, isSafeGroupLlmData, isSafeGroupLlmOutput, normalizeGroupContentMode, parseGroupLlmJson, projectGroupLlmErrorDiagnostic, projectPublicPlayerProfile } from './group-llm-safety.js';
 import { groupForumProfileForModel, normalizeGroupForumProfile, publicProfileToGroupForumProfile } from './group-forum-store.js';
 
 const ERROR_MESSAGES = Object.freeze({
@@ -79,12 +79,15 @@ export async function generateGroupChatReply({ state, groupUid, playerMessage, b
     try {
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeMessages(built.context, resolved.promptPreset), signal });
         const parsed = parseGroupLlmJson(completion?.text);
-        if (!parsed) return failure('group_chat_invalid_json');
+        if (!parsed) return { ...failure('group_chat_invalid_json'), diagnostic: groupResponseParseDiagnostic(completion?.text) };
         const draft = normalizeGroupChatReply(parsed, built.context.contentMode);
-        return draft ? Object.freeze({ ok: true, draft }) : failure('group_chat_response_invalid');
+        return draft ? Object.freeze({ ok: true, draft }) : {
+            ...failure('group_chat_response_invalid'),
+            diagnostic: groupDiagnostic({ stage: '响应校验', field: 'reply', expected: '仅含 reply 单字段、1-480 字安全纯文本' }),
+        };
     } catch (error) {
         const publicError = toPublicLlmError(error);
-        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
+        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable, diagnostic: projectGroupLlmErrorDiagnostic(error) };
     }
 }
 
@@ -188,8 +191,8 @@ export function buildGroupChatUpdateContext({ state, group, history } = {}) {
     const localGroup = publicGroup ? null : localGroupProjection(group, contentMode);
     const target = publicGroup ?? localGroup;
     const normalizedHistory = normalizeHistory(history, contentMode);
-    if (!target) return updateFailure('group_update_target_invalid');
-    if (!normalizedHistory) return updateFailure('group_update_history_invalid');
+    if (!target) return { ...updateFailure('group_update_target_invalid'), diagnostic: groupDiagnostic({ stage: '上下文构建', field: 'group', hint: '群公开投影不可用（群不存在、非本地群或成员资料无效）' }) };
+    if (!normalizedHistory) return { ...updateFailure('group_update_history_invalid'), diagnostic: groupDiagnostic({ stage: '上下文构建', field: 'history', hint: '本地历史结构或文本未通过安全校验，未调用模型' }) };
     const playerPublicProfile = publicGroup?.playerPublicProfile ?? projectPublicPlayerProfile(state?.玩家, { contentMode });
     return Object.freeze({ ok: true, context: Object.freeze({
         contentMode,
@@ -226,34 +229,59 @@ function makeGroupUpdateMessages(context, promptPreset, trigger) {
     ]);
 }
 
+/**
+ * 校验群聊更新草稿。成功返回 { update }；失败返回 { diagnostic } 供控制台
+ * detail 说明具体不合规点（字段路径/昵称/结论，不带隐藏数据或消息原文）。
+ */
 function normalizeGroupUpdate(value, existingMembers, contentMode) {
-    if (!ownRecord(value) || Object.keys(value).sort().join(',') !== 'messages,participants') return null;
+    const reject = (record) => ({ diagnostic: groupDiagnostic({ stage: '响应校验', ...record }) });
+    if (!ownRecord(value) || Object.keys(value).sort().join(',') !== 'messages,participants') {
+        return reject({ field: 'participants/messages', expected: '恰含 participants 与 messages 两个字段的 JSON 对象' });
+    }
     const participants = ownValue(value, 'participants');
     const messages = ownValue(value, 'messages');
-    if (!Array.isArray(participants) || participants.length > 3 || !Array.isArray(messages) || messages.length < 1 || messages.length > 8) return null;
+    if (!Array.isArray(participants) || participants.length > 3 || !Array.isArray(messages) || messages.length < 1 || messages.length > 8) {
+        return reject({
+            field: 'participants/messages',
+            expected: 'participants ≤ 3 且 messages 为 1-8 条的数组',
+            actual: `participants ${Array.isArray(participants) ? participants.length + ' 条' : '非数组'}、messages ${Array.isArray(messages) ? messages.length + ' 条' : '非数组'}`,
+        });
+    }
     const names = new Set(existingMembers.map((profile) => String(profile.nickname).normalize('NFKC').toLowerCase()));
     const normalizedParticipants = [];
-    for (const participant of participants) {
-        try {
-            const profile = normalizeGroupForumProfile(participant);
-            if (!isSafeGroupLlmData(profile, { contentMode })) return null;
-            const name = profile.nickname.normalize('NFKC').toLowerCase();
-            if (names.has(name)) return null;
-            names.add(name);
-            normalizedParticipants.push(profile);
-        } catch { return null; }
+    for (const [index, participant] of participants.entries()) {
+        let profile;
+        try { profile = normalizeGroupForumProfile(participant); }
+        catch (error) {
+            return reject({
+                field: `participants[${index}]`,
+                hint: error?.code === 'NON_ADULT_PROFILE' ? '临时群友缺少明确的成年年龄段写法' : '临时群友公开资料字段无效',
+            });
+        }
+        if (!isSafeGroupLlmData(profile, { contentMode })) return reject({ field: `participants[${index}]`, hint: '临时群友资料含不安全文本，安全扫描拒绝' });
+        const name = profile.nickname.normalize('NFKC').toLowerCase();
+        if (names.has(name)) return reject({ field: `participants[${index}].nickname`, actual: profile.nickname, hint: '昵称与已有成员或先前临时群友重复' });
+        names.add(name);
+        normalizedParticipants.push(profile);
     }
     const normalizedMessages = [];
-    for (const message of messages) {
-        if (!ownRecord(message) || Object.keys(message).some((key) => !['speaker', 'text', 'imageDirective'].includes(key)) || !Object.hasOwn(message, 'speaker') || !Object.hasOwn(message, 'text')) return null;
+    for (const [index, message] of messages.entries()) {
+        if (!ownRecord(message) || Object.keys(message).some((key) => !['speaker', 'text', 'imageDirective'].includes(key)) || !Object.hasOwn(message, 'speaker') || !Object.hasOwn(message, 'text')) {
+            return reject({ field: `messages[${index}]`, expected: '仅含 speaker/text（可选 imageDirective）字段的记录' });
+        }
         const speaker = cleanGroupLlmText(ownValue(message, 'speaker'), 80);
         const text = cleanGroupLlmText(ownValue(message, 'text'), 480);
-        if (!speaker || !text || !isSafeGroupLlmOutput(text, 480, { contentMode }) || !names.has(speaker.normalize('NFKC').toLowerCase())) return null;
+        if (!speaker) return reject({ field: `messages[${index}].speaker`, expected: '1-80 字纯文本昵称' });
+        if (!text || !isSafeGroupLlmOutput(text, 480, { contentMode })) return reject({ field: `messages[${index}].text`, expected: '1-480 字安全纯文本', hint: '文本超限或被安全扫描拒绝' });
+        if (!names.has(speaker.normalize('NFKC').toLowerCase())) return reject({ field: `messages[${index}].speaker`, actual: speaker, hint: '发言者不在已有成员或 participants 名单中' });
         let imageDirective;
-        if (Object.hasOwn(message, 'imageDirective')) { try { imageDirective = normalizeImageDirective(ownValue(message, 'imageDirective')); } catch { return null; } }
+        if (Object.hasOwn(message, 'imageDirective')) {
+            try { imageDirective = normalizeImageDirective(ownValue(message, 'imageDirective')); }
+            catch { return reject({ field: `messages[${index}].imageDirective`, hint: '生图指令不符合白名单结构' }); }
+        }
         normalizedMessages.push(Object.freeze(imageDirective ? { speaker, text, imageDirective } : { speaker, text }));
     }
-    return Object.freeze({ participants: Object.freeze(normalizedParticipants), messages: Object.freeze(normalizedMessages) });
+    return { update: Object.freeze({ participants: Object.freeze(normalizedParticipants), messages: Object.freeze(normalizedMessages) }) };
 }
 
 /**
@@ -272,11 +300,13 @@ export async function generateGroupChatUpdate({ state, group, history, trigger =
     try {
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeGroupUpdateMessages(built.context, resolved.promptPreset, trigger), signal });
         const parsed = parseGroupLlmJson(completion?.text);
-        if (!parsed) return updateFailure('group_update_invalid_json');
-        const update = normalizeGroupUpdate(parsed, built.context.group.members, built.context.contentMode);
-        return update ? Object.freeze({ ok: true, update }) : updateFailure('group_update_response_invalid');
+        if (!parsed) return { ...updateFailure('group_update_invalid_json'), diagnostic: groupResponseParseDiagnostic(completion?.text) };
+        const normalized = normalizeGroupUpdate(parsed, built.context.group.members, built.context.contentMode);
+        return normalized.update
+            ? Object.freeze({ ok: true, update: normalized.update })
+            : { ...updateFailure('group_update_response_invalid'), diagnostic: normalized.diagnostic };
     } catch (error) {
         const publicError = toPublicLlmError(error);
-        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
+        return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable, diagnostic: projectGroupLlmErrorDiagnostic(error) };
     }
 }

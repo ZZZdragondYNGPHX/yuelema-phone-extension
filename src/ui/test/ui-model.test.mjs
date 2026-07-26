@@ -92,6 +92,46 @@ test('private chat view exposes only public profile and session-visible transcri
     assert.doesNotMatch(serialized, /秘密|实际年龄|关系状态/);
 });
 
+test('private chat view projects per-npc meetup progress without boundary text or malformed records', () => {
+    const read = {
+        ok: true,
+        state: {
+            软件: { 内容模式: 'SFW' }, 推荐: { 当前队列: [], 临时候选池: {} },
+            角色池: {
+                npc_a: { 成人验证: true, 公开资料: { 昵称: '公开名' }, 隐藏资料: { 实际年龄: 29, 私人备注: '秘密' } },
+                npc_b: { 成人验证: true, 公开资料: { 昵称: '另一位' } },
+            },
+            会话: { chat_a: { 对象UID: 'npc_a', 状态: '已匹配', 最近消息: [] } },
+            面基记录: {
+                meetup_2: { 对象UID: 'npc_a', 关系路线: '恋爱', 时间: '周六晚上', 地点: '江边步道', 双方意图: '意图私文', 已确认边界: 'boundary-must-not-render', 待确认事项: '', 风险提示: 'risk-must-not-render', 状态: '已结束', 正文结果摘要: '散步后一起吃了宵夜，约好下周看展。' },
+                meetup_9: { 对象UID: 'npc_b', 关系路线: '友情', 时间: '周日', 地点: '展馆', 双方意图: '', 已确认边界: '', 待确认事项: '', 风险提示: '', 状态: '待发送', 正文结果摘要: '' },
+                meetup_10: { 对象UID: 'npc_a', 关系路线: '恋爱', 时间: '下周三', 地点: '美术馆', 双方意图: '', 已确认边界: '', 待确认事项: '', 风险提示: '', 状态: '正文进行中', 正文结果摘要: '' },
+                meetup_bad: { 对象UID: 'npc_a', 关系路线: '恋爱', 状态: '莫名状态', 正文结果摘要: '' },
+            },
+        },
+    };
+    const session = createPhoneView(read).messageSessions[0];
+    assert.deepEqual(session.meetups.map((item) => [item.meetupUid, item.status]), [['meetup_2', '已结束'], ['meetup_10', '正文进行中']], '只投影本会话对象的合法面基记录，且 meetup_10 按数字序排在 meetup_2 之后');
+    assert.equal(session.meetups[0].route, '恋爱');
+    assert.equal(session.meetups[0].resultSummary, '散步后一起吃了宵夜，约好下周看展。');
+    assert.deepEqual(Object.keys(session.meetups[0]).sort(), ['meetupUid', 'place', 'resultSummary', 'route', 'status', 'time'].sort(), '边界/风险/意图自由文本不进入聊天面');
+    assert.doesNotMatch(JSON.stringify(session.meetups), /boundary-must-not-render|risk-must-not-render|意图私文|秘密/u);
+});
+
+test('meetup result summaries containing real-world contact data are masked before display', () => {
+    const read = {
+        ok: true,
+        state: {
+            软件: { 内容模式: 'SFW' }, 推荐: { 当前队列: [], 临时候选池: {} },
+            角色池: { npc_a: { 成人验证: true, 公开资料: { 昵称: '公开名' } } },
+            会话: { chat_a: { 对象UID: 'npc_a', 状态: '已匹配', 最近消息: [] } },
+            面基记录: { meetup_1: { 对象UID: 'npc_a', 关系路线: '友情', 时间: '', 地点: '', 双方意图: '', 已确认边界: '', 待确认事项: '', 风险提示: '', 状态: '已结束', 正文结果摘要: '她把手机号 13800138000 留给了你。' } },
+        },
+    };
+    const session = createPhoneView(read).messageSessions[0];
+    assert.equal(session.meetups[0].resultSummary, '该记录包含不适合展示的敏感内容，已隐藏。');
+});
+
 test('private chat sessions sort by latest parseable message time desc with timeless sessions last', () => {
     const character = (nickname) => ({ 成人验证: true, 公开资料: { 昵称: nickname } });
     const session = (npcUid, messages) => ({ 对象UID: npcUid, 状态: '已匹配', 最近消息: messages });

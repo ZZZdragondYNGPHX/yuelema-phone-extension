@@ -140,6 +140,42 @@ const CHAT_SESSION_UID_PATTERN = /^chat_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const CHAT_STATUS = new Set(['请求中', '已匹配', '已取消', '已拉黑']);
 const CHAT_SENDERS = new Set(['玩家', '角色', '系统']);
 
+const MEETUP_UID_PATTERN = /^meetup_[a-z0-9][a-z0-9_-]{0,63}$/i;
+const MEETUP_STATUS = new Set(['提议', '待发送', '正文进行中', '已结束', '已取消']);
+const MEETUP_ROUTES = new Set(['友情', '恋爱', '欲望']);
+
+/** Numeric-aware ordering for the stable `meetup_<n>` keys so the latest record sorts last. */
+function meetupUidOrder(left, right) {
+    const leftNumber = /^meetup_(\d+)$/u.exec(left);
+    const rightNumber = /^meetup_(\d+)$/u.exec(right);
+    if (leftNumber && rightNumber) return Number(leftNumber[1]) - Number(rightNumber[1]);
+    return left.localeCompare(right, 'zh-Hans-CN');
+}
+
+/**
+ * Projects the phone-visible meetup records for one matched NPC. Only the state,
+ * route and body-written result summary cross this boundary; the boundary/risk
+ * free-text stays out of the chat surface and hidden layers never enter at all.
+ */
+function projectSessionMeetups(state, npcUid, mode) {
+    const records = ownRecord(state.面基记录) ? state.面基记录 : null;
+    if (!records || typeof npcUid !== 'string' || !npcUid) return Object.freeze([]);
+    const meetups = [];
+    for (const [meetupUid, raw] of Object.entries(records)) {
+        if (!MEETUP_UID_PATTERN.test(meetupUid) || !ownRecord(raw) || raw.对象UID !== npcUid) continue;
+        if (!MEETUP_STATUS.has(raw.状态) || !MEETUP_ROUTES.has(raw.关系路线)) continue;
+        meetups.push(Object.freeze({
+            meetupUid,
+            status: raw.状态,
+            route: raw.关系路线,
+            time: safeText(raw.时间, 160),
+            place: safeText(raw.地点, 160),
+            resultSummary: projectServiceSummary(raw.正文结果摘要, mode),
+        }));
+    }
+    return Object.freeze(meetups.sort((left, right) => meetupUidOrder(left.meetupUid, right.meetupUid)));
+}
+
 const CHAT_TIME_FULL_PATTERN = /^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/u;
 const CHAT_TIME_CLOCK_PATTERN = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/u;
 
@@ -204,6 +240,7 @@ export function projectMatchView(state) {
 
 export function projectPrivateChatView(state) {
     if (!ownRecord(state) || !ownRecord(state.会话) || !ownRecord(state.角色池)) return Object.freeze([]);
+    const contentMode = ownRecord(state.软件) && state.软件.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
     const sessions = [];
     for (const [sessionUid, session] of Object.entries(state.会话)) {
         if (!CHAT_SESSION_UID_PATTERN.test(sessionUid) || !ownRecord(session) || !CHAT_STATUS.has(session.状态)) continue;
@@ -236,6 +273,7 @@ export function projectPrivateChatView(state) {
         sessions.push(Object.freeze({
             sessionUid, npcUid, status: session.状态, profile, messages: Object.freeze(messages),
             meetupAccess,
+            meetups: projectSessionMeetups(state, npcUid, contentMode),
             summary: safeText(session.长期摘要, 500),
             summaryInfo: Object.freeze({
                 totalLayers,
@@ -447,7 +485,7 @@ export function describeActionFailure(result) {
         favorite_private_chat_state_invalid: '当前资料缺少可用于私聊判定的公开信息。',
         favorite_private_chat_score_invalid: '当前资料的匹配分数异常，未发起私聊。',
         content_mode_gate_state_invalid: '内容模式状态异常，未执行切换。',
-        service_order_invalid_state: '当前聊天缺少专属服务订单数据结构，请导入 v0.1.37 角色卡后新开聊天。',
+        service_order_invalid_state: '当前聊天缺少专属服务订单数据结构，请导入 v1.0.0 角色卡后新开聊天。',
         service_order_state_invalid: '服务订单状态未就绪，未复制任何本地角色。',
         service_order_candidate_invalid: '本地角色未通过成年公开资料校验，未复制。',
         service_order_uid_conflict: '服务订单编号冲突，请刷新后重试。',

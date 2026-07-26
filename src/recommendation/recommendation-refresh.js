@@ -2,6 +2,13 @@ import { DRAWING_DNA_RULES } from './drawing-dna-rules.js';
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
 import { COMPLETE_CANDIDATE_OUTPUT_CONTRACT, normalizeGeneratedCandidate } from './candidate.js';
+import {
+    RECOMMENDATION_DIAGNOSTIC_SCOPES,
+    clearRecommendationDiagnostics,
+    describeModelResponseForDiagnostics,
+    recordRecommendationDiagnostics,
+    snapshotErrorForDiagnostics,
+} from './recommendation-diagnostics.js';
 
 const MAX_RESPONSE_CHARS = 20_000;
 // A complete candidate contains several required nested records.  The old
@@ -340,39 +347,95 @@ function parseCandidateJson(raw) {
     }
 }
 
+const REFRESH_DIAGNOSTIC_SCOPE = RECOMMENDATION_DIAGNOSTIC_SCOPES.recommendationRefresh;
+
+function recordRefreshFailure(code, diagnostics = {}) {
+    recordRecommendationDiagnostics(REFRESH_DIAGNOSTIC_SCOPE, { code, ...diagnostics });
+}
+
+/** 从候选校验错误码（形如 公开资料.年龄段:underage）拆出字段路径与原因。 */
+function splitCandidateValidationCode(code) {
+    const separator = code.indexOf(':');
+    if (separator <= 0) return { field: undefined, reason: code };
+    return { field: code.slice(0, separator), reason: code.slice(separator + 1) };
+}
+
 /**
  * Calls only the configured fast model, validates its JSON completely, and returns
  * a candidate in memory. This function never writes MVU state; callers commit only
  * after a successful full result through the controlled patch boundary.
  */
 export async function generateRecommendationCandidate({ state, settingsStore, llmClient, signal } = {}) {
-    if (!ownRecord(state)) return { ok: false, code: 'recommendation_state_invalid', message: '当前软件状态无法用于生成推荐。' };
-    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return { ok: false, code: 'recommendation_settings_unavailable', message: '推荐刷新设置暂不可用。' };
-    if (!llmClient || typeof llmClient.chat !== 'function') return { ok: false, code: 'recommendation_llm_unavailable', message: '当前浏览器未提供快速模型连接。' };
+    clearRecommendationDiagnostics(REFRESH_DIAGNOSTIC_SCOPE);
+    if (!ownRecord(state)) {
+        recordRefreshFailure('recommendation_state_invalid', { stage: '前置检查', hint: '软件状态快照不可用，等待 MVU 就绪后重试' });
+        return { ok: false, code: 'recommendation_state_invalid', message: '当前软件状态无法用于生成推荐。' };
+    }
+    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') {
+        recordRefreshFailure('recommendation_settings_unavailable', { stage: '前置检查', hint: '设置存储未注入或不可用' });
+        return { ok: false, code: 'recommendation_settings_unavailable', message: '推荐刷新设置暂不可用。' };
+    }
+    if (!llmClient || typeof llmClient.chat !== 'function') {
+        recordRefreshFailure('recommendation_llm_unavailable', { stage: '前置检查', hint: '未注入可用的 LLM 客户端' });
+        return { ok: false, code: 'recommendation_llm_unavailable', message: '当前浏览器未提供快速模型连接。' };
+    }
 
     let resolved;
     try { resolved = settingsStore.resolveFunction('recommendation_refresh', { contentMode: contentModeOf(state) }); }
-    catch { return { ok: false, code: 'recommendation_settings_invalid', message: '推荐刷新预设无效，请检查设置。' }; }
-    if (!resolved.connectionPreset) return { ok: false, code: 'recommendation_connection_missing', message: '请先为“推荐刷新”绑定连接预设或设置默认连接。' };
+    catch (error) {
+        recordRefreshFailure('recommendation_settings_invalid', {
+            stage: '解析功能绑定', error: snapshotErrorForDiagnostics(error),
+            hint: '检查“推荐刷新”的连接预设与提示词绑定设置',
+        });
+        return { ok: false, code: 'recommendation_settings_invalid', message: '推荐刷新预设无效，请检查设置。' };
+    }
+    if (!resolved.connectionPreset) {
+        recordRefreshFailure('recommendation_connection_missing', {
+            stage: '解析功能绑定', field: 'recommendation_refresh.connectionPreset',
+            hint: '未绑定连接预设且无默认连接；请到设置页为“推荐刷新”绑定连接',
+        });
+        return { ok: false, code: 'recommendation_connection_missing', message: '请先为“推荐刷新”绑定连接预设或设置默认连接。' };
+    }
 
+    let stage = '构建请求上下文';
     try {
         const context = buildRecommendationContext(state, { devicePersonalization: readDevicePersonalization(settingsStore) });
+        stage = '请求快速模型';
         const completion = await llmClient.chat({
             preset: resolved.connectionPreset,
             messages: makeMessages(context, resolved.promptPreset),
             maxTokens: Math.max(RECOMMENDATION_MIN_MAX_TOKENS, resolved.connectionPreset.maxTokens),
             signal,
         });
+        stage = '解析模型响应';
         const parsed = parseCandidateJson(completion?.text);
-        if (!parsed) return { ok: false, code: 'recommendation_invalid_json', message: '快速模型没有返回可用的候选资料；当前推荐未改变。' };
+        if (!parsed) {
+            recordRefreshFailure('recommendation_invalid_json', {
+                stage, expected: '单个完整的候选 JSON 对象',
+                actual: describeModelResponseForDiagnostics(completion?.text, MAX_RESPONSE_CHARS),
+            });
+            return { ok: false, code: 'recommendation_invalid_json', message: '快速模型没有返回可用的候选资料；当前推荐未改变。' };
+        }
+        stage = '候选结构与成年人校验';
         const candidate = normalizeGeneratedCandidate(parsed, { contentMode: context.contentMode, requirePersonalName: true });
         assertBasicMutualCompatibility(context.playerPublicProfile, candidate);
         return { ok: true, candidate };
     } catch (error) {
         if (error instanceof TypeError && typeof error.code === 'string') {
+            // 校验错误码只含字段路径与原因；隐藏层与阈值字段仅报字段名，绝不带值。
+            const { field, reason } = splitCandidateValidationCode(error.code);
+            recordRefreshFailure(error.code, {
+                stage: '候选结构与成年人校验', field,
+                actual: `校验未通过（${reason}）`,
+                hint: '模型输出未满足候选结构合同；可重试或调整提示词预设',
+            });
             return { ok: false, code: error.code, message: '快速模型返回的候选资料未通过成年人或结构校验；当前推荐未改变。' };
         }
         const publicError = toPublicLlmError(error);
+        recordRefreshFailure(publicError.code, {
+            stage, error: snapshotErrorForDiagnostics(error) ?? snapshotErrorForDiagnostics(publicError),
+            hint: publicError.retryable ? '该错误可重试' : undefined,
+        });
         return { ok: false, code: publicError.code, message: publicError.message };
     }
 }

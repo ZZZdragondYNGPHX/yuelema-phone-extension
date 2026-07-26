@@ -43,6 +43,49 @@ const SERVICE_ORDER_STEPS = Object.freeze([
 ]);
 
 export function createServicePage(ctx) {
+    /* —— 安全控制台接线（2026-07-27）——
+     * ctx.operationActivity 可能缺席（测试或降级宿主）；缺席时全部静默跳过。
+     * 界面提示（setFeedback / describeActionFailure 文案）保持原有粗略文案不变；
+     * 具体失败原因只进控制台 detail：错误码、字段名/JSON 路径、校验结论与重试提示。
+     * 硬线：detail 不携带 API Key、隐私层字段值、关系分或阈值数值，也不携带
+     * 内部订单/角色 UID 的具体值（候选昵称允许出现）；入账时还会再过脱敏器。 */
+    const operationConsole = ctx.operationActivity && typeof ctx.operationActivity.start === 'function' ? ctx.operationActivity : null;
+    function startConsoleEntry(name, message) {
+        if (!operationConsole) return null;
+        try { return operationConsole.start(name, message); } catch { return null; }
+    }
+    function settleConsoleEntry(kind, handle, message, detail = null) {
+        if (!operationConsole || !handle) return;
+        try { operationConsole[kind](handle, message, { detail }); } catch { /* 控制台不可用时绝不影响功能路径 */ }
+    }
+    /** 32+ 连续 ASCII token 会被控制台脱敏器视作凭据整体抹除；给长错误码按下划线注入空格保住可读性。 */
+    function displayCode(code) {
+        const text = typeof code === 'string' ? code : '';
+        return text.length >= 32 ? text.replaceAll('_', '_ ').trim() : text;
+    }
+    /** 单条失败摘要：错误码 + reason/detail（受控管线增量字段）+ 必要时的界面 message。 */
+    function serviceFailureSummary(source) {
+        if (source instanceof Error) {
+            const parts = [source.name || '', typeof source.code === 'string' ? `错误码 ${displayCode(source.code)}` : '', typeof source.message === 'string' ? source.message.slice(0, 160) : ''];
+            return parts.filter(Boolean).join('：') || '未知异常';
+        }
+        if (!source || typeof source !== 'object') return '未知失败';
+        const parts = [
+            typeof source.code === 'string' && source.code ? `错误码 ${displayCode(source.code)}` : '',
+            typeof source.reason === 'string' && source.reason ? source.reason : '',
+            typeof source.detail === 'string' && source.detail ? source.detail : '',
+        ].filter(Boolean);
+        if (!parts.length && typeof source.message === 'string' && source.message) parts.push(source.message);
+        return parts.join('；') || '未知失败';
+    }
+    function serviceFailureDetail(operation, source, { stage = '', hint = '' } = {}) {
+        return [
+            `操作: ${operation}`,
+            stage ? `阶段: ${stage}` : '',
+            `原因: ${serviceFailureSummary(source)}`,
+            hint ? `提示: ${hint}` : '',
+        ].filter(Boolean).join('\n');
+    }
     // 页面局部 UI 状态（不进 MVU、不进浏览器存储；关小手机即回收）。
     let servicePublicationOpen = false;
     let openServiceRecordMenuId = '';
@@ -129,6 +172,8 @@ export function createServicePage(ctx) {
         ctx.serviceProfileGenerationPending = true;
         serviceGeneratingBatchKey = batchKey;
         const operationToken = ctx.setFeedback(`正在为「${category.label}」依次生成第 ${batch.profiles.length + 1} 位本地角色草稿…`); ctx.renderPage();
+        const consoleHandle = startConsoleEntry('约伴三席生成', `正在为该分类依次生成第 ${batch.profiles.length + 1} 席本地角色……`);
+        const attemptFailures = [];
         try {
             for (let slot = batch.profiles.length + 1; slot <= SERVICE_PROFILE_SLOT_COUNT; slot += 1) {
                 let accepted = null;
@@ -142,6 +187,8 @@ export function createServicePage(ctx) {
                     if (requestAbortController.signal.aborted || ctx.isDestroyed || requestId !== ctx.interactionGeneration || ctx.currentView.mode !== requestMode) break;
                     const duplicate = result?.ok && result?.candidate && batch.profiles.some((profile) => candidateNameKey(profile.candidate) === candidateNameKey(result.candidate));
                     if (result?.ok && result?.candidate && !duplicate) { accepted = result; break; }
+                    // 逐席逐次原因只进控制台 detail；界面提示保持原有粗略文案。
+                    attemptFailures.push(`第 ${slot} 席（第 ${attempt} 次）：${duplicate ? `候选昵称「${serviceProfileName({ candidate: result.candidate })}」与已生成角色重复` : serviceFailureSummary(result)}`);
                     if (!result?.retryable && !duplicate) break;
                 }
                 if (!accepted) { batch.failedSlot = slot; break; }
@@ -153,14 +200,21 @@ export function createServicePage(ctx) {
                     ctx.renderPage();
                 }
             }
-        } catch { batch.failedSlot = Math.max(1, batch.profiles.length + 1); }
+        } catch (error) {
+            batch.failedSlot = Math.max(1, batch.profiles.length + 1);
+            attemptFailures.push(`第 ${batch.failedSlot} 席：${serviceFailureSummary(error)}`);
+        }
         if (ctx.serviceProfileGenerationAbortController === requestAbortController) {
             ctx.serviceProfileGenerationAbortController = null;
             ctx.serviceProfileGenerationPending = false;
             serviceGeneratingBatchKey = '';
         }
-        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
+        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) {
+            settleConsoleEntry('dismiss', consoleHandle, '生成已中止，结果未展示。');
+            return;
+        }
         if (ctx.currentView.mode !== requestMode || requestAbortController.signal.aborted) {
+            settleConsoleEntry('dismiss', consoleHandle, '生成已停止；已通过校验的候补仍保留。');
             ctx.setFeedback('本批未完成的生成已停止；已通过校验的候补仍保留在所属模式中。', operationToken); ctx.renderPage(); return;
         }
         if (batch.profiles.length === SERVICE_PROFILE_SLOT_COUNT) {
@@ -171,8 +225,12 @@ export function createServicePage(ctx) {
             for (const profile of batch.profiles) profile.ready = true;
             ctx.serviceLocalProfiles.splice(0, ctx.serviceLocalProfiles.length, ...retained.slice(-24), ...batch.profiles);
             ctx.activeServiceHubTab = 'featured'; ctx.activeServiceCategoryId = category.id;
+            settleConsoleEntry('succeed', consoleHandle, '已依次生成 3 位本地服务角色。',
+                attemptFailures.length ? `操作: 约伴三席生成\n阶段: 逐席生成（含中途重试）\n${attemptFailures.join('\n')}` : null);
             ctx.setFeedback('已依次生成 3 位本地服务角色；现在可选择其中一位创建服务记录。', operationToken); ctx.renderPage(); return;
         }
+        settleConsoleEntry('fail', consoleHandle, `第 ${batch.failedSlot || batch.profiles.length + 1} 席未生成成功。`,
+            [`操作: 约伴三席生成`, `阶段: 逐席生成（已保留 ${batch.profiles.length} 席）`, ...(attemptFailures.length ? attemptFailures : ['原因: 未知失败']), '提示: 可点击“重试剩余席位”继续'].join('\n'));
         ctx.setFeedback(`第 ${batch.failedSlot || batch.profiles.length + 1} 位尚未生成成功；已通过校验的 ${batch.profiles.length} 位候补已保留。可重试剩余席位。`, operationToken);
         ctx.renderPage();
     }
@@ -238,12 +296,18 @@ export function createServicePage(ctx) {
         if (ctx.currentView.serviceOrders.some((order) => ['待确认', '进行中'].includes(order.status))) { ctx.setFeedback('当前已有一笔待确认或进行中的服务订单。'); return; }
         const requestId = ++ctx.interactionGeneration; const operationEpoch = ctx.serviceOrderOperationEpoch; ctx.serviceProfileHandoffPendingId = serviceBatchKey(requestMode, category.id, ctx.serviceXpSearchApplied);
         const operationToken = ctx.setFeedback(`正在复制 ${profiles.length} 位角色并创建待确认服务记录…`); ctx.renderPage(); let result;
-        try { result = await ctx.actionBridge.runServiceOrderHandoff({ candidates: profiles.map((profile) => profile.candidate), categoryId: category.id, expectedContentMode: requestMode }); } catch { result = { ok: false }; }
+        const consoleHandle = startConsoleEntry('创建服务订单', `正在复制 ${profiles.length} 位角色并创建待确认订单……`);
+        try { result = await ctx.actionBridge.runServiceOrderHandoff({ candidates: profiles.map((profile) => profile.candidate), categoryId: category.id, expectedContentMode: requestMode }); }
+        catch (error) { result = { ok: false, thrown: error }; }
         ctx.serviceProfileHandoffPendingId = '';
         if (!result?.ok || !SERVICE_ORDER_UID_PATTERN.test(result.orderUid ?? '') || !Array.isArray(result.npcUids) || result.npcUids.length !== profiles.length) {
+            settleConsoleEntry('fail', consoleHandle, '服务订单未创建。', serviceFailureDetail('创建服务订单',
+                result?.ok ? { code: 'service_order_result_invalid', reason: '桥接返回结果与请求不一致（订单编号或角色数量不匹配）' } : (result?.thrown ?? result),
+                { stage: '原子复制角色并建立待确认订单' }));
             if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
             ctx.setFeedback(result?.ok ? describeActionFailure({ code: 'service_order_result_invalid' }) : (result?.message || describeActionFailure(result)), operationToken); ctx.renderPage(); return;
         }
+        settleConsoleEntry('succeed', consoleHandle, '已创建待确认服务订单。');
         for (const profile of profiles) { profile.orderUid = result.orderUid; ctx.selectedServiceProfileIds.delete(profile.id); }
         ctx.refreshState();
         if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
@@ -257,17 +321,22 @@ export function createServicePage(ctx) {
         if (ctx.currentView.mode !== requestMode) { ctx.setFeedback('内容模式已改变，请在当前模式重新选择历史服务。'); ctx.renderPage(); return; }
         const requestId = ++ctx.interactionGeneration; const operationEpoch = ctx.serviceOrderOperationEpoch; ctx.serviceOrderRepeatPendingId = order.id;
         const operationToken = ctx.setFeedback('正在创建新的待确认服务记录…'); ctx.renderPage(); let result;
-        try { result = await ctx.actionBridge.runServiceOrderRepeat({ sourceOrderUid: order.id, expectedContentMode: requestMode }); } catch { result = { ok: false }; }
+        const consoleHandle = startConsoleEntry('再次下单', '正在从终态订单创建新的待确认订单……');
+        try { result = await ctx.actionBridge.runServiceOrderRepeat({ sourceOrderUid: order.id, expectedContentMode: requestMode }); }
+        catch (error) { result = { ok: false, thrown: error }; }
         ctx.serviceOrderRepeatPendingId = '';
         if (!result?.ok) {
+            settleConsoleEntry('fail', consoleHandle, '再次下单未完成。', serviceFailureDetail('再次下单', result?.thrown ?? result, { stage: '受控订单复建' }));
             if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
             ctx.setFeedback(result?.message || describeActionFailure(result), operationToken); ctx.renderPage(); return;
         }
         if (!SERVICE_ORDER_UID_PATTERN.test(result.orderUid ?? '')) {
+            settleConsoleEntry('fail', consoleHandle, '再次下单未完成。', serviceFailureDetail('再次下单', { code: 'service_order_result_invalid', reason: '桥接返回的订单编号格式未通过校验' }, { stage: '返回结果校验' }));
             ctx.refreshState();
             if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
             ctx.setFeedback(describeActionFailure({ code: 'service_order_result_invalid' }), operationToken); ctx.renderPage(); return;
         }
+        settleConsoleEntry('succeed', consoleHandle, '已创建新的待确认服务订单。');
         ctx.refreshState();
         if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
         if (ctx.currentView.mode !== requestMode) { ctx.setFeedback('内容模式已改变；已创建新的待确认服务记录，但未填入正文草稿。', operationToken); return; }
@@ -481,26 +550,66 @@ export function createServicePage(ctx) {
         if (!staged) { ctx.setFeedback('本地最小历史写入失败，未修改 MVU 订单。'); return; }
         const requestId = ++ctx.interactionGeneration; ctx.serviceOrderMutationPendingId = order.id;
         const token = ctx.setFeedback(status === '已取消' ? '正在取消并归档订单…' : '正在完成并归档订单…'); ctx.renderPage();
+        const operationName = status === '已取消' ? '取消订单' : '完成结单';
+        const consoleHandle = startConsoleEntry(operationName, status === '已取消' ? '正在取消并归档订单……' : '正在完成并归档订单……');
         const transition = status === '已取消' ? ctx.actionBridge.runServiceOrderCancel : ctx.actionBridge.runServiceOrderComplete;
         let result;
-        try { result = await transition?.({ orderUid: order.id, expectedContentMode: order.mode }); } catch { result = { ok: false }; }
-        if (!result?.ok) { ctx.serviceOrderMutationPendingId = ''; if (!ctx.isDestroyed && requestId === ctx.interactionGeneration) { ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); } return; }
+        try { result = await transition?.({ orderUid: order.id, expectedContentMode: order.mode }); } catch (error) { result = { ok: false, thrown: error }; }
+        if (!result?.ok) {
+            settleConsoleEntry('fail', consoleHandle, `${operationName}未完成。`, serviceFailureDetail(operationName, result?.thrown ?? result, { stage: '受控状态转换' }));
+            ctx.serviceOrderMutationPendingId = ''; if (!ctx.isDestroyed && requestId === ctx.interactionGeneration) { ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); } return;
+        }
         ctx.refreshState();
-        try { result = await ctx.actionBridge.runServiceOrderFinalize?.({ orderUid: order.id }); } catch { result = { ok: false }; }
+        try { result = await ctx.actionBridge.runServiceOrderFinalize?.({ orderUid: order.id }); } catch (error) { result = { ok: false, thrown: error }; }
         if (result?.ok) ctx.serviceOrderHistoryStore.markArchived(staged.localId);
         serviceOrderStepState.delete(order.id);
         ctx.serviceOrderMutationPendingId = '';
+        if (result?.ok) settleConsoleEntry('succeed', consoleHandle, '订单已进入终态并完成归档。');
+        else settleConsoleEntry('fail', consoleHandle, '订单已进入终态，但归档未完成。', serviceFailureDetail(operationName, result?.thrown ?? result, { stage: '归档移除终态订单', hint: '本地保留待修复归档，可稍后在历史记录中继续归档' }));
         if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
         ctx.refreshState(); ctx.setFeedback(result?.ok ? '订单已归档至本设备历史，并已从 MVU 开放订单中移除。' : '订单已进入终态；本地已保留待修复归档，稍后可重试。', token); ctx.renderPage();
+    }
+    /**
+     * 兜底：活动表里出现终态订单（正文违规直写终态，或此前 finalize 失败）时，
+     * 先补记本地最小历史，再受控删除该终态订单。绝不改写订单内容或伪造状态迁移。
+     */
+    async function recoverTerminalServiceOrder(order) {
+        if (!order || !isTerminalServiceOrder(order) || ctx.serviceOrderMutationPendingId || !ctx.serviceOrderHistoryStore?.stage) return;
+        if (order.mode !== ctx.currentView.mode) return;
+        const staged = ctx.serviceOrderHistoryStore.stage(order, { status: order.status, summary: order.summary });
+        if (!staged) { ctx.setFeedback('本地最小历史写入失败；终态订单保持原样，稍后自动重试。'); return; }
+        const requestId = ++ctx.interactionGeneration; ctx.serviceOrderMutationPendingId = order.id;
+        const consoleHandle = startConsoleEntry('终态订单归档兜底', '检测到活动表中的终态订单，正在补记本地历史并移除……');
+        let result;
+        try { result = await ctx.actionBridge.runServiceOrderFinalize?.({ orderUid: order.id }); } catch (error) { result = { ok: false, thrown: error }; }
+        ctx.serviceOrderMutationPendingId = '';
+        if (result?.ok) {
+            ctx.serviceOrderHistoryStore.markArchived(staged.localId);
+            serviceOrderStepState.delete(order.id);
+            settleConsoleEntry('succeed', consoleHandle, '终态订单已归档至本设备历史，并已从 MVU 活动订单中移除。');
+        } else {
+            settleConsoleEntry('fail', consoleHandle, '终态订单归档未完成。', serviceFailureDetail('终态订单归档兜底', result?.thrown ?? result, { stage: '归档移除终态订单', hint: '本地保留待修复归档，可稍后在历史记录中继续归档' }));
+        }
+        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
+        ctx.refreshState(); ctx.renderPage();
     }
     async function startServiceOrder(order) {
         if (!order || ctx.serviceOrderMutationPendingId) return;
         const boundaries = readServiceBoundaryDraft(order); const requestId = ++ctx.interactionGeneration; const operationEpoch = ctx.serviceOrderOperationEpoch; ctx.serviceOrderMutationPendingId = order.id;
         const token = ctx.setFeedback('正在确认成交并开始订单…'); ctx.renderPage(); let result;
-        try { result = await ctx.actionBridge.runServiceOrderStart?.({ orderUid: order.id, boundaries, expectedContentMode: order.mode }); } catch { result = { ok: false }; }
+        const consoleHandle = startConsoleEntry('确认成交', '正在确认成交并开始订单……');
+        try { result = await ctx.actionBridge.runServiceOrderStart?.({ orderUid: order.id, boundaries, expectedContentMode: order.mode }); }
+        catch (error) { result = { ok: false, thrown: error }; }
         ctx.serviceOrderMutationPendingId = '';
-        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
-        if (!result?.ok) { ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return; }
+        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) {
+            settleConsoleEntry('dismiss', consoleHandle, '提示已关闭，结果未展示。');
+            return;
+        }
+        if (!result?.ok) {
+            settleConsoleEntry('fail', consoleHandle, '确认成交未完成。', serviceFailureDetail('确认成交', result?.thrown ?? result, { stage: '结构化边界校验与受控开单' }));
+            ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return;
+        }
+        settleConsoleEntry('succeed', consoleHandle, '订单已确认成交并进入进行中。');
         ctx.serviceBoundaryDrafts.delete(order.id); serviceOrderStepState.delete(order.id); ctx.refreshState();
         // 成交后把执行提示词填入酒馆输入框；appendMeetupDraft 只写值并触发 input，绝不自动发送。
         const filled = appendServiceDealDraft(order, boundaries, token, operationEpoch);
@@ -511,10 +620,19 @@ export function createServicePage(ctx) {
         if (!record || ctx.serviceOrderMutationPendingId) return;
         const requestId = ++ctx.interactionGeneration; const operationEpoch = ctx.serviceOrderOperationEpoch; ctx.serviceOrderMutationPendingId = record.localId;
         const token = ctx.setFeedback('正在建立新的待确认订单…'); ctx.renderPage(); let result;
-        try { result = await ctx.actionBridge.runServiceOrderRebook?.({ npcUids: record.roleUids, categoryId: record.categoryId, expectedContentMode: record.mode }); } catch { result = { ok: false }; }
+        const consoleHandle = startConsoleEntry('历史再次下单', '正在从本地历史建立新的待确认订单……');
+        try { result = await ctx.actionBridge.runServiceOrderRebook?.({ npcUids: record.roleUids, categoryId: record.categoryId, expectedContentMode: record.mode }); }
+        catch (error) { result = { ok: false, thrown: error }; }
         ctx.serviceOrderMutationPendingId = '';
-        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
-        if (!result?.ok) { ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return; }
+        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) {
+            settleConsoleEntry('dismiss', consoleHandle, '提示已关闭，结果未展示。');
+            return;
+        }
+        if (!result?.ok) {
+            settleConsoleEntry('fail', consoleHandle, '历史再次下单未完成。', serviceFailureDetail('历史再次下单', result?.thrown ?? result, { stage: '受控订单重建' }));
+            ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return;
+        }
+        settleConsoleEntry('succeed', consoleHandle, '已建立新的待确认服务订单。');
         ctx.refreshState();
         if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
         ctx.activeServiceHubTab = 'orders';
@@ -539,10 +657,18 @@ export function createServicePage(ctx) {
         }
         const requestId = ++ctx.interactionGeneration; ctx.serviceOrderMutationPendingId = record.localId;
         const token = ctx.setFeedback('正在继续移除 MVU 终态订单…'); ctx.renderPage(); let result;
-        try { result = await ctx.actionBridge.runServiceOrderFinalize?.({ orderUid: terminal.id }); } catch { result = { ok: false }; }
+        const consoleHandle = startConsoleEntry('继续归档', '正在继续移除终态订单……');
+        try { result = await ctx.actionBridge.runServiceOrderFinalize?.({ orderUid: terminal.id }); } catch (error) { result = { ok: false, thrown: error }; }
         ctx.serviceOrderMutationPendingId = '';
-        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
-        if (!result?.ok) { ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return; }
+        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) {
+            settleConsoleEntry('dismiss', consoleHandle, '提示已关闭，结果未展示。');
+            return;
+        }
+        if (!result?.ok) {
+            settleConsoleEntry('fail', consoleHandle, '继续归档未完成。', serviceFailureDetail('继续归档', result?.thrown ?? result, { stage: '移除终态订单', hint: '可稍后重试；本地记录仍保留待归档标记' }));
+            ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return;
+        }
+        settleConsoleEntry('succeed', consoleHandle, '本地归档已完成。');
         ctx.serviceOrderHistoryStore.markArchived(record.localId);
         ctx.refreshState(); ctx.setFeedback('已完成本地归档，并从 MVU 开放订单中移除。', token); ctx.renderPage();
     }
@@ -551,20 +677,36 @@ export function createServicePage(ctx) {
         if (!globalThis.confirm?.('删除后将同时移除本单全部服务角色，且无法恢复。确定删除吗？')) return;
         const requestId = ++ctx.interactionGeneration; ctx.serviceOrderMutationPendingId = record.localId;
         const token = ctx.setFeedback('正在删除历史与服务角色…'); ctx.renderPage(); let result;
-        try { result = await ctx.actionBridge.deleteServiceHistoryRoles?.({ npcUids: record.roleUids }); } catch { result = { ok: false }; }
+        const consoleHandle = startConsoleEntry('删除服务历史', '正在删除本地历史与关联服务角色……');
+        try { result = await ctx.actionBridge.deleteServiceHistoryRoles?.({ npcUids: record.roleUids }); } catch (error) { result = { ok: false, thrown: error }; }
         ctx.serviceOrderMutationPendingId = '';
-        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
-        if (!result?.ok) { ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return; }
+        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) {
+            settleConsoleEntry('dismiss', consoleHandle, '提示已关闭，结果未展示。');
+            return;
+        }
+        if (!result?.ok) {
+            settleConsoleEntry('fail', consoleHandle, '删除服务历史未完成。', serviceFailureDetail('删除服务历史', result?.thrown ?? result, { stage: '受控删除孤立服务角色' }));
+            ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return;
+        }
+        settleConsoleEntry('succeed', consoleHandle, '历史与关联服务角色已删除。');
         ctx.serviceOrderHistoryStore.remove(record.localId); ctx.refreshState(); ctx.setFeedback('历史与关联服务角色已删除，无法恢复。', token); ctx.renderPage();
     }
     async function repairServiceOrderIssue(issue) {
         if (!issue?.id || ctx.serviceOrderMutationPendingId || typeof ctx.actionBridge.repairServiceOrder !== 'function') return;
         const requestId = ++ctx.interactionGeneration; ctx.serviceOrderMutationPendingId = issue.id;
         const token = ctx.setFeedback('正在移除损坏服务记录…'); ctx.renderPage(); let result;
-        try { result = await ctx.actionBridge.repairServiceOrder({ orderUid: issue.id }); } catch { result = { ok: false }; }
+        const consoleHandle = startConsoleEntry('移除损坏订单', '正在移除损坏的服务订单记录……');
+        try { result = await ctx.actionBridge.repairServiceOrder({ orderUid: issue.id }); } catch (error) { result = { ok: false, thrown: error }; }
         ctx.serviceOrderMutationPendingId = '';
-        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
-        if (!result?.ok) { ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return; }
+        if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) {
+            settleConsoleEntry('dismiss', consoleHandle, '提示已关闭，结果未展示。');
+            return;
+        }
+        if (!result?.ok) {
+            settleConsoleEntry('fail', consoleHandle, '损坏记录未移除。', serviceFailureDetail('移除损坏订单', result?.thrown ?? result, { stage: '受控修复删除' }));
+            ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return;
+        }
+        settleConsoleEntry('succeed', consoleHandle, '损坏服务记录已移除。');
         ctx.refreshState(); ctx.setFeedback('损坏服务记录已移除；可重新创建服务订单。', token); ctx.renderPage();
     }
     function buildServiceOrderIssueCard(issue) {
@@ -876,6 +1018,7 @@ export function createServicePage(ctx) {
         serviceStepSummary,
         createServiceBoundaryEditor,
         archiveAndFinalizeServiceOrder,
+        recoverTerminalServiceOrder,
         startServiceOrder,
         rebookServiceHistory,
         finalizePendingServiceHistory,

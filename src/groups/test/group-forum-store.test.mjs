@@ -204,6 +204,27 @@ test('top replacement discards old local posts and summaries while bottom append
     assert.equal(snapshot.posts.some((post) => post.title === '追加：雨后的书店'), true);
 });
 
+test('bottom append inserts the new batch after all retained posts while top replace stays newest-first', async () => {
+    const store = createGroupForumStore({ now: CLOCK });
+    await store.ready();
+    await store.replaceForumPosts({ communityProfiles: [profile('林澈')], update: { participants: [], posts: forumRefreshPosts('林澈') } });
+    const before = await store.snapshot();
+    assert.equal(before.posts.length, 8);
+    assert.equal(before.posts[0].topic, '话题广场', '顶部替换保持最新写入在最前（合同逆序展示）');
+    await store.addForumRefresh({
+        communityProfiles: [profile('周遥')],
+        update: { participants: [], posts: forumRefreshPosts('周遥').map((post) => ({ ...post, title: `追加：${post.title}` })) },
+    });
+    const after = await store.snapshot();
+    assert.equal(after.posts.length, 16);
+    assert.deepEqual(after.posts.slice(0, 8).map((post) => post.id), before.posts.map((post) => post.id), '底部追加不得改变旧帖子的顺序或位置');
+    assert.deepEqual(
+        after.posts.slice(8).map((post) => post.title),
+        forumRefreshPosts('周遥').map((post) => `追加：${post.title}`),
+        '追加批次必须按合同顺序排在本地列表末尾，而不是插到顶部',
+    );
+});
+
 test('store rejects minor temporary profiles and derives existing group cache keys from public presentation only', async () => {
     const store = createGroupForumStore({ now: CLOCK });
     await store.ready();
