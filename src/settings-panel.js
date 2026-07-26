@@ -1,4 +1,5 @@
 import { append, element, listen } from './dom.js';
+import { createUiIcon } from './ui/icon.js';
 import { CONTENT_MODES, FUNCTION_KEYS, YueLeMaSettingsError } from './settings/settings-store.js';
 import {
     deletePersistentKey,
@@ -253,7 +254,7 @@ function readPromptBundle(rawJson) {
  * Builds the settings console. Connection configuration stays export-safe, while
  * API Keys live only in the separate browser-local key cache and are never shown.
  */
-export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender, onNavigate, view, contentMode }) {
+export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender, onNavigate, view, contentMode, dialogController }) {
     const panel = element('section', { className: 'yl-settings-panel' });
     const activeView = normalizeSettingsView(view);
     const activeContentMode = normalizeContentMode(contentMode);
@@ -921,14 +922,17 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             notice.setAttribute('role', 'dialog');
             notice.setAttribute('aria-modal', 'true');
             const closeNotice = () => {
-                notice.hidden = true;
+                // 控制器 close 自带 hidden=true 与礼貌回焦 opener；无控制器时保持旧的 hidden 切换降级。
+                if (dialogController) dialogController.close(notice);
+                else notice.hidden = true;
                 enabled.checked = true;
             };
             const noticeTitlebar = element('div', { className: 'yl-dialog-titlebar' });
             const noticeClose = element('button', {
-                className: 'yl-dialog-close', type: 'button', text: '×', name: 'personalization-modal-close',
+                className: 'yl-dialog-close', type: 'button', name: 'personalization-modal-close',
                 ariaLabel: '关闭个性化内容推荐说明',
             });
+            noticeClose.appendChild(createUiIcon(document, 'close', { className: 'yl-dialog-close-svg', size: 18 }));
             append(noticeTitlebar, [element('h2', { text: '个性化内容推荐说明' }), noticeClose]);
             notice.appendChild(noticeTitlebar);
             listen(noticeClose, noticeClose, 'click', () => {
@@ -937,10 +941,14 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             }, signal);
             for (const paragraph of PERSONALIZATION_NOTICE) notice.appendChild(element('p', { text: paragraph }));
             const noticeActions = element('div', { className: 'yl-settings-actions' });
-            noticeActions.appendChild(actionButton('确定', async () => updateSettings(
-                () => settingsStore.setPersonalizationEnabled(false),
-                '个性化内容推荐已在当前设备关闭；后续首页刷新将不再参考本地标签权重。',
-            ), signal, { name: 'personalization-disable-confirm' }));
+            noticeActions.appendChild(actionButton('确定', async () => {
+                // 先把弹窗移出控制器焦点栈（含回焦 opener），成功保存后 onRerender 会重建整个面板。
+                if (dialogController) dialogController.close(notice);
+                updateSettings(
+                    () => settingsStore.setPersonalizationEnabled(false),
+                    '个性化内容推荐已在当前设备关闭；后续首页刷新将不再参考本地标签权重。',
+                );
+            }, signal, { name: 'personalization-disable-confirm' }));
             noticeActions.appendChild(actionButton('保持开启并关闭', async () => {
                 closeNotice();
                 onFeedback('已取消关闭，个性化内容推荐保持开启。');
@@ -954,7 +962,9 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                     return;
                 }
                 enabled.checked = true;
-                notice.hidden = false;
+                // 控制器 open 自带 hidden=false、aria-modal 与首个可聚焦元素聚焦；Escape/Tab 由 app-shell 全局委托。
+                if (dialogController) dialogController.open(notice, { opener: enabled, onRequestClose: closeNotice });
+                else notice.hidden = false;
             }, signal);
             return section;
         }

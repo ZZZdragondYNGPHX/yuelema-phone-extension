@@ -10,16 +10,20 @@ import { createImageManagerPanel } from './images/image-manager-panel.js';
 import { formatImageDirective } from './images/image-directive.js';
 import { createAvatarView, safeAvatarImageSource } from './ui/avatar-view.js';
 import { createOperationActivity } from './ui/operation-activity.js';
+import { createUiIcon } from './ui/icon.js';
+import { createMediaState } from './ui/media-state.js';
+import { createDialogController } from './ui/dialog-controller.js';
 import { DEFAULT_FORUM_AUTO_SETTINGS, DEFAULT_GROUP_AUTO_SETTINGS, FORUM_CHANNELS, externalGroupCacheKey, forumChannelForTopic, groupForumProfileForDisplay, publicProfileToGroupForumProfile } from './groups/group-forum-store.js';
 
 const UI_VERSION = '0.1.37';
+const UI_LAYOUT_STORAGE_KEY = 'yuelema.ui-layout/v1';
 const PANEL_DRAG_THRESHOLD = 8;
 const FORUM_PULL_THRESHOLD = 88;
 const FORUM_WHEEL_RELEASE_DELAY = 180;
 const FORUM_WHEEL_MAX_DISTANCE = 288;
 const CHAT_TOOL_LONG_PRESS_MS = 460;
 const ACTION_LABELS = Object.freeze({ like: '喜欢', refresh: '刷新', favorite: '收藏', unfavorite: '取消收藏', start_private_chat: '发起私聊', dislike: '不喜欢' });
-const ACTION_ICONS = Object.freeze({ like: '♥', refresh: '↻', favorite: '★', unfavorite: '★', start_private_chat: '✉', dislike: '✕' });
+const ACTION_ICON_NAMES = Object.freeze({ like: 'action_like', refresh: 'action_next', favorite: 'action_favorite', unfavorite: 'action_favorite', start_private_chat: 'action_chat', dislike: 'action_dislike' });
 const LOCAL_PAGE_COPY = Object.freeze({
     settings_image_generation: Object.freeze({ title: '生图设置' }),
     about: Object.freeze({ title: '关于软件' }),
@@ -40,38 +44,73 @@ const SERVICE_PRODUCT_CATEGORIES = Object.freeze([
     Object.freeze({ id: 'girl_luren', label: '路人商品', note: '虚构的成年陌生人邂逅；不使用现实可识别人物。' }),
     Object.freeze({ id: 'random_generation', label: '随机商品', note: '按你的偏好随机组合的虚构成年都市角色。' }),
 ]);
+// 论坛频道结构图标：本地 SVG 白名单映射；未知频道回退到店内文字符号（内容而非系统控制）。
+const FORUM_CHANNEL_ICON_NAMES = Object.freeze({
+    daily_mood: 'channel_mood',
+    nearby_people: 'channel_nearby',
+    city_moments: 'channel_moments',
+    shared_interests: 'channel_interests',
+    topic_square: 'channel_topics',
+});
 const SERVICE_HUB_TABS = Object.freeze([
-    Object.freeze({ id: 'home', label: '首页', icon: '⌂' }),
-    Object.freeze({ id: 'discover', label: '发现', icon: '◇' }),
-    Object.freeze({ id: 'service', label: '服务', icon: '♡' }),
-    Object.freeze({ id: 'history', label: '历史', icon: '◷' }),
+    Object.freeze({ id: 'home', label: '首页', iconName: 'home' }),
+    Object.freeze({ id: 'discover', label: '发现', iconName: 'sparkle' }),
+    Object.freeze({ id: 'service', label: '服务', iconName: 'service_hub' }),
+    Object.freeze({ id: 'history', label: '历史', iconName: 'clock' }),
 ]);
 function pageCopy(pageId) { return PAGE_COPY[pageId] ?? LOCAL_PAGE_COPY[pageId] ?? null; }
 const PRIMARY_PAGE_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'groups', group_chat_create: 'groups', group_chat_summary: 'groups', group_forum: 'groups', forum_post: 'groups', forum_post_summary: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home',
 });
 const PAGE_PARENT_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'group_chat', group_chat_create: 'group_chat', group_chat_summary: 'group_chat_room', group_forum: 'groups', forum_post: 'group_forum', forum_post_summary: 'forum_post', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile', settings: 'profile',
-    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', settings_image_generation: 'settings', settings_console: 'settings', settings_chat_summary: 'settings', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'settings', candidate_detail: 'home', match_profile: 'matches',
+    settings_connections: 'settings', settings_prompts: 'settings', settings_privacy: 'settings', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'settings', settings_image_generation: 'settings', settings_console: 'settings', settings_chat_summary: 'settings', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'settings', candidate_detail: 'home',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
-    matches: Object.freeze([{ key: 'soul_match', title: '灵魂匹配' }, { key: 'text_match', title: '语音匹配' }]),
+    matches: Object.freeze([{ key: 'soul_match', title: '灵魂匹配' }, { key: 'text_match', title: '描述匹配' }]),
     messages: Object.freeze([{ key: 'chat', title: '私聊' }]),
     group_forum: Object.freeze([{ key: 'forum', title: '论坛' }]),
     character_creator: Object.freeze([{ key: 'character_ai_completion', title: 'AI 完善补全' }, { key: 'character_full_authoring', title: 'AI 完整创作' }]),
     service_hub: Object.freeze([{ key: 'service_profile_generation', title: '约伴服务角色生成' }]),
 });
 
+function uiLayoutStorageOrNull(injectedStorage) {
+    if (injectedStorage !== undefined) return injectedStorage && typeof injectedStorage.getItem === 'function' && typeof injectedStorage.setItem === 'function' ? injectedStorage : null;
+    try {
+        const storage = globalThis.localStorage;
+        return storage && typeof storage.getItem === 'function' && typeof storage.setItem === 'function' ? storage : null;
+    } catch { return null; }
+}
+function readUiLayoutPreference(storage) {
+    try { return storage?.getItem(UI_LAYOUT_STORAGE_KEY) === 'desktop' ? 'desktop' : 'phone'; }
+    catch { return 'phone'; }
+}
+function persistUiLayoutPreference(storage, mode) {
+    try {
+        if (!storage) return false;
+        storage.setItem(UI_LAYOUT_STORAGE_KEY, mode === 'desktop' ? 'desktop' : 'phone');
+        return true;
+    } catch { return false; }
+}
+
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
-export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, imageLibrary = null, imageMatchCoordinator = null, groupForumStore = null, serviceOrderHistoryStore = null, readState = () => readLatestState() }) {
+export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, imageLibrary = null, imageMatchCoordinator = null, remoteImageImporter = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
     const abortController = new AbortController();
+    // 弹窗焦点统一由控制器管理：打开聚焦、Tab 焦点环、Escape 关栈顶、关闭礼貌回 opener。
+    const dialogController = createDialogController({ documentRef });
     const root = documentRef.createElement('section');
     root.id = rootId;
     root.className = 'yl-phone-extension';
     root.setAttribute('aria-label', '约了吗小手机');
     root.dataset.contentMode = 'SFW';
+
+    // The layout is a browser-only preference. It deliberately never flows into MVU,
+    // prompts, network payloads, exported data, or action-bridge commands.
+    const layoutStorage = uiLayoutStorageOrNull(uiLayoutStorage);
+    let uiLayoutMode = readUiLayoutPreference(layoutStorage);
+    root.dataset.uiLayout = uiLayoutMode;
 
     let open = false;
     let activePage = 'home';
@@ -92,7 +131,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let suppressChatToolClickForSessionUid = '';
     let chatToolClickSuppressionTimer = null;
     let selectedCandidateUid = '';
-    let matchedProfileDraft = null;
     let voiceMatchText = '';
     let aboutClickStreak = 0;
     let aboutUnlocked = false;
@@ -167,6 +205,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let imageManagerPanel = null;
     const matchedImageByProfile = new Map();
     const imageMatchPending = new Map();
+    // Image presentation state stays in this mounted UI only. It never enters MVU,
+    // prompts, storage, diagnostics, or image-library records.
+    const imageMatchFailures = new Set();
+    const imageAssetFailures = new Set();
+    const imageAssetsReady = new Set();
     const privateImageDirectives = new Map();
     const conversationImageStates = new Map();
     const imageDirectiveLongPressTimers = new Set();
@@ -174,10 +217,43 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let unsubscribeOperationActivity = null;
     let interactionGeneration = 0;
     let isDestroyed = false;
+    let panelHasCustomPosition = false;
 
+    /** 弹窗关闭兜底：opener 已被页面重渲替换时，焦点不得滞留在隐藏弹窗内，落到当前页标题。 */
+    function settleFocusAfterDialogClose(dialog) {
+        const active = documentRef.activeElement ?? null;
+        let node = active;
+        let inside = false;
+        while (node) {
+            if (node === dialog) { inside = true; break; }
+            node = node.parentNode ?? null;
+        }
+        if (!inside) return;
+        const heading = content.querySelector?.('.yl-page-heading')?.querySelector?.('h1') ?? null;
+        if (!heading || typeof heading.focus !== 'function') return;
+        heading.setAttribute('tabindex', '-1');
+        try { heading.focus(); } catch { /* 焦点兜底失败保持静默 */ }
+    }
+    function closeManagedDialog(dialog) {
+        dialogController.close(dialog);
+        settleFocusAfterDialogClose(dialog);
+    }
+    /** 结构性关闭图标：本地 SVG 白名单，不再依赖 Unicode “×” 字符渲染。 */
+    function applyCloseIcon(button) {
+        button.appendChild(createUiIcon(documentRef, 'close', { className: 'yl-dialog-close-svg', size: 18 }));
+        return button;
+    }
+    /** 列表/入口右侧的“进入”指示：同一 chevron SVG 家族，替代文字 “›”。 */
+    function openMark(className = 'yl-session-open-mark') {
+        const mark = element('span', { className });
+        mark.setAttribute('aria-hidden', 'true');
+        mark.appendChild(createUiIcon(documentRef, 'chevron_right', { className: 'yl-open-mark-svg', size: 16 }));
+        return mark;
+    }
     const launcher = element('button', { className: 'yl-phone-launcher', type: 'button', ariaLabel: '打开约了吗小手机', pressed: false, text: '约' });
     launcher.appendChild(element('span', { className: 'yl-phone-launcher-label', text: '约了吗' }));
     const panel = element('aside', { className: 'yl-phone-panel', ariaLabel: '约了吗小手机窗口', hidden: true });
+    panel.dataset.uiLayout = uiLayoutMode;
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'false');
     const header = element('header', { className: 'yl-phone-header', ariaLabel: '拖动约了吗小手机窗口' });
@@ -187,19 +263,25 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     statusDot.setAttribute('aria-hidden', 'true');
     const statusLine = element('span', { className: 'yl-phone-status' });
     append(brand, [element('strong', { text: '约了吗' }), statusDot, statusLine]);
-    const closeButton = element('button', { className: 'yl-phone-close', type: 'button', ariaLabel: '关闭约了吗小手机', text: '×' });
+    const closeButton = applyCloseIcon(element('button', { className: 'yl-phone-close', type: 'button', ariaLabel: '关闭约了吗小手机' }));
     const headerActions = element('div', { className: 'yl-phone-header-actions' });
     const dragHint = element('span', { className: 'yl-phone-drag-hint', text: '⠿ 拖动' });
     dragHint.setAttribute('aria-hidden', 'true');
     append(headerActions, [dragHint, closeButton]);
     append(header, [brand, headerActions]);
     const content = element('main', { className: 'yl-phone-content' });
+    const uiLayoutStatus = element('p', { className: 'yl-ui-layout-status' });
+    uiLayoutStatus.setAttribute('role', 'status');
+    uiLayoutStatus.setAttribute('aria-live', 'polite');
+    uiLayoutStatus.setAttribute('aria-atomic', 'true');
     const nav = element('nav', { className: 'yl-phone-nav', ariaLabel: '约了吗主导航' });
     const navButtons = new Map();
     function createPrimaryNavButton(item) {
         const button = element('button', { className: 'yl-phone-nav-item', type: 'button', ariaLabel: item.label });
+        const iconWrap = element('span', { className: 'yl-nav-icon' });
+        iconWrap.appendChild(createUiIcon(documentRef, item.iconName ?? item.id, { className: 'yl-nav-icon-svg', size: 22 }));
         append(button, [
-            element('span', { className: 'yl-nav-icon', text: item.icon }),
+            iconWrap,
             element('span', { className: 'yl-nav-label', text: item.label }),
         ]);
         button.dataset.page = item.id;
@@ -207,23 +289,23 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         listen(button, button, 'click', () => setActivePage(item.id), abortController.signal);
         return button;
     }
-    const serviceNavButton = createPrimaryNavButton({ id: 'service_hub', label: '约伴', icon: '♡' });
+    const serviceNavButton = createPrimaryNavButton({ id: 'service_hub', label: '约伴', iconName: 'service_hub' });
     serviceNavButton.classList.toggle('yl-service-nav', true);
     serviceNavButton.hidden = true;
     for (const item of NAV_ITEMS) {
         if (item.id === 'profile') nav.appendChild(serviceNavButton);
         nav.appendChild(createPrimaryNavButton(item));
     }
-    append(panel, [header, content, nav]);
+    append(panel, [header, content, nav, uiLayoutStatus]);
 
     const operationDialog = element('section', { className: 'yl-phone-placeholder yl-operation-dialog', hidden: true });
     operationDialog.setAttribute('role', 'dialog');
     operationDialog.setAttribute('aria-modal', 'false');
     operationDialog.setAttribute('aria-live', 'polite');
-    const operationDismiss = element('button', {
+    const operationDismiss = applyCloseIcon(element('button', {
         className: 'yl-dialog-close', type: 'button', name: 'operation-dialog-close',
-        ariaLabel: '关闭操作弹窗', text: '×',
-    });
+        ariaLabel: '关闭操作弹窗',
+    }));
     const operationTitle = element('h2', { text: '' });
     const romanceVisual = element('div', { className: 'yl-romance-visual', hidden: true, ariaLabel: '恋爱互动状态动画' });
     romanceVisual.setAttribute('aria-hidden', 'true');
@@ -246,7 +328,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     bindingDialog.setAttribute('aria-label', '功能预设选项');
     const bindingDialogTitlebar = element('div', { className: 'yl-dialog-titlebar' });
     const bindingDialogTitle = element('h2', { text: '功能预设选项' });
-    const bindingDialogClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭功能预设选项' });
+    const bindingDialogClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭功能预设选项' }));
     const bindingDialogContent = element('div', { className: 'yl-settings-panel' });
     append(bindingDialogTitlebar, [bindingDialogTitle, bindingDialogClose]);
     append(bindingDialog, [bindingDialogTitlebar, bindingDialogContent]);
@@ -256,26 +338,22 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     avatarDialog.setAttribute('aria-label', '更换个人头像');
     const avatarDialogTitlebar = element('div', { className: 'yl-dialog-titlebar' });
     const avatarDialogTitle = element('h2', { text: '更换头像' });
-    const avatarDialogClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭头像菜单' });
+    const avatarDialogClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭头像菜单' }));
     append(avatarDialogTitlebar, [avatarDialogTitle, avatarDialogClose]);
     const avatarDialogSummary = element('p', { className: 'yl-settings-summary', text: '头像仅保存到当前浏览器，不会写入公开资料、MVU 或提示词。' });
     const avatarFileInput = element('input', { type: 'file', accept: avatarAcceptAttribute(), ariaLabel: '选择本地头像文件' });
     avatarFileInput.hidden = true;
     const avatarFileButton = element('button', { className: 'yl-settings-button', type: 'button', text: '从本地导入图片' });
-    const avatarLinkField = element('label', { className: 'yl-settings-field' });
-    avatarLinkField.appendChild(element('span', { text: '引用图片链接' }));
-    const avatarLinkInput = element('input', { className: 'yl-settings-control', type: 'url', maxLength: 2048, placeholder: 'https://example.com/avatar.webp', ariaLabel: '头像图片链接' });
-    avatarLinkField.appendChild(avatarLinkInput);
-    const avatarLinkButton = element('button', { className: 'yl-settings-button', type: 'button', text: '保存图片链接' });
+    const avatarDialogHint = element('p', { className: 'yl-avatar-source-hint', text: '仅支持从本地导入 PNG、JPEG 或 WebP；不加载网络图片链接。' });
     const avatarRemoveButton = element('button', { className: 'yl-settings-button yl-avatar-remove', type: 'button', text: '移除头像' });
-    append(avatarDialog, [avatarDialogTitlebar, avatarDialogSummary, avatarFileInput, avatarFileButton, avatarLinkField, avatarLinkButton, avatarRemoveButton]);
+    append(avatarDialog, [avatarDialogTitlebar, avatarDialogSummary, avatarFileInput, avatarFileButton, avatarDialogHint, avatarRemoveButton]);
     const groupMemberPickerDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-group-member-picker', hidden: true });
     groupMemberPickerDialog.setAttribute('role', 'dialog');
     groupMemberPickerDialog.setAttribute('aria-modal', 'false');
     groupMemberPickerDialog.setAttribute('aria-label', '添加私聊角色');
     const groupMemberPickerTitlebar = element('div', { className: 'yl-dialog-titlebar' });
     const groupMemberPickerTitle = element('h2', { text: '添加私聊角色' });
-    const groupMemberPickerClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭私聊角色选择' });
+    const groupMemberPickerClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭私聊角色选择' }));
     const groupMemberPickerContent = element('div', { className: 'yl-settings-panel yl-group-member-picker-content' });
     append(groupMemberPickerTitlebar, [groupMemberPickerTitle, groupMemberPickerClose]);
     append(groupMemberPickerDialog, [groupMemberPickerTitlebar, groupMemberPickerContent]);
@@ -286,7 +364,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     groupAutoDialog.setAttribute('aria-label', '聊天群自动更新');
     const groupAutoTitlebar = element('div', { className: 'yl-dialog-titlebar' });
     const groupAutoTitle = element('h2', { text: '自动更新' });
-    const groupAutoClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭自动更新设置' });
+    const groupAutoClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭自动更新设置' }));
     const groupAutoContent = element('div', { className: 'yl-settings-panel yl-group-auto-content' });
     append(groupAutoTitlebar, [groupAutoTitle, groupAutoClose]);
     append(groupAutoDialog, [groupAutoTitlebar, groupAutoContent]);
@@ -297,7 +375,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     forumSettingsDialog.setAttribute('aria-label', '心动社区设置');
     const forumSettingsTitlebar = element('div', { className: 'yl-dialog-titlebar' });
     const forumSettingsTitle = element('h2', { text: '心动社区设置' });
-    const forumSettingsClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭心动社区设置' });
+    const forumSettingsClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭心动社区设置' }));
     const forumSettingsContent = element('div', { className: 'yl-settings-panel yl-forum-settings-content' });
     append(forumSettingsTitlebar, [forumSettingsTitle, forumSettingsClose]);
     append(forumSettingsDialog, [forumSettingsTitlebar, forumSettingsContent]);
@@ -307,7 +385,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     imageDirectiveDialog.setAttribute('aria-modal', 'false');
     imageDirectiveDialog.setAttribute('aria-label', '生图结构化语句');
     const imageDirectiveTitlebar = element('div', { className: 'yl-dialog-titlebar' });
-    const imageDirectiveClose = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: '关闭生图结构化语句' });
+    const imageDirectiveClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭生图结构化语句' }));
     append(imageDirectiveTitlebar, [element('h2', { text: '生图结构化语句' }), imageDirectiveClose]);
     const imageDirectiveDialogText = element('textarea', { className: 'yl-settings-control yl-settings-textarea yl-image-directive-dialog-text', rows: 8, ariaLabel: '当前图片结构化语句' });
     imageDirectiveDialogText.readOnly = true;
@@ -320,12 +398,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         catch { return ''; }
     }
     function closeImageDirectiveDialog() {
-        imageDirectiveDialog.hidden = true;
+        closeManagedDialog(imageDirectiveDialog);
         imageDirectiveDialogText.value = '';
     }
     function openImageDirectiveDialog(directive) {
         imageDirectiveDialogText.value = formatDirectiveForDisplay(directive) || '结构化语句当前不可用。';
-        imageDirectiveDialog.hidden = false;
+        dialogController.open(imageDirectiveDialog, { onRequestClose: closeImageDirectiveDialog });
     }
     function clearImageDirectiveLongPressTimers() {
         for (const timer of imageDirectiveLongPressTimers) clearTimeout(timer);
@@ -495,8 +573,56 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             top: Math.max(margin, Math.min(top, Math.max(margin, viewport.height - height - margin))),
         };
     }
+    function clampCustomPanelPosition() {
+        // Preserve the CSS right/bottom anchor until the user has deliberately dragged.
+        if (!panelHasCustomPosition) return;
+        const rawLeft = typeof panel.style?.getPropertyValue === 'function' ? panel.style.getPropertyValue('left') : (panel.style?.left ?? '');
+        const rawTop = typeof panel.style?.getPropertyValue === 'function' ? panel.style.getPropertyValue('top') : (panel.style?.top ?? '');
+        const left = Number.parseFloat(rawLeft);
+        const top = Number.parseFloat(rawTop);
+        if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+        const rect = panel.getBoundingClientRect?.();
+        const width = Number(rect?.width);
+        const height = Number(rect?.height);
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+        // Inline left/top can be relative to a transformed host ancestor; clamp in viewport
+        // coordinates then write the compensated local coordinates back to that ancestor.
+        const originX = (Number(rect?.left) || 0) - left;
+        const originY = (Number(rect?.top) || 0) - top;
+        const next = clampPanelPosition(Number(rect?.left) || left, Number(rect?.top) || top, width, height);
+        setPanelPosition(next.left - originX, next.top - originY);
+    }
+    function applyUiLayoutMode(mode) {
+        const next = mode === 'desktop' ? 'desktop' : 'phone';
+        uiLayoutMode = next;
+        root.dataset.uiLayout = next;
+        panel.dataset.uiLayout = next;
+    }
+    function announceUiLayout(message) {
+        uiLayoutStatus.textContent = '';
+        const publish = () => {
+            if (!isDestroyed) uiLayoutStatus.textContent = message;
+        };
+        if (typeof globalThis.queueMicrotask === 'function') globalThis.queueMicrotask(publish);
+        else Promise.resolve().then(publish);
+    }
+    function setUiLayoutMode(mode, toggleButton = null) {
+        if (panelDrag) return;
+        const requested = mode === 'desktop' ? 'desktop' : 'phone';
+        if (requested === uiLayoutMode) return;
+        // A layout preference is deliberately storage-only. Failure is a silent safe fallback
+        // to phone mode rather than a partially applied, non-restorable desktop mode.
+        const next = persistUiLayoutPreference(layoutStorage, requested) ? requested : 'phone';
+        applyUiLayoutMode(next);
+        updateUiLayoutToggle(toggleButton);
+        announceUiLayout(next === requested
+            ? (next === 'desktop' ? '已切换到电脑端界面。' : '已切换到手机端界面。')
+            : '已保留手机端界面。');
+        clampCustomPanelPosition();
+    }
     function setPanelPosition(left, top) {
         if (!panel.style?.setProperty) return;
+        panelHasCustomPosition = true;
         panel.style.setProperty('left', Math.round(left) + 'px');
         panel.style.setProperty('top', Math.round(top) + 'px');
         panel.style.setProperty('right', 'auto');
@@ -722,36 +848,86 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         try { return JSON.stringify(profile); } catch { return ''; }
     }
     function imageSourceUrl(record) {
-        if (record?.source?.kind === 'embedded' && typeof record.source.dataUrl === 'string') return record.source.dataUrl;
-        if (record?.source?.kind === 'url' && typeof record.source.url === 'string') return record.source.url;
-        return '';
+        // Coordinators may be injected by the host. Re-normalize at the final DOM
+        // boundary so only validated embedded image data can become an <img src>.
+        return safeAvatarImageSource(record);
     }
     function clearMatchedImageState() {
         matchedImageByProfile.clear();
         imageMatchPending.clear();
+        imageMatchFailures.clear();
+        imageAssetFailures.clear();
+        imageAssetsReady.clear();
         try { imageMatchCoordinator?.clearCache?.(); } catch { /* best effort */ }
     }
-    function scheduleImageMatch(candidate) {
+    function scheduleImageMatch(candidate, { force = false } = {}) {
         if (!imageMatchCoordinator || typeof imageMatchCoordinator.resolveImage !== 'function') return;
         const key = imageProfileKey(candidate);
-        if (!key || matchedImageByProfile.has(key) || imageMatchPending.has(key)) return;
+        if (!key || imageMatchPending.has(key)) return;
+        if (!force && (matchedImageByProfile.has(key) || imageMatchFailures.has(key))) return;
+        if (force) {
+            matchedImageByProfile.delete(key);
+            imageMatchFailures.delete(key);
+            imageAssetFailures.delete(key);
+            imageAssetsReady.delete(key);
+        }
         const profile = imageMatchProfile(candidate);
         const task = Promise.resolve().then(() => imageMatchCoordinator.resolveImage(profile, { contentMode: currentView.mode }))
-            .then((record) => { matchedImageByProfile.set(key, record ?? null); if (open) renderPage(); })
-            .catch(() => { matchedImageByProfile.set(key, null); })
-            .finally(() => { imageMatchPending.delete(key); });
+            .then((record) => {
+                imageMatchFailures.delete(key);
+                imageAssetFailures.delete(key);
+                imageAssetsReady.delete(key);
+                matchedImageByProfile.set(key, record ?? null);
+            })
+            .catch(() => {
+                matchedImageByProfile.delete(key);
+                imageMatchFailures.add(key);
+                imageAssetsReady.delete(key);
+            })
+            .finally(() => {
+                imageMatchPending.delete(key);
+                if (open) renderPage();
+            });
         imageMatchPending.set(key, task);
+    }
+    function retryCandidateImage(candidate) {
+        const key = imageProfileKey(candidate);
+        if (!key || imageMatchPending.has(key)) return;
+        matchedImageByProfile.delete(key);
+        imageMatchFailures.delete(key);
+        imageAssetFailures.delete(key);
+        imageAssetsReady.delete(key);
+        try { imageMatchCoordinator?.clearCache?.(); } catch { /* best effort */ }
+        scheduleImageMatch(candidate, { force: true });
+        if (open) renderPage();
+    }
+    function candidateImageState(candidate) {
+        const key = imageProfileKey(candidate);
+        if (!candidate || !key) return 'empty';
+        if (imageMatchPending.has(key)) return 'loading';
+        if (imageMatchFailures.has(key) || imageAssetFailures.has(key)) return 'error';
+        if (matchedImageByProfile.has(key)) {
+            const record = matchedImageByProfile.get(key);
+            if (!record || !imageSourceUrl(record)) return 'empty';
+            return imageAssetsReady.has(key) ? 'ready' : 'loading';
+        }
+        if (imageMatchCoordinator && typeof imageMatchCoordinator.resolveImage === 'function') {
+            scheduleImageMatch(candidate);
+            return 'loading';
+        }
+        return 'empty';
     }
     function matchedImageFor(candidate) {
         const key = imageProfileKey(candidate);
         if (!key) return null;
-        if (!matchedImageByProfile.has(key)) scheduleImageMatch(candidate);
+        if (!matchedImageByProfile.has(key) && !imageMatchFailures.has(key)) scheduleImageMatch(candidate);
         return matchedImageByProfile.get(key) ?? null;
     }
-    function appendImagePreview(parent, record, className, alt, onFailure) {
+    function appendImagePreview(parent, record, className, alt, { onLoad, onFailure } = {}) {
         const source = imageSourceUrl(record);
         if (!source) return false;
         const image = element('img', { className, src: source, alt, loading: 'lazy', referrerPolicy: 'no-referrer' });
+        listen(image, image, 'load', () => { onLoad?.(); }, abortController.signal);
         listen(image, image, 'error', () => { image.hidden = true; onFailure?.(); }, abortController.signal);
         parent.appendChild(image);
         return true;
@@ -778,6 +954,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         } else delete romanceVisual.dataset.visual;
         romanceSignal.textContent = visual === 'accepted' ? '♥' : visual === 'declined' || visual === 'failure' ? '╳' : '∿∿∿';
         romanceRight.textContent = visual === 'declined' || visual === 'failure' ? '♡' : '♥';
+        const wasHidden = operationDialog.hidden;
         operationDialog.hidden = false;
         operationDialog.setAttribute('role', state === 'failure' ? 'alertdialog' : 'dialog');
         operationDialog.setAttribute('aria-live', state === 'failure' ? 'assertive' : 'polite');
@@ -787,6 +964,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         operationDismiss.hidden = false;
         operationClose.hidden = false;
         operationClose.textContent = state === 'loading' ? '关闭提示' : '关闭';
+        // 仅在“关闭 → 打开”过渡时接管焦点；状态更新（loading → success 等）不反复抢焦点。
+        if (wasHidden) dialogController.open(operationDialog, { initialFocus: operationClose, onRequestClose: hideOperationDialog });
         if (Number.isFinite(autoCloseMs) && autoCloseMs > 0) {
             const delay = Math.max(1000, Math.min(10000, Math.round(autoCloseMs)));
             operationAutoCloseTimer = globalThis.setTimeout(() => {
@@ -816,7 +995,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         interactionGeneration += 1;
         clearOperationAutoClose();
         activeOperation = null;
-        operationDialog.hidden = true;
+        closeManagedDialog(operationDialog);
         operationDialog.setAttribute('aria-busy', 'false');
     }
     function visibleOperationMessage(message, fallback) {
@@ -922,7 +1101,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         setActivePage(back);
     }
     function closeFeatureBindingDialog() {
-        bindingDialog.hidden = true;
+        closeManagedDialog(bindingDialog);
         bindingDialogContent.replaceChildren();
         featureBindingDialogState = null;
     }
@@ -978,7 +1157,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             }, abortController.signal);
             row.appendChild(save); bindingDialogContent.appendChild(row);
         }
-        bindingDialog.hidden = false;
+        dialogController.open(bindingDialog, { onRequestClose: closeFeatureBindingDialog });
     }
     function buildFeatureOptionsButton(pageId) {
         const features = FEATURE_BINDING_FOR_PAGE[pageId];
@@ -991,14 +1170,38 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }, abortController.signal);
         return button;
     }
+    function createLayoutSvgIcon(mode) {
+        const current = mode === 'desktop' ? 'desktop' : 'phone';
+        const svg = createUiIcon(documentRef, current, { className: 'yl-ui-layout-icon' });
+        svg.dataset.layoutIcon = current;
+        return svg;
+    }
+    function updateUiLayoutToggle(button) {
+        if (!button) return;
+        const currentLabel = uiLayoutMode === 'desktop' ? '电脑端界面' : '手机端界面';
+        const targetLabel = uiLayoutMode === 'desktop' ? '手机端界面' : '电脑端界面';
+        const description = `当前为${currentLabel}，切换到${targetLabel}`;
+        button.dataset.uiLayout = uiLayoutMode;
+        button.setAttribute('aria-label', description);
+        button.setAttribute('title', description);
+        button.replaceChildren(createLayoutSvgIcon(uiLayoutMode));
+    }
+    function buildUiLayoutToggle() {
+        const button = element('button', { className: 'yl-ui-layout-toggle', type: 'button' });
+        updateUiLayoutToggle(button);
+        listen(button, button, 'click', () => setUiLayoutMode(uiLayoutMode === 'desktop' ? 'phone' : 'desktop', button), abortController.signal);
+        return button;
+    }
     function buildPageHeading(copy, pageId) {
         const row = element("div", { className: "yl-page-heading" });
         const back = backPage(pageId);
         if (back) {
-            const button = element("button", { className: "yl-page-back", type: "button", ariaLabel: "返回", text: "‹" });
+            const button = element("button", { className: "yl-page-back", type: "button", ariaLabel: "返回" });
+            button.appendChild(createUiIcon(documentRef, 'chevron_left', { className: 'yl-page-back-svg', size: 20 }));
             listen(button, button, "click", () => navigateBack(pageId, back), abortController.signal); row.appendChild(button);
         }
         row.appendChild(element("h1", { text: copy.title }));
+        if (pageId === 'profile') row.appendChild(buildUiLayoutToggle());
         const featureOptions = buildFeatureOptionsButton(pageId);
         if (featureOptions) row.appendChild(featureOptions);
         const groupListAction = buildGroupListActionButton(pageId);
@@ -1015,6 +1218,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         serviceNavButton.hidden = !serviceHubUnlocked;
         nav.classList.toggle('has-service-entry', serviceHubUnlocked);
         root.dataset.contentMode = currentView.mode === 'NSFW' ? 'NSFW' : 'SFW';
+        root.dataset.uiLayout = uiLayoutMode;
+        panel.dataset.uiLayout = uiLayoutMode;
         statusLine.textContent = currentView.status === 'ready' ? '已连接' : 'MVU 未就绪';
         content.replaceChildren();
         const page = element('article', { className: `yl-phone-page yl-page-${activePage}` });
@@ -1022,7 +1227,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (currentView.status !== 'ready') page.appendChild(buildEmptyPlaceholder('暂时无法读取当前聊天的软件状态。', { icon: '◌' }));
         else if (activePage === 'home') page.appendChild(currentView.candidate ? buildCandidateCard(currentView.candidate) : buildEmptyCandidateCard());
         else if (activePage === 'matches') page.appendChild(buildMatchesPage());
-        else if (activePage === 'match_profile') page.appendChild(buildMatchProfilePage());
         else if (activePage === 'messages') page.appendChild(buildMessagesPage());
         else if (activePage === 'private_chat') page.appendChild(buildPrivateChatPage());
         else if (activePage === 'private_chat_summary') page.appendChild(buildPrivateChatSummaryPage());
@@ -1065,6 +1269,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             onFeedback: createOperationFeedbackHandler({ ai: true }),
             onConfigureFeature: (feature) => openFeatureBinding([feature], feature.title + '设置'),
             onRegistered: () => { refreshState(); setActivePage('profile'); },
+            // 链接导入 = 一次性下载字节 → 既有本地压缩/签名链 → embedded data URL；URL 本身不保存。
+            importAvatarFromUrl: remoteImageImporter
+                ? async (url) => compressLocalAvatar(await remoteImageImporter.importImageFile(url))
+                : null,
         });
     }
     function displayTags(candidate) { return [...(candidate.兴趣标签 ?? []), ...(candidate.生活方式标签 ?? []), ...(candidate.性格标签 ?? []), ...(candidate.沟通风格标签 ?? [])]; }
@@ -1098,6 +1306,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         interactive = false,
         fallback = '人',
         imageSource = null,
+        onImageLoad = null,
+        onImageFailure = null,
     } = {}) {
         const nickname = profile?.昵称 || '未命名对象';
         const matched = imageSource === null && imageEnabled ? matchedImageFor(profile) : null;
@@ -1110,6 +1320,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             imageClassName: className + '-image',
             alt: nickname + '的头像',
             fallback,
+            onImageLoad,
+            onImageFailure,
         });
         if (imageSource === null && imageEnabled && !matched && !profileSource && imageMatchPending.has(imageProfileKey(profile))) {
             avatar.dataset.imageStatus = 'loading';
@@ -1128,16 +1340,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }, abortController.signal);
         return avatar;
     }
-    function candidateAvatar(candidate, { imageEnabled = true, interactive = true, className = 'yl-candidate-avatar' } = {}) {
-        return publicAvatar(candidate, { uid: candidate?.uid, className, imageEnabled, interactive });
+    function candidateAvatar(candidate, { imageEnabled = true, interactive = true, className = 'yl-candidate-avatar', onImageLoad = null, onImageFailure = null } = {}) {
+        return publicAvatar(candidate, { uid: candidate?.uid, className, imageEnabled, interactive, onImageLoad, onImageFailure });
     }
-    function buildActionButton(kind, { pending = false, disabled = false } = {}) {
+    function buildActionButton(kind, { pending = false, disabled = false, label = ACTION_LABELS[kind], ariaLabel = label } = {}) {
         const actionStyle = kind === 'unfavorite' ? 'favorite' : kind;
-        const button = element('button', { className: `yl-phone-action-card yl-action-${actionStyle} yl-action-circle`, type: 'button', ariaLabel: ACTION_LABELS[kind], disabled });
-        const icon = element('span', { className: 'yl-action-icon', text: ACTION_ICONS[kind] });
-        icon.setAttribute('aria-hidden', 'true');
-        const label = element('span', { className: 'yl-action-label', text: pending ? '处理中…' : ACTION_LABELS[kind] });
-        append(button, [icon, label]);
+        const button = element('button', { className: `yl-phone-action-card yl-action-${actionStyle} yl-action-circle`, type: 'button', ariaLabel, disabled });
+        const icon = createUiIcon(documentRef, ACTION_ICON_NAMES[kind], { className: 'yl-action-icon', size: 22, strokeWidth: 1.9 });
+        const text = element('span', { className: 'yl-action-label', text: pending ? '处理中…' : label });
+        append(button, [icon, text]);
         return button;
     }
     function isFavoriteCandidate(candidate) {
@@ -1148,28 +1359,77 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const favoriteAction = isFavoriteCandidate(candidate) ? 'unfavorite' : 'favorite';
         for (const kind of ['like', 'dislike', favoriteAction, 'refresh']) {
             const pending = actionBridge.isPending(kind, candidate.uid);
-            const button = buildActionButton(kind, { pending, disabled: pending });
+            const button = buildActionButton(kind, { pending, disabled: refreshing || pending, label: kind === 'refresh' ? '下一位' : ACTION_LABELS[kind], ariaLabel: kind === 'refresh' ? '刷新候选人，显示下一位' : ACTION_LABELS[kind] });
             listen(button, button, 'click', () => { void runCandidateAction(kind, candidate.uid); }, abortController.signal);
             actions.appendChild(button);
         }
         return actions;
     }
     function buildCandidateCard(candidate) {
-        const card = element('section', { className: refreshing ? 'yl-candidate-card is-refreshing' : 'yl-candidate-card' });
+        const card = element('section', { className: refreshing ? 'yl-candidate-card yl-discovery-workbench is-refreshing' : 'yl-candidate-card yl-discovery-workbench' });
         const tags = displayTags(candidate);
-        card.appendChild(buildCandidateBackgroundSlot(candidate, tags));
-        const top = element('div', { className: 'yl-candidate-topline' });
-        top.appendChild(candidateAvatar(candidate, { imageEnabled: true }));
+        const media = element('div', { className: 'yl-candidate-media' });
+        const imageKey = imageProfileKey(candidate);
+        media.appendChild(buildCandidateBackgroundSlot(candidate, tags));
+        const top = element('div', { className: 'yl-candidate-topline yl-candidate-media-copy' });
+        top.appendChild(candidateAvatar(candidate, {
+            imageEnabled: true,
+            onImageFailure: () => {
+                if (!imageKey || imageAssetFailures.has(imageKey)) return;
+                imageAssetsReady.delete(imageKey);
+                imageAssetFailures.add(imageKey);
+                if (open) renderPage();
+            },
+        }));
         const copy = element('div', { className: 'yl-candidate-copy' });
         const nameRow = element('div', { className: 'yl-candidate-name-row' });
         nameRow.appendChild(element('h2', { text: candidate.昵称 || '未命名候选人' }));
         nameRow.appendChild(buildMetaBadges(candidate));
         copy.appendChild(nameRow);
-        copy.appendChild(element('p', { className: 'yl-phone-page-description yl-candidate-subline', text: [candidate.年龄段, candidate.城市, candidate.寻找意图].filter(Boolean).join(' · ') || '仅公开资料' }));
-        top.appendChild(copy); card.appendChild(top);
-        card.appendChild(buildTagChips(tags, '暂无关键词'));
-        card.appendChild(buildActionRow(candidate));
+        copy.appendChild(element('p', { className: 'yl-phone-page-description yl-candidate-subline', text: [candidate.年龄段, candidate.城市].filter(Boolean).join(' · ') || '仅公开资料' }));
+        top.appendChild(copy); media.appendChild(top); card.appendChild(media);
+        card.appendChild(buildCandidateDossier(candidate, tags));
         return card;
+    }
+    function buildCandidateDossier(candidate, tags) {
+        const dossier = element('aside', { className: 'yl-candidate-dossier', ariaLabel: `${candidate.昵称 || '候选人'}的公开档案` });
+        dossier.appendChild(element('span', { className: 'yl-candidate-dossier-kicker', text: '本次公开档案' }));
+        dossier.appendChild(element('p', { className: 'yl-candidate-bio', text: candidate.简介 || '这位候选人暂未留下更多公开介绍。' }));
+        dossier.appendChild(buildCandidateMediaFeedback(candidate));
+        const facts = element('div', { className: 'yl-candidate-facts' });
+        let factCount = 0;
+        for (const [label, value] of [['寻找意图', candidate.寻找意图], ['距离', candidate.距离范围]]) {
+            if (!value) continue;
+            facts.appendChild(element('span', { className: 'yl-candidate-fact-label', text: label }));
+            facts.appendChild(element('span', { className: 'yl-candidate-fact-value', text: value }));
+            factCount += 1;
+        }
+        if (factCount) dossier.appendChild(facts);
+        dossier.appendChild(buildTagChips(tags, '暂无公开关键词'));
+        dossier.appendChild(buildActionRow(candidate));
+        return dossier;
+    }
+    function buildCandidateMediaFeedback(candidate) {
+        const nickname = candidate?.昵称 || '这位候选人';
+        const state = candidateImageState(candidate);
+        const mediaState = createMediaState({
+            documentRef,
+            kind: 'background',
+            initialState: state,
+            className: 'yl-candidate-media-feedback yl-media-state',
+            statusClassName: 'yl-candidate-media-feedback-status',
+            retryClassName: 'yl-candidate-media-feedback-retry yl-settings-button',
+            retryLabel: '重新尝试图片匹配',
+            onRetry: () => retryCandidateImage(candidate),
+            stateText: {
+                loading: '正在为' + nickname + '准备公开画面。',
+                ready: nickname + '的公开画面已准备好。',
+                empty: nickname + '暂时没有可用公开画面，仍可继续浏览资料。',
+                error: '公开画面暂时无法显示。可重新尝试，资料和操作不会受影响。',
+            },
+        });
+        mediaState.element.dataset.candidateUid = String(candidate?.uid ?? '');
+        return mediaState.element;
     }
     function buildCandidateBackgroundSlot(candidate, tags) {
         const slot = element('div', { className: 'yl-candidate-background-slot yl-candidate-image-slot' });
@@ -1177,35 +1437,52 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         slot.dataset.imageSlot = 'candidate-background';
         slot.dataset.candidateUid = String(candidate?.uid ?? '');
         slot.dataset.keywords = tags.join('|');
+        const key = imageProfileKey(candidate);
         const record = candidate ? matchedImageFor(candidate) : null;
-        if (record) {
-            slot.dataset.imageStatus = 'matched';
-            appendImagePreview(slot, record, 'yl-candidate-background-image', '', () => { slot.dataset.imageStatus = 'failed'; });
-        } else slot.dataset.imageStatus = candidate && imageMatchPending.has(imageProfileKey(candidate)) ? 'loading' : 'fallback';
+        const state = candidateImageState(candidate);
+        slot.dataset.imageStatus = state;
+        if (record && state !== 'error') {
+            appendImagePreview(slot, record, 'yl-candidate-background-image', '', {
+                onLoad: () => {
+                    if (imageAssetsReady.has(key)) return;
+                    imageAssetsReady.add(key);
+                    imageAssetFailures.delete(key);
+                    if (open) renderPage();
+                },
+                onFailure: () => {
+                    if (imageAssetFailures.has(key)) return;
+                    imageAssetsReady.delete(key);
+                    imageAssetFailures.add(key);
+                    if (open) renderPage();
+                },
+            });
+        }
         return slot;
     }
     function buildEmptyCandidateCard() {
-        const card = element('section', { className: refreshing ? 'yl-candidate-card yl-candidate-card-empty is-refreshing' : 'yl-candidate-card yl-candidate-card-empty' });
-        card.appendChild(buildCandidateBackgroundSlot(null, []));
-        const top = element('div', { className: 'yl-candidate-topline' });
+        const card = element('section', { className: refreshing ? 'yl-candidate-card yl-candidate-card-empty yl-discovery-workbench is-refreshing' : 'yl-candidate-card yl-candidate-card-empty yl-discovery-workbench' });
+        const media = element('div', { className: 'yl-candidate-media' });
+        media.appendChild(buildCandidateBackgroundSlot(null, []));
+        const top = element('div', { className: 'yl-candidate-topline yl-candidate-media-copy' });
         top.appendChild(element('span', { className: 'yl-candidate-avatar yl-candidate-avatar-placeholder', text: '？' }));
         const copy = element('div', { className: 'yl-candidate-copy' });
         const nameRow = element('div', { className: 'yl-candidate-name-row' });
         nameRow.appendChild(element('h2', { text: '等待下一次相遇' }));
-        nameRow.appendChild(element('span', { className: 'yl-candidate-meta-badges' }));
         copy.appendChild(nameRow);
-        copy.appendChild(element('p', { className: 'yl-phone-page-description yl-candidate-subline', text: '点击刷新，由快速模型生成一位明确成年的候选人。' }));
-        top.appendChild(copy);
-        card.appendChild(top);
-        card.appendChild(buildTagChips([], '等待生成关键词'));
+        copy.appendChild(element('p', { className: 'yl-phone-page-description yl-candidate-subline', text: '下一位将来自已校验的成年人公开资料。' }));
+        top.appendChild(copy); media.appendChild(top); card.appendChild(media);
+        const dossier = element('aside', { className: 'yl-candidate-dossier yl-candidate-dossier-empty', ariaLabel: '开始发现候选人' });
+        dossier.appendChild(element('span', { className: 'yl-candidate-dossier-kicker', text: '发现从这里开始' }));
+        dossier.appendChild(element('p', { className: 'yl-candidate-bio', text: '点击“下一位”，由快速模型生成一位明确成年的公开候选人。' }));
+        dossier.appendChild(buildTagChips([], '等待生成公开关键词'));
         const actions = element('div', { className: 'yl-candidate-actions' });
-        for (const kind of ['like', 'refresh', 'favorite', 'dislike']) {
+        for (const kind of ['like', 'dislike', 'favorite', 'refresh']) {
             const enabled = kind === 'refresh' && typeof actionBridge.runRecommendationInitialCandidate === 'function';
-            const button = buildActionButton(kind, { pending: refreshing && kind === 'refresh', disabled: !enabled || refreshing });
+            const button = buildActionButton(kind, { pending: refreshing && kind === 'refresh', disabled: !enabled || refreshing, label: kind === 'refresh' ? '下一位' : ACTION_LABELS[kind], ariaLabel: kind === 'refresh' ? '刷新候选人，显示下一位' : ACTION_LABELS[kind] });
             if (enabled) listen(button, button, 'click', () => { actionBridge.emit('open_random_candidates'); void runInitialRecommendationCandidate(); }, abortController.signal);
             actions.appendChild(button);
         }
-        card.appendChild(actions);
+        dossier.appendChild(actions); card.appendChild(dossier);
         return card;
     }
     function buildCandidateDetail() {
@@ -1238,16 +1515,17 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         listen(soulButton, soulButton, 'click', () => { void runCandidateMatch('soul'); }, abortController.signal); soul.appendChild(soulButton); tools.appendChild(soul);
 
         const voice = element('article', { className: 'yl-voice-match-card' });
-        append(voice, [element('strong', { text: '语音匹配' }), element('span', { text: '用一段文字说说此刻想遇见怎样的人；这次提取的关键词会优先于本地偏好。' })]);
-        const voiceInput = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, maxLength: 800, placeholder: '例如：想找一个周末愿意逛展、也能认真听我说话的人。', value: voiceMatchText, ariaLabel: '语音匹配文字描述' });
+        append(voice, [element('strong', { text: '描述匹配' }), element('span', { text: '用一段文字说说此刻想遇见怎样的人；这次提取的关键词会优先于本地偏好。' })]);
+        const voiceInput = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, maxLength: 800, placeholder: '例如：想找一个周末愿意逛展、也能认真听我说话的人。', value: voiceMatchText, ariaLabel: '描述匹配文字描述' });
         listen(voiceInput, voiceInput, 'input', () => { voiceMatchText = voiceInput.value; }, abortController.signal);
         const voiceButton = element('button', { className: 'yl-settings-button', type: 'button', text: actionBridge.isPending('candidate_match_voice', '') ? '匹配中…' : '开始匹配', disabled: actionBridge.isPending('candidate_match_voice', '') || typeof actionBridge.runCandidateMatch !== 'function' });
         listen(voiceButton, voiceButton, 'click', () => { void runCandidateMatch('voice'); }, abortController.signal); append(voice, [voiceInput, voiceButton]); tools.appendChild(voice);
         section.appendChild(tools);
 
         const matches = currentView.matches ?? [];
-        const historyTitle = element('h2', { className: 'yl-match-history-title', text: '已互相喜欢' }); section.appendChild(historyTitle);
-        if (!matches.length) section.appendChild(buildEmptyPlaceholder('还没有互相匹配的对象。先试试上面的 AI 匹配吧。', { tag: 'p', icon: '♥' }));
+        const history = element('section', { className: 'yl-match-history', ariaLabel: '已牵手对象' });
+        const historyTitle = element('h2', { className: 'yl-match-history-title', text: '已牵手对象' }); history.appendChild(historyTitle);
+        if (!matches.length) history.appendChild(buildEmptyPlaceholder('还没有互相匹配的对象。先试试匹配工具吧。', { tag: 'p', icon: '♥' }));
         for (const match of matches) {
             const card = element('article', { className: 'yl-chat-session yl-match-row' });
             const ring = element('span', { className: 'yl-match-avatar-ring' }); ring.appendChild(candidateAvatar(match.profile, { imageEnabled: true })); card.appendChild(ring);
@@ -1259,15 +1537,16 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 if (session) openPrivateChat(session.sessionUid);
                 else setActivePage('messages');
             }, abortController.signal);
-            card.appendChild(openMessages); section.appendChild(card);
+            card.appendChild(openMessages); history.appendChild(card);
         }
+        section.appendChild(history);
         return section;
     }
     async function runCandidateMatch(mode) {
         if (typeof actionBridge.runCandidateMatch !== 'function') { setFeedback('AI 匹配服务尚未就绪。'); return; }
         const requestId = ++interactionGeneration;
         const pageAtStart = activePage;
-        const modeLabel = mode === 'soul' ? '灵魂匹配' : '语音匹配';
+        const modeLabel = mode === 'soul' ? '灵魂匹配' : '描述匹配';
         const runningMessage = modeLabel + '中……';
         const activityHandle = operationActivity.start(modeLabel, runningMessage);
         const operationToken = showRomanceLoading(modeLabel, runningMessage);
@@ -1309,38 +1588,53 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         operationActivity.succeed(activityHandle, modeLabel + '成功，已打开私聊。');
         showRomanceResult({ accepted: true, title: '心动连接成功', message: successMessage }, operationToken);
     }
-    function buildMatchProfilePage() {
-        const profile = matchedProfileDraft?.profile;
-        if (!profile) return buildEmptyPlaceholder('本次匹配档案已失效，请返回匹配页重新开始。', { icon: '✦' });
-        const section = element('section', { className: 'yl-match-profile' });
-        const hero = element('article', { className: 'yl-match-profile-hero' });
-        const avatar = publicAvatar(profile, { className: 'yl-match-profile-avatar', imageEnabled: true, interactive: false, fallback: '心' });
-        const copy = element('div', { className: 'yl-match-profile-copy' });
-        copy.appendChild(element('span', { className: 'yl-match-profile-mode', text: matchedProfileDraft.mode === 'voice' ? 'VOICE MATCH' : 'SOUL MATCH' }));
-        copy.appendChild(element('h2', { text: profile.昵称 || '未命名对象' }));
-        copy.appendChild(element('p', { text: [profile.年龄段, profile.性别, profile.性取向].filter(Boolean).join(' · ') }));
-        const score = Number.isInteger(matchedProfileDraft?.matchScore) ? matchedProfileDraft.matchScore : null;
-        const scoreBadge = score === null ? null : element('span', { className: 'yl-match-profile-score', text: score + '% 同频' });
-        append(hero, scoreBadge ? [avatar, copy, scoreBadge] : [avatar, copy]); section.appendChild(hero);
-        const grid = element('div', { className: 'yl-match-profile-grid' });
-        for (const [title, value] of [['相遇坐标', [profile.城市, profile.距离范围].filter(Boolean).join(' · ')], ['这次想寻找什么', profile.寻找意图], ['关于 TA', profile.简介], ['缘分说明', matchedProfileDraft?.explanation]]) {
-            const card = element('article', { className: 'yl-match-profile-info' }); append(card, [element('strong', { text: title }), element('p', { text: value || '未提供' })]); grid.appendChild(card);
-        }
-        section.appendChild(grid); section.appendChild(element('h3', { text: '心动关键词' })); section.appendChild(buildTagChips(displayTags(profile), '暂无公开关键词'));
-        section.appendChild(element('p', { className: 'yl-match-profile-note', text: '这是一份仅本次展示的 AI 公开资料草稿，没有写入角色池、会话或匹配状态。' }));
-        const actions = element('div', { className: 'yl-match-profile-actions' });
-        const cancel = element('button', { className: 'yl-settings-button', type: 'button', text: '返回匹配' }); listen(cancel, cancel, 'click', () => setActivePage('matches'), abortController.signal);
-        const retry = element('button', { className: 'yl-settings-button', type: 'button', text: '再匹配一次' }); listen(retry, retry, 'click', () => { setActivePage('matches'); }, abortController.signal);
-        append(actions, [cancel, retry]); section.appendChild(actions); return section;
+    function buildHubEntry({ page, iconName, title, note, meta = '', className = '', tone = 'neutral' }) {
+        const button = element('button', { className: ['yl-center-entry', 'yl-hub-entry', className].filter(Boolean).join(' '), type: 'button', ariaLabel: title });
+        button.dataset.page = page;
+        button.dataset.tone = tone;
+        const icon = element('span', { className: 'yl-hub-entry-icon' });
+        icon.appendChild(createUiIcon(documentRef, iconName, { className: 'yl-hub-entry-svg', size: 20 }));
+        const copy = element('span', { className: 'yl-hub-entry-copy' });
+        append(copy, [element('strong', { text: title }), element('span', { text: note })]);
+        const trail = element('span', { className: 'yl-hub-entry-trail' });
+        if (meta) trail.appendChild(element('span', { className: 'yl-hub-entry-meta', text: meta }));
+        trail.appendChild(createUiIcon(documentRef, 'chevron_right', { className: 'yl-hub-entry-chevron', size: 18 }));
+        append(button, [icon, copy, trail]);
+        listen(button, button, 'click', () => setActivePage(page), abortController.signal);
+        return button;
+    }
+    function buildHubSection({ title, note = '', entries, className = '' }) {
+        const section = element('section', { className: ['yl-hub-section', className].filter(Boolean).join(' ') });
+        const heading = element('header', { className: 'yl-hub-section-heading' });
+        heading.appendChild(element('h2', { text: title }));
+        if (note) heading.appendChild(element('p', { text: note }));
+        section.appendChild(heading);
+        const list = element('div', { className: 'yl-hub-section-list' });
+        for (const entry of entries) list.appendChild(buildHubEntry(entry));
+        section.appendChild(list);
+        return section;
     }
     function buildGroupsPage() { return buildGroupHub(); }
     function buildGroupHub() {
-        const section = element('section', { className: 'yl-miniapp-grid' });
-        for (const [page, icon, title, note] of [['group_chat', '◌', '聊天群', '创建群聊、模拟群友更新与本地总结。'], ['group_forum', '▤', '心动社区', '下拉刷新首页，再进入帖子参与讨论。']]) {
-            const button = element('button', { className: 'yl-miniapp-card', type: 'button', ariaLabel: title });
-            append(button, [element('span', { className: 'yl-miniapp-icon', text: icon }), element('strong', { text: title }), element('span', { text: note })]);
-            listen(button, button, 'click', () => setActivePage(page), abortController.signal); section.appendChild(button);
-        }
+        const section = element('section', { className: 'yl-miniapp-grid yl-community-hub' });
+        const intro = element('article', { className: 'yl-community-intro' });
+        append(intro, [
+            element('span', { className: 'yl-hub-eyebrow', text: '城市关系频道' }),
+            element('h2', { text: '先选择一种一起聊天的方式' }),
+            element('p', { text: '聊天群适合持续共聊；心动社区适合围绕话题阅读和参与。两者都只展示公开资料。' }),
+        ]);
+        const signal = element('div', { className: 'yl-relationship-signal', ariaLabel: '社区公开内容摘要' });
+        signal.appendChild(element('span', { className: 'yl-signal-line', ariaHidden: 'true' }));
+        append(signal, [
+            element('span', { text: currentView.groups.length + ' 个可见群组' }),
+            element('span', { text: socialPosts().length + ' 条本地社区帖子' }),
+        ]);
+        intro.appendChild(signal);
+        section.appendChild(intro);
+        const choices = element('div', { className: 'yl-community-choices' });
+        choices.appendChild(buildHubEntry({ page: 'group_chat', iconName: 'group_chat', title: '聊天群', note: '创建群聊、查看群友更新，并在需要时生成本地总结。', meta: currentView.groups.length + ' 个群组', className: 'yl-miniapp-card yl-community-choice', tone: 'rose' }));
+        choices.appendChild(buildHubEntry({ page: 'group_forum', iconName: 'forum', title: '心动社区', note: '按频道浏览公开帖子，下拉刷新后再进入讨论。', meta: socialPosts().length + ' 条帖子', className: 'yl-miniapp-card yl-community-choice', tone: 'violet' }));
+        section.appendChild(choices);
         return section;
     }
 
@@ -1493,7 +1787,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function closeGroupMemberPicker() {
         groupMemberPickerOpen = false;
-        groupMemberPickerDialog.hidden = true;
+        closeManagedDialog(groupMemberPickerDialog);
         groupMemberPickerContent.replaceChildren();
     }
     function openGroupMemberPicker() {
@@ -1531,11 +1825,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             append(actions, [cancel, confirm]); groupMemberPickerContent.appendChild(actions);
         }
         groupMemberPickerOpen = true;
-        groupMemberPickerDialog.hidden = false;
+        dialogController.open(groupMemberPickerDialog, { onRequestClose: closeGroupMemberPicker });
     }
     function closeGroupAutoDialog() {
         groupAutoDialogKey = '';
-        groupAutoDialog.hidden = true;
+        closeManagedDialog(groupAutoDialog);
         groupAutoContent.replaceChildren();
     }
     function openGroupAutoDialog(group) {
@@ -1573,7 +1867,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             })();
         }, abortController.signal);
         append(actions, [cancel, confirm]); groupAutoContent.appendChild(actions);
-        groupAutoDialog.hidden = false;
+        dialogController.open(groupAutoDialog, { onRequestClose: closeGroupAutoDialog });
     }
     function openGroupPresetDialog(group) {
         openFeatureBinding([{ key: 'group_chat', title: group.name + '聊天群' }], `${group.name} · 预设`, {
@@ -1633,7 +1927,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
     }
     function closeForumSettingsDialog() {
-        forumSettingsDialog.hidden = true;
+        closeManagedDialog(forumSettingsDialog);
         forumSettingsContent.replaceChildren();
     }
     function buildLocalBindingZone({ title, description, binding, namePrefix } = {}) {
@@ -1719,7 +2013,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             })();
         }, abortController.signal);
         append(actions, [cancel, save]); forumSettingsContent.appendChild(actions);
-        forumSettingsDialog.hidden = false;
+        dialogController.open(forumSettingsDialog, { onRequestClose: closeForumSettingsDialog });
     }
     function stopForumAutoTimer() {
         if (forumAutoTimer !== null) clearInterval(forumAutoTimer);
@@ -1760,7 +2054,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function buildGroupListActionButton(pageId) {
         if (pageId !== 'group_chat') return null;
-        const button = element('button', { className: 'yl-group-more-button', type: 'button', text: '⋮', ariaLabel: '聊天群创建与查找' });
+        const button = element('button', { className: 'yl-group-more-button', type: 'button', ariaLabel: '聊天群创建与查找' });
+        button.appendChild(createUiIcon(documentRef, 'more_vertical', { className: 'yl-group-more-svg', size: 20 }));
         listen(button, button, 'click', () => { groupListMenuOpen = !groupListMenuOpen; renderPage(); }, abortController.signal);
         return button;
     }
@@ -1779,7 +2074,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             className: 'yl-private-chat-more yl-group-room-more', type: 'button', text: '…',
             ariaLabel: `打开${group.name}的更多操作`, disabled: groupRoomDestructiveKey === group.cacheKey,
         });
-        more.setAttribute('aria-haspopup', 'menu');
+        // Disclosure 按钮列表：同私聊更多操作，不宣称 role=menu。
         more.setAttribute('aria-expanded', String(expanded));
         listen(more, more, 'click', () => {
             groupRoomMenuOpen = !expanded;
@@ -1789,12 +2084,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         wrapper.appendChild(more);
         if (expanded) {
             const menu = element('div', { className: 'yl-private-chat-more-menu yl-group-room-more-menu', ariaLabel: `${group.name}更多操作` });
-            menu.setAttribute('role', 'menu');
             const exit = element('button', { className: 'yl-private-chat-menu-item is-danger', type: 'button', text: '退出群聊', ariaLabel: '退出群聊并删除本地群数据' });
             const clear = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '清空群历史', ariaLabel: '仅清空当前聊天群历史' });
             const auto = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '自动更新设置', ariaLabel: '设置聊天群自动更新' });
             const preset = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '预设', ariaLabel: `配置${group.name}的预设` });
-            for (const item of [exit, clear, auto, preset]) item.setAttribute('role', 'menuitem');
             listen(exit, exit, 'click', () => { groupRoomMenuOpen = false; groupRoomConfirmation = 'exit'; groupRoomConfirmationKey = group.cacheKey; renderPage(); }, abortController.signal);
             listen(clear, clear, 'click', () => { groupRoomMenuOpen = false; groupRoomConfirmation = 'clear'; groupRoomConfirmationKey = group.cacheKey; renderPage(); }, abortController.signal);
             listen(auto, auto, 'click', () => { groupRoomMenuOpen = false; renderPage(); openGroupAutoDialog(group); }, abortController.signal);
@@ -1813,32 +2106,38 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             listen(search, search, 'click', () => { groupSearchOpen = !groupSearchOpen; groupListMenuOpen = false; renderPage(); }, abortController.signal);
             append(menu, [create, search]); section.appendChild(menu);
         }
+        const results = element('div', { className: 'yl-group-room-results' });
+        const renderGroupResults = () => {
+            const query = groupSearchQuery.trim().toLocaleLowerCase('zh-CN');
+            const groups = currentGroupCards().filter((group) => !query || `${group.name} ${group.description} ${groupParticipants(group).map((profile) => profile.nickname).join(' ')}`.toLocaleLowerCase('zh-CN').includes(query));
+            if (!groups.length) {
+                results.replaceChildren(buildEmptyPlaceholder(query ? '没有找到匹配的聊天群。' : '还没有聊天群。点右上角 ⋮ 创建，或等待卡片提供公开群组。', { icon: '◌' }));
+                return;
+            }
+            const list = element('div', { className: 'yl-group-room-list' });
+            for (const group of groups) {
+                const thread = groupConversation(group);
+                const last = thread.messages?.at?.(-1);
+                const card = element('button', { className: 'yl-group-room-card', type: 'button', ariaLabel: `打开${group.name}` });
+                const avatars = element('div', { className: 'yl-group-room-avatars' });
+                for (const profile of groupParticipants(group).slice(0, 4)) avatars.appendChild(publicAvatar(safeLocalDisplayProfile(profile), { className: 'yl-group-room-avatar', imageEnabled: true, interactive: false }));
+                const copy = element('span', { className: 'yl-group-room-copy' });
+                const auto = thread.auto?.enabled === true ? ` · 自动 ${thread.auto.intervalSeconds}s` : '';
+                append(copy, [element('strong', { text: group.name }), element('span', { text: last ? `${last.sender === 'user' ? '我' : (last.author?.nickname || '群友')}：${last.content}` : `${groupParticipants(group).length} 位成员${auto}` })]);
+                append(card, [avatars, copy, openMark()]);
+                listen(card, card, 'click', () => { activeGroupCacheKey = group.cacheKey; setActivePage('group_chat_room'); }, abortController.signal);
+                list.appendChild(card);
+            }
+            results.replaceChildren(list);
+        };
         if (groupSearchOpen) {
             const input = element('input', { className: 'yl-settings-control yl-group-search-input', type: 'search', maxLength: 120, value: groupSearchQuery, placeholder: '查找群名或成员昵称', ariaLabel: '查找聊天群' });
-            listen(input, input, 'input', () => { groupSearchQuery = input.value; renderPage(); }, abortController.signal);
+            // 输入节点保持稳定，只替换结果列表：整页重建会丢失焦点、光标与中文 IME 组合输入。
+            listen(input, input, 'input', () => { groupSearchQuery = input.value; renderGroupResults(); }, abortController.signal);
             section.appendChild(input);
         }
-        const query = groupSearchQuery.trim().toLocaleLowerCase('zh-CN');
-        const groups = currentGroupCards().filter((group) => !query || `${group.name} ${group.description} ${groupParticipants(group).map((profile) => profile.nickname).join(' ')}`.toLocaleLowerCase('zh-CN').includes(query));
-        if (!groups.length) {
-            section.appendChild(buildEmptyPlaceholder(query ? '没有找到匹配的聊天群。' : '还没有聊天群。点右上角 ⋮ 创建，或等待卡片提供公开群组。', { icon: '◌' }));
-            return section;
-        }
-        const list = element('div', { className: 'yl-group-room-list' });
-        for (const group of groups) {
-            const thread = groupConversation(group);
-            const last = thread.messages?.at?.(-1);
-            const card = element('button', { className: 'yl-group-room-card', type: 'button', ariaLabel: `打开${group.name}` });
-            const avatars = element('div', { className: 'yl-group-room-avatars' });
-            for (const profile of groupParticipants(group).slice(0, 4)) avatars.appendChild(publicAvatar(safeLocalDisplayProfile(profile), { className: 'yl-group-room-avatar', imageEnabled: true, interactive: false }));
-            const copy = element('span', { className: 'yl-group-room-copy' });
-            const auto = thread.auto?.enabled === true ? ` · 自动 ${thread.auto.intervalSeconds}s` : '';
-            append(copy, [element('strong', { text: group.name }), element('span', { text: last ? `${last.sender === 'user' ? '我' : (last.author?.nickname || '群友')}：${last.content}` : `${groupParticipants(group).length} 位成员${auto}` })]);
-            append(card, [avatars, copy, element('span', { className: 'yl-session-open-mark', text: '›' })]);
-            listen(card, card, 'click', () => { activeGroupCacheKey = group.cacheKey; setActivePage('group_chat_room'); }, abortController.signal);
-            list.appendChild(card);
-        }
-        section.appendChild(list);
+        renderGroupResults();
+        section.appendChild(results);
         return section;
     }
     function buildGroupChatCreatePage() {
@@ -1859,7 +2158,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 const display = safeLocalDisplayProfile(profile);
                 row.appendChild(publicAvatar(display, { className: 'yl-group-member-avatar', imageEnabled: true, interactive: false }));
                 row.appendChild(element('span', { text: display.昵称 }));
-                const remove = element('button', { className: 'yl-dialog-close', type: 'button', text: '×', ariaLabel: `移除${display.昵称}` });
+                const remove = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: `移除${display.昵称}` }));
                 listen(remove, remove, 'click', () => { groupCreateMembers = groupCreateMembers.filter((item) => item.nickname !== profile.nickname); renderPage(); }, abortController.signal);
                 row.appendChild(remove); members.appendChild(row);
             }
@@ -2240,7 +2539,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const selected = selectedChannel?.id === channel.id;
             const card = element('button', { className: selected ? 'yl-forum-channel is-active' : 'yl-forum-channel', type: 'button', pressed: selected, ariaLabel: selected ? `返回心动社区全部动态（当前${channel.title}）` : `进入${channel.title}子区` });
             card.setAttribute('data-forum-channel', channel.id);
-            append(card, [element('b', { text: channel.icon }), element('strong', { text: channel.title }), element('small', { text: channel.note })]);
+            const channelIconName = FORUM_CHANNEL_ICON_NAMES[channel.id];
+            const channelGlyph = element('b', { className: 'yl-forum-channel-icon', text: channelIconName ? '' : channel.icon });
+            if (channelIconName) channelGlyph.appendChild(createUiIcon(documentRef, channelIconName, { className: 'yl-forum-channel-svg', size: 18 }));
+            append(card, [channelGlyph, element('strong', { text: channel.title }), element('small', { text: channel.note })]);
             listen(card, card, 'click', () => selectForumChannel(channel.id), abortController.signal);
             channels.appendChild(card);
         }
@@ -2492,10 +2794,41 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         activeMessageSessionUid = session.sessionUid;
         setActivePage('private_chat', { preserveOperation });
     }
+    function buildMessageSessionButton(session) {
+        const nickname = chatNickname(session);
+        const lastMessage = session.messages.at(-1);
+        const button = element('button', { className: 'yl-chat-session yl-message-session', type: 'button', ariaLabel: `打开与${nickname}的私聊` });
+        const avatarWrap = element('span', { className: 'yl-session-avatar-wrap' });
+        avatarWrap.appendChild(chatAvatar(session));
+        const presence = element('span', { className: 'yl-session-presence' });
+        presence.dataset.status = session.status;
+        presence.setAttribute('aria-hidden', 'true');
+        avatarWrap.appendChild(presence);
+        const copy = element('span', { className: 'yl-session-copy' });
+        const titleLine = element('span', { className: 'yl-session-title-line' });
+        titleLine.appendChild(element('span', { className: 'yl-session-name', text: nickname }));
+        titleLine.appendChild(element('span', { className: 'yl-session-status', text: session.status }));
+        append(copy, [titleLine, element('span', { className: 'yl-session-preview', text: lastMessage ? lastMessage.content : '还没有消息，打个招呼吧。' })]);
+        const meta = element('span', { className: 'yl-session-meta' });
+        if (lastMessage?.time) meta.appendChild(element('span', { className: 'yl-session-time', text: lastMessage.time }));
+        meta.appendChild(openMark());
+        append(button, [avatarWrap, copy, meta]);
+        listen(button, button, 'click', () => openPrivateChat(session.sessionUid), abortController.signal);
+        return button;
+    }
+    function messageSessionsMatchingQuery(sessions, query) {
+        const normalizedQuery = String(query ?? '').trim().toLocaleLowerCase();
+        if (!normalizedQuery) return sessions;
+        return sessions.filter((session) => {
+            const nickname = chatNickname(session).toLocaleLowerCase();
+            const latestVisibleMessage = String(session.messages.at(-1)?.content ?? '').toLocaleLowerCase();
+            return nickname.includes(normalizedQuery) || latestVisibleMessage.includes(normalizedQuery);
+        });
+    }
     function buildMessagesPage() {
         const sessions = messageSessions();
         if (!sessions.length) return buildEmptyPlaceholder('暂无已建立的私聊会话。去匹配页遇见一位公开可见的成年人吧。', { icon: '✉' });
-        const section = element('section', { className: 'yl-chat-page yl-message-list-page' });
+        const section = element('section', { className: 'yl-chat-page yl-message-list-page yl-message-list-workbench' });
         const intro = element('section', { className: 'yl-message-list-intro' });
         const introCopy = element('div', { className: 'yl-message-list-copy' });
         append(introCopy, [
@@ -2509,42 +2842,27 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const search = element('label', { className: 'yl-message-search' });
         const searchInput = element('input', { className: 'yl-message-search-input yl-settings-control', type: 'search', value: messageSearchQuery, placeholder: '搜索昵称或最近消息', ariaLabel: '搜索私聊' });
         search.appendChild(searchInput);
-        listen(searchInput, searchInput, 'input', () => { messageSearchQuery = String(searchInput.value ?? ''); renderPage(); }, abortController.signal);
         section.appendChild(search);
-        const query = messageSearchQuery.trim().toLocaleLowerCase();
-        const visibleSessions = query ? sessions.filter((session) => {
-            const nickname = chatNickname(session).toLocaleLowerCase();
-            const latestVisibleMessage = String(session.messages.at(-1)?.content ?? '').toLocaleLowerCase();
-            return nickname.includes(query) || latestVisibleMessage.includes(query);
-        }) : sessions;
-        if (!visibleSessions.length) {
-            section.appendChild(buildEmptyPlaceholder('没有找到符合条件的私聊。', { icon: '⌕' }));
-            return section;
-        }
+        const resultSummary = element('p', { className: 'yl-message-search-status', text: '' });
+        resultSummary.setAttribute('role', 'status');
+        resultSummary.setAttribute('aria-live', 'polite');
         const sessionList = element('div', { className: 'yl-chat-session-list' });
-        for (const session of visibleSessions) {
-            const nickname = chatNickname(session);
-            const lastMessage = session.messages.at(-1);
-            const button = element('button', { className: 'yl-chat-session yl-message-session', type: 'button', ariaLabel: `打开与${nickname}的私聊` });
-            const avatarWrap = element('span', { className: 'yl-session-avatar-wrap' });
-            avatarWrap.appendChild(chatAvatar(session));
-            const presence = element('span', { className: 'yl-session-presence' });
-            presence.dataset.status = session.status;
-            presence.setAttribute('aria-hidden', 'true');
-            avatarWrap.appendChild(presence);
-            const copy = element('span', { className: 'yl-session-copy' });
-            const titleLine = element('span', { className: 'yl-session-title-line' });
-            titleLine.appendChild(element('span', { className: 'yl-session-name', text: nickname }));
-            titleLine.appendChild(element('span', { className: 'yl-session-status', text: session.status }));
-            append(copy, [titleLine, element('span', { className: 'yl-session-preview', text: lastMessage ? lastMessage.content : '还没有消息，打个招呼吧。' })]);
-            const meta = element('span', { className: 'yl-session-meta' });
-            if (lastMessage?.time) meta.appendChild(element('span', { className: 'yl-session-time', text: lastMessage.time }));
-            meta.appendChild(element('span', { className: 'yl-session-open-mark', text: '›' }));
-            append(button, [avatarWrap, copy, meta]);
-            listen(button, button, 'click', () => openPrivateChat(session.sessionUid), abortController.signal);
-            sessionList.appendChild(button);
-        }
-        section.appendChild(sessionList);
+        const renderMessageSessionResults = () => {
+            const visibleSessions = messageSessionsMatchingQuery(sessions, messageSearchQuery);
+            const hasQuery = Boolean(String(messageSearchQuery ?? '').trim());
+            resultSummary.textContent = hasQuery ? `找到 ${visibleSessions.length} 个私聊` : `共 ${sessions.length} 个私聊`;
+            const items = visibleSessions.length
+                ? visibleSessions.map((session) => buildMessageSessionButton(session))
+                : [buildEmptyPlaceholder('没有找到符合条件的私聊。', { icon: '⌕' })];
+            sessionList.replaceChildren(...items);
+        };
+        renderMessageSessionResults();
+        listen(searchInput, searchInput, 'input', () => {
+            messageSearchQuery = String(searchInput.value ?? '');
+            // Keep the input node, focus and IME composition alive; only the result region changes.
+            renderMessageSessionResults();
+        }, abortController.signal);
+        append(section, [resultSummary, sessionList]);
         return section;
     }
     function cancelChatToolLongPress() {
@@ -2561,7 +2879,52 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function buildPrivateChatPage() {
         const session = messageSessionByUid(activeMessageSessionUid);
         if (!session) return buildEmptyPlaceholder('这个私聊会话暂时不可见。请返回消息列表后重试。', { icon: '✉' });
-        return buildConversationPanel(session);
+        const conversation = buildConversationPanel(session);
+        if (uiLayoutMode !== 'desktop') return conversation;
+        // desktop 工作台第二层：同一份公开会话投影获得右侧上下文栏；不建第二数据源。
+        const workbench = element('section', { className: 'yl-private-chat-workbench' });
+        append(workbench, [conversation, buildChatContextPanel(session)]);
+        return workbench;
+    }
+    /** desktop 私聊上下文栏：只渲染对方公开投影与会话状态，绝不触碰隐藏/仅好友层、关系数据或内部 UID。 */
+    function buildChatContextPanel(session) {
+        const aside = element('aside', { className: 'yl-chat-context-panel', ariaLabel: `${chatNickname(session)}的公开资料` });
+        const head = element('div', { className: 'yl-chat-context-head' });
+        head.appendChild(chatAvatar(session, 'yl-chat-context-avatar'));
+        const headCopy = element('div', { className: 'yl-chat-context-head-copy' });
+        headCopy.appendChild(element('strong', { text: chatNickname(session) }));
+        headCopy.appendChild(element('span', { className: 'yl-chat-context-status', text: session.status }));
+        head.appendChild(headCopy);
+        aside.appendChild(head);
+        const profile = session.profile ?? {};
+        const facts = element('div', { className: 'yl-chat-context-facts' });
+        for (const [label, value] of [['年龄段', profile.年龄段], ['城市', profile.城市], ['性别', profile.性别], ['性取向', profile.性取向], ['距离范围', profile.距离范围], ['寻找意图', profile.寻找意图]]) {
+            if (!value) continue;
+            const fact = element('div', { className: 'yl-chat-context-fact' });
+            append(fact, [element('span', { className: 'yl-chat-context-fact-label', text: label }), element('span', { className: 'yl-chat-context-fact-value', text: value })]);
+            facts.appendChild(fact);
+        }
+        if (facts.childNodes.length) aside.appendChild(facts);
+        if (profile.简介) {
+            const bio = element('div', { className: 'yl-chat-context-bio' });
+            append(bio, [element('span', { className: 'yl-chat-context-fact-label', text: '简介' }), element('p', { text: profile.简介 })]);
+            aside.appendChild(bio);
+        }
+        const tags = [];
+        for (const field of ['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']) {
+            for (const tag of profile[field] ?? []) {
+                if (!tags.includes(tag)) tags.push(tag);
+                if (tags.length >= 10) break;
+            }
+            if (tags.length >= 10) break;
+        }
+        if (tags.length) {
+            const tagRow = element('div', { className: 'yl-chat-context-tags', ariaLabel: '对方公开标签' });
+            for (const tag of tags) tagRow.appendChild(element('span', { className: 'yl-chat-context-tag', text: tag }));
+            aside.appendChild(tagRow);
+        }
+        aside.appendChild(element('p', { className: 'yl-chat-context-note', text: '这里只显示对方的公开资料。' }));
+        return aside;
     }
     function closeChatMoreMenu() {
         if (!chatMoreMenuSessionUid) return false;
@@ -2588,7 +2951,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             ariaLabel: '打开与' + chatNickname(session) + '的更多操作',
             disabled: destructiveChatSessionUid === session.sessionUid,
         });
-        more.setAttribute('aria-haspopup', 'menu');
+        // Disclosure 按钮列表：不宣称 role=menu（无完整菜单键盘模型），aria-expanded 表达展开状态。
         more.setAttribute('aria-expanded', String(moreOpen));
         listen(more, more, 'click', (event) => {
             event.stopPropagation?.();
@@ -2599,13 +2962,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         actions.appendChild(more);
         if (moreOpen) {
             const menu = element('div', { className: 'yl-private-chat-more-menu', ariaLabel: '私聊更多操作' });
-            menu.setAttribute('role', 'menu');
             const summary = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '聊天总结', ariaLabel: '查看聊天总结', disabled: !chatSummaryEnabled() });
             const clear = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '清空聊天记录', ariaLabel: '清空聊天记录' });
             const removeCharacter = element('button', { className: 'yl-private-chat-menu-item is-danger', type: 'button', text: '删除角色', ariaLabel: '删除角色完整数据' });
-            clear.setAttribute('role', 'menuitem');
-            removeCharacter.setAttribute('role', 'menuitem');
-            summary.setAttribute('role', 'menuitem');
             listen(summary, summary, 'click', () => {
                 chatMoreMenuSessionUid = '';
                 setActivePage('private_chat_summary');
@@ -2875,7 +3234,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const privacyNote = element('p', { className: 'yl-chat-privacy-note', text: '线上短消息会通过当前“私聊”功能绑定处理；重要面基安排请单独确认。' });
         panel.appendChild(privacyNote);
         const transcript = element('div', { className: 'yl-chat-transcript', ariaLabel: `${chatNickname(session)}的私聊记录` });
-        transcript.setAttribute('aria-live', 'polite');
+        // Do not make a full transcript a live region: only concise reply state is announced.
+        transcript.setAttribute('aria-live', 'off');
         if (!session.messages.length) transcript.appendChild(buildEmptyPlaceholder('还没有消息。用一句简单的问候开始吧。', { tag: 'p', icon: '✦' }));
         else {
             transcript.appendChild(element('p', { className: 'yl-chat-transcript-label', text: '最近消息' }));
@@ -2912,19 +3272,21 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             className: 'yl-chat-send-button', type: 'button', disabled: pending,
             ariaLabel: pending ? '正在生成私聊回复' : '发送消息',
         });
-        const sendGlyph = element('span', { className: pending ? 'yl-chat-send-pending' : 'yl-chat-send-icon', text: pending ? '···' : '' });
+        const sendGlyph = pending
+            ? element('span', { className: 'yl-chat-send-pending', text: '···' })
+            : createUiIcon(documentRef, 'send', { className: 'yl-chat-send-icon', size: 21, strokeWidth: 2 });
         sendGlyph.setAttribute('aria-hidden', 'true');
         send.appendChild(sendGlyph);
         const meetupSupported = typeof actionBridge.runPrivateChatMeetupHandoff === 'function' || typeof actionBridge.runMeetupHandoff === 'function';
         const meetupUnlocked = meetupSupported && session.meetupAccess?.unlocked === true;
         const meetupAvailable = meetupSupported;
         const toolsOpen = meetupAvailable && activeChatToolsSessionUid === session.sessionUid;
-        send.setAttribute('aria-haspopup', meetupAvailable ? 'menu' : 'false');
+        // Disclosure：右键 / 长按展开工具列表，不宣称 role=menu。
         send.setAttribute('aria-expanded', String(toolsOpen));
         send.setAttribute('title', meetupSupported ? '左键发送，右键打开工具栏' : '发送消息');
         const updateSendState = () => {
             const empty = !String(input.value ?? '').trim();
-            send.disabled = pending;
+            send.disabled = pending || empty;
             send.classList.toggle('is-empty', empty && !pending);
             send.setAttribute('aria-disabled', String(pending || empty));
         };
@@ -2990,14 +3352,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         controls.appendChild(send);
         if (toolsOpen) {
             const toolMenu = element('div', { className: 'yl-chat-tool-menu', ariaLabel: '私聊发送工具栏' });
-            toolMenu.setAttribute('role', 'menu');
             const meetupTool = element('button', {
                 className: 'yl-chat-tool-button', type: 'button', disabled: !meetupUnlocked,
                 text: meetupUnlocked ? `约定面基 · ${session.meetupAccess.route}路线` : '关系未达面基条件',
                 ariaLabel: meetupUnlocked ? `打开约定面基，${session.meetupAccess.route}路线` : '关系未达面基条件',
             });
             meetupTool.setAttribute('aria-disabled', String(!meetupUnlocked));
-            meetupTool.setAttribute('role', 'menuitem');
             listen(meetupTool, meetupTool, 'click', () => {
                 if (!meetupUnlocked) return;
                 activeChatToolsSessionUid = '';
@@ -3086,15 +3446,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
 
     function closeAvatarDialog() {
-        avatarDialog.hidden = true;
-        avatarLinkInput.value = '';
+        closeManagedDialog(avatarDialog);
+        try { avatarFileInput.value = ''; } catch { /* file inputs may be immutable in host DOMs */ }
     }
     function openAvatarDialog() {
         if (!playerAvatarStore || typeof playerAvatarStore.snapshot !== 'function') {
             setFeedback('本地头像存储尚未就绪。');
             return;
         }
-        avatarDialog.hidden = false;
+        dialogController.open(avatarDialog, { onRequestClose: closeAvatarDialog });
     }
     function playerAvatarButton(nickname) {
         let avatar = null;
@@ -3130,17 +3490,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             avatarFileInput.value = '';
         }
     }
-    function saveLinkedAvatar() {
-        if (!playerAvatarStore || typeof playerAvatarStore.setAvatar !== 'function') return;
-        try {
-            playerAvatarStore.setAvatar({ kind: 'url', url: String(avatarLinkInput.value ?? '').trim() });
-            closeAvatarDialog();
-            setFeedback('头像链接已保存到当前浏览器。');
-            renderPage();
-        } catch {
-            setFeedback('头像链接仅支持有效的 http 或 https 图片地址。');
-        }
-    }
     function removePlayerAvatar() {
         if (!playerAvatarStore || typeof playerAvatarStore.removeAvatar !== 'function') return;
         try { playerAvatarStore.removeAvatar(); } catch { /* menu remains usable even if storage clearing fails */ }
@@ -3148,23 +3497,80 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         setFeedback('本地头像已移除。');
         renderPage();
     }
+    function localCharacterTemplateCount() {
+        try {
+            const templates = typeof characterLibrary?.list === 'function' ? characterLibrary.list() : [];
+            return Array.isArray(templates) ? templates.length : 0;
+        } catch { return 0; }
+    }
     function buildProfileHub() {
-        const section = element('section', { className: 'yl-person-center' });
+        const section = element('section', { className: 'yl-person-center yl-profile-dashboard' });
         const nickname = currentView.playerProfile.昵称 || '未填写个人资料';
-        const headerCard = element('article', { className: 'yl-person-summary' });
+        const city = currentView.playerProfile.城市 || '建立公开资料后开启更准确的匹配。';
+        const headerCard = element('article', { className: 'yl-person-summary yl-profile-identity-card' });
         const hero = element('div', { className: 'yl-person-hero' });
         hero.appendChild(playerAvatarButton(nickname));
         headerCard.appendChild(hero);
-        const copy = element('div');
-        copy.appendChild(element('strong', { text: nickname }));
-        copy.appendChild(element('span', { text: currentView.playerProfile.城市 || '建立公开资料后开启更准确的匹配。' }));
-        headerCard.appendChild(copy); section.appendChild(headerCard);
-        const entries = [['profile_editor', '◉', '个人资料', '填写公开资料。'], ['character_creator', '＋', '创建角色', '创建、导入并管理成年人角色模板。'], ['favorites', '☆', `收藏夹${currentView.favorites.length ? ` · ${currentView.favorites.length}` : ''}`, '查看保存的候选人。'], ['settings', '⚙', '设置', '匹配、连接、提示词与关于软件。']];
-        for (const [page, icon, title, note] of entries) {
-            const button = element('button', { className: 'yl-center-entry', type: 'button', ariaLabel: title });
-            append(button, [element('span', { text: icon }), element('strong', { text: title }), element('span', { text: note }), element('span', { text: '›' })]);
-            listen(button, button, 'click', () => setActivePage(page), abortController.signal); section.appendChild(button);
+        const copy = element('div', { className: 'yl-profile-identity-copy' });
+        append(copy, [
+            element('span', { className: 'yl-hub-eyebrow', text: '我的公开形象' }),
+            element('strong', { text: nickname }),
+            element('span', { text: city }),
+            element('small', { text: '这里只呈现公开资料与本地关系资产。' }),
+        ]);
+        headerCard.appendChild(copy);
+        const profileSignal = element('div', { className: 'yl-relationship-signal yl-profile-signal', ariaLabel: '关系资产摘要' });
+        profileSignal.appendChild(element('span', { className: 'yl-signal-line', ariaHidden: 'true' }));
+        append(profileSignal, [
+            element('span', { text: currentView.messageSessions.length + ' 个私聊' }),
+            element('span', { text: currentView.favorites.length + ' 个收藏' }),
+            element('span', { text: localCharacterTemplateCount() + ' 个模板' }),
+        ]);
+        headerCard.appendChild(profileSignal);
+        section.appendChild(headerCard);
+        const assets = element('div', { className: 'yl-profile-metrics', ariaLabel: '我的关系资产' });
+        for (const [value, label] of [[currentView.messageSessions.length, '私聊'], [currentView.favorites.length, '收藏'], [localCharacterTemplateCount(), '角色模板']]) {
+            const metric = element('div', { className: 'yl-profile-metric' });
+            append(metric, [element('strong', { text: String(value) }), element('span', { text: label })]);
+            assets.appendChild(metric);
         }
+        section.appendChild(assets);
+        const dashboard = element('div', { className: 'yl-profile-dashboard-grid' });
+        dashboard.appendChild(buildHubSection({
+            title: '我的公开形象', note: '别人在发现页看到的就是这份公开资料。', className: 'yl-profile-section-identity',
+            entries: [
+                { page: 'profile_editor', iconName: 'edit_profile', title: '个人资料', note: '编辑昵称、城市、简介和公开标签。', meta: currentView.playerProfile.昵称 ? '已建立' : '待完善', tone: 'rose' },
+            ],
+        }));
+        dashboard.appendChild(buildHubSection({
+            title: '我的关系资产', note: '回访已经保留的人与已经建立的连接。', className: 'yl-profile-section-relationships',
+            entries: [
+                { page: 'favorites', iconName: 'favorite', title: '收藏夹', note: '查看保存的候选人，并决定是否主动发起私聊。', meta: currentView.favorites.length + ' 人', tone: 'gold' },
+                { page: 'matches', iconName: 'matches', title: '已牵手对象', note: '查看互相匹配的对象，随时进入私聊。', meta: currentView.matches.length + ' 人', tone: 'rose' },
+            ],
+        }));
+        dashboard.appendChild(buildHubSection({
+            title: '创作工具', note: '角色与图片素材保持本地、可导入导出。', className: 'yl-profile-section-tools',
+            entries: [
+                { page: 'character_creator', iconName: 'create_character', title: '创建角色', note: '创建、导入并管理明确为成年人的角色模板。', meta: localCharacterTemplateCount() + ' 个', tone: 'violet' },
+                { page: 'settings_images', iconName: 'image', title: '图片素材', note: '管理本地角色展示图与匹配关键词。', meta: '本地', tone: 'violet' },
+            ],
+        }));
+        dashboard.appendChild(buildHubSection({
+            title: '偏好与设置', note: '连接、提示词、推荐与隐私都在这里分层收纳。', className: 'yl-profile-section-preferences',
+            entries: [
+                { page: 'settings', iconName: 'settings', title: '设置', note: '管理连接、提示词、隐私、图片与软件信息。', meta: '设备级', tone: 'neutral' },
+            ],
+        }));
+        dashboard.appendChild(buildHubSection({
+            title: '高级与诊断', note: '低频诊断信息；不显示密钥或私密内容。', className: 'yl-profile-section-diagnostics',
+            entries: [
+                { page: 'settings_chat_summary', iconName: 'summary', title: '总结档案', note: '按楼层整理私聊、群聊与论坛帖子。', meta: '本地', tone: 'neutral' },
+                { page: 'settings_console', iconName: 'console', title: '运行记录', note: '查看安全运行进度，不显示密钥或原始数据。', meta: '会话级', tone: 'neutral' },
+                { page: 'about', iconName: 'info', title: '关于软件', note: '查看版本与更新日志。', meta: UI_VERSION, tone: 'neutral' },
+            ],
+        }));
+        section.appendChild(dashboard);
         return section;
     }
     function seedPlayerDraft() {
@@ -3259,7 +3665,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function summarySettingEntry(title, note, page, disabled = false) {
         const button = element('button', { className: 'yl-center-entry', type: 'button', ariaLabel: title, disabled });
-        append(button, [element('strong', { text: title }), element('span', { text: note }), element('span', { text: '›' })]);
+        append(button, [element('strong', { text: title }), element('span', { text: note }), openMark()]);
         if (!disabled) listen(button, button, 'click', () => setActivePage(page), abortController.signal);
         return button;
     }
@@ -3388,7 +3794,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                     element('span', { className: 'yl-session-name', text: chatNickname(session) }),
                     element('span', { className: 'yl-session-preview', text: `已对话 ${info.totalLayers} 层 · ${info.records.length} 条总结${info.pendingMessageCount ? ` · ${info.pendingMessageCount} 条待整理` : ''}` }),
                 ]);
-                append(button, [copy, element('span', { className: 'yl-session-open-mark', text: '›' })]);
+                append(button, [copy, openMark()]);
                 listen(button, button, 'click', () => { localSummaryTarget = null; summaryHistorySessionUid = session.sessionUid; setActivePage('settings_chat_summary_history_detail'); }, abortController.signal);
                 list.appendChild(button);
             }
@@ -3408,7 +3814,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                     element('span', { className: 'yl-session-name', text: titleText }),
                     element('span', { className: 'yl-session-preview', text: `已对话 ${info.totalFloors} 楼 · ${info.records.length} 条总结${info.pendingFloorCount ? ` · ${info.pendingFloorCount} 楼待整理` : ''}` }),
                 ]);
-                append(button, [icon, copy, element('span', { className: 'yl-session-open-mark', text: '›' })]);
+                append(button, [icon, copy, openMark()]);
                 listen(button, button, 'click', () => {
                     localSummaryTarget = { kind, id: kind === 'group' ? item.key : item.id, title: titleText };
                     summaryHistorySessionUid = ''; setActivePage('settings_chat_summary_history_detail');
@@ -3428,25 +3834,39 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return buildConversationSummaryDetail(session, { actionsEnabled: true, historyMode: true });
     }
     function buildSettingsHome() {
-        const section = element('section', { className: 'yl-settings-home' });
-        const entries = [
-            ['settings_connections', '连接预设', '按名称选择和维护连接。'],
-            ['settings_prompts', '提示词预设', '只维护提示词条目与导入导出。'],
-            ['settings_privacy', '隐私权限设置', '管理个性化内容推荐与当前设备偏好。'],
-            ['settings_images', '图片管理', '上传或导入角色展示图，并编辑匹配关键词与权重。'],
-            ['settings_image_generation', '生图设置', '配置 NovelAI 或 OpenAI-compatible 生图接口与固定提示词。'],
-            ['settings_chat_summary', '对话总结', '按楼层整理私聊、聊天群和帖子；后两者仅保存在浏览器本地。'],
-            ['settings_console', '控制台', '查看本次会话中的安全运行进度，不显示技术密钥或原始数据。'],
-            ['about', '关于软件', '进入子界面查看版本、更新日志与隐藏功能。'],
-        ];
-        for (const [page, title, note] of entries) {
-            const row = element('div', { className: 'yl-settings-home-row' });
-            const button = element('button', { className: 'yl-center-entry', type: 'button', ariaLabel: title });
-            append(button, [element('strong', { text: title }), element('span', { text: note }), element('span', { text: '›' })]);
-            listen(button, button, 'click', () => setActivePage(page), abortController.signal);
-            row.appendChild(button);
-            section.appendChild(row);
-        }
+        const section = element('section', { className: 'yl-settings-home yl-settings-catalog' });
+        const intro = element('article', { className: 'yl-settings-catalog-intro' });
+        append(intro, [
+            element('span', { className: 'yl-hub-eyebrow', text: '设备与创作控制台' }),
+            element('h2', { text: '把低频配置按任务收起来' }),
+            element('p', { text: '连接、提示词和图片属于创作工具；推荐与总结属于体验偏好；控制台与关于软件属于高级诊断。API Key 与私密内容不会出现在本页摘要。' }),
+        ]);
+        section.appendChild(intro);
+        const catalog = element('div', { className: 'yl-settings-catalog-grid' });
+        catalog.appendChild(buildHubSection({
+            title: 'AI 与创作', note: '配置模型连接和内容生产能力。', className: 'yl-settings-category yl-settings-category-creative',
+            entries: [
+                { page: 'settings_connections', iconName: 'connection', title: '连接预设', note: '按名称选择和维护非机密连接信息。', meta: '连接' },
+                { page: 'settings_prompts', iconName: 'prompt', title: '提示词预设', note: '维护提示词条目以及导入和导出。', meta: '文本' },
+                { page: 'settings_images', iconName: 'image', title: '图片管理', note: '管理本地角色展示图与匹配关键词。', meta: '媒体' },
+                { page: 'settings_image_generation', iconName: 'sparkle', title: '生图设置', note: '配置会话生图接口与固定提示词。', meta: '生成' },
+            ],
+        }));
+        catalog.appendChild(buildHubSection({
+            title: '偏好与隐私', note: '决定当前设备如何推荐和整理内容。', className: 'yl-settings-category yl-settings-category-preference',
+            entries: [
+                { page: 'settings_privacy', iconName: 'privacy', title: '隐私权限设置', note: '管理个性化推荐与当前设备关键词偏好。', meta: '受控' },
+                { page: 'settings_chat_summary', iconName: 'summary', title: '对话总结', note: '按楼层整理私聊、群聊与论坛帖子。', meta: '本地' },
+            ],
+        }));
+        catalog.appendChild(buildHubSection({
+            title: '高级与诊断', note: '查看运行状态和软件说明；低频信息保持收纳。', className: 'yl-settings-category yl-settings-category-system',
+            entries: [
+                { page: 'settings_console', iconName: 'console', title: '控制台', note: '查看安全运行进度，不显示密钥或原始数据。', meta: '会话级' },
+                { page: 'about', iconName: 'info', title: '关于软件', note: '查看版本、更新日志与隐藏功能入口。', meta: UI_VERSION },
+            ],
+        }));
+        section.appendChild(catalog);
         return section;
     }
     function buildAboutSoftwarePage() {
@@ -3458,7 +3878,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         section.appendChild(intro);
         const actions = element('div', { className: 'yl-about-actions' });
         const version = element('button', { className: 'yl-center-entry', type: 'button', name: 'about-version-info', ariaLabel: '版本信息' });
-        append(version, [element('span', { text: 'ⓘ' }), element('strong', { text: '版本信息' }), element('span', { text: '查看当前版本号。' }), element('span', { text: '›' })]);
+        const versionIcon = element('span', { className: 'yl-about-entry-icon' });
+        versionIcon.appendChild(createUiIcon(documentRef, 'info', { className: 'yl-about-entry-svg', size: 18 }));
+        append(version, [versionIcon, element('strong', { text: '版本信息' }), element('span', { text: '查看当前版本号。' }), openMark()]);
         listen(version, version, 'click', showVersionInformation, abortController.signal); actions.appendChild(version);
         if (aboutUnlocked) {
             const modeEntry = element('button', { className: 'yl-settings-button yl-hidden-feature-entry', type: 'button', name: 'about-content-mode-entry', text: '切换 SFW / NSFW' });
@@ -3466,7 +3888,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             if (aboutModeControlOpen) actions.appendChild(buildContentModeSlider());
         }
         const releases = element('button', { className: 'yl-center-entry', type: 'button', name: 'about-release-notes', ariaLabel: '更新日志' });
-        append(releases, [element('span', { text: '↻' }), element('strong', { text: '更新日志' }), element('span', { text: '查看最近三次更新内容。' }), element('span', { text: '›' })]);
+        const releasesIcon = element('span', { className: 'yl-about-entry-icon' });
+        releasesIcon.appendChild(createUiIcon(documentRef, 'refresh', { className: 'yl-about-entry-svg', size: 18 }));
+        append(releases, [releasesIcon, element('strong', { text: '更新日志' }), element('span', { text: '查看最近三次更新内容。' }), openMark()]);
         listen(releases, releases, 'click', showRecentReleaseNotes, abortController.signal); actions.appendChild(releases);
         if (serviceEntryUnlocked) {
             if (serviceHubUnlocked) {
@@ -3951,8 +4375,40 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function buildServiceHubPage() {
         const copy = serviceHubModeCopy(); const category = serviceCategory(copy, activeServiceCategoryId); const section = element('section', { className: 'yl-service-hub', ariaLabel: '专属服务小程序' });
         const tabs = element('div', { className: 'yl-service-tabs', ariaLabel: '专属服务导航' }); tabs.setAttribute('role', 'tablist');
-        for (const item of SERVICE_HUB_TABS) { const tab = element('button', { className: 'yl-service-tab', type: 'button', ariaLabel: item.label }); tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(activeServiceHubTab === item.id)); tab.classList.toggle('is-active', activeServiceHubTab === item.id); append(tab, [element('span', { text: item.icon }), element('span', { text: item.label })]); listen(tab, tab, 'click', () => { activeServiceHubTab = item.id; renderPage(); }, abortController.signal); tabs.appendChild(tab); }
+        const tabButtons = [];
+        const focusServiceHubTab = (tabId) => { root.querySelectorAll?.(`[name="service-hub-tab-${tabId}"]`)?.[0]?.focus?.(); };
+        for (const item of SERVICE_HUB_TABS) {
+            const active = activeServiceHubTab === item.id;
+            const tab = element('button', { className: 'yl-service-tab', type: 'button', name: `service-hub-tab-${item.id}`, ariaLabel: item.label });
+            tab.setAttribute('role', 'tab');
+            tab.setAttribute('id', `yl-service-hub-tab-${item.id}`);
+            tab.setAttribute('aria-selected', String(active));
+            tab.setAttribute('aria-controls', 'yl-service-hub-panel');
+            // roving tabindex：Tab 键只停靠当前激活项，方向键在 tab 之间漫游。
+            tab.setAttribute('tabindex', active ? '0' : '-1');
+            tab.classList.toggle('is-active', active);
+            const tabIcon = element('span', { className: 'yl-service-tab-icon' });
+            tabIcon.appendChild(createUiIcon(documentRef, item.iconName, { className: 'yl-service-tab-svg', size: 18 }));
+            append(tab, [tabIcon, element('span', { text: item.label })]);
+            listen(tab, tab, 'click', () => { activeServiceHubTab = item.id; renderPage(); focusServiceHubTab(item.id); }, abortController.signal);
+            tabs.appendChild(tab); tabButtons.push(tab);
+        }
+        listen(tabs, tabs, 'keydown', (event) => {
+            if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
+            const current = tabButtons.indexOf(documentRef.activeElement);
+            const from = current >= 0 ? current : Math.max(0, SERVICE_HUB_TABS.findIndex((entry) => entry.id === activeServiceHubTab));
+            const next = event.key === 'Home' ? 0
+                : event.key === 'End' ? tabButtons.length - 1
+                    : event.key === 'ArrowRight' ? (from + 1) % tabButtons.length
+                        : (from - 1 + tabButtons.length) % tabButtons.length;
+            event.preventDefault?.();
+            for (let index = 0; index < tabButtons.length; index += 1) tabButtons[index].setAttribute('tabindex', index === next ? '0' : '-1');
+            tabButtons[next].focus?.();
+        }, abortController.signal);
         section.appendChild(tabs); const body = element('div', { className: 'yl-service-body' });
+        body.setAttribute('role', 'tabpanel');
+        body.setAttribute('id', 'yl-service-hub-panel');
+        body.setAttribute('aria-labelledby', `yl-service-hub-tab-${activeServiceHubTab}`);
         if (activeServiceHubTab === 'home') {
             const hero = element('article', { className: 'yl-service-hero' }); append(hero, [element('span', { className: 'yl-service-mode-badge', text: copy.label }), element('h2', { text: copy.title }), element('p', { text: copy.subtitle })]); body.appendChild(hero);
             const grid = element('div', { className: 'yl-service-category-grid' });
@@ -4026,6 +4482,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             imageManagerPanel = createImageManagerPanel({
                 documentRef,
                 imageLibrary,
+                dialogController,
+                // 链接导入 = 一次性下载字节，随后仍走同一条本地压缩链；URL 不落库。
+                importRemoteImageFile: remoteImageImporter ? (url) => remoteImageImporter.importImageFile(url) : null,
                 compressImageFile: async (file) => (await compressLocalAvatar(file)).dataUrl,
                 onFeedback: (message) => setFeedback(message),
                 onChange: () => { clearMatchedImageState(); renderPage(); },
@@ -4042,7 +4501,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const section = element('section', { className: 'yl-settings-detail' });
         section.appendChild(buildSettingsPanel({
             settingsStore, llmClient, signal: abortController.signal, view,
-            contentMode: currentView.mode,
+            contentMode: currentView.mode, dialogController,
             onFeedback: createOperationFeedbackHandler(), onRerender: renderPage, onNavigate: setActivePage,
         }));
         return section;
@@ -4050,7 +4509,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     function buildPrivacySettings() {
         const section = element('section', { className: 'yl-settings-home' });
         const button = element('button', { className: 'yl-center-entry', type: 'button', ariaLabel: '个性化内容推荐管理' });
-        append(button, [element('strong', { text: '个性化内容推荐管理' }), element('span', { text: '开启或关闭个性化推荐，并编辑当前设备的关键词权重。' }), element('span', { text: '›' })]);
+        append(button, [element('strong', { text: '个性化内容推荐管理' }), element('span', { text: '开启或关闭个性化推荐，并编辑当前设备的关键词权重。' }), openMark()]);
         listen(button, button, 'click', () => setActivePage('settings_personalization'), abortController.signal);
         section.appendChild(button);
         return section;
@@ -4192,6 +4651,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(root, documentRef, 'pointermove', movePanelDrag, abortController.signal);
     listen(root, documentRef, 'pointerup', endPanelDrag, abortController.signal);
     listen(root, documentRef, 'pointercancel', endPanelDrag, abortController.signal);
+    if (documentRef.defaultView?.addEventListener) {
+        listen(root, documentRef.defaultView, 'resize', () => clampCustomPanelPosition(), abortController.signal);
+    }
     listen(operationDismiss, operationDismiss, 'click', hideOperationDialog, abortController.signal);
     listen(operationClose, operationClose, 'click', hideOperationDialog, abortController.signal);
     listen(bindingDialogClose, bindingDialogClose, 'click', closeFeatureBindingDialog, abortController.signal);
@@ -4202,24 +4664,23 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(imageDirectiveClose, imageDirectiveClose, 'click', closeImageDirectiveDialog, abortController.signal);
     listen(avatarFileButton, avatarFileButton, 'click', () => { avatarFileInput.click?.(); }, abortController.signal);
     listen(avatarFileInput, avatarFileInput, 'change', () => { void saveLocalAvatarFile(avatarFileInput.files?.[0]); }, abortController.signal);
-    listen(avatarLinkButton, avatarLinkButton, 'click', saveLinkedAvatar, abortController.signal);
     listen(avatarRemoveButton, avatarRemoveButton, 'click', removePlayerAvatar, abortController.signal);
     listen(root, documentRef, "click", (event) => {
         if (chatMoreMenuSessionUid && !event.target?.closest?.('.yl-private-chat-actions')) closeChatMoreMenu();
     }, abortController.signal);
     listen(root, documentRef, "keydown", (event) => {
+        // 弹窗打开时 Tab / Escape 交由控制器：焦点环留在栈顶弹窗内，Escape 走各弹窗自己的关闭函数。
+        if (event.key === "Tab") {
+            if (dialogController.hasOpenDialog()) dialogController.handleKeydown(event);
+            return;
+        }
         if (event.key !== "Escape") return;
-        if (!operationDialog.hidden) hideOperationDialog();
-        else if (!bindingDialog.hidden) closeFeatureBindingDialog();
-        else if (!avatarDialog.hidden) closeAvatarDialog();
-        else if (!groupMemberPickerDialog.hidden) closeGroupMemberPicker();
-        else if (!groupAutoDialog.hidden) closeGroupAutoDialog();
-        else if (!forumSettingsDialog.hidden) closeForumSettingsDialog();
-        else if (!imageDirectiveDialog.hidden) closeImageDirectiveDialog();
-        else if (imageManagerPanel?.handleEscape?.()) { /* image manager handled it */ }
-        else if (chatMoreMenuSessionUid) closeChatMoreMenu();
-        else if (groupRoomMenuOpen) { resetGroupRoomMenu(); renderPage(); }
-        else if (open) setOpen(false);
+        if (dialogController.handleKeydown(event)) return;
+        if (imageManagerPanel?.handleEscape?.()) return;
+        if (chatMoreMenuSessionUid) { closeChatMoreMenu(); return; }
+        if (activeChatToolsSessionUid) { activeChatToolsSessionUid = ''; renderPage(); return; }
+        if (groupRoomMenuOpen) { resetGroupRoomMenu(); renderPage(); return; }
+        if (open) setOpen(false);
     }, abortController.signal);
     unsubscribeOperationActivity = operationActivity.subscribe(() => {
         if (open && activePage === 'settings_console') renderPage();
@@ -4227,6 +4688,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     renderPage();
     return Object.freeze({
         refreshState,
-        destroy() { cancelChatToolLongPress(); clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; invalidateServiceProfileGeneration(); invalidateServiceOrderOperations(); stopGroupAutoTimer(); stopForumAutoTimer(); cancelForumPullInteractions(); clearSummaryToast(); hideOperationDialog(); closeGroupMemberPicker(); closeGroupAutoDialog(); closeForumSettingsDialog(); resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { cancelChatToolLongPress(); clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; invalidateServiceProfileGeneration(); invalidateServiceOrderOperations(); stopGroupAutoTimer(); stopForumAutoTimer(); cancelForumPullInteractions(); clearSummaryToast(); hideOperationDialog(); closeGroupMemberPicker(); closeGroupAutoDialog(); closeForumSettingsDialog(); resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); dialogController.dispose(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }

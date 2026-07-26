@@ -19,8 +19,7 @@ function ownEnumerableData(record, key) {
 
 function asAvatarReference(input) {
     if (typeof input === 'string') {
-        if (input.startsWith('data:')) return { kind: 'embedded', dataUrl: input };
-        return { kind: 'url', url: input };
+        return input.startsWith('data:') ? { kind: 'embedded', dataUrl: input } : null;
     }
     if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
 
@@ -34,9 +33,8 @@ function asAvatarReference(input) {
  * Returns a browser-loadable avatar source or an empty string.
  *
  * Accepted inputs:
- * - a bounded http/https URL string;
  * - a bounded PNG/JPEG/WebP base64 data URL string;
- * - an existing { kind: 'url'|'embedded', ... } avatar/image source;
+ * - an existing { kind: 'embedded', ... } avatar/image source;
  * - an image-library record shaped as { source: { kind, ... } }.
  */
 export function safeAvatarImageSource(input) {
@@ -71,6 +69,8 @@ export function createAvatarView({
     alt = '',
     fallback = DEFAULT_FALLBACK,
     tagName = 'span',
+    onImageLoad = null,
+    onImageFailure = null,
 } = {}) {
     if (!documentRef || typeof documentRef.createElement !== 'function') {
         throw new TypeError('avatar_view_document_required');
@@ -98,13 +98,16 @@ export function createAvatarView({
     root.dataset.imageStatus = 'loading';
 
     image.addEventListener('load', () => {
-        if (image.parentNode === root) root.dataset.imageStatus = 'ready';
+        if (image.parentNode !== root) return;
+        root.dataset.imageStatus = 'ready';
+        try { onImageLoad?.(); } catch { /* presentation callbacks must not break avatar fallback */ }
     }, { once: true });
     image.addEventListener('error', () => {
         if (image.parentNode !== root) return;
         image.remove();
         root.textContent = fallbackText;
         root.dataset.imageStatus = 'failed';
+        try { onImageFailure?.(); } catch { /* presentation callbacks must not break avatar fallback */ }
     }, { once: true });
 
     root.appendChild(image);

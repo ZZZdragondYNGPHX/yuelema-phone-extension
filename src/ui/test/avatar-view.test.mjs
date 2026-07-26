@@ -8,12 +8,9 @@ test.after(() => miniDom.restore());
 
 const PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo=';
 
-test('安全来源复用现有头像策略并支持图片库记录', () => {
-    assert.equal(safeAvatarImageSource('https://cdn.example.test/avatar.webp'), 'https://cdn.example.test/avatar.webp');
-    assert.equal(
-        safeAvatarImageSource({ kind: 'url', url: 'http://images.example.test/member.png' }),
-        'http://images.example.test/member.png',
-    );
+test('安全来源只接受 embedded data URL 并支持图片库记录', () => {
+    assert.equal(safeAvatarImageSource('https://cdn.example.test/avatar.webp'), '');
+    assert.equal(safeAvatarImageSource({ kind: 'url', url: 'http://images.example.test/member.png' }), '');
     assert.equal(
         safeAvatarImageSource({ source: { kind: 'embedded', dataUrl: PNG_DATA_URL } }),
         PNG_DATA_URL,
@@ -50,7 +47,7 @@ test('NPC 头像创建 img，设置隐私属性且 MiniDOM 可查询', () => {
     const avatar = createAvatarView({
         documentRef: miniDom.document,
         nickname: '林晚',
-        imageSource: { source: { kind: 'url', url: 'https://cdn.example.test/lin.webp' } },
+        imageSource: { source: { kind: 'embedded', dataUrl: PNG_DATA_URL } },
         className: 'yl-member-avatar',
         imageClassName: 'yl-member-avatar-image',
     });
@@ -60,7 +57,7 @@ test('NPC 头像创建 img，设置隐私属性且 MiniDOM 可查询', () => {
     assert.equal(avatar.className, 'yl-member-avatar');
     assert.equal(avatar.dataset.imageStatus, 'loading');
     assert.equal(image?.className, 'yl-member-avatar-image');
-    assert.equal(image?.getAttribute('src'), 'https://cdn.example.test/lin.webp');
+    assert.equal(image?.getAttribute('src'), PNG_DATA_URL);
     assert.equal(image?.getAttribute('alt'), '林晚的头像');
     assert.equal(image?.getAttribute('loading'), 'lazy');
     assert.equal(image?.getAttribute('referrerpolicy'), 'no-referrer');
@@ -68,6 +65,24 @@ test('NPC 头像创建 img，设置隐私属性且 MiniDOM 可查询', () => {
 
     image.dispatchEvent(new Event('load'));
     assert.equal(avatar.dataset.imageStatus, 'ready');
+});
+
+test('头像加载回调只报告最终加载结果，且回调异常不影响回退', () => {
+    let loaded = 0;
+    let failed = 0;
+    const avatar = createAvatarView({
+        documentRef: miniDom.document,
+        nickname: '林晚',
+        imageSource: PNG_DATA_URL,
+        onImageLoad() { loaded += 1; },
+        onImageFailure() { failed += 1; throw new Error('presentation callback must be isolated'); },
+    });
+    const image = avatar.querySelector('img');
+    image.dispatchEvent(new Event('error'));
+    assert.equal(loaded, 0);
+    assert.equal(failed, 1);
+    assert.equal(avatar.dataset.imageStatus, 'failed');
+    assert.equal(avatar.textContent, '林');
 });
 
 test('玩家 data 头像可渲染，加载失败后删除图片并回退首字', () => {

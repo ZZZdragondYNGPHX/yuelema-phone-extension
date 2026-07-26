@@ -256,6 +256,12 @@ test('group room right-top more menu exposes exit, clear-history, automatic sett
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开菜单测试群'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开菜单测试群的更多操作'));
         assert.match(miniDom.document.body.textContent, /退出群聊|清空群历史|自动更新设置|预设/u);
+        const roomMoreOpen = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开菜单测试群的更多操作');
+        assert.equal(roomMoreOpen.getAttribute('aria-haspopup'), null, 'Phase 69：群房间更多操作是 disclosure，不再宣称 haspopup=menu');
+        assert.equal(roomMoreOpen.getAttribute('aria-expanded'), 'true');
+        const roomMenu = miniDom.document.querySelector('.yl-group-room-more-menu');
+        assert.equal(roomMenu.getAttribute('role'), null, 'Phase 69：无键盘模型的动作列表不得宣称 role=menu');
+        assert.equal(roomMenu.querySelectorAll('button').every((node) => node.getAttribute('role') === null), true, 'Phase 69：列表项是普通按钮而非 menuitem');
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '清空群历史'));
         assert.match(miniDom.document.body.textContent, /只会删除聊天消息/u);
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '确认清空群历史'));
@@ -358,8 +364,9 @@ test('empty candidate card refresh invokes the fast recommendation bridge withou
     try {
         const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
         click(launcher);
-        const refresh = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '刷新');
+        const refresh = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '刷新候选人，显示下一位');
         assert.ok(refresh, 'empty candidate card must expose its refresh action');
+        assert.equal(refresh.textContent, '下一位', 'empty candidate refresh keeps the concise visible label');
         assert.equal(miniDom.document.body.textContent.includes('快速随机创建候选人'), false);
         click(refresh);
         await flushUi();
@@ -474,7 +481,12 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         assert.ok(primaryNavPages.indexOf('service_hub') < primaryNavPages.indexOf('profile'));
         assert.match(miniDom.document.body.textContent, /今日心动档案/u);
         const serviceTabs = () => miniDom.document.querySelectorAll('.yl-service-tab');
-        assert.deepEqual(serviceTabs().map((node) => node.textContent), ['⌂首页', '◇发现', '♡服务', '◷历史']);
+        assert.deepEqual(serviceTabs().map((node) => node.textContent), ['首页', '发现', '服务', '历史']);
+        assert.deepEqual(
+            serviceTabs().map((tab) => tab.querySelector('svg')?.dataset.icon),
+            ['home', 'sparkle', 'service_hub', 'clock'],
+            '服务台 tab 应使用本地 SVG 白名单结构图标而非文字符号',
+        );
         const firstServiceCategory = miniDom.document.querySelector('[name="service-category-girl_shuren"]');
         assert.ok(firstServiceCategory, '首页应显示可直接生成角色的服务分类');
         click(firstServiceCategory);
@@ -1111,7 +1123,7 @@ test('late service-order handoff after close preserves the MVU result without fi
 
         click(launcher);
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
-        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '♡服务'));
+        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '服务'));
         assert.match(miniDom.document.body.textContent, /待确认/u, 'the already-committed MVU order remains recoverable after reopening');
     } finally {
         mounted.destroy();
@@ -1150,7 +1162,7 @@ test('pending service-history archive retries finalize only and leaves rebooking
         for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
         click(miniDom.document.querySelector('[name="about-service-entry"]'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
-        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '◷历史'));
+        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '历史'));
         assert.ok(miniDom.document.querySelector('[name="service-history-finalize"]'));
         click(miniDom.document.querySelector('[name="service-history-finalize"]'));
         await flushUi();
@@ -1196,7 +1208,7 @@ test('XP search scopes generated service drafts to the active person category an
         for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
         click(miniDom.document.querySelector('[name="about-service-entry"]'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
-        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '◇发现'));
+        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '发现'));
 
         const search = miniDom.document.querySelector('[name="service-xp-search"]');
         assert.ok(search, '发现页必须提供本次 XP 搜索输入框');
@@ -1225,6 +1237,101 @@ test('XP search scopes generated service drafts to the active person category an
         mounted.refreshState();
         assert.equal(miniDom.document.querySelectorAll('.yl-phone-extension').find((node) => node.id === 'ylm-test-service-xp-search').dataset.contentMode, 'NSFW');
         assert.equal(miniDom.document.querySelector('[name="service-xp-search"]')?.value, '', '切换模式必须清空本次 XP 搜索状态');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('community group search keeps the input node stable and only swaps the result list', async () => {
+    const bridge = { emit() {}, isPending() { return false; } };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-26T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-group-search-stability', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'groups'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('聊天群')));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '聊天群创建与查找'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '查找'));
+
+        const input = miniDom.document.querySelector('.yl-group-search-input');
+        assert.ok(input, '开启查找后应显示查找输入框');
+        const results = miniDom.document.querySelector('.yl-group-room-results');
+        assert.ok(results, '查找结果应有独立容器');
+        input.focus();
+
+        input.value = '夜谈';
+        input.dispatchEvent(new Event('input'));
+        assert.strictEqual(miniDom.document.querySelector('.yl-group-search-input'), input, '输入过滤不得重建查找输入框');
+        assert.strictEqual(miniDom.document.activeElement, input, '过滤时必须保留输入框焦点');
+        assert.match(results.textContent, /城市夜谈/u, '匹配的群应保留在结果区');
+
+        input.value = '不存在的群名';
+        input.dispatchEvent(new Event('input'));
+        assert.strictEqual(miniDom.document.querySelector('.yl-group-search-input'), input, '空结果时输入框仍不得重建');
+        assert.strictEqual(miniDom.document.activeElement, input, '空结果时焦点仍在输入框');
+        assert.match(results.textContent, /没有找到匹配的聊天群/u, '空结果应给出可读说明');
+        assert.doesNotMatch(results.textContent, /城市夜谈/u, '不匹配的群不得残留在结果区');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('Phase 69: service hub tabs expose a complete tab keyboard model with roving focus', async () => {
+    const state = { 软件: { 内容模式: 'SFW' }, 推荐: { 当前队列: [], 临时候选池: {} }, 角色池: {}, 服务订单: {} };
+    const bridge = { emit() {}, isPending() { return false; } };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-phase69-service-tabs', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => ({ ok: true, state }),
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关于软件'));
+        for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
+        click(miniDom.document.querySelector('[name="about-service-entry"]'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
+
+        const tablist = miniDom.document.querySelector('.yl-service-tabs');
+        assert.equal(tablist.getAttribute('role'), 'tablist');
+        const tabs = () => miniDom.document.querySelectorAll('.yl-service-tab');
+        assert.deepEqual(tabs().map((tab) => tab.getAttribute('role')), ['tab', 'tab', 'tab', 'tab']);
+        assert.deepEqual(tabs().map((tab) => tab.getAttribute('tabindex')), ['0', '-1', '-1', '-1'], 'roving tabindex 只让激活 tab 参与 Tab 序');
+        assert.equal(tabs().every((tab) => tab.getAttribute('aria-controls') === 'yl-service-hub-panel'), true);
+        const body = miniDom.document.querySelector('.yl-service-body');
+        assert.equal(body.getAttribute('role'), 'tabpanel');
+        assert.equal(body.getAttribute('id'), 'yl-service-hub-panel');
+        assert.equal(body.getAttribute('aria-labelledby'), 'yl-service-hub-tab-home');
+
+        tabs()[0].focus();
+        const arrow = (key) => {
+            const event = new Event('keydown', { cancelable: true });
+            Object.defineProperty(event, 'key', { configurable: true, value: key });
+            tablist.dispatchEvent(event);
+            return event;
+        };
+        const right = arrow('ArrowRight');
+        assert.equal(right.defaultPrevented, true, '方向键应阻止页面滚动默认行为');
+        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-discover', 'ArrowRight 把焦点移到下一个 tab');
+        assert.equal(miniDom.document.activeElement.getAttribute('aria-selected'), 'false', '方向键只移动焦点，不激活面板');
+        arrow('End');
+        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-history');
+        arrow('ArrowRight');
+        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-home', '方向键在首尾循环');
+        arrow('ArrowLeft');
+        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-history');
+        arrow('Home');
+        assert.equal(miniDom.document.activeElement.getAttribute('name'), 'service-hub-tab-home');
+
+        click(tabs().find((tab) => tab.getAttribute('name') === 'service-hub-tab-service'));
+        assert.equal(miniDom.document.activeElement?.getAttribute?.('name'), 'service-hub-tab-service', '激活后焦点落在新激活 tab 上');
+        assert.equal(miniDom.document.querySelector('.yl-service-body').getAttribute('aria-labelledby'), 'yl-service-hub-tab-service');
+        assert.deepEqual(tabs().map((tab) => tab.getAttribute('aria-selected')), ['false', 'false', 'true', 'false']);
+        assert.deepEqual(tabs().map((tab) => tab.getAttribute('tabindex')), ['-1', '-1', '0', '-1'], '激活后 roving tabindex 跟随新 tab');
     } finally {
         mounted.destroy();
     }

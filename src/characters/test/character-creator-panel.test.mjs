@@ -75,8 +75,7 @@ function fillExistingDraft(panel) {
     control(panel, 'hidden-age').value = '30';
     control(panel, 'hidden-note').value = 'hidden-note-must-not-leak';
     control(panel, 'boundary').value = 'private-boundary-must-not-leak';
-    control(panel, 'avatar-kind').value = 'url';
-    control(panel, 'avatar-url').value = 'https://private.example/original-avatar.webp';
+    control(panel, 'avatar-kind').value = 'embedded';
     control(panel, 'ai-completion-instruction').value = '补全为明确成年的都市约会资料。';
 }
 
@@ -117,7 +116,14 @@ test('AI 补全和完整创作各有独立的预设选项入口', () => {
         { key: 'character_full_authoring', title: 'AI 完整创作' },
     ]);
 });
-test('AI 补全成功只载入草稿：清除 URL 头像且不会登记或写 MVU', async () => {
+test('头像来源只提供占位与本地压缩两种入口，不再存在 URL 头像表单', () => {
+    const { panel } = createHarness();
+    assert.equal(panel.querySelector('[name="avatar-url"]'), null, 'URL 头像输入框已按新合同移除');
+    const kinds = control(panel, 'avatar-kind').querySelectorAll('option').map((option) => option.value);
+    assert.deepEqual(kinds, ['placeholder', 'embedded'], '头像来源只允许 placeholder 与 embedded');
+});
+
+test('AI 补全成功只载入草稿：头像重置为占位且不会登记或写 MVU', async () => {
     const { panel, feedback, writes, completionRequests } = createHarness();
     fillExistingDraft(panel);
 
@@ -131,18 +137,17 @@ test('AI 补全成功只载入草稿：清除 URL 头像且不会登记或写 MV
     assert.equal(request.publicProfile.头像引用, '');
     const serializedRequest = JSON.stringify(request);
     for (const forbidden of [
-        'private.example/original-avatar.webp', 'friend-secret-must-not-leak', 'friend-boundary-secret-must-not-leak',
+        'friend-secret-must-not-leak', 'friend-boundary-secret-must-not-leak',
         'hidden-note-must-not-leak', 'private-boundary-must-not-leak', 'data:image',
     ]) assert.equal(serializedRequest.includes(forbidden), false, `补全请求不得包含：${forbidden}`);
 
     assert.equal(control(panel, 'public-昵称').value, 'AI 草稿角色');
     assert.equal(control(panel, 'avatar-kind').value, 'placeholder');
-    assert.equal(control(panel, 'avatar-url').value, '');
     assert.equal(feedback.at(-1), 'AI 补全草稿已载入编辑器；请检查私有层、边界和阈值后再登记。');
     assertNoWrite(writes);
 });
 
-test('AI 补全模型失败时保持原始表单草稿与 URL 头像，且不会写 MVU', async () => {
+test('AI 补全模型失败时保持原始表单草稿与头像来源选择，且不会写 MVU', async () => {
     const { panel, feedback, writes, completionRequests } = createHarness({
         completion: async () => { throw new Error('Authorization Bearer private-key-must-not-leak'); },
     });
@@ -152,8 +157,8 @@ test('AI 补全模型失败时保持原始表单草稿与 URL 头像，且不会
         friend: control(panel, 'friend-关系状态').value,
         hidden: control(panel, 'hidden-note').value,
         avatarKind: control(panel, 'avatar-kind').value,
-        avatarUrl: control(panel, 'avatar-url').value,
     };
+    assert.equal(before.avatarKind, 'embedded');
 
     completionButton(panel).dispatchEvent(new Event('click'));
     await flushUi();
@@ -163,7 +168,6 @@ test('AI 补全模型失败时保持原始表单草稿与 URL 头像，且不会
     assert.equal(control(panel, 'friend-关系状态').value, before.friend);
     assert.equal(control(panel, 'hidden-note').value, before.hidden);
     assert.equal(control(panel, 'avatar-kind').value, before.avatarKind);
-    assert.equal(control(panel, 'avatar-url').value, before.avatarUrl);
     assert.equal(feedback.at(-1), 'AI 角色创作未完成；当前草稿未改变。');
     assert.equal(JSON.stringify(feedback).includes('private-key-must-not-leak'), false);
     assertNoWrite(writes);
@@ -236,4 +240,178 @@ test('本地模板库 UI 接线支持保存草稿、单模板导入和整库导�
     assert.equal(templateText.value, exportedTextOnly);
     assert.deepEqual(calls.exportLibrary, [{ includeAvatar: true }, { includeAvatar: false }]);
     assert.equal(calls.register, 0);
+});
+
+test('步骤导航 rail：四个按钮指向真实分段 id，点击后单选高亮', () => {
+    const { panel } = createHarness();
+    const rail = panel.querySelector('.yl-character-step-rail');
+    assert.ok(rail, '应存在步骤导航 rail');
+    assert.equal(rail.tagName, 'NAV');
+    assert.equal(rail.getAttribute('aria-label'), '创建角色步骤导航');
+
+    const buttons = rail.querySelectorAll('.yl-character-step-link');
+    assert.equal(buttons.length, 4, 'rail 应有 4 个步骤按钮');
+    const expected = [
+        ['01', '心动名片', 'yl-character-section-public'],
+        ['02', '形象与灵感', 'yl-character-section-avatar'],
+        ['03', '边界与节奏', 'yl-character-section-private'],
+        ['04', '确认登记', 'yl-character-section-submit'],
+    ];
+    const sectionIds = new Set(
+        [...panel.querySelectorAll('section'), ...panel.querySelectorAll('footer')]
+            .map((node) => node.getAttribute('id'))
+            .filter(Boolean),
+    );
+    expected.forEach(([number, label, targetId], index) => {
+        const button = buttons[index];
+        assert.equal(button.getAttribute('type'), 'button');
+        assert.equal(button.querySelector('.yl-character-step-number').textContent, number);
+        assert.equal(button.querySelector('.yl-character-step-label').textContent, label);
+        assert.equal(button.getAttribute('data-step-target'), targetId);
+        assert.ok(sectionIds.has(targetId), `data-step-target 指向的分段应存在：${targetId}`);
+    });
+
+    assert.ok(buttons[0].classList.contains('is-active'), '默认第一项应处于激活态');
+    assert.equal(buttons[0].getAttribute('aria-current'), 'step');
+
+    buttons[2].dispatchEvent(new Event('click'));
+    buttons.forEach((button, index) => {
+        assert.equal(button.classList.contains('is-active'), index === 2, `按钮 ${index} 的 is-active 状态`);
+        assert.equal(button.getAttribute('aria-current') === 'step', index === 2, `按钮 ${index} 的 aria-current 状态`);
+    });
+});
+
+test('公开名片预览随公开字段更新，且绝不包含私密值', () => {
+    const { panel } = createHarness();
+    fillExistingDraft(panel);
+    control(panel, 'threshold-拒绝阈值').value = '37';
+    control(panel, 'public-昵称').dispatchEvent(new Event('input'));
+
+    const preview = panel.querySelector('.yl-character-preview');
+    assert.ok(preview, '应存在公开名片预览');
+    const card = preview.querySelector('.yl-character-preview-card');
+    assert.ok(card);
+    assert.equal(card.querySelector('.yl-character-preview-name').textContent, '原始公开昵称');
+    assert.equal(card.querySelector('.yl-character-preview-meta').textContent, '25-29 · 北京 · 5 km');
+    assert.equal(card.querySelector('.yl-character-preview-intent').textContent, '想找：先聊天');
+    assert.equal(card.querySelector('.yl-character-preview-bio').textContent, '原始公开简介');
+    const tags = card.querySelectorAll('.yl-character-preview-tag').map((tag) => tag.textContent);
+    assert.deepEqual(tags, ['原始兴趣', '咖啡']);
+
+    const previewText = preview.textContent;
+    for (const forbidden of [
+        'friend-secret-must-not-leak', 'friend-boundary-secret-must-not-leak',
+        'hidden-note-must-not-leak', 'private-boundary-must-not-leak', '37',
+    ]) assert.equal(previewText.includes(forbidden), false, `预览不得包含私密值：${forbidden}`);
+});
+
+test('昵称为空时预览只显示空态文案', () => {
+    const { panel } = createHarness();
+    const empty = panel.querySelector('.yl-character-preview-empty');
+    assert.ok(empty, '初始（昵称为空）应显示空态');
+    assert.equal(empty.textContent, '填写昵称后，这里会出现 TA 的名片。');
+    assert.equal(panel.querySelector('.yl-character-preview-name'), null);
+    assert.equal(panel.querySelector('.yl-character-preview-avatar'), null);
+
+    control(panel, 'public-昵称').value = '林夏';
+    control(panel, 'public-昵称').dispatchEvent(new Event('input'));
+    assert.equal(panel.querySelector('.yl-character-preview-empty'), null);
+    assert.equal(panel.querySelector('.yl-character-preview-name').textContent, '林夏');
+
+    control(panel, 'public-昵称').value = '   ';
+    control(panel, 'public-昵称').dispatchEvent(new Event('input'));
+    assert.ok(panel.querySelector('.yl-character-preview-empty'), '清空昵称后应回到空态');
+});
+
+test('载入本地模板后预览同步更新', () => {
+    const characterLibrary = {
+        list: () => [{ id: 'local_1', metadata: { name: '收藏草稿' } }],
+        get: () => ({ template: { format: 'yuelema.character/v1', character: adultCandidate(), avatar: { kind: 'placeholder' } } }),
+    };
+    const panel = buildCharacterCreatorPanel({
+        documentRef: miniDom.document,
+        actionBridge: { async registerCharacter() { return { ok: true }; } },
+        characterLibrary,
+        signal: new AbortController().signal,
+        onFeedback() {},
+    });
+    assert.ok(panel.querySelector('.yl-character-preview-empty'), '载入前昵称为空应显示空态');
+
+    buttonByText(panel, '载入').dispatchEvent(new Event('click'));
+    const card = panel.querySelector('.yl-character-preview-card');
+    assert.equal(card.querySelector('.yl-character-preview-name').textContent, 'AI 草稿角色');
+    assert.ok(card.querySelector('.yl-character-preview-meta').textContent.includes('上海'));
+    const previewText = panel.querySelector('.yl-character-preview').textContent;
+    assert.equal(previewText.includes('新候选自己的私密设定。'), false, '载入模板后预览也不得包含隐藏资料');
+});
+
+test('预览尾注声明私密资料边界', () => {
+    const { panel } = createHarness();
+    const note = panel.querySelector('.yl-character-preview-note');
+    assert.ok(note, '应存在预览尾注');
+    assert.equal(note.textContent, '预览只包含公开资料；仅好友与隐藏资料绝不会出现在这里。');
+});
+
+test('未注入链接导入器时不渲染任何链接导入控件', () => {
+    const { panel } = createHarness();
+    assert.equal(panel.querySelector('[name="avatar-import-url"]'), null, '无能力时不得留下死链接输入框');
+    const remoteButton = panel.querySelectorAll('button').find((button) => button.textContent === '下载并压缩为本地头像');
+    assert.equal(remoteButton, undefined, '无能力时不得留下死导入按钮');
+});
+
+test('链接导入成功：一次性下载结果压缩为 embedded 头像并同步预览，链接不落任何草稿', async () => {
+    const importedUrls = [];
+    const panel = buildCharacterCreatorPanel({
+        documentRef: miniDom.document,
+        actionBridge: { async registerCharacter() { return { ok: true }; } },
+        characterLibrary: { list: () => [] },
+        signal: new AbortController().signal,
+        onFeedback() {},
+        importAvatarFromUrl: async (url) => {
+            importedUrls.push(url);
+            return { kind: 'embedded', dataUrl: 'data:image/webp;base64,AAAA', width: 64, height: 64, mimeType: 'image/webp' };
+        },
+    });
+    control(panel, 'public-昵称').value = '林夏';
+    control(panel, 'public-昵称').dispatchEvent(new Event('input'));
+    const urlInput = panel.querySelector('[name="avatar-import-url"]');
+    assert.ok(urlInput, '注入能力后应有链接输入框');
+    assert.equal(urlInput.getAttribute('type') ?? urlInput.type, 'text', '链接输入必须是 text，避免原生 url 校验阻塞整表单提交');
+    urlInput.value = '  https://example.com/a.png  ';
+    buttonByText(panel, '下载并压缩为本地头像').dispatchEvent(new Event('click'));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(importedUrls, ['https://example.com/a.png'], '应以去空格后的链接调用注入导入器且只调一次');
+    assert.equal(control(panel, 'avatar-kind').value, 'embedded', '导入成功后头像来源应切换为 embedded');
+    const note = panel.querySelector('.yl-character-avatar-note');
+    assert.ok(note.textContent.includes('链接本身不会被保存'), '提示必须申明链接不持久化');
+    const previewAvatar = panel.querySelector('.yl-character-preview-avatar');
+    assert.ok(previewAvatar, '预览应重建头像节点');
+    assert.equal(panel.textContent.includes('example.com'), false, '面板任何可见文本不得回显链接');
+});
+
+test('链接导入失败：保持原头像草稿并显示安全投影文案', async () => {
+    const failure = new Error('REMOTE_IMAGE_TYPE_UNSUPPORTED');
+    failure.code = 'REMOTE_IMAGE_TYPE_UNSUPPORTED';
+    const panel = buildCharacterCreatorPanel({
+        documentRef: miniDom.document,
+        actionBridge: { async registerCharacter() { return { ok: true }; } },
+        characterLibrary: { list: () => [] },
+        signal: new AbortController().signal,
+        onFeedback() {},
+        importAvatarFromUrl: async () => { throw failure; },
+    });
+    const urlInput = panel.querySelector('[name="avatar-import-url"]');
+    const importButton = buttonByText(panel, '下载并压缩为本地头像');
+    importButton.dispatchEvent(new Event('click'));
+    assert.equal(panel.querySelector('.yl-character-avatar-note').textContent, '请先粘贴要导入的图片链接。', '空链接应先提示');
+    urlInput.value = 'https://example.com/not-an-image';
+    importButton.dispatchEvent(new Event('click'));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.notEqual(control(panel, 'avatar-kind').value, 'embedded', '失败不得把头像来源改成 embedded');
+    const note = panel.querySelector('.yl-character-avatar-note').textContent;
+    assert.equal(note, '链接内容不是支持的图片格式（PNG / JPEG / WebP）。');
+    assert.equal(note.includes('example.com'), false, '失败提示不得回显链接');
+    assert.equal(importButton.disabled, false, '失败后导入按钮应恢复可用');
 });

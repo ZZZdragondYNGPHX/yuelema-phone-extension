@@ -9,7 +9,7 @@ const { mountPhoneApp } = await import('../../app-shell.js');
 
 test.after(() => miniDom.restore());
 
-const IMAGE_URL = 'https://cdn.example.test/matched.webp';
+const IMAGE_DATA_URL = 'data:image/png;base64,iVBORw0KGgo=';
 
 function candidateRecord() {
     return {
@@ -70,7 +70,7 @@ test('设置页提供图片管理入口并挂载浏览器本地图片面板', as
         await flushUi();
         assert.ok(miniDom.document.querySelector('.yl-image-manager'));
         assert.ok(miniDom.document.querySelector('[name="image-file"]'));
-        assert.ok(miniDom.document.querySelector('[name="image-url"]'));
+        assert.equal(miniDom.document.querySelector('[name="image-url"]'), null, '图片管理不得保留远程 URL 输入');
         assert.match(miniDom.document.body.textContent, /图片库还是空的/u);
         assert.ok(miniDom.document.querySelector('.yl-page-back'));
     } finally {
@@ -81,7 +81,7 @@ test('设置页提供图片管理入口并挂载浏览器本地图片面板', as
 test('首页候选卡背景和公开资料头像使用匹配图片，其他列表范围保持未接入', async () => {
     const imageRecord = Object.freeze({
         id: 'image_matched',
-        source: Object.freeze({ kind: 'url', url: IMAGE_URL }),
+        source: Object.freeze({ kind: 'embedded', dataUrl: IMAGE_DATA_URL }),
         keywordWeights: Object.freeze([{ keyword: '夜景', weight: 5 }]),
     });
     const calls = [];
@@ -109,8 +109,8 @@ test('首页候选卡背景和公开资料头像使用匹配图片，其他列�
         const card = miniDom.document.querySelector('.yl-candidate-card');
         const background = card.querySelector('.yl-candidate-background-image');
         const avatarImage = card.querySelector('.yl-candidate-avatar-image');
-        assert.equal(background?.getAttribute('src'), IMAGE_URL);
-        assert.equal(avatarImage?.getAttribute('src'), IMAGE_URL);
+        assert.equal(background?.getAttribute('src'), IMAGE_DATA_URL);
+        assert.equal(avatarImage?.getAttribute('src'), IMAGE_DATA_URL);
         assert.equal(calls.length >= 1, true);
         assert.equal(Object.hasOwn(calls[0].profile, 'uid'), false);
         assert.equal(Object.hasOwn(calls[0].profile, '隐藏资料'), false);
@@ -118,7 +118,7 @@ test('首页候选卡背景和公开资料头像使用匹配图片，其他列�
 
         click(card.querySelectorAll('span').find((node) => node.getAttribute('role') === 'button'));
         await flushUi();
-        assert.equal(miniDom.document.querySelector('.yl-public-profile')?.querySelector('.yl-candidate-avatar-image')?.getAttribute('src'), IMAGE_URL);
+        assert.equal(miniDom.document.querySelector('.yl-public-profile')?.querySelector('.yl-candidate-avatar-image')?.getAttribute('src'), IMAGE_DATA_URL);
     } finally {
         mounted.destroy();
     }

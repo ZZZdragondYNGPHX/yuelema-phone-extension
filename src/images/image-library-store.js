@@ -33,7 +33,7 @@ const USER_MESSAGES = Object.freeze({
     DUPLICATE_IMAGE_ID: '图片 ID 已存在。',
     INVALID_IMAGE_ID: '图片 ID 格式无效。',
     INVALID_IMAGE_INPUT: '图片资料格式无效。',
-    INVALID_IMAGE_SOURCE: '图片来源必须是安全的本地图片或 HTTP/HTTPS 链接。',
+    INVALID_IMAGE_SOURCE: '图片来源必须是经验证的本地 PNG、JPEG 或 WebP 图片。',
     INVALID_KEYWORD_WEIGHTS: '图片关键词或权重格式无效。',
     DUPLICATE_KEYWORD: '同一张图片不能包含重复关键词。',
     DANGEROUS_FIELD_FORBIDDEN: '图片库包含不允许的危险字段。',
@@ -197,7 +197,7 @@ function base64PrefixBytes(encoded, byteCount = 12) {
     return output;
 }
 
-function normalizeEmbeddedImageDataUrl(value) {
+export function normalizeEmbeddedImageDataUrl(value) {
     if (typeof value !== 'string' || value.length === 0
         || value.length > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH || value !== value.trim()) {
         fail('INVALID_IMAGE_SOURCE');
@@ -222,42 +222,11 @@ function normalizeEmbeddedImageDataUrl(value) {
     return `data:${mediaType};base64,${encoded}`;
 }
 
-function normalizeRemoteImageUrl(value) {
-    if (typeof value !== 'string' || value.length === 0 || value.length > 2_048 || value !== value.trim()
-        || CONTROL_PATTERN.test(value) || HTML_PATTERN.test(value)) {
-        fail('INVALID_IMAGE_SOURCE');
-    }
-    let parsed;
-    try { parsed = new URL(value); } catch { fail('INVALID_IMAGE_SOURCE'); }
-    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
-        fail('INVALID_IMAGE_SOURCE');
-    }
-    for (const key of parsed.searchParams.keys()) assertSafeKey(key);
-    for (const parameterValue of parsed.searchParams.values()) {
-        if (SECRET_VALUE_PATTERN.test(parameterValue)) fail('SENSITIVE_FIELD_FORBIDDEN');
-    }
-    if (parsed.hash.includes('=')) {
-        const fragmentParams = new URLSearchParams(parsed.hash.slice(1));
-        for (const key of fragmentParams.keys()) assertSafeKey(key);
-        for (const parameterValue of fragmentParams.values()) {
-            if (SECRET_VALUE_PATTERN.test(parameterValue)) fail('SENSITIVE_FIELD_FORBIDDEN');
-        }
-    }
-    return parsed.href;
-}
-
 function normalizeSource(input) {
-    assertExactObject(input, new Set(['kind', 'url', 'dataUrl']), new Set(['kind']), 'INVALID_IMAGE_SOURCE');
+    assertExactObject(input, new Set(['kind', 'dataUrl']), new Set(['kind', 'dataUrl']), 'INVALID_IMAGE_SOURCE');
     const kind = ownData(input, 'kind', 'INVALID_IMAGE_SOURCE');
-    if (kind === 'embedded') {
-        assertExactObject(input, new Set(['kind', 'dataUrl']), new Set(['kind', 'dataUrl']), 'INVALID_IMAGE_SOURCE');
-        return { kind, dataUrl: normalizeEmbeddedImageDataUrl(ownData(input, 'dataUrl', 'INVALID_IMAGE_SOURCE')) };
-    }
-    if (kind === 'url') {
-        assertExactObject(input, new Set(['kind', 'url']), new Set(['kind', 'url']), 'INVALID_IMAGE_SOURCE');
-        return { kind, url: normalizeRemoteImageUrl(ownData(input, 'url', 'INVALID_IMAGE_SOURCE')) };
-    }
-    fail('INVALID_IMAGE_SOURCE');
+    if (kind !== 'embedded') fail('INVALID_IMAGE_SOURCE');
+    return { kind, dataUrl: normalizeEmbeddedImageDataUrl(ownData(input, 'dataUrl', 'INVALID_IMAGE_SOURCE')) };
 }
 
 function normalizeKeyword(value) {
@@ -337,6 +306,27 @@ function normalizeDocument(input) {
     return { schema: IMAGE_LIBRARY_SCHEMA_ID, schemaVersion: IMAGE_LIBRARY_SCHEMA_VERSION, images };
 }
 
+function isExactLegacyRemoteRecord(record) {
+    if (!isPlainObject(record)) return false;
+    const recordKeys = Object.keys(record).sort();
+    if (recordKeys.join('|') !== 'createdAt|id|keywordWeights|source|updatedAt') return false;
+    const source = record.source;
+    if (!isPlainObject(source)) return false;
+    const sourceKeys = Object.keys(source).sort();
+    return sourceKeys.join('|') === 'kind|url'
+        && source.kind === 'url'
+        && typeof source.url === 'string';
+}
+
+function discardLegacyRemoteRecords(input) {
+    const candidate = cloneSafeValue(input);
+    if (!isPlainObject(candidate) || !Array.isArray(candidate.images)) return candidate;
+    return {
+        ...candidate,
+        images: candidate.images.filter((record) => !isExactLegacyRemoteRecord(record)),
+    };
+}
+
 function utf8ByteLength(value) {
     let bytes = 0;
     for (const char of value) {
@@ -356,13 +346,22 @@ function serializeDocument(document) {
     return serialized;
 }
 
+function parseDocumentInput(input, { discardLegacyRemote = false } = {}) {
+    let parsed = input;
+    if (typeof input === 'string') {
+        if (input.length === 0) fail('INVALID_LIBRARY_JSON');
+        if (utf8ByteLength(input) > MAX_IMAGE_LIBRARY_SERIALIZED_BYTES) fail('LIBRARY_TOO_LARGE');
+        try { parsed = JSON.parse(input); } catch { fail('INVALID_LIBRARY_JSON'); }
+    }
+    return normalizeDocument(discardLegacyRemote ? discardLegacyRemoteRecords(parsed) : parsed);
+}
+
 function parseImportInput(input) {
-    if (typeof input !== 'string') return normalizeDocument(input);
-    if (input.length === 0) fail('INVALID_LIBRARY_JSON');
-    if (utf8ByteLength(input) > MAX_IMAGE_LIBRARY_SERIALIZED_BYTES) fail('LIBRARY_TOO_LARGE');
-    let parsed;
-    try { parsed = JSON.parse(input); } catch { fail('INVALID_LIBRARY_JSON'); }
-    return normalizeDocument(parsed);
+    return parseDocumentInput(input);
+}
+
+function parseStoredInput(input) {
+    return parseDocumentInput(input, { discardLegacyRemote: true });
 }
 
 function isStorageAdapter(value) {
@@ -412,10 +411,8 @@ export function createImageLibraryStore(options) {
             try { stored = await storage.getItem(storageKey); } catch { fail('STORAGE_READ_FAILED'); }
             if (stored === null || stored === undefined) {
                 document = makeDefaultDocument();
-            } else if (typeof stored === 'string') {
-                document = parseImportInput(stored);
             } else {
-                document = normalizeDocument(stored);
+                document = parseStoredInput(stored);
                 serializeDocument(document);
             }
             loaded = true;

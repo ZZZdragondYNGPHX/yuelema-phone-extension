@@ -730,37 +730,13 @@ test('group and forum draft bridge pending keys are isolated by feature and grou
     release();
     assert.equal((await first).ok, true);
 });
-test('candidate match draft reads through MVU but never commits a patch or event', async () => {
-    const initialState = recommendationState();
-    const { mvu, calls } = createMvu({ initialState });
-    const requests = [];
-    const candidateSettingsStore = {
-        snapshot() { return { personalization: { keywordWeightsByMode: { SFW: [{ keyword: '电影', weight: 3 }], NSFW: [] } } }; },
-        resolveFunction(key) {
-            assert.equal(key, 'soul_match');
-            return { connectionPreset, promptPreset: { enabled: true, content: '仅生成成年人公开资料。' } };
-        },
-    };
-    const bridge = createActionBridge({
-        documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); }, settingsStore: candidateSettingsStore,
-        llmClient: { async chat(request) {
-            requests.push(request);
-            return { text: JSON.stringify({
-                profile: {
-                    昵称: '林夏', 年龄段: '25-29', 性别: '女', 性取向: '双性恋', 城市: '上海', 距离范围: '10 km',
-                    寻找意图: '先聊天再认真约会', 简介: '喜欢电影和夜跑。', 兴趣标签: ['电影'], 生活方式标签: ['夜猫子'], 性格标签: ['慢热'], 沟通风格标签: ['及时回应'],
-                }, drawing: { core_dna: 'adult woman, black hair, brown eyes', outfit_dna: 'cream cardigan, dark skirt' }, explanation: '公开兴趣接近。', matchScore: 88,
-            }) };
-        } },
-    });
 
-    const result = await bridge.generateCandidateMatchDraft('soul');
+test('action bridge exposes only the transactional candidate-match entry point', () => {
+    const { mvu } = createMvu({ initialState: recommendationState() });
+    const bridge = createActionBridge({ documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {} });
 
-    assert.equal(result.ok, true, JSON.stringify(result));
-    assert.equal(result.draft.profile.昵称, '林夏');
-    assert.deepEqual(calls.map(([name]) => name), ['get']);
-    assert.equal(requests.length, 1);
-    assert.doesNotMatch(JSON.stringify(result), /UID|隐藏资料|关系分|阈值|private-key/u);
+    assert.equal(bridge.generateCandidateMatchDraft, undefined);
+    assert.equal(typeof bridge.runCandidateMatch, 'function');
 });
 
 test('soul match creates an independent npc_match session and never promotes a favourite or queue candidate', async () => {

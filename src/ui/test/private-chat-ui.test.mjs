@@ -296,7 +296,8 @@ test('desktop right-click and mobile long-press on the paper plane open the meet
         assert.equal(contextMenuEvent.defaultPrevented, true, '右键纸飞机应阻止浏览器默认菜单');
         toolMenu = miniDom.document.querySelector('.yl-chat-tool-menu');
         assert.ok(toolMenu, '右键纸飞机应打开小型工具栏');
-        assert.equal(toolMenu.getAttribute('role'), 'menu');
+        assert.equal(toolMenu.getAttribute('role'), null, '工具栏是 disclosure 列表，不得宣称无键盘模型的 role=menu');
+        assert.equal(toolMenu.getAttribute('aria-label'), '私聊发送工具栏');
         assert.match(toolMenu.textContent, /^约定面基 · 友情路线$/u);
         sendButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息');
         assert.equal(sendButton.getAttribute('aria-expanded'), 'true');
@@ -533,4 +534,101 @@ test('private chat more menu deletes the complete character through the controll
         assert.deepEqual(calls, ['npc_lin']);
         assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null);
     } finally { mounted.destroy(); }
+});
+
+test('desktop layout adds a public-projection context rail beside the private chat', async () => {
+    const storage = createMemoryStorage();
+    storage.setItem('yuelema.ui-layout/v1', 'desktop');
+    const bridge = { emit() {}, isPending() { return false; }, runPrivateChat() { return Promise.resolve({ ok: true }); } };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-private-chat-context-desktop', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, uiLayoutStorage: storage, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+
+        const workbench = miniDom.document.querySelector('.yl-private-chat-workbench');
+        assert.ok(workbench, 'desktop 私聊应组成会话工作台');
+        assert.ok(workbench.querySelector('.yl-private-chat-screen'), '工作台内仍是同一私聊主列');
+        const rail = workbench.querySelector('.yl-chat-context-panel');
+        assert.ok(rail, 'desktop 私聊应有公开资料上下文栏');
+        assert.equal(rail.getAttribute('aria-label'), '林澈的公开资料');
+        for (const expected of ['25-29', '上海', '先聊天再约会', '公开简介。', '电影', '这里只显示对方的公开资料。']) {
+            assert.ok(rail.textContent.includes(expected), `上下文栏应展示公开字段：${expected}`);
+        }
+        for (const forbidden of [
+            'friend-secret-must-not-render', 'hidden-secret-must-not-render', 'session-summary-must-not-render',
+            '实际年龄', '全局账号表现', 'NPC专属匹配度', '拒绝阈值', 'npc_lin', 'chat_lin',
+        ]) assert.equal(miniDom.document.body.textContent.includes(forbidden), false, `上下文栏不得暴露 ${forbidden}`);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('phone layout keeps the private chat single-column without a context rail', async () => {
+    const bridge = { emit() {}, isPending() { return false; }, runPrivateChat() { return Promise.resolve({ ok: true }); } };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-private-chat-context-phone', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, uiLayoutStorage: createMemoryStorage(), readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        assert.equal(miniDom.document.querySelector('.yl-private-chat-workbench'), null, 'phone 私聊不应套工作台外壳');
+        assert.equal(miniDom.document.querySelector('.yl-chat-context-panel'), null, 'phone 私聊不渲染上下文栏');
+        assert.ok(miniDom.document.querySelector('.yl-private-chat-screen'), 'phone 私聊保持单列会话');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('Phase 69: chat action lists are disclosures and Escape dismisses the send toolbar', async () => {
+    let privateChatCalls = 0;
+    const result = readResult();
+    result.state.角色池.npc_lin.与玩家关系.友情值 = 60;
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        runPrivateChat() { privateChatCalls += 1; return { ok: true }; },
+        runPrivateChatMeetupHandoff() { return { ok: true, draftApplied: true }; },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-phase69-disclosure', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result,
+    });
+    const pressEscape = () => {
+        const event = new Event('keydown', { cancelable: true });
+        Object.defineProperty(event, 'key', { configurable: true, value: 'Escape' });
+        miniDom.document.dispatchEvent(event);
+    };
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+
+        const more = () => miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的更多操作');
+        assert.equal(more().getAttribute('aria-haspopup'), null, '更多操作是 disclosure，不再宣称 haspopup=menu');
+        assert.equal(more().getAttribute('aria-expanded'), 'false');
+        click(more());
+        assert.equal(more().getAttribute('aria-expanded'), 'true');
+        const moreMenu = miniDom.document.querySelector('.yl-private-chat-more-menu');
+        assert.ok(moreMenu, '更多操作应展开动作列表');
+        assert.equal(moreMenu.getAttribute('role'), null, '无键盘模型的动作列表不得宣称 role=menu');
+        assert.equal(moreMenu.querySelectorAll('button').every((node) => node.getAttribute('role') === null), true, '列表项是普通按钮而非 menuitem');
+        pressEscape();
+        assert.equal(miniDom.document.querySelector('.yl-private-chat-more-menu'), null, 'Escape 应关闭更多操作列表');
+
+        const sendButton = () => miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息');
+        assert.equal(sendButton().getAttribute('aria-haspopup'), null, '纸飞机不再宣称 haspopup');
+        rightClick(sendButton());
+        assert.ok(miniDom.document.querySelector('.yl-chat-tool-menu'), '右键应展开发送工具栏');
+        pressEscape();
+        assert.equal(miniDom.document.querySelector('.yl-chat-tool-menu'), null, 'Escape 应关闭发送工具栏');
+        assert.equal(miniDom.document.querySelector('.yl-phone-panel').hidden, false, 'Escape 关闭工具栏时不得连带关闭小手机窗口');
+        assert.equal(privateChatCalls, 0, '整个过程不得触发私聊发送');
+    } finally {
+        mounted.destroy();
+    }
 });

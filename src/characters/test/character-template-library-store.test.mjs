@@ -124,10 +124,17 @@ test('supports compatibility CRUD plus explicit rename, replacement, and deletio
 
     const updated = store.update('one', {
         metadata: { name: '再次改名' },
-        template: template('苏晴', { kind: 'url', url: 'https://example.com/a.png' }),
+        template: template('苏晴', { kind: 'embedded', dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }),
     });
     assert.equal(updated.metadata.name, '再次改名');
     assert.equal(updated.template.character.公开资料.昵称, '苏晴');
+    assert.deepEqual(updated.template.avatar, { kind: 'embedded', dataUrl: 'data:image/png;base64,iVBORw0KGgo=' });
+
+    // kind=url avatars are no longer part of the template contract and are rejected by the codec.
+    expectCode(() => store.update('one', {
+        template: template('不合法', { kind: 'url', url: 'https://example.com/a.png' }),
+    }), 'TEMPLATE_INVALID');
+    assert.equal(store.loadTemplate('one').metadata.name, '再次改名');
 
     const deleted = store.deleteTemplate('one');
     assert.equal(deleted.id, 'one');
@@ -348,4 +355,38 @@ test('rejects malformed legacy migrations and credential-bearing whole-library d
         connectionPreset: { apiKey: 'sk-test' },
     }), 'SENSITIVE_DATA_FORBIDDEN');
     assert.deepEqual(store.list(), []);
+});
+
+test('persisted legacy kind=url avatars are stripped on load; library import still rejects them', () => {
+    const persistedDocument = {
+        schema: CHARACTER_TEMPLATE_LIBRARY_SCHEMA,
+        schemaVersion: CHARACTER_TEMPLATE_LIBRARY_SCHEMA_VERSION,
+        templates: [{
+            id: 'legacy-url-avatar',
+            metadata: { name: '遗留头像记录', createdAt: '2026-07-20T00:00:01.000Z', updatedAt: '2026-07-20T00:00:02.000Z' },
+            template: {
+                format: CHARACTER_TEMPLATE_FORMAT,
+                character: adultCharacter('遗留头像'),
+                avatar: { kind: 'url', url: 'https://example.com/avatar.png' },
+            },
+        }],
+    };
+    const storage = createFakeStorage({
+        [CHARACTER_TEMPLATE_LIBRARY_STORAGE_KEY]: JSON.stringify(persistedDocument),
+    });
+    const store = createCharacterTemplateLibraryStore({ storage, now: clockSequence() });
+
+    // 载入不砖化：整库可列出，遗留记录以“无头像”降级呈现，URL 不进入任何投影。
+    assert.deepEqual(store.listTemplates().map((entry) => entry.id), ['legacy-url-avatar']);
+    const loaded = store.loadTemplate('legacy-url-avatar');
+    assert.equal(Object.hasOwn(loaded.template, 'avatar'), false);
+    assert.equal(JSON.stringify(loaded).includes('https://example.com'), false);
+    assert.equal(JSON.stringify(loaded).includes('"url"'), false);
+
+    // 剥离仅限持久化载入路径：整库 JSON 导入仍拒绝 kind=url。
+    expectCode(() => store.importLibraryJson({
+        schema: CHARACTER_TEMPLATE_LIBRARY_SCHEMA,
+        schemaVersion: CHARACTER_TEMPLATE_LIBRARY_SCHEMA_VERSION,
+        templates: persistedDocument.templates,
+    }), 'TEMPLATE_INVALID');
 });

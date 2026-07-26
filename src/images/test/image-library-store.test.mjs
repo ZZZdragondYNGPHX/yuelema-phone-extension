@@ -44,32 +44,69 @@ test('uses an async memory storage adapter and returns a frozen versioned snapsh
     assert.equal(await storage.getItem(IMAGE_LIBRARY_STORAGE_KEY), null);
 });
 
-test('accepts safe embedded and HTTP/HTTPS URL sources and normalizes image records', async () => {
+test('accepts only validated embedded data URLs and rejects every remote URL source', async () => {
     const store = storeWithMemory();
     const embedded = await store.add({
         source: { kind: 'embedded', dataUrl: 'data:image/PNG;base64,iVBORw0KGgo=' },
         keywordWeights: [{ keyword: '艺术', weight: 5 }],
     });
-    const remote = await store.add({
-        source: { kind: 'url', url: 'https://cdn.example.test/images/forest.webp' },
-        keywordWeights: [{ keyword: '夜景', weight: -2 }],
-    });
 
     assert.match(embedded.id, /^image_/u);
     assert.deepEqual(embedded.source, { kind: 'embedded', dataUrl: PNG_DATA_URL });
-    assert.deepEqual(remote.source, { kind: 'url', url: 'https://cdn.example.test/images/forest.webp' });
     assert.equal(Object.isFrozen(embedded), true);
     assert.equal(Object.isFrozen(embedded.source), true);
     assert.equal(Object.isFrozen(embedded.keywordWeights), true);
 
+    for (const source of [
+        { kind: 'url', url: 'https://cdn.example.test/images/forest.webp' },
+        { kind: 'url', url: 'http://cdn.example.test/images/forest.webp' },
+        { kind: 'url', url: 'file:///private/image.png' },
+        { kind: 'url', url: 'blob:https://example.test/local-object' },
+    ]) {
+        await expectCode(store.add({ source }), 'INVALID_IMAGE_SOURCE');
+    }
     await expectCode(
-        store.add({ source: { kind: 'url', url: 'file:///private/image.png' } }),
+        store.update(embedded.id, { source: { kind: 'url', url: 'https://cdn.example.test/replaced.webp' } }),
         'INVALID_IMAGE_SOURCE',
     );
-    await expectCode(
-        store.add({ source: { kind: 'url', url: 'blob:https://example.test/local-object' } }),
-        'INVALID_IMAGE_SOURCE',
-    );
+    await expectCode(store.import({
+        schema: IMAGE_LIBRARY_SCHEMA_ID,
+        schemaVersion: IMAGE_LIBRARY_SCHEMA_VERSION,
+        images: [{
+            id: 'image_remote',
+            source: { kind: 'url', url: 'https://cdn.example.test/imported.webp' },
+            keywordWeights: [],
+            createdAt: FIXED_TIME,
+            updatedAt: FIXED_TIME,
+        }],
+    }), 'INVALID_IMAGE_SOURCE');
+});
+
+test('drops exact legacy remote stored records while preserving validated embedded records', async () => {
+    const storage = createMemoryImageLibraryStorage([[IMAGE_LIBRARY_STORAGE_KEY, JSON.stringify({
+        schema: IMAGE_LIBRARY_SCHEMA_ID,
+        schemaVersion: IMAGE_LIBRARY_SCHEMA_VERSION,
+        images: [
+            {
+                id: 'image_embedded',
+                source: { kind: 'embedded', dataUrl: PNG_DATA_URL },
+                keywordWeights: [{ keyword: '艺术', weight: 2 }],
+                createdAt: FIXED_TIME,
+                updatedAt: FIXED_TIME,
+            },
+            {
+                id: 'image_legacy_remote',
+                source: { kind: 'url', url: 'https://cdn.example.test/legacy.webp' },
+                keywordWeights: [{ keyword: '夜景', weight: 2 }],
+                createdAt: FIXED_TIME,
+                updatedAt: FIXED_TIME,
+            },
+        ],
+    })]]);
+    const store = createImageLibraryStore({ storage, now: () => FIXED_TIME });
+
+    assert.deepEqual((await store.list()).map((record) => record.id), ['image_embedded']);
+    assert.equal((await store.export()).includes('legacy.webp'), false);
 });
 
 test('accepts signature-valid embedded binary whose decoded bytes contain markup-like sequences', async () => {
@@ -115,7 +152,7 @@ test('supports image and keyword CRUD without exposing mutable internal state', 
     const store = storeWithMemory();
     const added = await store.add({
         id: 'image_portrait_1',
-        source: { kind: 'url', url: 'http://images.example.test/portrait.jpg' },
+        source: { kind: 'embedded', dataUrl: PNG_DATA_URL },
         keywordWeights: [
             { keyword: '艺术', weight: 5 },
             { keyword: '慢热', weight: 2 },
@@ -155,7 +192,7 @@ test('exports and imports a complete document while invalid imports roll back at
         schemaVersion: IMAGE_LIBRARY_SCHEMA_VERSION,
         images: [{
             id: 'image_bad',
-            source: { kind: 'url', url: 'https://example.test/bad.jpg' },
+            source: { kind: 'embedded', dataUrl: PNG_DATA_URL },
             keywordWeights: [{ keyword: '重复', weight: 1 }, { keyword: '重复', weight: 2 }],
             createdAt: FIXED_TIME,
             updatedAt: FIXED_TIME,
@@ -195,23 +232,24 @@ test('keeps the prior in-memory document when an import storage write fails', as
 test('rejects duplicate keywords, invalid ranges, oversized data, and sensitive fields', async () => {
     const store = storeWithMemory();
     await expectCode(store.add({
-        source: { kind: 'url', url: 'https://example.test/a.png' },
+        source: { kind: 'embedded', dataUrl: PNG_DATA_URL },
         keywordWeights: [{ keyword: '艺术', weight: 1 }, { keyword: ' 艺术 ', weight: 2 }],
     }), 'DUPLICATE_KEYWORD');
     await expectCode(store.add({
-        source: { kind: 'url', url: 'https://example.test/a.png' },
+        source: { kind: 'embedded', dataUrl: PNG_DATA_URL },
         keywordWeights: [{ keyword: '艺术', weight: 6 }],
     }), 'INVALID_KEYWORD_WEIGHTS');
     await expectCode(store.add({
-        source: { kind: 'url', url: 'https://example.test/a.png' },
+        source: { kind: 'embedded', dataUrl: PNG_DATA_URL },
         apiKey: 'sk-secret-value',
     }), 'SENSITIVE_FIELD_FORBIDDEN');
     await expectCode(store.add({
-        source: { kind: 'url', url: 'https://example.test/a.png' },
+        source: { kind: 'embedded', dataUrl: PNG_DATA_URL },
         uid: 'character_1',
     }), 'SENSITIVE_FIELD_FORBIDDEN');
     await expectCode(store.add({
-        source: { kind: 'url', url: 'https://example.test/a.png?token=secret' },
+        source: { kind: 'embedded', dataUrl: PNG_DATA_URL },
+        token: 'secret',
     }), 'SENSITIVE_FIELD_FORBIDDEN');
     await expectCode(store.import('x'.repeat(MAX_IMAGE_LIBRARY_SERIALIZED_BYTES + 1)), 'LIBRARY_TOO_LARGE');
 });

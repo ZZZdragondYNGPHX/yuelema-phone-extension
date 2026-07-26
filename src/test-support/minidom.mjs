@@ -106,6 +106,11 @@ class MiniElement extends MiniNode {
         return this.attributes.get(String(name)) ?? null;
     }
 
+    focus() {
+        const documentRef = this.ownerDocument ?? globalThis.document;
+        if (documentRef) documentRef.activeElement = this;
+    }
+
     matches(selector) {
         const nameMatch = /^\[name="([^"]+)"\]$/u.exec(selector);
         if (nameMatch) return this.getAttribute('name') === nameMatch[1];
@@ -119,12 +124,21 @@ class MiniElement extends MiniNode {
 class MiniDocument extends MiniNode {
     constructor() {
         super();
+        this.ownerDocument = this;
+        this.activeElement = null;
         this.body = new MiniElement('body');
+        this.body.ownerDocument = this;
         this.appendChild(this.body);
     }
 
     createElement(tagName) {
-        return new MiniElement(tagName);
+        const node = new MiniElement(tagName);
+        node.ownerDocument = this;
+        return node;
+    }
+
+    createElementNS(_namespace, tagName) {
+        return this.createElement(tagName);
     }
 
     createTextNode(value) {

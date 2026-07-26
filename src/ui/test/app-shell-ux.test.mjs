@@ -102,6 +102,155 @@ function deferred() {
     return { promise, resolve, reject };
 }
 
+test('layout preference is browser-local and the profile header toggles the same focused device button in place', async () => {
+    const storage = createMemoryStorage();
+    const actionCalls = [];
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-ui-layout-toggle', uiLayoutStorage: storage,
+        actionBridge: { emit(...args) { actionCalls.push(args); }, isPending() { return false; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        assert.equal(miniDom.document.querySelector('.yl-ui-layout-toggle'), null, '布局按钮不得占用发现页的页头空间');
+        click(buttonByPage('profile'));
+        actionCalls.length = 0;
+        const root = miniDom.document.querySelector('.yl-phone-extension');
+        const panel = miniDom.document.querySelector('.yl-phone-panel');
+        const content = miniDom.document.querySelector('.yl-phone-content');
+        const toggle = miniDom.document.querySelector('.yl-ui-layout-toggle');
+        assert.ok(toggle, '只有顶级“我的”页应渲染布局切换按钮');
+        assert.equal(root.dataset.uiLayout, 'phone');
+        assert.equal(panel.dataset.uiLayout, 'phone');
+        assert.match(toggle.getAttribute('aria-label'), /当前为手机端界面，切换到电脑端界面/u);
+        assert.equal(toggle.getAttribute('title'), toggle.getAttribute('aria-label'));
+        assert.equal(toggle.dataset.uiLayout, 'phone');
+        assert.equal(toggle.textContent, '', '设备按钮在窄屏只展示图标');
+        assert.equal(toggle.querySelector('svg').dataset.layoutIcon, 'phone');
+        assert.equal(toggle.querySelector('svg').getAttribute('aria-hidden'), 'true');
+        assert.equal(toggle.querySelector('svg').getAttribute('focusable'), 'false');
+
+        content.scrollTop = 137;
+        toggle.focus();
+        click(toggle);
+        await flushUi();
+        assert.strictEqual(miniDom.document.querySelector('.yl-ui-layout-toggle'), toggle, '布局切换不得通过 renderPage 重建按钮');
+        assert.strictEqual(miniDom.document.activeElement, toggle, '原地更新 SVG 后应保留按钮焦点');
+        assert.equal(content.scrollTop, 137, '布局切换不得重建内容或重置滚动位置');
+        assert.equal(root.dataset.uiLayout, 'desktop');
+        assert.equal(panel.dataset.uiLayout, 'desktop');
+        assert.equal(storage.getItem('yuelema.ui-layout/v1'), 'desktop', '布局仅写入浏览器本地存储');
+        assert.match(toggle.getAttribute('aria-label'), /当前为电脑端界面，切换到手机端界面/u);
+        assert.equal(toggle.dataset.uiLayout, 'desktop');
+        assert.equal(toggle.querySelector('svg').dataset.layoutIcon, 'desktop');
+        assert.match(miniDom.document.querySelector('.yl-ui-layout-status').textContent, /已切换到电脑端界面/u);
+        assert.equal(root.dataset.contentMode, 'SFW', '布局切换不得混入内容模式');
+        assert.deepEqual(actionCalls, [], '布局切换不得进入 action bridge 或 MVU');
+
+        click(buttonByText('设置'));
+        assert.equal(miniDom.document.querySelector('.yl-ui-layout-toggle'), null, '布局按钮只属于顶级“我的”页');
+    } finally { mounted.destroy(); }
+});
+
+test('layout preference restores desktop on remount and invalid or unreadable values fall back to phone', async () => {
+    const storage = createMemoryStorage();
+    storage.setItem('yuelema.ui-layout/v1', 'desktop');
+    const mountWith = (rootId, uiLayoutStorage) => mountPhoneApp({
+        documentRef: miniDom.document, rootId, uiLayoutStorage,
+        actionBridge: { emit() {}, isPending() { return false; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+
+    const persisted = mountWith('ylm-test-ui-layout-persisted', storage);
+    try {
+        const root = miniDom.document.querySelector('.yl-phone-extension');
+        assert.equal(root.dataset.uiLayout, 'desktop');
+        click(miniDom.document.querySelector('.yl-phone-launcher'));
+        click(buttonByPage('profile'));
+        assert.equal(miniDom.document.querySelector('.yl-ui-layout-toggle').querySelector('svg').dataset.layoutIcon, 'desktop');
+    } finally { persisted.destroy(); }
+
+    for (const [rootId, uiLayoutStorage] of [
+        ['ylm-test-ui-layout-invalid', { getItem() { return 'tablet'; }, setItem() {} }],
+        ['ylm-test-ui-layout-read-error', { getItem() { throw new Error('private storage detail'); }, setItem() {} }],
+        ['ylm-test-ui-layout-unavailable', null],
+    ]) {
+        const mounted = mountWith(rootId, uiLayoutStorage);
+        try { assert.equal(miniDom.document.querySelector('.yl-phone-extension').dataset.uiLayout, 'phone'); }
+        finally { mounted.destroy(); }
+    }
+    await flushUi();
+});
+
+test('layout storage write failure silently preserves phone without rebuilding UI or emitting actions', async () => {
+    const actionCalls = [];
+    const storage = { getItem() { return null; }, setItem() { throw new Error('QuotaExceeded: private detail'); } };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-ui-layout-write-error', uiLayoutStorage: storage,
+        actionBridge: { emit(...args) { actionCalls.push(args); }, isPending() { return false; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelector('.yl-phone-launcher'));
+        click(buttonByPage('profile'));
+        actionCalls.length = 0;
+        const toggle = miniDom.document.querySelector('.yl-ui-layout-toggle');
+        toggle.focus();
+        click(toggle);
+        await flushUi();
+        assert.strictEqual(miniDom.document.querySelector('.yl-ui-layout-toggle'), toggle);
+        assert.strictEqual(miniDom.document.activeElement, toggle);
+        assert.equal(miniDom.document.querySelector('.yl-phone-extension').dataset.uiLayout, 'phone');
+        assert.equal(toggle.querySelector('svg').dataset.layoutIcon, 'phone');
+        assert.match(miniDom.document.querySelector('.yl-ui-layout-status').textContent, /已保留手机端界面/u);
+        assert.doesNotMatch(miniDom.document.body.textContent, /QuotaExceeded|private detail/u);
+        assert.deepEqual(actionCalls, []);
+    } finally { mounted.destroy(); }
+});
+test('layout changes preserve the CSS anchor before drag and clamp an already dragged panel to the new desktop size', async () => {
+    const previousDefaultView = miniDom.document.defaultView;
+    const previousDocumentElement = miniDom.document.documentElement;
+    miniDom.document.defaultView = { innerWidth: 400, innerHeight: 300 };
+    miniDom.document.documentElement = { clientWidth: 400, clientHeight: 300 };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-ui-layout-clamp', uiLayoutStorage: createMemoryStorage(),
+        actionBridge: { emit() {}, isPending() { return false; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelector('.yl-phone-launcher'));
+        click(buttonByPage('profile'));
+        const panel = miniDom.document.querySelector('.yl-phone-panel');
+        const header = miniDom.document.querySelector('.yl-phone-header');
+        const toggle = miniDom.document.querySelector('.yl-ui-layout-toggle');
+        const styles = installStyleRecorder(panel);
+        panel.getBoundingClientRect = () => {
+            const localLeft = Number.parseFloat(styles.left);
+            const localTop = Number.parseFloat(styles.top);
+            const left = Number.isFinite(localLeft) ? localLeft + 30 : 100;
+            const top = Number.isFinite(localTop) ? localTop + 15 : 50;
+            const width = panel.dataset.uiLayout === 'desktop' ? 350 : 200;
+            const height = panel.dataset.uiLayout === 'desktop' ? 240 : 150;
+            return { left, top, width, height, right: left + width, bottom: top + height };
+        };
+
+        click(toggle);
+        assert.equal(styles.left, undefined, '未拖动时切换不得把 CSS right/bottom 锚点改成 left/top');
+        assert.equal(styles.top, undefined);
+        click(toggle);
+        header.dispatchEvent(pointerEvent('pointerdown', { pointerId: 71, clientX: 150, clientY: 80 }));
+        header.dispatchEvent(pointerEvent('pointermove', { pointerId: 71, clientX: 260, clientY: 160 }));
+        header.dispatchEvent(pointerEvent('pointerup', { pointerId: 71, clientX: 260, clientY: 160 }));
+        assert.equal(styles.left, '170px');
+        assert.equal(styles.top, '115px');
+
+        click(toggle);
+        await flushUi();
+        assert.equal(panel.dataset.uiLayout, 'desktop');
+        assert.equal(styles.left, '20px', '电脑端变宽后应在 viewport 内重新 clamp，并保留 transform 偏移补偿');
+        assert.equal(styles.top, '45px');
+    } finally {
+        mounted.destroy();
+        miniDom.document.defaultView = previousDefaultView;
+        miniDom.document.documentElement = previousDocumentElement;
+    }
+});
 test('all routed child pages keep a top-left back button and settings views stay isolated', () => {
     const settingsStore = createSettingsStore({ storage: createMemoryStorage() });
     const bridge = { emit() {}, isPending() { return false; }, runMvuAction: async () => ({ ok: true }) };
@@ -193,13 +342,13 @@ test('match tools create a fresh mutual match and message session without using 
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
         click(buttonByPage('matches'));
-        assert.match(miniDom.document.body.textContent, /灵魂匹配|语音匹配/u);
-        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '语音匹配文字描述');
-        assert.ok(input, '语音匹配应提供独立文字输入框');
+        assert.match(miniDom.document.body.textContent, /灵魂匹配|描述匹配/u);
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '描述匹配文字描述');
+        assert.ok(input, '描述匹配应提供独立文字输入框');
         input.value = '周末想逛展，也想认真聊天';
         input.dispatchEvent(new Event('input'));
         const matchButtons = miniDom.document.querySelectorAll('button').filter((node) => node.textContent === '开始匹配');
-        assert.equal(matchButtons.length, 2, '灵魂与语音匹配各有一个开始按钮');
+        assert.equal(matchButtons.length, 2, '灵魂与描述匹配各有一个开始按钮');
         click(matchButtons[1]);
         await flushUi();
         assert.deepEqual(calls, [{ mode: 'voice', voiceText: '周末想逛展，也想认真聊天' }]);
@@ -321,14 +470,11 @@ test('my-page avatar is browser-local, while the public-profile editor no longer
         click(avatar);
         const menu = miniDom.document.querySelector('.yl-avatar-modal');
         assert.equal(menu.hidden, false);
-        assert.match(menu.textContent, /从本地导入图片|引用图片链接|移除头像/u);
-        const link = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '头像图片链接');
-        assert.ok(link);
-        link.value = 'https://example.invalid/player-avatar.webp';
-        click(buttonByText('保存图片链接'));
-        assert.deepEqual(playerAvatarStore.snapshot(), { kind: 'url', url: 'https://example.invalid/player-avatar.webp' });
-        const image = miniDom.document.querySelector('.yl-person-avatar-button').querySelector('img');
-        assert.equal(image.getAttribute('src'), 'https://example.invalid/player-avatar.webp');
+        assert.match(menu.textContent, /从本地导入图片|不加载网络图片链接|移除头像/u);
+        assert.doesNotMatch(menu.textContent, /引用图片链接|保存图片链接/u);
+        assert.ok(miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('type') === 'file'));
+        assert.equal(miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '头像图片链接'), undefined);
+        assert.deepEqual(playerAvatarStore.snapshot(), { kind: 'placeholder' });
 
         click(buttonByText('个人资料'));
         const editor = miniDom.document.querySelector('.yl-profile-editor');
@@ -772,7 +918,7 @@ test('home candidate card is a request-free visual shell with public info, keywo
 
         const cardButtons = card.querySelectorAll('button');
         assert.equal(cardButtons.length, 4, '候选卡除四个操作外不应混入额外按钮');
-        assert.deepEqual(cardButtons.map((node) => node.getAttribute('aria-label')), ['喜欢', '不喜欢', '收藏', '刷新']);
+        assert.deepEqual(cardButtons.map((node) => node.getAttribute('aria-label')), ['喜欢', '不喜欢', '收藏', '刷新候选人，显示下一位']);
         assert.equal(networkRequests, 0, '渲染背景预留槽不得触发 fetch 或 Image 请求');
     } finally {
         mounted.destroy();
@@ -897,7 +1043,7 @@ test('declined match stays on matches and never opens an empty session', async (
         click(buttonByPage('matches'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '开始匹配'));
         await flushUi();
-        assert.match(miniDom.document.body.textContent, /灵魂匹配|语音匹配/u);
+        assert.match(miniDom.document.body.textContent, /灵魂匹配|描述匹配/u);
         assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null);
         assert.match(miniDom.document.body.textContent, /婉拒/u);
         assert.equal(miniDom.document.querySelector('.yl-operation-dialog').dataset.visual, 'declined');
@@ -921,7 +1067,7 @@ test('home favorites save without generating a profile while like/dislike still 
         assert.deepEqual(calls.splice(0), [['save', 'favorite', 'npc_1']], '收藏只保存，不得生成新角色');
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '喜欢')); await flushUi();
         assert.deepEqual(calls.splice(0), [['save', 'like', 'npc_1'], ['next']]);
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '刷新')); await flushUi();
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '刷新候选人，显示下一位')); await flushUi();
         assert.deepEqual(calls.splice(0), [['refresh', 'npc_1']]);
         next = { ok: false, message: '下一位服务暂时不可用' };
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '不喜欢')); await flushUi();
@@ -947,7 +1093,7 @@ test('initial home candidate generation is visible in the safe operation console
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '刷新'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '刷新候选人，显示下一位'));
         await flushUi();
         assert.deepEqual(calls, ['initial']);
         click(buttonByPage('profile'));
@@ -1058,4 +1204,281 @@ test('closing a pending romance dialog or phone prevents an accepted result from
         assert.match(consoleText, /收藏主动私聊.*已关闭.*提示已关闭，结果未展示/u);
         assert.doesNotMatch(consoleText, /进行中/u);
     } finally { favoriteMounted.destroy(); }
+});
+
+test('discovery workbench exposes one public candidate projection with semantic action icons', async () => {
+    const read = readyReadResult();
+    read.state.推荐.临时候选池.npc_1.隐藏资料 = { 私密备注: '绝不应渲染' };
+    const actionCalls = [];
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-discovery-workbench', uiLayoutStorage: createMemoryStorage(),
+        actionBridge: { emit(...args) { actionCalls.push(args); }, isPending() { return false; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: () => read,
+    });
+    try {
+        click(miniDom.document.querySelector('.yl-phone-launcher'));
+        const workbench = miniDom.document.querySelector('.yl-discovery-workbench');
+        assert.ok(workbench, '发现页必须提供同一候选的工作台容器');
+        assert.ok(workbench.querySelector('.yl-candidate-media'), '候选人相遇画面必须独立为媒体区');
+        const dossier = workbench.querySelector('.yl-candidate-dossier');
+        assert.ok(dossier, '候选人的公开档案必须独立为资料区');
+        assert.match(dossier.textContent, /本次公开档案|只展示公开资料|聊天后约会/u);
+        assert.doesNotMatch(workbench.textContent, /绝不应渲染|拒绝阈值|NPC专属匹配度/u, '发现工作台不得渲染隐藏资料或关系阈值');
+
+        const expectedIcons = new Map([
+            ['喜欢', { ariaLabel: '喜欢', iconName: 'action_like' }],
+            ['不喜欢', { ariaLabel: '不喜欢', iconName: 'action_dislike' }],
+            ['收藏', { ariaLabel: '收藏', iconName: 'action_favorite' }],
+            ['下一位', { ariaLabel: '刷新候选人，显示下一位', iconName: 'action_next' }],
+        ]);
+        for (const [label, { ariaLabel, iconName }] of expectedIcons) {
+            const button = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === ariaLabel);
+            assert.ok(button, `发现操作应保留可访问名称：${ariaLabel}`);
+            assert.equal(button.textContent, label, `${ariaLabel} 应保留可见动作文字：${label}`);
+            assert.equal(button.querySelector('svg')?.dataset.icon, iconName, `${label} 必须使用本地白名单 SVG`);
+        }
+        assert.deepEqual(actionCalls, [], '仅构建发现工作台不得触发 action bridge');
+    } finally { mounted.destroy(); }
+    await flushUi();
+});
+
+test('matching page uses description terminology while retaining the voice action contract', async () => {
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-description-match', uiLayoutStorage: createMemoryStorage(),
+        actionBridge: { emit() {}, isPending() { return false; }, async runCandidateMatch(mode) { return { ok: false, message: mode }; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelector('.yl-phone-launcher'));
+        click(buttonByPage('matches'));
+        assert.match(miniDom.document.body.textContent, /描述匹配/u);
+        assert.doesNotMatch(miniDom.document.body.textContent, /语音匹配文字描述/u);
+        assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '描述匹配文字描述')?.getAttribute('aria-label'), '描述匹配文字描述');
+        const history = miniDom.document.querySelector('.yl-match-history');
+        assert.equal(history?.getAttribute('aria-label'), '已牵手对象', '匹配结果应进入独立且可访问的结果区域');
+        assert.match(history.textContent, /已牵手对象|还没有互相匹配/u);
+    } finally { mounted.destroy(); }
+    await flushUi();
+});
+
+test('candidate public media exposes loading, error, retry, and ready states without changing candidate actions', async () => {
+    const first = deferred();
+    const second = deferred();
+    const requests = [first, second];
+    let resolveCalls = 0;
+    let clearCalls = 0;
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document,
+        rootId: 'ylm-test-candidate-media-state',
+        uiLayoutStorage: createMemoryStorage(),
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null,
+        llmClient: null,
+        characterLibrary: null,
+        imageMatchCoordinator: {
+            resolveImage() { return requests[resolveCalls++].promise; },
+            clearCache() { clearCalls += 1; },
+        },
+        readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelector('.yl-phone-launcher'));
+        await flushUi();
+
+        let feedback = miniDom.document.querySelector('.yl-candidate-media-feedback');
+        assert.equal(feedback.dataset.mediaState, 'loading');
+        assert.equal(feedback.getAttribute('aria-busy'), 'true');
+        assert.match(feedback.textContent, /正在为公开候选人准备公开画面/u);
+        assert.equal(feedback.querySelector('button'), null, '非错误状态不应在 DOM 中留下额外重试控件');
+
+        first.reject(new Error('private provider detail must not render'));
+        await flushUi();
+        feedback = miniDom.document.querySelector('.yl-candidate-media-feedback');
+        assert.equal(feedback.dataset.mediaState, 'error');
+        assert.doesNotMatch(feedback.textContent, /private provider detail/u);
+        const retry = feedback.querySelector('button');
+        assert.equal(retry.hidden, false);
+        assert.equal(retry.disabled, false);
+        assert.equal(retry.textContent, '重新尝试图片匹配');
+
+        click(retry);
+        await flushUi();
+        feedback = miniDom.document.querySelector('.yl-candidate-media-feedback');
+        assert.equal(feedback.dataset.mediaState, 'loading');
+        assert.equal(clearCalls, 1);
+        assert.equal(resolveCalls, 2);
+
+        second.resolve({ id: 'public-image', source: { kind: 'embedded', dataUrl: 'data:image/png;base64,iVBORw0KGgo=' } });
+        await flushUi();
+        const backgroundImage = miniDom.document.querySelector('.yl-candidate-background-image');
+        assert.ok(backgroundImage, '安全来源解析后应进入现有背景图加载路径');
+        backgroundImage.dispatchEvent(new Event('load'));
+        await flushUi();
+
+        feedback = miniDom.document.querySelector('.yl-candidate-media-feedback');
+        assert.equal(feedback.dataset.mediaState, 'ready');
+        assert.equal(feedback.getAttribute('aria-busy'), 'false');
+        assert.match(feedback.textContent, /公开画面已准备好/u);
+
+        const avatarImage = miniDom.document.querySelector('.yl-candidate-avatar-image');
+        assert.ok(avatarImage, '候选头像应复用同一公开媒体记录');
+        avatarImage.dispatchEvent(new Event('error'));
+        await flushUi();
+        feedback = miniDom.document.querySelector('.yl-candidate-media-feedback');
+        assert.equal(feedback.dataset.mediaState, 'error', '头像加载失败也必须进入可见、可重试的公开媒体状态');
+        assert.equal(feedback.querySelector('button')?.textContent, '重新尝试图片匹配');
+        assert.equal(miniDom.document.querySelectorAll('button').filter((node) => node.className.includes('yl-phone-action-card')).length, 4, '媒体反馈不得改变四操作轨');
+    } finally {
+        mounted.destroy();
+    }
+});
+test('Phase 67: primary nav renders whitelist SVG icons with 发现/社区 naming and structural glyphs are gone', async () => {
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-phase67-nav',
+        actionBridge: { emit() {}, isPending() { return false; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        const expected = [
+            ['home', '发现', 'home'],
+            ['matches', '匹配', 'matches'],
+            ['messages', '消息', 'messages'],
+            ['groups', '社区', 'groups'],
+            ['profile', '我的', 'profile'],
+        ];
+        for (const [page, label, iconName] of expected) {
+            const button = buttonByPage(page);
+            assert.ok(button, `底栏应有 ${label} 导航`);
+            const navLabel = button.querySelector('.yl-nav-label');
+            assert.equal(navLabel.textContent, label, `导航 ${page} 的前台名称应为 ${label}`);
+            const svg = button.querySelector('svg');
+            assert.equal(svg?.dataset.icon, iconName, `导航 ${page} 必须使用本地白名单 SVG`);
+            assert.equal(svg.getAttribute('aria-hidden'), 'true');
+        }
+        click(buttonByPage('groups'));
+        const heading = miniDom.document.querySelector('.yl-page-heading').querySelector('h1');
+        assert.equal(heading.textContent, '社区', '社区一级页标题应与导航命名一致');
+
+        // 结构性关闭图标：操作弹窗右上角必须是本地 close SVG 而非文字 ×。
+        const operationClose = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('name') === 'operation-dialog-close');
+        assert.equal(operationClose.querySelector('svg')?.dataset.icon, 'close');
+        assert.equal(operationClose.textContent, '', '关闭按钮不再渲染文字符号');
+
+        // 返回按钮使用 chevron_left SVG。
+        click(buttonByPage('profile'));
+        click(buttonByText('设置'));
+        const back = backButton();
+        assert.equal(back.querySelector('svg')?.dataset.icon, 'chevron_left');
+        assert.equal(back.getAttribute('aria-label'), '返回');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('Phase 67: profile hub exposes the five asset groups with safe public metrics only', async () => {
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-phase67-profile',
+        actionBridge: { emit() {}, isPending() { return false; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        const sections = miniDom.document.querySelectorAll('.yl-hub-section');
+        assert.deepEqual(
+            sections.map((section) => section.querySelector('h2').textContent),
+            ['我的公开形象', '我的关系资产', '创作工具', '偏好与设置', '高级与诊断'],
+            '我的页应固定为五组关系资产目录',
+        );
+        const entryPages = miniDom.document.querySelectorAll('.yl-hub-entry').map((entry) => entry.dataset.page);
+        assert.deepEqual(entryPages, [
+            'profile_editor', 'favorites', 'matches', 'character_creator', 'settings_images',
+            'settings', 'settings_chat_summary', 'settings_console', 'about',
+        ], '五组目录的入口页面与顺序应保持稳定');
+        for (const entry of miniDom.document.querySelectorAll('.yl-hub-entry')) {
+            assert.ok(entry.querySelector('svg'), '每个目录入口都应有本地 SVG 图标');
+        }
+        const dashboardText = miniDom.document.querySelector('.yl-person-center').textContent;
+        assert.doesNotMatch(dashboardText, /拒绝阈值|NPC专属匹配度|npc_1|api[\s_-]*key/iu, '我的页摘要不得泄漏隐藏资料、阈值或内部 UID');
+        // 入口跳转仍走既有路由：已牵手对象直达匹配页。
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((entry) => entry.dataset.page === 'matches'));
+        assert.match(miniDom.document.querySelector('.yl-page-heading').querySelector('h1').textContent, /匹配/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+function focusIsInside(node, container) {
+    let current = node;
+    while (current) {
+        if (current === container) return true;
+        current = current.parentNode ?? null;
+    }
+    return false;
+}
+
+test('Phase 68: dialogs trap focus, close on Escape, and politely return focus to the opener', async () => {
+    const settingsStore = createSettingsStore(createMemoryStorage());
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-phase68-dialog-focus',
+        actionBridge: { emit() {}, isPending() { return false; } }, settingsStore, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('messages'));
+        const optionsButton = miniDom.document.querySelector('.yl-feature-options');
+        assert.ok(optionsButton, '消息页应提供功能预设入口');
+        optionsButton.focus();
+        click(optionsButton);
+
+        const dialog = miniDom.document.querySelector('.yl-feature-binding-modal');
+        assert.equal(dialog.hidden, false, '功能预设弹窗应已打开');
+        assert.equal(dialog.getAttribute('aria-modal'), 'true', '打开的弹窗必须声明 aria-modal');
+        assert.ok(focusIsInside(miniDom.document.activeElement, dialog), '打开弹窗时焦点必须进入弹窗');
+
+        const beforeTab = miniDom.document.activeElement;
+        pressKey('Tab');
+        assert.ok(focusIsInside(miniDom.document.activeElement, dialog), 'Tab 循环必须停留在弹窗内');
+        pressKey('Tab');
+        assert.ok(focusIsInside(miniDom.document.activeElement, dialog), '连续 Tab 仍不得逃出弹窗');
+        assert.ok(beforeTab, '弹窗内应存在可聚焦控件');
+
+        pressKey('Escape');
+        assert.equal(dialog.hidden, true, 'Escape 应关闭栈顶弹窗');
+        assert.strictEqual(miniDom.document.activeElement, optionsButton, '关闭后焦点应回到打开弹窗的按钮');
+        assert.equal(miniDom.document.querySelector('.yl-phone-panel').hidden, false, 'Escape 关闭弹窗时不得连带关闭小手机窗口');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('Phase 68: operation dialog focuses its close action once and stays put across state updates', async () => {
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-phase68-operation-focus',
+        actionBridge: { emit() {}, isPending() { return false; } }, settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(buttonByPage('profile'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((entry) => entry.dataset.page === 'settings'));
+        const aboutEntry = miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('关于软件'));
+        click(aboutEntry);
+        const versionButton = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('name') === 'about-version-info');
+        assert.ok(versionButton, '关于子页应提供版本信息入口');
+        versionButton.focus();
+        click(versionButton);
+
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+        assert.equal(dialog.hidden, false, '版本信息应打开操作弹窗');
+        const bottomClose = dialog.querySelector('[name="operation-dialog-action"]');
+        assert.strictEqual(miniDom.document.activeElement, bottomClose, '操作弹窗打开时应聚焦底部关闭按钮');
+
+        pressKey('Escape');
+        assert.equal(dialog.hidden, true, 'Escape 应关闭操作弹窗');
+        // 版本信息按钮在弹窗打开的同一轮 renderPage 中被重建，opener 已失效：
+        // 焦点不得滞留在隐藏弹窗内，应按 §7.1.1 兜底落到当前页标题。
+        assert.equal(focusIsInside(miniDom.document.activeElement, dialog), false, '焦点不得滞留在已隐藏的操作弹窗内');
+        const heading = miniDom.document.querySelector('.yl-page-heading')?.querySelector('h1');
+        assert.ok(heading, '关于页应有页标题');
+        assert.strictEqual(miniDom.document.activeElement, heading, 'opener 失效时焦点应兜底到页面标题');
+    } finally {
+        mounted.destroy();
+    }
 });

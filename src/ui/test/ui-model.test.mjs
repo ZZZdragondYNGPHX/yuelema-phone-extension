@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPhoneView, describeActionFailure, projectMatchView, projectPlayerPublicProfile, projectPublicProfile, projectServiceOrderView, projectServiceOrderIssues } from '../../ui-model.js';
+import { PAGE_COPY, createPhoneView, describeActionFailure, projectMatchView, projectPlayerPublicProfile, projectPublicProfile, projectServiceOrderView, projectServiceOrderIssues } from '../../ui-model.js';
 
 function profile() {
     return {
@@ -36,6 +36,10 @@ function readResult() {
         },
     };
 }
+
+test('UI model no longer exposes the dead transient match-profile route', () => {
+    assert.equal(Object.hasOwn(PAGE_COPY, 'match_profile'), false);
+});
 
 test('public profile projection uses an explicit whitelist and omits private layers', () => {
     const projected = projectPublicProfile(profile(), 'npc_lc');

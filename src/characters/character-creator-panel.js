@@ -1,6 +1,8 @@
 import { append, element, listen } from '../dom.js';
+import { createAvatarView } from '../ui/avatar-view.js';
 import { CHARACTER_TEMPLATE_FORMAT, importCharacterTemplate, projectCharacterTemplateError } from './character-template-codec.js';
 import { avatarAcceptAttribute, compressLocalAvatar, projectAvatarError } from './avatar-codec.js';
+import { projectRemoteImportError } from '../images/remote-image-import.js';
 
 const TAG_KEYS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
 const PUBLIC_TEXT_KEYS = Object.freeze(['昵称', '年龄段', '性别', '性取向', '城市', '距离范围', '寻找意图', '简介']);
@@ -68,7 +70,7 @@ function readNamed(form, name) {
 function candidateFromForm(form, avatar) {
     const candidate = baseCandidate();
     for (const key of PUBLIC_TEXT_KEYS) candidate.公开资料[key] = cleanText(readNamed(form, `public-${key}`));
-    candidate.公开资料.头像引用 = avatar.kind === 'url' ? avatar.url : avatar.kind === 'embedded' ? '本地头像' : '';
+    candidate.公开资料.头像引用 = avatar.kind === 'embedded' ? '本地头像' : '';
     for (const key of TAG_KEYS) candidate.公开资料[key] = splitTags(readNamed(form, `tag-${key}`));
     for (const key of FRIEND_TEXT_KEYS) candidate.仅好友资料[key] = cleanText(readNamed(form, `friend-${key}`));
     candidate.隐藏资料.实际年龄 = Number(readNamed(form, 'hidden-age'));
@@ -88,10 +90,9 @@ function publicProfileFromForm(form) {
     return profile;
 }
 function avatarFromForm(form, localAvatar) {
-    const kind = readNamed(form, 'avatar-kind');
-    if (kind === 'url') return { kind: 'url', url: cleanText(readNamed(form, 'avatar-url')) };
-    if (kind === 'embedded') return localAvatar ?? { kind: 'placeholder' };
-    return { kind: 'placeholder' };
+    return readNamed(form, 'avatar-kind') === 'embedded' && localAvatar
+        ? localAvatar
+        : { kind: 'placeholder' };
 }
 
 function candidateToForm(form, template) {
@@ -116,8 +117,6 @@ function candidateToForm(form, template) {
     for (const key of THRESHOLD_KEYS) form.querySelector(`[name="threshold-${key}"]`).value = String(candidate[key]);
     const avatarKind = form.querySelector('[name="avatar-kind"]');
     if (avatarKind) avatarKind.value = template.avatar?.kind ?? 'placeholder';
-    const avatarUrl = form.querySelector('[name="avatar-url"]');
-    if (avatarUrl) avatarUrl.value = template.avatar?.kind === 'url' ? template.avatar.url : '';
 }
 
 function safeLibraryMessage(error) {
@@ -144,7 +143,7 @@ function safeLibraryMessage(error) {
  * The editor may show the current private draft because the player owns it; normal
  * recommendation cards remain public-projection-only in app-shell/ui-model.
  */
-export function buildCharacterCreatorPanel({ documentRef, actionBridge, characterLibrary, signal, contentMode = 'SFW', onFeedback, onRegistered, onConfigureFeature = null }) {
+export function buildCharacterCreatorPanel({ documentRef, actionBridge, characterLibrary, signal, contentMode = 'SFW', onFeedback, onRegistered, onConfigureFeature = null, importAvatarFromUrl = null }) {
     const section = element('section', { className: 'yl-phone-empty-actions yl-character-editor yl-character-creator' });
 
     const hero = element('article', { className: 'yl-character-hero' });
@@ -167,9 +166,12 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     append(hero, [heroCopy, journey]);
     section.appendChild(hero);
 
+    const stepRail = element('nav', { className: 'yl-character-step-rail', ariaLabel: '创建角色步骤导航' });
+    section.appendChild(stepRail);
+
     const form = element('form', { className: 'yl-character-form' });
 
-    const publicSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-public' });
+    const publicSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-public', id: 'yl-character-section-public' });
     sectionHeading(publicSection, {
         step: '01', eyebrow: 'PUBLIC PROFILE', title: '先做一张让人愿意停留的心动名片',
     });
@@ -197,7 +199,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         textField(tagsGroup, label, { name: `tag-${key}`, placeholder });
     }
 
-    const avatarSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-avatar' });
+    const avatarSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-avatar', id: 'yl-character-section-avatar' });
     sectionHeading(avatarSection, {
         step: '02', eyebrow: 'PROFILE PHOTO', title: '选一张有故事感的头像',
     });
@@ -205,23 +207,36 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     const avatarSourceField = element('label', { className: 'yl-character-field yl-character-avatar-source' });
     avatarSourceField.appendChild(element('span', { className: 'yl-character-field-label', text: '头像来源' }));
     const avatarKind = element('select', { name: 'avatar-kind', ariaLabel: '头像来源' });
-    append(avatarKind, [element('option', { value: 'placeholder', text: '先用占位头像' }), element('option', { value: 'url', text: '填写图片 URL' }), element('option', { value: 'embedded', text: '选择本地图片（压缩后保存）' })]);
+    append(avatarKind, [element('option', { value: 'placeholder', text: '先用占位头像' }), element('option', { value: 'embedded', text: '选择本地图片（压缩后保存）' })]);
     avatarSourceField.appendChild(avatarKind);
     avatarLayout.appendChild(avatarSourceField);
-    const avatarUrl = textField(avatarLayout, '公开图片 URL', { name: 'avatar-url', placeholder: 'https://example.com/avatar.webp', hint: '只接受 http/https 地址。' });
     const avatarUpload = element('label', { className: 'yl-character-field yl-character-avatar-upload' });
     avatarUpload.appendChild(element('span', { className: 'yl-character-avatar-upload-title', text: '从本机选择一张照片' }));
     avatarUpload.appendChild(element('span', { className: 'yl-character-avatar-upload-description', text: '图片会在当前浏览器内压缩处理，不会交给 AI 创作请求。' }));
     const avatarFile = element('input', { name: 'avatar-file', type: 'file', accept: avatarAcceptAttribute(), ariaLabel: '选择本地头像' });
     avatarUpload.appendChild(avatarFile);
     avatarLayout.appendChild(avatarUpload);
+    // 链接导入是能力门控 UI：宿主没有注入导入器时完全不渲染，不留死控件。
+    let remoteUrlInput = null;
+    let remoteImportButton = null;
+    if (typeof importAvatarFromUrl === 'function') {
+        const remoteField = element('label', { className: 'yl-character-field yl-character-avatar-remote' });
+        remoteField.appendChild(element('span', { className: 'yl-character-field-label', text: '或粘贴图片链接' }));
+        // type=text 而非 type=url：避免半截链接触发浏览器原生校验、阻塞整表单提交；合法性由导入器统一裁决。
+        remoteUrlInput = element('input', { name: 'avatar-import-url', type: 'text', inputMode: 'url', placeholder: 'https://…', ariaLabel: '要导入的图片链接' });
+        remoteField.appendChild(remoteUrlInput);
+        remoteField.appendChild(element('span', { className: 'yl-character-field-hint', text: '仅在点击导入时下载一次并压缩为本地头像；链接本身不会被保存或用于展示。' }));
+        remoteImportButton = element('button', { className: 'yl-character-library-action yl-character-avatar-remote-button', type: 'button', text: '下载并压缩为本地头像' });
+        remoteField.appendChild(remoteImportButton);
+        avatarLayout.appendChild(remoteField);
+    }
     const avatarNote = element('p', { className: 'yl-phone-page-description yl-character-avatar-note', text: '本地头像会压缩为最长边不超过 1024px 的 WebP；导出模板时可自行选择是否包含头像。' });
     const drawingGroup = fieldGroup(avatarSection, '生图身份锚点', '英文绘图标签会在生成图片时固定人物外观和当前穿搭；它们不会进入推荐评分、关系判断或普通名片。', 'yl-character-field-grid yl-character-field-grid-two');
     textField(drawingGroup, 'core_dna（固定外观）', { name: 'drawing-core-dna', rows: 3, placeholder: '例如：adult woman, short black bob, warm brown eyes, beauty mark', hint: '首次确定后尽量稳定；只写外观锚点。' });
     textField(drawingGroup, 'outfit_dna（当前穿搭）', { name: 'drawing-outfit-dna', rows: 3, placeholder: '例如：cream knit cardigan, dark denim skirt, ankle boots', hint: '明确换装时再更新；只写服装与配饰。' });
     append(avatarSection, [avatarLayout, avatarNote, drawingGroup]);
 
-    const aiSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-ai' });
+    const aiSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-ai', id: 'yl-character-section-ai' });
     sectionHeading(aiSection, {
         step: '02 · 可选', eyebrow: 'CREATIVE ASSISTANT', title: 'AI 补全 / 完整创作：还没想完整？让 AI 帮你补上灵感',
     });
@@ -255,7 +270,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     aiSection.appendChild(aiChoices);
     aiSection.appendChild(element('p', { className: 'yl-character-safety-note', text: '隐私提示：AI 补全不会读取头像、仅好友资料、隐藏资料、偏好与边界或互动阈值。' }));
 
-    const friendSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-private' });
+    const friendSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-private', id: 'yl-character-section-private' });
     sectionHeading(friendSection, {
         step: '03', eyebrow: 'PRIVATE & BOUNDARIES', title: '把亲近后的真实与边界写清楚',
         description: '这一部分只在你拥有的完整编辑草稿中出现，不会进入普通推荐卡 DOM。明确边界不是扫兴，而是让关系有被尊重的可能。',
@@ -268,7 +283,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     textField(hiddenGroup, '私人创作备注', { name: 'hidden-note', rows: 3, placeholder: '记录不希望公开展示的角色设定，可留空。' });
     textField(hiddenGroup, '整体偏好与边界', { name: 'boundary', rows: 3, placeholder: '记录关系推进中需要长期遵守的偏好与边界，可留空。', className: 'yl-character-field-wide' });
 
-    const thresholdSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-thresholds' });
+    const thresholdSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-thresholds', id: 'yl-character-section-thresholds' });
     sectionHeading(thresholdSection, {
         step: '03 · 进阶', eyebrow: 'INTERACTION RHYTHM', title: '设定 TA 的互动节奏',
         description: '0–100 的数值用于表达角色在不同负面互动下的反应门槛。它们不是公开标签，也不会替代剧情中的具体沟通与判断。',
@@ -282,7 +297,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     };
     for (const key of THRESHOLD_KEYS) textField(thresholdGrid, key, { name: `threshold-${key}`, type: 'number', value: String(baseCandidate()[key]), min: 0, max: 100, required: true, inputMode: 'numeric', hint: thresholdHints[key] });
 
-    const submitSection = element('footer', { className: 'yl-character-submit-card' });
+    const submitSection = element('footer', { className: 'yl-character-submit-card', id: 'yl-character-section-submit' });
     const submitCopy = element('div', { className: 'yl-character-submit-copy' });
     submitCopy.appendChild(element('span', { className: 'yl-character-step-badge', text: '04' }));
     const submitWords = element('div', { className: 'yl-character-submit-words' });
@@ -298,6 +313,54 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
 
     append(form, [publicSection, avatarSection, aiSection, friendSection, thresholdSection, submitSection]);
     section.appendChild(form);
+
+    const stepButtons = [];
+    function activateStepButton(activeButton) {
+        for (const button of stepButtons) {
+            const isActive = button === activeButton;
+            button.classList.toggle('is-active', isActive);
+            if (isActive) button.setAttribute('aria-current', 'step');
+            else if (typeof button.removeAttribute === 'function') button.removeAttribute('aria-current');
+            else button.setAttribute('aria-current', 'false');
+        }
+    }
+    const stepTargets = [
+        ['01', '心动名片', publicSection],
+        ['02', '形象与灵感', avatarSection],
+        ['03', '边界与节奏', friendSection],
+        ['04', '确认登记', submitSection],
+    ];
+    for (const [number, label, target] of stepTargets) {
+        const stepButton = element('button', { className: 'yl-character-step-link', type: 'button' });
+        const targetId = target.getAttribute('id') ?? '';
+        stepButton.dataset.stepTarget = targetId;
+        stepButton.setAttribute('data-step-target', targetId);
+        append(stepButton, [
+            element('span', { className: 'yl-character-step-number', text: number }),
+            element('span', { className: 'yl-character-step-label', text: label }),
+        ]);
+        listen(stepButton, stepButton, 'click', () => {
+            activateStepButton(stepButton);
+            const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+            target.scrollIntoView?.({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+        }, signal);
+        stepButtons.push(stepButton);
+        stepRail.appendChild(stepButton);
+    }
+    activateStepButton(stepButtons[0]);
+
+    const preview = element('aside', { className: 'yl-character-preview' });
+    const previewHeader = element('header', { className: 'yl-character-preview-header' });
+    previewHeader.appendChild(element('p', { className: 'yl-character-section-eyebrow', text: 'LIVE PREVIEW' }));
+    previewHeader.appendChild(element('h2', { className: 'yl-character-preview-title', text: '公开名片实时预览' }));
+    previewHeader.appendChild(element('p', { className: 'yl-character-preview-description', text: '这里只显示会出现在发现页的公开资料。' }));
+    const previewCard = element('article', { className: 'yl-character-preview-card' });
+    append(preview, [
+        previewHeader,
+        previewCard,
+        element('p', { className: 'yl-character-preview-note', text: '预览只包含公开资料；仅好友与隐藏资料绝不会出现在这里。' }),
+    ]);
+    section.appendChild(preview);
 
     const templateWorkspace = element('section', { className: 'yl-character-template-workspace' });
     const templateIntro = element('header', { className: 'yl-character-template-heading' });
@@ -329,6 +392,37 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     section.appendChild(templateWorkspace);
 
     let localAvatar = null;
+    /** Rebuilds the public-card preview strictly from public form fields plus the in-memory avatar draft. */
+    function updatePreview() {
+        const profile = publicProfileFromForm(form);
+        if (!profile.昵称) {
+            previewCard.replaceChildren(element('p', { className: 'yl-character-preview-empty', text: '填写昵称后，这里会出现 TA 的名片。' }));
+            return;
+        }
+        const imageSource = readNamed(form, 'avatar-kind') === 'embedded' && localAvatar ? localAvatar.dataUrl : '';
+        const children = [
+            createAvatarView({ documentRef: documentRef ?? globalThis.document, nickname: profile.昵称, imageSource, className: 'yl-character-preview-avatar' }),
+            element('strong', { className: 'yl-character-preview-name', text: profile.昵称 }),
+        ];
+        const meta = [profile.年龄段, profile.城市, profile.距离范围].filter(Boolean).join(' · ');
+        if (meta) children.push(element('p', { className: 'yl-character-preview-meta', text: meta }));
+        if (profile.寻找意图) children.push(element('p', { className: 'yl-character-preview-intent', text: `想找：${profile.寻找意图}` }));
+        if (profile.简介) children.push(element('p', { className: 'yl-character-preview-bio', text: profile.简介 }));
+        const tags = [...new Set(TAG_KEYS.flatMap((key) => profile[key]))].slice(0, 12);
+        if (tags.length) {
+            const tagList = element('div', { className: 'yl-character-preview-tags' });
+            for (const tag of tags) tagList.appendChild(element('span', { className: 'yl-character-preview-tag', text: tag }));
+            children.push(tagList);
+        }
+        previewCard.replaceChildren(...children);
+    }
+    for (const tagName of ['input', 'textarea', 'select']) {
+        for (const field of form.querySelectorAll(tagName)) {
+            listen(field, field, 'input', () => updatePreview(), signal);
+            listen(field, field, 'change', () => updatePreview(), signal);
+        }
+    }
+
     function templateFromEditor() {
         const avatar = avatarFromForm(form, localAvatar);
         return importCharacterTemplate({ format: CHARACTER_TEMPLATE_FORMAT, character: candidateFromForm(form, avatar), avatar });
@@ -351,7 +445,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
             const exportTextOnly = element('button', { className: 'yl-character-library-action', type: 'button', text: '导出不含头像' });
             const remove = element('button', { className: 'yl-character-library-action yl-character-library-action-danger', type: 'button', text: '删除' });
             listen(load, load, 'click', () => {
-                try { const record = characterLibrary.get(entry.id); candidateToForm(form, record.template); localAvatar = record.template.avatar?.kind === 'embedded' ? record.template.avatar : null; avatarNote.textContent = localAvatar ? '已载入已压缩的本地头像。' : '已载入模板头像设置。'; onFeedback('已载入本地模板草稿，尚未登记到当前聊天。'); } catch (error) { onFeedback(safeLibraryMessage(error)); }
+                try { const record = characterLibrary.get(entry.id); candidateToForm(form, record.template); localAvatar = record.template.avatar?.kind === 'embedded' ? record.template.avatar : null; avatarNote.textContent = localAvatar ? '已载入已压缩的本地头像。' : '已载入模板头像设置。'; updatePreview(); onFeedback('已载入本地模板草稿，尚未登记到当前聊天。'); } catch (error) { onFeedback(safeLibraryMessage(error)); }
             }, signal);
             for (const [button, includeAvatar] of [[exportWithAvatar, true], [exportTextOnly, false]]) listen(button, button, 'click', () => {
                 try { templateText.value = characterLibrary.exportTemplate(entry.id, { includeAvatar }); onFeedback(includeAvatar ? '已写入含头像的导出 JSON，可复制保存。' : '已写入不含头像的导出 JSON，可复制保存。'); } catch (error) { onFeedback(safeLibraryMessage(error)); }
@@ -367,8 +461,8 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         candidateToForm(form, template);
         localAvatar = null;
         avatarKind.value = 'placeholder';
-        avatarUrl.value = '';
-        avatarNote.textContent = 'AI 草稿不携带头像；可自行选择 URL、本地图片或占位头像。';
+        avatarNote.textContent = 'AI 草稿不携带头像；可自行选择本地图片或占位头像。';
+        updatePreview();
         onFeedback(message);
     }
 
@@ -397,8 +491,28 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         const file = avatarFile.files?.[0];
         if (!file) return;
         avatarNote.textContent = '正在压缩本地头像…';
-        void compressLocalAvatar(file).then((avatar) => { localAvatar = avatar; avatarKind.value = 'embedded'; avatarNote.textContent = `本地头像已压缩为 ${avatar.width}×${avatar.height} WebP。`; }).catch((error) => { localAvatar = null; avatarNote.textContent = projectAvatarError(error).message; });
+        void compressLocalAvatar(file).then((avatar) => { localAvatar = avatar; avatarKind.value = 'embedded'; avatarNote.textContent = `本地头像已压缩为 ${avatar.width}×${avatar.height} WebP。`; updatePreview(); }).catch((error) => { localAvatar = null; avatarNote.textContent = projectAvatarError(error).message; updatePreview(); });
     }, signal);
+    if (remoteImportButton) {
+        listen(remoteImportButton, remoteImportButton, 'click', async () => {
+            const url = cleanText(remoteUrlInput?.value);
+            if (!url) { avatarNote.textContent = '请先粘贴要导入的图片链接。'; return; }
+            remoteImportButton.disabled = true;
+            avatarNote.textContent = '正在下载并压缩链接图片…';
+            try {
+                const avatar = await importAvatarFromUrl(url);
+                localAvatar = avatar;
+                avatarKind.value = 'embedded';
+                avatarNote.textContent = `链接图片已压缩为 ${avatar.width}×${avatar.height} WebP 本地头像；链接本身不会被保存。`;
+                updatePreview();
+            } catch (error) {
+                // 失败不改动当前头像草稿；提示只用安全投影文案，不回显链接或宿主异常原文。
+                avatarNote.textContent = projectRemoteImportError(error)?.message ?? projectAvatarError(error).message;
+            } finally {
+                remoteImportButton.disabled = false;
+            }
+        }, signal);
+    }
 
     listen(importButton, importButton, 'click', () => {
         try {
@@ -406,6 +520,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
             candidateToForm(form, template);
             localAvatar = template.avatar?.kind === 'embedded' ? template.avatar : null;
             avatarNote.textContent = localAvatar ? '已导入已压缩的本地头像。' : '已导入头像设置。';
+            updatePreview();
             onFeedback('模板已通过完整成年人和结构校验；请检查草稿后再登记。');
         } catch (error) { onFeedback(projectCharacterTemplateError(error).message); }
     }, signal);
@@ -468,5 +583,6 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     }, signal);
 
     renderLibrary();
+    updatePreview();
     return section;
 }

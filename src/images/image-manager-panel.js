@@ -1,4 +1,5 @@
-import { projectImageLibraryError } from './image-library-store.js';
+import { normalizeEmbeddedImageDataUrl, projectImageLibraryError } from './image-library-store.js';
+import { projectRemoteImportError } from './remote-image-import.js';
 
 const ACCEPTED_IMAGE_TYPES = Object.freeze(['image/png', 'image/jpeg', 'image/webp']);
 const LONG_PRESS_DELAY_MS = 550;
@@ -22,14 +23,12 @@ function createElement(documentRef, tagName, { className = '', text = null, type
 
 function sourceUrl(source) {
     if (!source || typeof source !== 'object') return '';
-    if (source.kind === 'url' && typeof source.url === 'string' && /^https?:\/\/[^\s<>]+$/iu.test(source.url)) {
-        return source.url;
+    if (source.kind !== 'embedded' || typeof source.dataUrl !== 'string') return '';
+    try {
+        return normalizeEmbeddedImageDataUrl(source.dataUrl);
+    } catch {
+        return '';
     }
-    if (source.kind === 'embedded' && typeof source.dataUrl === 'string'
-        && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/iu.test(source.dataUrl)) {
-        return source.dataUrl;
-    }
-    return '';
 }
 
 function normalizeCompressedImage(result) {
@@ -38,17 +37,6 @@ function normalizeCompressedImage(result) {
         return result.dataUrl;
     }
     throw new TypeError('image_manager_compression_result_invalid');
-}
-
-function validateRemoteUrl(value) {
-    const text = String(value ?? '').trim();
-    try {
-        const parsed = new URL(text);
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('invalid protocol');
-        return parsed.href;
-    } catch {
-        throw new TypeError('image_manager_url_invalid');
-    }
 }
 
 function parseKeywordRows(rowsContainer) {
@@ -74,7 +62,6 @@ function parseKeywordRows(rowsContainer) {
 }
 
 function feedbackMessage(error) {
-    if (error?.message === 'image_manager_url_invalid') return '请输入有效的 HTTP/HTTPS 图片链接。';
     if (error?.message === 'image_manager_file_type_invalid') return '本地图片仅支持 PNG、JPEG 或 WebP。';
     if (error?.message === 'image_manager_compression_unavailable') return '当前页面无法压缩本地图片。';
     if (error?.message === 'image_manager_compression_result_invalid') return '本地图片压缩结果无效，未保存图片。';
@@ -87,8 +74,11 @@ function feedbackMessage(error) {
 /**
  * Browser-local image library manager.
  *
- * The panel owns no persistence and performs no network request. Remote URLs are
- * handed to the injected image library and displayed only as browser image sources.
+ * The panel owns no persistence and performs no network request. Only validated
+ * embedded PNG/JPEG/WebP data URLs may become browser image sources.
+ *
+ * `dialogController`（可选，app-shell 单例）负责关键词编辑弹窗的焦点陷阱、initialFocus
+ * 与关闭回焦；不传时保持旧的 hidden 切换 + 面板自有 document Escape 降级行为。
  */
 export function createImageManagerPanel({
     documentRef,
@@ -97,6 +87,10 @@ export function createImageManagerPanel({
     onFeedback = noop,
     onChange = noop,
     onConfigure = noop,
+    dialogController = null,
+    // 一次性链接导入能力（url → Blob）。未注入时不渲染任何链接入口；
+    // 下载结果仍必须走注入压缩链变成 embedded data URL，URL 本身不落库。
+    importRemoteImageFile = null,
 } = {}) {
     if (!documentRef || typeof documentRef.createElement !== 'function') {
         throw new TypeError('image_manager_document_invalid');
@@ -133,7 +127,7 @@ export function createImageManagerPanel({
     heading.appendChild(titlebar);
     heading.appendChild(createElement(documentRef, 'p', {
         className: 'yl-image-manager-description',
-        text: '上传本地图片或导入图片链接，并为每张图片设置用于角色匹配的关键词权重。',
+        text: '上传本地图片，并为每张图片设置用于角色匹配的关键词权重。',
     }));
 
     const intake = createElement(documentRef, 'div', { className: 'yl-image-manager-intake' });
@@ -143,24 +137,31 @@ export function createImageManagerPanel({
     fileInput.setAttribute('accept', ACCEPTED_IMAGE_TYPES.join(','));
     fileLabel.appendChild(fileInput);
 
-    const urlGroup = createElement(documentRef, 'div', { className: 'yl-image-manager-url-group' });
-    const urlInput = createElement(documentRef, 'input', { type: 'url', name: 'image-url' });
-    urlInput.setAttribute('placeholder', 'https://example.com/image.webp');
-    urlInput.setAttribute('autocomplete', 'off');
-    const urlButton = createElement(documentRef, 'button', { type: 'button', className: 'yl-image-manager-url-button', text: '导入图片链接' });
-    urlGroup.appendChild(urlInput);
-    urlGroup.appendChild(urlButton);
     intake.appendChild(fileLabel);
-    intake.appendChild(urlGroup);
+
+    let remoteUrlInput = null;
+    let remoteImportButton = null;
+    if (typeof importRemoteImageFile === 'function') {
+        const remoteRow = createElement(documentRef, 'div', { className: 'yl-image-remote-import' });
+        remoteUrlInput = createElement(documentRef, 'input', { type: 'text', name: 'image-import-url' });
+        remoteUrlInput.setAttribute('inputmode', 'url');
+        remoteUrlInput.setAttribute('placeholder', 'https://…');
+        remoteUrlInput.setAttribute('aria-label', '要导入的图片链接');
+        remoteImportButton = createElement(documentRef, 'button', { type: 'button', className: 'yl-image-remote-import-button', text: '下载并保存到图片库' });
+        remoteRow.appendChild(remoteUrlInput);
+        remoteRow.appendChild(remoteImportButton);
+        intake.appendChild(remoteRow);
+        intake.appendChild(createElement(documentRef, 'p', { className: 'yl-image-remote-import-hint', text: '仅在点击时下载一次并压缩保存；链接本身不会被保存。' }));
+    }
 
     const status = createElement(documentRef, 'p', { className: 'yl-image-manager-status', text: '正在读取图片库…' });
     status.setAttribute('aria-live', 'polite');
     const grid = createElement(documentRef, 'div', { className: 'yl-image-manager-grid' });
 
+    // Disclosure 动作列表：不宣称 role=menu（无完整菜单键盘模型），Escape 与外点关闭生命周期保留。
     const contextMenu = createElement(documentRef, 'div', { className: 'yl-image-context-menu', hidden: true });
-    contextMenu.setAttribute('role', 'menu');
+    contextMenu.setAttribute('aria-label', '图片操作');
     const editMenuButton = createElement(documentRef, 'button', { type: 'button', className: 'yl-image-context-action', text: '编辑匹配关键词' });
-    editMenuButton.setAttribute('role', 'menuitem');
     contextMenu.appendChild(editMenuButton);
 
     const editorBackdrop = createElement(documentRef, 'div', { className: 'yl-image-keyword-backdrop', hidden: true });
@@ -188,9 +189,13 @@ export function createImageManagerPanel({
     editor.appendChild(editorActions);
     editorBackdrop.appendChild(editor);
 
-    element.appendChild(heading);
-    element.appendChild(intake);
-    element.appendChild(status);
+    // 说明、导入与状态收进同一侧栏容器：phone 保持原纵向阅读顺序，
+    // desktop 工作台由 CSS 将其整体作为左列卡片，避免三块内容视觉散落。
+    const side = createElement(documentRef, 'div', { className: 'yl-image-manager-side' });
+    side.appendChild(heading);
+    side.appendChild(intake);
+    side.appendChild(status);
+    element.appendChild(side);
     element.appendChild(grid);
     element.appendChild(contextMenu);
     element.appendChild(editorBackdrop);
@@ -210,10 +215,9 @@ export function createImageManagerPanel({
 
     function setBusy(isBusy, message = '') {
         fileInput.disabled = isBusy;
-        urlInput.disabled = isBusy;
-        urlButton.disabled = isBusy;
         saveButton.disabled = isBusy;
         deleteButton.disabled = isBusy;
+        if (remoteImportButton) remoteImportButton.disabled = isBusy;
         if (message) status.textContent = message;
     }
 
@@ -236,8 +240,8 @@ export function createImageManagerPanel({
         suppressedClickImageId = null;
     }
 
-    function sourceLabel(record) {
-        return record.source.kind === 'embedded' ? '本地图片' : '远程图片';
+    function sourceLabel() {
+        return '本地图片';
     }
 
     function keywordSummary(record) {
@@ -287,7 +291,7 @@ export function createImageManagerPanel({
         if (records.length === 0) {
             const empty = createElement(documentRef, 'div', { className: 'yl-image-manager-empty' });
             empty.appendChild(createElement(documentRef, 'strong', { text: '图片库还是空的' }));
-            empty.appendChild(createElement(documentRef, 'p', { text: '上传本地图片或导入一个 HTTP/HTTPS 图片链接后，预览会显示在这里。' }));
+            empty.appendChild(createElement(documentRef, 'p', { text: '上传本地 PNG、JPEG 或 WebP 图片后，预览会显示在这里。' }));
             grid.appendChild(empty);
             status.textContent = '当前没有图片。';
             return;
@@ -333,7 +337,7 @@ export function createImageManagerPanel({
             listen(card, 'keydown', (event) => {
                 if (event.key !== 'Enter' && event.key !== ' ') return;
                 event.preventDefault();
-                openEditor(record);
+                openEditor(record, card);
             });
             grid.appendChild(card);
         }
@@ -360,6 +364,9 @@ export function createImageManagerPanel({
     }
 
     function closeEditor() {
+        // 有控制器时先把编辑器移出焦点栈（controller.close 自带礼貌回焦 opener），再清理瞬态，
+        // 避免回焦时机落在已清空的子树之后；controller.close 不会回调 onRequestClose，故与本函数无递归。
+        if (dialogController && !editorBackdrop.hidden) dialogController.close(editor);
         editorBackdrop.hidden = true;
         activeImageId = null;
         keywordRows.replaceChildren();
@@ -367,6 +374,15 @@ export function createImageManagerPanel({
     }
 
     function handleEscape() {
+        // 有控制器时：编辑器的 Escape 由 app-shell 委托链先经 dialogController.handleKeydown 处理
+        // （onRequestClose → closeEditor），本方法对编辑器一律返回 false，避免双通道重复关闭；
+        // 右键菜单是 disclosure、不入控制器栈，Escape 仍由本方法接管。
+        if (dialogController) {
+            if (contextMenu.hidden) return false;
+            clearLongPress();
+            closeContextMenu();
+            return true;
+        }
         const wasOpen = !editorBackdrop.hidden || !contextMenu.hidden;
         if (!wasOpen) return false;
         clearLongPress();
@@ -375,7 +391,14 @@ export function createImageManagerPanel({
         return true;
     }
 
-    function openEditor(record) {
+    function cardForRecord(recordId) {
+        for (const card of grid.querySelectorAll('.yl-image-card')) {
+            if (card.dataset.imageId === recordId) return card;
+        }
+        return null;
+    }
+
+    function openEditor(record, opener = null) {
         closeContextMenu();
         activeImageId = record.id;
         keywordRows.replaceChildren();
@@ -383,6 +406,14 @@ export function createImageManagerPanel({
         for (const entry of record.keywordWeights) addKeywordRow(entry.keyword, entry.weight);
         if (record.keywordWeights.length === 0) addKeywordRow('', 0);
         editorBackdrop.hidden = false;
+        // 控制器 open 自带 aria-modal、Tab 焦点环与首个可聚焦元素聚焦（编辑器内即首行关键词输入）；
+        // opener 为触发的图片卡片，关闭时由控制器礼貌回焦。无控制器时保持旧的 hidden 切换降级。
+        if (dialogController) {
+            dialogController.open(editor, {
+                opener: opener ?? cardForRecord(record.id),
+                onRequestClose: () => closeEditor(),
+            });
+        }
     }
 
     function enqueueOperation(action) {
@@ -428,30 +459,31 @@ export function createImageManagerPanel({
         });
     });
 
-    listen(configureButton, 'click', () => safeCallback(onConfigure));
-
-    listen(urlButton, 'click', () => {
-        void enqueueOperation(async () => {
-            setBusy(true, '正在保存远程图片链接…');
-            try {
-                const url = validateRemoteUrl(urlInput.value);
-                const added = await imageLibrary.add({ source: { kind: 'url', url }, keywordWeights: [] });
-                urlInput.value = '';
-                await completeMutation('add', added, '图片链接已保存；若远程站点拒绝加载，预览会显示失败状态。');
-            } catch (error) {
-                status.textContent = '图片链接未保存。';
-                report(feedbackMessage(error));
-            } finally {
-                if (!disposed) setBusy(false);
-            }
+    if (remoteImportButton) {
+        listen(remoteImportButton, 'click', () => {
+            const url = String(remoteUrlInput?.value ?? '').trim();
+            if (!url) { status.textContent = '请先粘贴要导入的图片链接。'; return; }
+            void enqueueOperation(async () => {
+                setBusy(true, '正在下载并压缩链接图片…');
+                try {
+                    if (typeof compressImageFile !== 'function') throw new TypeError('image_manager_compression_unavailable');
+                    const remoteFile = await importRemoteImageFile(url);
+                    const dataUrl = normalizeCompressedImage(await compressImageFile(remoteFile));
+                    const added = await imageLibrary.add({ source: { kind: 'embedded', dataUrl }, keywordWeights: [] });
+                    remoteUrlInput.value = '';
+                    await completeMutation('add', added, '链接图片已压缩并保存到图片库；链接本身不会被保存。');
+                } catch (error) {
+                    // 失败提示只用安全投影文案，不回显链接或宿主异常原文。
+                    status.textContent = '链接图片未保存。';
+                    report(projectRemoteImportError(error)?.message ?? feedbackMessage(error));
+                } finally {
+                    if (!disposed) setBusy(false);
+                }
+            });
         });
-    });
+    }
 
-    listen(urlInput, 'keydown', (event) => {
-        if (event.key !== 'Enter') return;
-        event.preventDefault();
-        urlButton.dispatchEvent(new Event('click'));
-    });
+    listen(configureButton, 'click', () => safeCallback(onConfigure));
 
     listen(editMenuButton, 'click', () => {
         const record = records.find((item) => item.id === contextMenu.dataset.imageId || item.id === activeImageId);
@@ -506,9 +538,14 @@ export function createImageManagerPanel({
         if (event.target === contextMenu || event.target === editMenuButton) return;
         closeContextMenu();
     });
-    listen(documentRef, 'keydown', (event) => {
-        if (event.key === 'Escape') handleEscape();
-    });
+    if (!dialogController) {
+        // 无控制器降级：Escape 由面板自己的 document keydown 处理。
+        // 有控制器时绝不注册本监听——Escape 走 app-shell 全局链的 dialogController.handleKeydown，
+        // 双通道会对同一次按键重复处理。
+        listen(documentRef, 'keydown', (event) => {
+            if (event.key === 'Escape') handleEscape();
+        });
+    }
 
     void reload().catch((error) => {
         if (disposed) return;
@@ -529,6 +566,8 @@ export function createImageManagerPanel({
             disposed = true;
             clearLongPress();
             clearSuppressedClick();
+            // 面板销毁时若编辑器仍在控制器栈内，先出栈（不回焦，宿主即将拆除 DOM），避免栈悬挂。
+            if (dialogController && !editorBackdrop.hidden) dialogController.close(editor, { restoreFocus: false });
             controller.abort();
             element.remove();
         },

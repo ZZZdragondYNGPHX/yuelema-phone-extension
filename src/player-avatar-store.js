@@ -64,9 +64,13 @@ export function createPlayerAvatarStore({ storage } = {}) {
     return Object.freeze({ snapshot, setAvatar, removeAvatar });
 }
 
+/** Returns only a validated embedded image source; network URLs are never renderable. */
 export function avatarImageSource(avatar) {
-    if (!avatar || typeof avatar !== 'object') return '';
-    if (avatar.kind === 'url' && typeof avatar.url === 'string') return avatar.url;
-    if (avatar.kind === 'embedded' && typeof avatar.dataUrl === 'string') return avatar.dataUrl;
-    return '';
+    if (!avatar || typeof avatar !== 'object' || avatar.kind !== 'embedded') return '';
+    try {
+        const normalized = normalizeAvatarReference(avatar);
+        return normalized.kind === 'embedded' ? normalized.dataUrl : '';
+    } catch {
+        return '';
+    }
 }

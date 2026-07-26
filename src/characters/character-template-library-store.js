@@ -204,7 +204,20 @@ function normalizeStoredMetadata(input) {
     };
 }
 
-function normalizeRecord(codec, input) {
+/**
+ * Persisted-storage records may still carry the retired kind=url avatar envelope.
+ * Only that load path strips the avatar via the codec compatibility helper; new
+ * imports, updates, and library-file imports keep rejecting URL avatars outright.
+ */
+function normalizeRecordTemplate(codec, input, { stripLegacyUrlAvatar = false } = {}) {
+    if (stripLegacyUrlAvatar) {
+        const stripped = defaultCodec.dropLegacyUrlAvatar(input);
+        if (stripped !== null) return normalizeTemplate(codec, stripped);
+    }
+    return normalizeTemplate(codec, input);
+}
+
+function normalizeRecord(codec, input, options = {}) {
     assertExactRecord(input, {
         required: ['id', 'metadata', 'template'],
         code: 'INVALID_LIBRARY_DOCUMENT',
@@ -212,7 +225,7 @@ function normalizeRecord(codec, input) {
     return {
         id: normalizeId(ownData(input, 'id', 'INVALID_LIBRARY_DOCUMENT')),
         metadata: normalizeStoredMetadata(ownData(input, 'metadata', 'INVALID_LIBRARY_DOCUMENT')),
-        template: normalizeTemplate(codec, ownData(input, 'template', 'INVALID_LIBRARY_DOCUMENT')),
+        template: normalizeRecordTemplate(codec, ownData(input, 'template', 'INVALID_LIBRARY_DOCUMENT'), options),
     };
 }
 
@@ -246,7 +259,7 @@ function migrateLegacyDocument(input) {
     }
 }
 
-function normalizeDocument(codec, input) {
+function normalizeDocument(codec, input, options = {}) {
     if (!isPlainRecord(input)) fail('INVALID_LIBRARY_DOCUMENT');
     const schema = Object.hasOwn(input, 'schema') ? ownData(input, 'schema', 'INVALID_LIBRARY_DOCUMENT') : undefined;
     const version = Object.hasOwn(input, 'schemaVersion') ? ownData(input, 'schemaVersion', 'INVALID_LIBRARY_DOCUMENT') : undefined;
@@ -269,7 +282,7 @@ function normalizeDocument(codec, input) {
     const ids = new Set();
     const templates = [];
     for (let index = 0; index < templatesInput.length; index += 1) {
-        const record = normalizeRecord(codec, ownData(templatesInput, String(index), 'UNSAFE_LIBRARY_DATA'));
+        const record = normalizeRecord(codec, ownData(templatesInput, String(index), 'UNSAFE_LIBRARY_DATA'), options);
         if (ids.has(record.id)) fail('DUPLICATE_TEMPLATE_ID');
         ids.add(record.id);
         templates.push(record);
@@ -380,7 +393,7 @@ export function createCharacterTemplateLibraryStore({
         const currentRaw = readStorage(targetStorageKey);
         if (currentRaw !== null) {
             const parsed = parseLibraryJson(currentRaw);
-            const normalized = normalizeDocument(normalizedCodec, parsed);
+            const normalized = normalizeDocument(normalizedCodec, parsed, { stripLegacyUrlAvatar: true });
             // Re-persist only when a same-key legacy document was encountered.
             if (parsed?.schema === LEGACY_LIBRARY_SCHEMA) persist(normalized);
             else document = normalized;
@@ -393,7 +406,7 @@ export function createCharacterTemplateLibraryStore({
             if (parsed?.schema !== LEGACY_LIBRARY_SCHEMA || parsed?.schemaVersion !== LEGACY_LIBRARY_SCHEMA_VERSION) {
                 fail('LIBRARY_MIGRATION_FAILED');
             }
-            const normalized = normalizeDocument(normalizedCodec, parsed);
+            const normalized = normalizeDocument(normalizedCodec, parsed, { stripLegacyUrlAvatar: true });
             persist(normalized);
             migrated = true;
             // The new copy is already durable; stale legacy cleanup is best effort.

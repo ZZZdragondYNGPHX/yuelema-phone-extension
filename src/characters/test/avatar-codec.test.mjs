@@ -6,7 +6,11 @@ function fakeFile({ type = 'image/png', size = 3 } = {}) {
     return { type, size };
 }
 
-function fakeBlob({ type = 'image/webp', bytes = Uint8Array.from([1, 2, 3]) } = {}) {
+// Real RIFF....WEBP container signature so the compressed output passes the
+// binary-signature validation now enforced by normalizeEmbeddedAvatarDataUrl.
+const WEBP_SIGNATURE_BYTES = Object.freeze([0x52, 0x49, 0x46, 0x46, 0x0c, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]);
+
+function fakeBlob({ type = 'image/webp', bytes = Uint8Array.from(WEBP_SIGNATURE_BYTES) } = {}) {
     return { type, size: bytes.length, async arrayBuffer() { return bytes.buffer.slice(0); } };
 }
 
@@ -30,9 +34,20 @@ test('compressLocalAvatar scales image, returns bounded embedded avatar and rele
     const options = successOptions();
     const output = await compressLocalAvatar(fakeFile(), options);
     assert.deepEqual(output, {
-        kind: 'embedded', dataUrl: 'data:image/webp;base64,AQID', width: 1024, height: 512, mimeType: 'image/webp',
+        kind: 'embedded', dataUrl: 'data:image/webp;base64,UklGRgwAAABXRUJQ', width: 1024, height: 512, mimeType: 'image/webp',
     });
     assert.deepEqual(options.events, [['canvas', 1024, 512], ['draw', [0, 0, 1024, 512]], 'closed']);
+});
+
+test('compressLocalAvatar rejects compressed output whose bytes lack the claimed image signature', async () => {
+    const unsignedCanvas = {
+        getContext() { return { drawImage() {} }; },
+        async convertToBlob() { return fakeBlob({ bytes: Uint8Array.from([1, 2, 3]) }); },
+    };
+    await assert.rejects(
+        () => compressLocalAvatar(fakeFile(), successOptions({ canvasFactory: () => unsignedCanvas })),
+        { code: 'avatar_compression_failed' },
+    );
 });
 
 test('compressLocalAvatar rejects unsupported or oversized source files before decoding', async () => {

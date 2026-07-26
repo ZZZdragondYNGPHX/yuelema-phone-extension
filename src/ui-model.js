@@ -3,11 +3,11 @@ import { listConversationSummaryRecords, listUnsummarizedConversationMessages, n
 import { deriveMeetupAccess } from './chat/relationship-progress.js';
 
 export const NAV_ITEMS = Object.freeze([
-    { id: 'home', label: '首页', icon: '⌂' },
-    { id: 'matches', label: '匹配', icon: '♥' },
-    { id: 'messages', label: '消息', icon: '✉' },
-    { id: 'groups', label: '群组', icon: '◎' },
-    { id: 'profile', label: '我的', icon: '◉' },
+    { id: 'home', label: '发现', iconName: 'home' },
+    { id: 'matches', label: '匹配', iconName: 'matches' },
+    { id: 'messages', label: '消息', iconName: 'messages' },
+    { id: 'groups', label: '社区', iconName: 'groups' },
+    { id: 'profile', label: '我的', iconName: 'profile' },
 ]);
 
 export const PAGE_COPY = Object.freeze({
@@ -15,7 +15,7 @@ export const PAGE_COPY = Object.freeze({
     matches: { title: '匹配' },
     messages: { title: '消息' },
     private_chat: { title: '私聊' },
-    groups: { title: '小程序' },
+    groups: { title: '社区' },
     group_chat: { title: '聊天群' },
     group_chat_room: { title: '聊天群' },
     group_chat_create: { title: '创建聊天群' },
@@ -40,7 +40,6 @@ export const PAGE_COPY = Object.freeze({
     settings_chat_summary_history: { title: '总结档案' },
     settings_chat_summary_history_detail: { title: '对话总结' },
     private_chat_summary: { title: '聊天总结' },
-    match_profile: { title: '心动档案' },
     candidate_detail: { title: '公开资料' },
 });
 

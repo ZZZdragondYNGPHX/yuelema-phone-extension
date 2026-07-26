@@ -119,12 +119,19 @@ test('CRUD updates codec content, rejects duplicate IDs, and rejects credential 
     store.create({ id: 'one', metadata: { name: '初版' }, template: template() });
     const updated = store.update('one', {
         metadata: { name: '改名' },
-        template: template({ name: '苏晴', avatar: { kind: 'url', url: 'https://example.com/a.png' } }),
+        template: template({ name: '苏晴', avatar: { kind: 'embedded', dataUrl: 'data:image/png;base64,iVBORw0KGgo=' } }),
     });
     assert.equal(updated.metadata.name, '改名');
     assert.equal(updated.metadata.createdAt, '2026-07-19T00:00:01.000Z');
     assert.equal(updated.metadata.updatedAt, '2026-07-19T00:00:02.000Z');
     assert.equal(updated.template.character.公开资料.昵称, '苏晴');
+    assert.deepEqual(updated.template.avatar, { kind: 'embedded', dataUrl: 'data:image/png;base64,iVBORw0KGgo=' });
+
+    // kind=url avatars are rejected by the codec under the embedded-only contract.
+    expectCode(() => store.update('one', {
+        template: template({ name: '不合法', avatar: { kind: 'url', url: 'https://example.com/a.png' } }),
+    }), 'TEMPLATE_INVALID');
+    assert.equal(store.get('one').metadata.name, '改名');
 
     expectCode(() => store.create({ id: 'one', metadata: { name: '重复' }, template: template() }), 'DUPLICATE_TEMPLATE_ID');
     expectCode(() => store.create({

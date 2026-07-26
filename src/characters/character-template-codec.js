@@ -13,8 +13,7 @@ export const MAX_EMBEDDED_AVATAR_DATA_URL_LENGTH = 1_048_576;
 
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SENSITIVE_KEY_PATTERN = /(?:api[\s_-]*key|authorization|token|secret|password|credential|private[\s_-]*key|密钥|令牌|密码|授权|凭据)/iu;
-const HTML_PATTERN = /<!--|<\s*\/?\s*[a-z][^>]*>/iu;
-const AVATAR_KINDS = new Set(['placeholder', 'url', 'embedded']);
+const AVATAR_KINDS = new Set(['placeholder', 'embedded']);
 const ERROR_PREFIX = 'character_template_validation_failed:';
 const USER_MESSAGES = Object.freeze({
     template_invalid_json: '角色模板 JSON 无法解析。',
@@ -80,39 +79,87 @@ function assertExactRecord(value, { required, optional = [] }) {
     }
 }
 
-function normalizeText(value, maxLength) {
-    if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) fail('template_avatar_invalid');
-    if (value !== value.trim() || /[\u0000-\u001f\u007f]/u.test(value) || HTML_PATTERN.test(value)) fail('template_avatar_invalid');
-    return value;
+function base64PrefixBytes(encoded, byteCount = 12) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const output = [];
+    let bits = 0;
+    let accumulator = 0;
+    for (const char of encoded) {
+        if (char === '=') break;
+        const value = alphabet.indexOf(char);
+        if (value < 0) fail('template_avatar_invalid');
+        accumulator = (accumulator << 6) | value;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            output.push((accumulator >> bits) & 0xff);
+            if (output.length >= byteCount) break;
+        }
+    }
+    return output;
 }
 
-function decodeBase64ForInspection(base64) {
-    try {
-        if (typeof globalThis.atob === 'function') return globalThis.atob(base64);
-        // Browser-compatible fallback that does not depend on Node Buffer.
-        const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-        let output = '';
-        let bits = 0;
-        let accumulator = 0;
-        for (const char of base64.replace(/=+$/u, '')) {
-            const value = alphabet.indexOf(char);
-            if (value < 0) return null;
-            accumulator = (accumulator << 6) | value;
-            bits += 6;
-            if (bits >= 8) {
-                bits -= 8;
-                output += String.fromCharCode((accumulator >> bits) & 0xff);
-            }
-        }
-        return output;
-    } catch {
+/**
+ * Normalizes the only avatar transport accepted by character templates: a bounded
+ * PNG, JPEG, or WebP base64 data URL with a matching binary signature.
+ */
+export function normalizeEmbeddedAvatarDataUrl(value) {
+    if (typeof value !== 'string' || value.length === 0
+        || value.length > MAX_EMBEDDED_AVATAR_DATA_URL_LENGTH || value !== value.trim()) {
+        fail('template_avatar_invalid');
+    }
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/iu.exec(value);
+    if (!match || match[2].length === 0) fail('template_avatar_invalid');
+    const mediaType = match[1].toLowerCase();
+    const prefix = base64PrefixBytes(match[2]);
+    const hasPrefix = (...bytes) => bytes.every((byte, index) => prefix[index] === byte);
+    if (mediaType === 'image/png' && !hasPrefix(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) {
+        fail('template_avatar_invalid');
+    }
+    if (mediaType === 'image/jpeg' && !hasPrefix(0xff, 0xd8, 0xff)) fail('template_avatar_invalid');
+    if (mediaType === 'image/webp'
+        && !(hasPrefix(0x52, 0x49, 0x46, 0x46) && prefix[8] === 0x57 && prefix[9] === 0x45
+            && prefix[10] === 0x42 && prefix[11] === 0x50)) {
+        fail('template_avatar_invalid');
+    }
+    return 'data:' + mediaType + ';base64,' + match[2];
+}
+
+function hasExactEnumerableDataKeys(value, keys) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.length !== keys.length || ownKeys.some((key) => typeof key !== 'string' || !keys.includes(key))) return false;
+    return keys.every((key) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return descriptor?.enumerable === true && Object.hasOwn(descriptor, 'value');
+    });
+}
+
+/**
+ * Returns an avatar-free copy only for an exact persisted legacy kind=url
+ * envelope. New imports never call this compatibility helper and still reject URL,
+ * blob, and file sources. The helper reads data descriptors only, so a stored URL
+ * cannot reach rendering or trigger a network transport.
+ */
+export function dropLegacyUrlAvatar(input) {
+    if (!hasExactEnumerableDataKeys(input, ['format', 'character', 'avatar'])) return null;
+    const avatar = Object.getOwnPropertyDescriptor(input, 'avatar').value;
+    if (!hasExactEnumerableDataKeys(avatar, ['kind', 'url'])
+        || Object.getOwnPropertyDescriptor(avatar, 'kind').value !== 'url'
+        || typeof Object.getOwnPropertyDescriptor(avatar, 'url').value !== 'string') {
         return null;
     }
+    return {
+        format: Object.getOwnPropertyDescriptor(input, 'format').value,
+        character: Object.getOwnPropertyDescriptor(input, 'character').value,
+    };
 }
 
 function normalizeAvatar(input) {
     try {
-        assertExactRecord(input, { required: ['kind'], optional: ['url', 'dataUrl'] });
+        assertExactRecord(input, { required: ['kind'], optional: ['dataUrl'] });
         const kind = ownData(input, 'kind', 'template_avatar_invalid');
         if (typeof kind !== 'string' || !AVATAR_KINDS.has(kind)) fail('template_avatar_invalid');
 
@@ -121,31 +168,15 @@ function normalizeAvatar(input) {
             return { kind };
         }
 
-        if (kind === 'url') {
-            assertExactRecord(input, { required: ['kind', 'url'] });
-            const url = normalizeText(ownData(input, 'url', 'template_avatar_invalid'), 2_048);
-            let parsed;
-            try { parsed = new URL(url); } catch { fail('template_avatar_invalid'); }
-            if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
-                fail('template_avatar_invalid');
-            }
-            return { kind, url: parsed.href };
-        }
-
         assertExactRecord(input, { required: ['kind', 'dataUrl'] });
-        const dataUrl = normalizeText(ownData(input, 'dataUrl', 'template_avatar_invalid'), MAX_EMBEDDED_AVATAR_DATA_URL_LENGTH);
-        const match = /^data:(image\/(?:png|jpeg|webp));base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/iu.exec(dataUrl);
-        if (!match || match[2].length === 0) fail('template_avatar_invalid');
-        const decoded = decodeBase64ForInspection(match[2]);
-        if (decoded === null || decoded.length === 0 || HTML_PATTERN.test(decoded)) fail('template_avatar_invalid');
-        return { kind, dataUrl: `data:${match[1].toLowerCase()};base64,${match[2]}` };
+        return { kind, dataUrl: normalizeEmbeddedAvatarDataUrl(ownData(input, 'dataUrl', 'template_avatar_invalid')) };
     } catch (error) {
         if (isCodecError(error)) throw error;
         fail('template_avatar_invalid');
     }
 }
 
-/** Reuses the exact local/avatar URL policy for non-template presentation stores. */
+/** Reuses the exact embedded-avatar policy for non-template presentation stores. */
 export function normalizeAvatarReference(input) {
     return Object.freeze(normalizeAvatar(input));
 }

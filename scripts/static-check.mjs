@@ -12,8 +12,8 @@ const requiredFiles = [
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
     'src/recommendation/candidate.js', 'src/recommendation/drawing-dna-rules.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/match-candidate-materializer.js', 'src/recommendation/soul-text-match-service.js',
-    'src/images/image-directive.js', 'src/images/image-library-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js',
-    'src/images/test/image-directive.test.mjs', 'src/images/test/image-library-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs',
+    'src/images/image-directive.js', 'src/images/image-library-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js', 'src/images/remote-image-import.js',
+    'src/images/test/image-directive.test.mjs', 'src/images/test/image-library-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs', 'src/images/test/remote-image-import.test.mjs',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js', 'src/groups/group-forum-store.js', 'src/groups/local-conversation-summary-service.js',
     'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/conversation-summary.js', 'src/chat/interaction-rhythm.js', 'src/chat/relationship-progress.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/conversation-summary.test.mjs', 'src/chat/test/interaction-rhythm.test.mjs', 'src/chat/test/relationship-progress.test.mjs',
     'src/test-support/minidom.mjs', 'src/launcher-drag.js', 'src/ui/test/launcher-drag.test.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/character-template-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
@@ -22,6 +22,7 @@ const requiredFiles = [
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs', 'src/groups/test/group-forum-store.test.mjs', 'src/groups/test/local-conversation-summary-service.test.mjs',
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs', 'src/mvu/test/service-order-handoff.test.mjs',
     'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs', 'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs',
+    'src/ui/icon.js', 'src/ui/media-state.js', 'src/ui/dialog-controller.js', 'src/ui/test/icon.test.mjs', 'src/ui/test/media-state.test.mjs', 'src/ui/test/dialog-controller.test.mjs', 'src/ui/test/app-shell-message-search.test.mjs', 'src/ui/test/style-token-contract.test.mjs',
 ];
 
 function fail(message) {
@@ -59,8 +60,8 @@ const sourceRelativeFiles = [
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
     'src/recommendation/candidate.js', 'src/recommendation/drawing-dna-rules.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/match-candidate-materializer.js', 'src/recommendation/soul-text-match-service.js',
-    'src/images/image-directive.js', 'src/images/image-library-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js',
-    'src/images/test/image-directive.test.mjs', 'src/images/test/image-library-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs',
+    'src/images/image-directive.js', 'src/images/image-library-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js', 'src/images/remote-image-import.js',
+    'src/images/test/image-directive.test.mjs', 'src/images/test/image-library-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs', 'src/images/test/remote-image-import.test.mjs',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js', 'src/groups/group-forum-store.js', 'src/groups/local-conversation-summary-service.js',
     'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/conversation-summary.js', 'src/chat/interaction-rhythm.js', 'src/chat/relationship-progress.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/conversation-summary.test.mjs', 'src/chat/test/interaction-rhythm.test.mjs', 'src/chat/test/relationship-progress.test.mjs',
     'src/test-support/minidom.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
@@ -69,6 +70,7 @@ const sourceRelativeFiles = [
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs', 'src/groups/test/group-forum-store.test.mjs', 'src/groups/test/local-conversation-summary-service.test.mjs',
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
     'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs',
+    'src/ui/icon.js', 'src/ui/media-state.js', 'src/ui/dialog-controller.js', 'src/ui/test/icon.test.mjs', 'src/ui/test/media-state.test.mjs', 'src/ui/test/dialog-controller.test.mjs', 'src/ui/test/app-shell-message-search.test.mjs', 'src/ui/test/style-token-contract.test.mjs',
 ];
 const sourceFiles = sourceRelativeFiles.map(relativePath => resolve(root, relativePath));
 const sourceText = await Promise.all(sourceFiles.map(path => readFile(path, 'utf8')));
@@ -284,6 +286,15 @@ if (!imageDirective.includes('composeImagePrompt') || !imageDirective.includes('
 if (!imageGenerationClient.includes('requireSessionKey') || !imageGenerationClient.includes('fetchImpl') || !imageGenerationClient.includes('readResponseBytes') || !imageGenerationClient.includes('MAX_IMAGE_BYTES') || imageGenerationClient.includes("kind: 'url'")) fail('缺少注入式生图客户端、独立 Key、有界图片响应读取或仍允许 UI 远程图片 URL');
 if (!drawingDnaRules.includes('core_dna') || !drawingDnaRules.includes('outfit_dna')) fail('缺少角色绘图 DNA 生成规则');
 console.log('✓ 生图设置、逐会话自动生成、绘图 DNA 与注入式安全客户端接线');
+
+const remoteImageImport = await readFile(resolve(root, 'src/images/remote-image-import.js'), 'utf8');
+if (!remoteImageImport.includes('fetchImpl') || /globalThis\s*\.\s*fetch/.test(remoteImageImport) || remoteImageImport.includes("kind: 'url'")) fail('远程图片导入必须使用注入式 transport，且不得引入 URL 渲染来源');
+if (!remoteImageImport.includes("credentials: 'omit'") || !remoteImageImport.includes("referrerPolicy: 'no-referrer'") || !remoteImageImport.includes('maxBytes')) fail('远程图片导入必须省略凭据、禁用 referrer 并限制字节上限');
+if (!index.includes('createRemoteImageImporter') || !appShell.includes('importAvatarFromUrl') || !appShell.includes('remoteImageImporter.importImageFile')) fail('链接导入必须由入口注入 transport，并经 app-shell 组合既有本地压缩链');
+const creatorPanel = await readFile(resolve(root, 'src/characters/character-creator-panel.js'), 'utf8');
+if (!creatorPanel.includes('projectRemoteImportError') || !creatorPanel.includes('链接本身不会被保存')) fail('创作面板链接导入必须使用安全错误投影并申明链接不持久化');
+if (!appShell.includes('importRemoteImageFile') || !imageManagerPanel.includes('importRemoteImageFile') || !imageManagerPanel.includes('projectRemoteImportError')) fail('图片管理链接导入必须由 app-shell 注入能力并使用安全错误投影');
+console.log('✓ 一次性链接导入走注入式 transport、复用本地压缩合同且 URL 不落库');
 
 if (process.exitCode) process.exit(process.exitCode);
 console.log('静态检查通过。');

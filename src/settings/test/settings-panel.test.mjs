@@ -14,6 +14,7 @@ import {
 
 const miniDom = installMiniDom();
 const { buildSettingsPanel } = await import('../../settings-panel.js');
+const { createDialogController } = await import('../../ui/dialog-controller.js');
 
 test.after(() => miniDom.restore());
 test.afterEach(() => {
@@ -59,6 +60,28 @@ function byName(panel, name) {
 async function click(node) {
     node.dispatchEvent(new Event('click'));
     await new Promise((resolve) => setImmediate(resolve));
+}
+
+function keyEvent(key, { shiftKey = false } = {}) {
+    const event = new Event('keydown', { cancelable: true });
+    Object.defineProperty(event, 'key', { configurable: true, value: key });
+    Object.defineProperty(event, 'shiftKey', { configurable: true, value: shiftKey });
+    return event;
+}
+
+function personalizationNotice(panel) {
+    const notice = panel.querySelectorAll('section').find((node) => node.getAttribute('aria-label') === '个性化内容推荐说明');
+    assert.ok(notice, '应存在个性化内容推荐说明弹窗');
+    return notice;
+}
+
+function isWithin(node, ancestor) {
+    let current = node;
+    while (current) {
+        if (current === ancestor) return true;
+        current = current.parentNode ?? null;
+    }
+    return false;
 }
 
 function addConnection(store, id = 'fast') {
@@ -349,7 +372,15 @@ test('个性化内容推荐关闭需确认，取消保持开启，关闭后偏�
     assert.match(notice.textContent, /关闭后改按非个性化因素展示/u);
     assert.equal(store.snapshot().personalization.enabled, true);
 
-    await click(byName(harness.panel, 'personalization-modal-close'));
+    const modalClose = byName(harness.panel, 'personalization-modal-close');
+    assert.equal(modalClose.getAttribute('aria-label'), '关闭个性化内容推荐说明');
+    assert.equal(modalClose.textContent.includes('×'), false, '关闭按钮不再使用文字 ×');
+    const closeIcon = modalClose.childNodes.find((node) => typeof node.tagName === 'string' && node.tagName.toLowerCase() === 'svg');
+    assert.ok(closeIcon, '关闭按钮应包含 SVG 图标');
+    assert.equal(closeIcon.getAttribute('aria-hidden'), 'true');
+    assert.equal(closeIcon.dataset.icon, 'close');
+
+    await click(modalClose);
     assert.equal(notice.hidden, true);
     assert.equal(toggle.checked, true);
     assert.equal(store.snapshot().personalization.enabled, true);
@@ -374,6 +405,111 @@ test('个性化内容推荐关闭需确认，取消保持开启，关闭后偏�
     disabledToggle.checked = true;
     disabledToggle.dispatchEvent(new Event('change'));
     assert.equal(store.snapshot().personalization.enabled, true);
+});
+
+test('注入 dialogController 后：取消勾选打开弹窗即把焦点移入弹窗内首个可聚焦元素', async () => {
+    const store = createSettingsStore({ storage: createMemoryStorage() });
+    const dialogController = createDialogController({ documentRef: miniDom.document });
+    const harness = buildHarness(store, { view: 'personalization', dialogController });
+    miniDom.document.body.appendChild(harness.panel);
+    try {
+        const toggle = byName(harness.panel, 'personalization-enabled');
+        toggle.checked = false;
+        toggle.dispatchEvent(new Event('change'));
+
+        const notice = personalizationNotice(harness.panel);
+        assert.equal(notice.hidden, false);
+        assert.equal(dialogController.hasOpenDialog(), true);
+        assert.equal(dialogController.isTopDialog(notice), true);
+        const active = miniDom.document.activeElement;
+        assert.ok(isWithin(active, notice), '焦点应进入弹窗子树');
+        assert.equal(active, byName(harness.panel, 'personalization-modal-close'), '应聚焦弹窗内首个可聚焦元素（标题栏关闭按钮）');
+    } finally {
+        dialogController.dispose();
+        harness.panel.remove();
+        miniDom.document.activeElement = null;
+    }
+});
+
+test('注入 dialogController 后：Escape 经控制器关闭弹窗、复位开关并礼貌回焦 opener', async () => {
+    const store = createSettingsStore({ storage: createMemoryStorage() });
+    const dialogController = createDialogController({ documentRef: miniDom.document });
+    const harness = buildHarness(store, { view: 'personalization', dialogController });
+    miniDom.document.body.appendChild(harness.panel);
+    try {
+        const toggle = byName(harness.panel, 'personalization-enabled');
+        toggle.checked = false;
+        toggle.dispatchEvent(new Event('change'));
+        const notice = personalizationNotice(harness.panel);
+        assert.equal(notice.hidden, false);
+
+        const handled = dialogController.handleKeydown(keyEvent('Escape'));
+        assert.equal(handled, true);
+        assert.equal(notice.hidden, true);
+        assert.equal(toggle.checked, true, 'Escape 关闭后开关应复位为开启');
+        assert.equal(dialogController.hasOpenDialog(), false, '弹窗应已从控制器栈弹出');
+        assert.equal(miniDom.document.activeElement, toggle, '关闭后焦点应礼貌回到 opener 复选框');
+        assert.equal(store.snapshot().personalization.enabled, true, 'Escape 只关闭说明，不改变设置');
+    } finally {
+        dialogController.dispose();
+        harness.panel.remove();
+        miniDom.document.activeElement = null;
+    }
+});
+
+test('注入 dialogController 后：按钮关闭路径同样经控制器回焦，确定分支照常关闭个性化', async () => {
+    const store = createSettingsStore({ storage: createMemoryStorage() });
+    const dialogController = createDialogController({ documentRef: miniDom.document });
+    const harness = buildHarness(store, { view: 'personalization', dialogController });
+    miniDom.document.body.appendChild(harness.panel);
+    try {
+        const toggle = byName(harness.panel, 'personalization-enabled');
+        toggle.checked = false;
+        toggle.dispatchEvent(new Event('change'));
+        const notice = personalizationNotice(harness.panel);
+
+        await click(byName(harness.panel, 'personalization-disable-cancel'));
+        assert.equal(notice.hidden, true);
+        assert.equal(toggle.checked, true);
+        assert.equal(dialogController.hasOpenDialog(), false);
+        assert.equal(miniDom.document.activeElement, toggle, '按钮关闭同样回焦 opener');
+        assert.equal(store.snapshot().personalization.enabled, true);
+
+        toggle.checked = false;
+        toggle.dispatchEvent(new Event('change'));
+        assert.equal(dialogController.hasOpenDialog(), true);
+        await click(byName(harness.panel, 'personalization-disable-confirm'));
+        assert.equal(dialogController.hasOpenDialog(), false, '确定分支也应把弹窗移出控制器栈');
+        assert.equal(store.snapshot().personalization.enabled, false);
+        assert.equal(harness.rerenders, 1, '确定成功后仍触发重建');
+    } finally {
+        dialogController.dispose();
+        harness.panel.remove();
+        miniDom.document.activeElement = null;
+    }
+});
+
+test('不传 dialogController 时旧行为不回归：hidden 切换打开与关闭仍工作', async () => {
+    const store = createSettingsStore({ storage: createMemoryStorage() });
+    const harness = buildHarness(store, { view: 'personalization' });
+    const toggle = byName(harness.panel, 'personalization-enabled');
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event('change'));
+    const notice = personalizationNotice(harness.panel);
+    assert.equal(notice.hidden, false);
+    assert.equal(toggle.checked, true);
+
+    await click(byName(harness.panel, 'personalization-modal-close'));
+    assert.equal(notice.hidden, true);
+    assert.equal(toggle.checked, true);
+    assert.equal(store.snapshot().personalization.enabled, true);
+
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event('change'));
+    assert.equal(notice.hidden, false);
+    await click(byName(harness.panel, 'personalization-disable-cancel'));
+    assert.equal(notice.hidden, true);
+    assert.equal(toggle.checked, true);
 });
 
 test('preference 子视图只查看并保存当前 contentMode 的独立关键词词库', async () => {

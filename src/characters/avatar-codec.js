@@ -4,7 +4,7 @@
  * This module never writes storage. It converts an explicitly selected image File
  * into the same bounded embedded avatar envelope validated by character-template-codec.
  */
-import { MAX_EMBEDDED_AVATAR_DATA_URL_LENGTH } from './character-template-codec.js';
+import { MAX_EMBEDDED_AVATAR_DATA_URL_LENGTH, normalizeEmbeddedAvatarDataUrl } from './character-template-codec.js';
 
 export const MAX_SOURCE_AVATAR_BYTES = 8 * 1024 * 1024;
 export const MAX_AVATAR_EDGE = 1024;
@@ -143,7 +143,9 @@ export async function compressLocalAvatar(file, {
         if (typeof dataUrl !== 'string' || dataUrl.length > MAX_EMBEDDED_AVATAR_DATA_URL_LENGTH) fail('avatar_output_too_large');
         const expectedPrefix = `data:${compressed.type};base64,`;
         if (!dataUrl.startsWith(expectedPrefix)) fail('avatar_compression_failed');
-        return Object.freeze({ kind: 'embedded', dataUrl, width: size.width, height: size.height, mimeType: compressed.type });
+        let normalizedDataUrl;
+        try { normalizedDataUrl = normalizeEmbeddedAvatarDataUrl(dataUrl); } catch { fail('avatar_compression_failed'); }
+        return Object.freeze({ kind: 'embedded', dataUrl: normalizedDataUrl, width: size.width, height: size.height, mimeType: compressed.type });
     } catch (error) {
         if (error && typeof error.code === 'string' && error.message?.startsWith('avatar_codec_failed:')) throw error;
         fail('avatar_compression_failed');
