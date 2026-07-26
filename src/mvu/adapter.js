@@ -38,6 +38,104 @@ function sameJsonValue(left, right) {
     return false;
 }
 
+function jsonValueType(value) {
+    if (value === undefined) return 'missing';
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return 'array';
+    if (isPlainRecord(value)) return 'object';
+    return typeof value;
+}
+
+function appendPointerSegment(pointer, segment) {
+    const text = String(segment);
+    const safe = text.length <= 80 && !/[\u0000-\u001f\u007f]/u.test(text) ? text : '[redacted]';
+    const escaped = safe.replace(/~/g, '~0').replace(/\//g, '~1');
+    const next = pointer === '/' ? `/${escaped}` : `${pointer}/${escaped}`;
+    return next.length <= 240 ? next : '/[redacted]';
+}
+
+function firstJsonDifference(expected, actual, path = '/') {
+    if (Object.is(expected, actual)) return null;
+    const expectedType = jsonValueType(expected);
+    const actualType = jsonValueType(actual);
+    if (expectedType !== actualType) {
+        return { path, kind: 'value_type_mismatch', expectedType, actualType };
+    }
+    if (expectedType === 'array') {
+        const sharedLength = Math.min(expected.length, actual.length);
+        for (let index = 0; index < sharedLength; index += 1) {
+            const difference = firstJsonDifference(expected[index], actual[index], appendPointerSegment(path, index));
+            if (difference) return difference;
+        }
+        if (expected.length !== actual.length) {
+            return { path, kind: 'array_length_mismatch', expectedType, actualType };
+        }
+        return null;
+    }
+    if (expectedType === 'object') {
+        for (const key of Object.keys(expected)) {
+            const childPath = appendPointerSegment(path, key);
+            if (!Object.hasOwn(actual, key)) {
+                return { path: childPath, kind: 'missing_key', expectedType: jsonValueType(expected[key]), actualType: 'missing' };
+            }
+            const difference = firstJsonDifference(expected[key], actual[key], childPath);
+            if (difference) return difference;
+        }
+        for (const key of Object.keys(actual)) {
+            if (!Object.hasOwn(expected, key)) {
+                return { path: appendPointerSegment(path, key), kind: 'unexpected_key', expectedType: 'missing', actualType: jsonValueType(actual[key]) };
+            }
+        }
+        return null;
+    }
+    return { path, kind: 'value_mismatch', expectedType, actualType };
+}
+
+function operationForDifference(patch, path) {
+    let best = null;
+    for (const [operationIndex, operation] of patch.entries()) {
+        for (const operationPath of [operation?.path, operation?.from]) {
+            if (typeof operationPath !== 'string') continue;
+            if (path !== operationPath && !path.startsWith(`${operationPath}/`)) continue;
+            if (!best || operationPath.length > best.length) {
+                best = { operationIndex, operation: operation?.op ?? 'unknown', length: operationPath.length };
+            }
+        }
+    }
+    const fallback = patch[0];
+    return best ? { operationIndex: best.operationIndex, operation: best.operation } : { operationIndex: 0, operation: fallback?.op ?? 'unknown' };
+}
+
+function describePostconditionDifference(kind) {
+    const reasons = {
+        missing_key: 'MVU provider 返回结果缺少 Patch 预期字段',
+        unexpected_key: 'MVU provider 返回结果包含 Patch 未产生的额外字段',
+        value_type_mismatch: 'MVU provider 返回字段类型与 Patch 预期不一致',
+        value_mismatch: 'MVU provider 返回字段值未按 Patch 更新',
+        array_length_mismatch: 'MVU provider 返回数组长度与 Patch 预期不一致',
+    };
+    return reasons[kind] ?? 'MVU provider 返回状态与 Patch 预期不一致';
+}
+
+function logProviderPostconditionFailure(logger, code, detail) {
+    if (typeof logger?.error !== 'function') return;
+    try {
+        logger.error('[约了吗][MVU 受控写入被拒绝]', {
+            code,
+            phase: 'provider_postcondition',
+            reason: describePostconditionDifference(detail.kind),
+            operationIndex: detail.operationIndex,
+            operation: detail.operation,
+            path: detail.path,
+            kind: detail.kind,
+            expectedType: detail.expectedType,
+            actualType: detail.actualType,
+        });
+    } catch {
+        // Diagnostics must never alter the controlled write result.
+    }
+}
+
 function cloneJsonValue(value) {
     if (Array.isArray(value)) return value.map(cloneJsonValue);
     if (isPlainRecord(value)) {
@@ -161,7 +259,10 @@ function validateProviderPostconditions(beforeState, state, patch) {
     const applied = applyPatchToSnapshot(beforeState, patch);
     if (!applied.ok) return applied;
     if (sameJsonValue(applied.expected, state)) return { ok: true };
-    return { ok: false, operationIndex: 0, path: patch[0]?.path ?? '/' };
+    const difference = firstJsonDifference(applied.expected, state) ?? {
+        path: patch[0]?.path ?? '/', kind: 'unknown_mismatch', expectedType: 'unknown', actualType: 'unknown',
+    };
+    return { ok: false, ...operationForDifference(patch, difference.path), ...difference };
 }
 
 function findStrippedRelationshipRoutes(state, patch) {
@@ -226,6 +327,7 @@ export async function applyControlledPatch({
     scope = LATEST_MESSAGE_SCOPE,
     eventEmit = globalThis.eventEmit,
     getContext = globalThis.SillyTavern?.getContext?.bind(globalThis.SillyTavern),
+    diagnosticLogger = globalThis.console,
 } = {}) {
     if (!validMvuApi(mvu)) return unavailable('mvu_official_pipeline_unavailable');
     const emit = resolveEventEmitter({ eventEmit, getContext });
@@ -277,12 +379,18 @@ export async function applyControlledPatch({
     const postconditions = validateProviderPostconditions(oldStateSnapshot, newData.stat_data, patch);
     if (!postconditions.ok) {
         const relationshipRoutes = findStrippedRelationshipRoutes(newData.stat_data, patch);
-        return {
-            ok: false,
-            status: 'no_change',
-            code: relationshipRoutes ? 'mvu_relationship_routes_schema_outdated' : 'mvu_parse_postcondition_failed',
-            detail: relationshipRoutes ?? { operationIndex: postconditions.operationIndex, path: postconditions.path },
+        const code = relationshipRoutes ? 'mvu_relationship_routes_schema_outdated' : 'mvu_parse_postcondition_failed';
+        const detail = {
+            operationIndex: postconditions.operationIndex,
+            operation: postconditions.operation,
+            path: postconditions.path,
+            kind: postconditions.kind,
+            expectedType: postconditions.expectedType,
+            actualType: postconditions.actualType,
         };
+        const result = { ok: false, status: 'no_change', code, detail };
+        logProviderPostconditionFailure(diagnosticLogger, code, detail);
+        return result;
     }
 
     try {

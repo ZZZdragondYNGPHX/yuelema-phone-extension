@@ -8,6 +8,7 @@ import {
     buildClearPrivateChatPatch,
     buildControlledPatch,
     buildRecommendationInitialCandidatePatch,
+    buildServiceOrderHandoffPatch,
     buildUpdateVariable,
     validateControlledPatchAgainstState,
     validateControlledPatchWhitelist,
@@ -365,6 +366,96 @@ test('content-mode toggle isolates live state from an in-place provider mutation
     assert.equal(oldData.stat_data.软件.内容模式, 'SFW');
 });
 
+test('service-order handoff persists when the schema supplies its empty legal completion signal', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    oldData.stat_data.推荐.当前队列 = [];
+    oldData.stat_data.推荐.临时候选池 = {};
+    oldData.stat_data.服务订单 = {};
+    oldData.stat_data.系统.UID计数器.服务订单 = 0;
+    const built = buildServiceOrderHandoffPatch(oldData.stat_data, { candidate: completeCandidate(), categoryId: 'girl_shuren' });
+    assert.equal(built.ok, true);
+    let persisted;
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async (_raw, data) => {
+            calls.push('parse');
+            const next = structuredClone(data);
+            const [role, order, roleCounter, orderCounter] = built.value.patch;
+            next.stat_data.角色池.npc_service_2 = role.value;
+            next.stat_data.服务订单.service_1 = { ...order.value, 合法结束条件: { 已满足: false, 摘要: '', 记录时间: '' } };
+            next.stat_data.系统.UID计数器.角色 = roleCounter.value;
+            next.stat_data.系统.UID计数器.服务订单 = orderCounter.value;
+            return next;
+        },
+        replaceMvuData: async (data) => { calls.push('replace'); persisted = data; },
+    };
+
+    const result = await applyControlledPatch({ patch: built.value.patch, mvu, eventEmit: async () => calls.push('event') });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 'applied');
+    assert.deepEqual(calls, ['parse', 'replace', 'event']);
+    assert.deepEqual(persisted.stat_data.服务订单.service_1.合法结束条件, { 已满足: false, 摘要: '', 记录时间: '' });
+    assert.equal(persisted.stat_data.服务订单.service_1.状态, '待确认');
+    assert.ok(persisted.stat_data.角色池.npc_service_2);
+    assert.equal(persisted.stat_data.系统.UID计数器.角色, 2);
+    assert.equal(persisted.stat_data.系统.UID计数器.服务订单, 1);
+});
+
+test('service-order schema omissions report the precise safe postcondition diagnostic to the console', async () => {
+    const calls = [];
+    const diagnosticCalls = [];
+    const oldData = { stat_data: stateFixture() };
+    oldData.stat_data.推荐.当前队列 = [];
+    oldData.stat_data.推荐.临时候选池 = {};
+    oldData.stat_data.服务订单 = {};
+    oldData.stat_data.系统.UID计数器.服务订单 = 0;
+    const built = buildServiceOrderHandoffPatch(oldData.stat_data, { candidate: completeCandidate(), categoryId: 'girl_shuren' });
+    assert.equal(built.ok, true);
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async (_raw, data) => {
+            calls.push('parse');
+            const next = structuredClone(data);
+            const [role, order, roleCounter, orderCounter] = built.value.patch;
+            next.stat_data.角色池.npc_service_2 = role.value;
+            const { 合法结束条件: _omitted, ...legacyOrder } = order.value;
+            next.stat_data.服务订单.service_1 = legacyOrder;
+            next.stat_data.系统.UID计数器.角色 = roleCounter.value;
+            next.stat_data.系统.UID计数器.服务订单 = orderCounter.value;
+            return next;
+        },
+        replaceMvuData: async () => calls.push('replace'),
+    };
+
+    const result = await applyControlledPatch({
+        patch: built.value.patch,
+        mvu,
+        eventEmit: async () => calls.push('event'),
+        diagnosticLogger: { error: (...args) => diagnosticCalls.push(args) },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'mvu_parse_postcondition_failed');
+    assert.deepEqual(result.detail, {
+        operationIndex: 1, operation: 'add', path: '/服务订单/service_1/合法结束条件',
+        kind: 'missing_key', expectedType: 'object', actualType: 'missing',
+    });
+    assert.deepEqual(diagnosticCalls, [[
+        '[约了吗][MVU 受控写入被拒绝]',
+        {
+            code: 'mvu_parse_postcondition_failed', phase: 'provider_postcondition',
+            reason: 'MVU provider 返回结果缺少 Patch 预期字段', operationIndex: 1, operation: 'add',
+            path: '/服务订单/service_1/合法结束条件', kind: 'missing_key', expectedType: 'object', actualType: 'missing',
+        },
+    ]]);
+    assert.doesNotMatch(JSON.stringify(diagnosticCalls), /林澈|待正文确认|私人备注/);
+    assert.deepEqual(calls, ['parse']);
+});
+
 test('stripped relationship routes identify an outdated schema without leaking a partial parse into live state', async () => {
     const calls = [];
     const oldData = { stat_data: stateFixture() };
@@ -392,11 +483,22 @@ test('stripped relationship routes identify an outdated schema without leaking a
         replaceMvuData: async () => calls.push('replace'),
     };
 
-    const result = await applyControlledPatch({ patch: built.value, mvu, eventEmit: async () => calls.push('event') });
+    const diagnosticCalls = [];
+    const result = await applyControlledPatch({
+        patch: built.value, mvu, eventEmit: async () => calls.push('event'),
+        diagnosticLogger: { error: (...args) => diagnosticCalls.push(args) },
+    });
     assert.equal(result.ok, false);
     assert.equal(result.status, 'no_change');
     assert.equal(result.code, 'mvu_relationship_routes_schema_outdated');
-    assert.deepEqual(result.detail, { operationIndex: 0, path: candidateOperation.path });
+    assert.deepEqual(result.detail, {
+        operationIndex: 0, operation: 'add', path: `${candidateOperation.path}/与玩家关系/友情值`,
+        kind: 'missing_key', expectedType: 'number', actualType: 'missing',
+    });
+    assert.deepEqual(diagnosticCalls, [[
+        '[约了吗][MVU 受控写入被拒绝]',
+        { code: 'mvu_relationship_routes_schema_outdated', phase: 'provider_postcondition', reason: 'MVU provider 返回结果缺少 Patch 预期字段', operationIndex: 0, operation: 'add', path: `${candidateOperation.path}/与玩家关系/友情值`, kind: 'missing_key', expectedType: 'number', actualType: 'missing' },
+    ]]);
     assert.deepEqual(calls, ['parse']);
     assert.equal(oldData.stat_data.推荐.临时候选池[uid], undefined);
     assert.deepEqual(oldData.stat_data.推荐.当前队列, []);
@@ -439,11 +541,21 @@ test('unrelated provider changes cannot disguise a dropped content-mode replace'
         replaceMvuData: async () => { calls.push('replace'); },
     };
     const patch = buildControlledPatch(oldData.stat_data, { kind: 'toggle_content_mode' }).value;
-    const result = await applyControlledPatch({ patch, mvu, eventEmit: async () => calls.push('event') });
+    const diagnosticCalls = [];
+    const result = await applyControlledPatch({
+        patch, mvu, eventEmit: async () => calls.push('event'),
+        diagnosticLogger: { error: (...args) => diagnosticCalls.push(args) },
+    });
     assert.equal(result.ok, false);
     assert.equal(result.status, 'no_change');
-    assert.equal(result.code, 'mvu_parse_postcondition_failed');
-    assert.deepEqual(result.detail, { operationIndex: 0, path: '/软件/内容模式' });
+    assert.deepEqual(result.detail, {
+        operationIndex: 0, operation: 'replace', path: '/软件/内容模式',
+        kind: 'value_mismatch', expectedType: 'string', actualType: 'string',
+    });
+    assert.deepEqual(diagnosticCalls, [[
+        '[约了吗][MVU 受控写入被拒绝]',
+        { code: 'mvu_parse_postcondition_failed', phase: 'provider_postcondition', reason: 'MVU provider 返回字段值未按 Patch 更新', operationIndex: 0, operation: 'replace', path: '/软件/内容模式', kind: 'value_mismatch', expectedType: 'string', actualType: 'string' },
+    ]]);
     assert.deepEqual(calls, ['parse']);
 });
 
@@ -485,10 +597,13 @@ test('applyControlledPatch rejects a provider that drops a remove operation', as
         },
         replaceMvuData: async () => calls.push('replace'),
     };
-    const result = await applyControlledPatch({ patch, mvu, eventEmit: async () => calls.push('event') });
+    const result = await applyControlledPatch({ patch, mvu, eventEmit: async () => calls.push('event'), diagnosticLogger: { error() {} } });
     assert.equal(result.ok, false);
     assert.equal(result.status, 'no_change');
     assert.equal(result.code, 'mvu_parse_postcondition_failed');
-    assert.deepEqual(result.detail, { operationIndex: 0, path: '/会话/chat_1' });
+    assert.deepEqual(result.detail, {
+        operationIndex: 0, operation: 'remove', path: '/会话/chat_1',
+        kind: 'unexpected_key', expectedType: 'missing', actualType: 'object',
+    });
     assert.deepEqual(calls, ['parse']);
 });

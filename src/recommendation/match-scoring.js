@@ -181,6 +181,41 @@ export function scoreLocalCandidateMatch(playerProfile, npcProfile, effectiveKey
 }
 
 /**
+ * Keyword-only score for 描述匹配 (text_match).  It deliberately reads only
+ * the candidate's public tags and the effective keyword weights for this run
+ * (transient description-derived weights merged over saved local weights).
+ * No player profile field — gender, orientation, city, age, or intent — ever
+ * reaches or influences this result; adult/structure safety stays enforced by
+ * the candidate codec before scoring.
+ */
+export function scoreKeywordOnlyCandidateMatch(npcProfile, effectiveKeywordWeights) {
+    const npcTags = profileTags(record(npcProfile));
+    const weights = normalizedWeightMap(effectiveKeywordWeights);
+    if (!npcTags.length) {
+        return Object.freeze({
+            score: 50, eligible: true, heartCardScore: null, keywordScore: 50, sharedTags: 0,
+            reasons: Object.freeze(['候选人暂无公开标签，关键词匹配保持中性']),
+        });
+    }
+    let matchedKeywords = 0;
+    let weightTotal = 0;
+    for (const tag of npcTags) {
+        if (weights.has(tag)) matchedKeywords += 1;
+        weightTotal += 50 + ((weights.get(tag) ?? 0) * 10);
+    }
+    const score = clampInteger(weightTotal / npcTags.length, 0, 100);
+    const reasons = matchedKeywords > 0 ? [`关键词命中 ${matchedKeywords} 项`] : ['未命中关键词，保持中性探索'];
+    return Object.freeze({
+        score,
+        eligible: true,
+        heartCardScore: null,
+        keywordScore: score,
+        sharedTags: matchedKeywords,
+        reasons: Object.freeze(reasons),
+    });
+}
+
+/**
  * The explicit acceptance score for a player-initiated private-chat request
  * from the favourites list.  It combines local keyword taste (40%) with the
  * complete public heart-card fields (60%); it never reads private/hidden data.

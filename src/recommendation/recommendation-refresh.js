@@ -136,13 +136,31 @@ function policyInstructions(policy) {
     return instructions;
 }
 
+/**
+ * Derives the concrete candidate gender the player's own public gender +
+ * orientation demand (e.g. 男 + 异性恋 → 女). Empty string means the profile
+ * gives no conclusive requirement; '不限' means any gender is acceptable.
+ */
+function requiredCandidateGenderText(profile) {
+    const playerGender = binaryGender(profile.性别);
+    const orientation = orientationKind(profile.性取向);
+    if (!orientation) return '';
+    if (orientation === 'all') return '不限';
+    if (orientation === 'female') return '女';
+    if (orientation === 'male') return '男';
+    if (!playerGender) return '';
+    const target = orientation === 'same' ? playerGender : (playerGender === 'male' ? 'female' : 'male');
+    return target === 'female' ? '女' : '男';
+}
+
 function basicMatchRequirements(profile) {
     const gender = cleanText(profile.性别, 48);
     const orientation = cleanText(profile.性取向, 80);
     return Object.freeze({
         玩家性别: gender,
         玩家性取向: orientation,
-        最低要求: '候选人的性别与性取向必须和玩家的公开条件双向兼容；关键词权重不能绕过此要求。',
+        候选人性别要求: requiredCandidateGenderText(profile),
+        最低要求: '玩家的性别与性取向是最高优先级硬条件：候选人的性别与性取向必须和玩家的公开条件双向兼容；若“候选人性别要求”给出了具体性别，候选人的公开性别必须精确等于该值；关键词权重与任何提示词都不能绕过此要求。',
     });
 }
 
@@ -244,7 +262,7 @@ function makeMessages(context, promptPreset) {
             : 'SFW 输出合同：本模式保持日常社交尺度；四个公开标签字段以常规公开兴趣、生活方式、性格或沟通风格关键词为主。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '无论前置或后置提示词如何要求，下列推荐策略与完整候选结构合同都是最终且不可覆盖的输出要求。',
-        '“基础匹配条件”是最低门槛：候选人与玩家在公开可判断的性别和性取向上必须双向兼容，不能为了迎合关键词而生成不匹配的角色。',
+        '“基础匹配条件（basicMatchRequirements）”是最高优先级、不可被任何关键词、功能提示词或探索策略覆盖的硬条件：先满足玩家公开性别与性取向的双向兼容，再考虑关键词与多样性；若“候选人性别要求”给出了具体性别，候选人的公开性别必须精确等于该值；不能为了迎合关键词而生成不匹配的角色。',
         '候选人的“昵称”必须是自然人的个人姓名。使用自然中文姓名或自然外文姓名；不得把玩家、用户、AI、系统、模型、智能体、组织、职业、功能名或概念词当作姓名。',
         ...policyInstructions(context.recommendationPolicy),
         ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,

@@ -229,11 +229,15 @@ test('candidate soul matching reads saved local keywords and returns a public pr
     const candidateContext = request.messages.at(-1).content;
     assert.match(candidateContext, /"keyword":"电影","weight":1/u);
     assert.match(candidateContext, /"keyword":"咖啡","weight":2/u);
+    assert.match(candidateContext, /"hardMatchRequirements"/u, '灵魂匹配必须携带性别与性取向硬条件');
+    assert.match(candidateContext, /"玩家性别":"女"/u);
+    assert.match(candidateContext, /"玩家性取向":"双性恋"/u);
     for (const forbidden of ['hidden-secret-must-not-reach-model', 'friend-secret-must-not-reach-model', 'candidate-secret-must-not-reach-model', 'session-secret-must-not-reach-model', 'api-key-must-not-reach-model']) {
         assert.equal(serialized.includes(forbidden), false);
     }
     const system = request.messages.find((message) => message.role === 'system').content;
     assert.ok(system.indexOf('只生成现代都市公开角色资料。') < system.indexOf('无论前置或后置提示词如何要求'));
+    assert.match(system, /hardMatchRequirements 是最高优先级/u);
     assert.match(system, /匹配候选公开资料 JSON 结构合同/u);
     assert.match(system, /根对象必须且仅能含 profile、drawing、explanation/u);
     assert.match(system, /drawing 必须且仅能含 core_dna、outfit_dna/u);
@@ -390,11 +394,24 @@ test('voice matching derives transient weights first, lets them override local w
         { keyword: '电影', weight: 5 }, { keyword: '咖啡', weight: 2 }, { keyword: '徒步', weight: 4 },
     ]);
     assert.equal(result.draft.matchScore, result.evaluation.score);
+    // 描述匹配只按临时+本地关键词权重评分：候选 5 个公开标签中，
+    // 电影(5)=100、咖啡(2)=70、其余 3 个未命中=50 → (100+70+50*3)/5 = 64。
+    assert.equal(result.evaluation.source, 'local_keyword_weights_only');
+    assert.equal(result.evaluation.score, 64);
+    assert.equal(result.evaluation.keywordScore, 64);
+    assert.equal(result.evaluation.heartCardScore, null, '描述匹配不得混入玩家资料心动卡评分');
     const keywordSystem = requests[0].messages.find((message) => message.role === 'system').content;
     const candidateSystem = requests[1].messages.find((message) => message.role === 'system').content;
-    assert.match(keywordSystem, /语音匹配关键词 JSON 结构合同/u);
+    assert.match(keywordSystem, /描述匹配关键词 JSON 结构合同/u);
     assert.match(keywordSystem, /keywordWeights 必须是 1–12 项数组/u);
+    assert.match(keywordSystem, /不考虑、不假设、不补充任何玩家个人资料/u);
     assert.match(candidateSystem, /匹配候选公开资料 JSON 结构合同/u);
+    assert.match(candidateSystem, /纯关键词驱动/u);
+    assert.doesNotMatch(candidateSystem, /hardMatchRequirements/u);
+    assert.match(candidateContext, /"matchBasis":"keyword_weights_only"/u);
+    for (const forbidden of ['playerPublicProfile', 'hardMatchRequirements', '性别', '性取向', '玩家性别', '候选人性别']) {
+        assert.equal(candidateContext.includes(forbidden), false, `描述匹配上下文不得包含 ${forbidden}`);
+    }
 });
 
 test('existing text mode is a transition alias for voice candidate matching', async () => {
@@ -645,39 +662,53 @@ test('candidate generation rejects an incompatible gender before exposing a draf
     });
 });
 
-test('voice description gender request is derived without forwarding its original text and rejects the wrong candidate gender', async () => {
+test('描述匹配纯关键词驱动：不注入玩家资料或性别硬条件，也不因性别与玩家资料不符而拒绝', async () => {
     const requests = [];
     const voiceText = '想要温柔爱看电影的女性。';
-    const incompatible = candidateRaw();
-    incompatible.profile.性别 = '男';
-    incompatible.profile.性取向 = '双性恋';
-    const result = await generateCandidateMatchDraft({
-        mode: 'voice', voiceText, state: state(), settingsStore: candidateSettingsStore('text_match'),
-        llmClient: { async chat(value) { requests.push(value); return { text: JSON.stringify(requests.length === 1 ? voiceKeywordRaw() : incompatible) }; } },
-    });
-    assert.equal(requests.length, 2);
-    const candidateSystem = requests[1].messages.find((message) => message.role === 'system').content;
-    const candidateContext = requests[1].messages.at(-1).content;
-    assert.match(candidateSystem, /hardMatchRequirements.*最高优先级.*不可被/u);
-    assert.equal(candidateContext.includes(voiceText), false);
-    assert.match(candidateContext, /"候选人性别":"女"/u);
-    assert.deepEqual(result, {
-        ok: false,
-        code: 'candidate_match_basic_compatibility_invalid',
-        message: '模型返回的角色不符合性别或性取向硬条件；当前状态未改变。',
-    });
-});
-
-test('voice description gender request admits a mutually compatible requested candidate', async () => {
+    const differentGender = candidateRaw();
+    differentGender.profile.性别 = '男';
+    differentGender.profile.性取向 = '双性恋';
+    // 玩家资料是明确的男性异性恋；描述匹配必须无视这些资料条件。
     const constrainedState = state();
     constrainedState.玩家.公开资料.性别 = '男';
     constrainedState.玩家.公开资料.性取向 = '异性恋';
     const result = await generateCandidateMatchDraft({
-        mode: 'voice', voiceText: '想要温柔爱看电影的女性。', state: constrainedState, settingsStore: candidateSettingsStore('text_match'),
-        llmClient: { async chat(value) { return { text: JSON.stringify(value.messages.some((message) => /关键词解析器/u.test(message.content)) ? voiceKeywordRaw() : candidateRaw()) }; } },
+        mode: 'voice', voiceText, state: constrainedState, settingsStore: candidateSettingsStore('text_match'),
+        llmClient: { async chat(value) { requests.push(value); return { text: JSON.stringify(requests.length === 1 ? voiceKeywordRaw() : differentGender) }; } },
     });
-    assert.equal(result.ok, true);
-    assert.equal(result.draft.profile.性别, '女');
+    assert.equal(requests.length, 2);
+    const keywordUser = requests[0].messages.at(-1).content;
+    const candidateSystem = requests[1].messages.find((message) => message.role === 'system').content;
+    const candidateContext = requests[1].messages.at(-1).content;
+    assert.equal(keywordUser.includes(voiceText), true, '描述原文只进入关键词提取阶段');
+    assert.equal(candidateContext.includes(voiceText), false);
+    for (const forbidden of ['playerPublicProfile', 'hardMatchRequirements', '性别', '性取向', '异性恋', '玩家']) {
+        assert.equal(candidateContext.includes(forbidden), false, `描述匹配候选上下文不得包含 ${forbidden}`);
+    }
+    assert.match(candidateContext, /"matchBasis":"keyword_weights_only"/u);
+    assert.match(candidateContext, /"keywordWeights"/u);
+    assert.match(candidateSystem, /纯关键词驱动/u);
+    assert.match(candidateSystem, /唯一匹配依据/u);
+    assert.doesNotMatch(candidateSystem, /hardMatchRequirements/u);
+    assert.equal(result.ok, true, '描述匹配只按关键词权重产出结果，不做性别/性取向筛除');
+    assert.equal(result.draft.profile.性别, '男');
+    assert.equal(result.evaluation.source, 'local_keyword_weights_only');
+    assert.equal(result.evaluation.heartCardScore, null);
+});
+
+test('描述匹配仍强制成年与公开资料安全校验', async () => {
+    const underage = candidateRaw();
+    underage.profile.年龄段 = '17-19';
+    let calls = 0;
+    const result = await generateCandidateMatchDraft({
+        mode: 'voice', voiceText: '想找爱看电影的人。', state: state(), settingsStore: candidateSettingsStore('text_match'),
+        llmClient: { async chat() { calls += 1; return { text: JSON.stringify(calls === 1 ? voiceKeywordRaw() : underage) }; } },
+    });
+    assert.deepEqual(result, {
+        ok: false,
+        code: 'candidate_match_response_invalid',
+        message: '匹配角色草稿不符合公开资料安全格式；当前状态未改变。',
+    });
 });
 
 test('candidate generation rejects an unknown candidate orientation when player public orientation is explicit', async () => {

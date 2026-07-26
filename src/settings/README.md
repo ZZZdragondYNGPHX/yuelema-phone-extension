@@ -4,12 +4,12 @@
 
 ## 允许持久化的内容
 
-`settings-store.js` 管理版本化数据（当前 `schema: "yuelema.settings"`、`schemaVersion: 13`；v11/v12 在加载/导入时就地迁移，仅刷新内置提示词文案——v12 为内容尺度调整，v13 为 NSFW 内置预设写入具体情色写作指导；自定义预设逐字保留）：
+`settings-store.js` 管理版本化数据（当前 `schema: "yuelema.settings"`、`schemaVersion: 14`；v11/v12/v13 在加载/导入时就地迁移，仅刷新内置提示词文案——v12 为内容尺度调整，v13 为 NSFW 内置预设写入具体情色写作指导，v14 把「语音匹配」内置预设改名为「描述匹配」（`builtin_voice_match_*` ID 与用户绑定保持不变）；自定义预设逐字保留）：
 
 - 非机密连接预设：`id`、`name`、`url`、`model`、`temperature`、`maxTokens`、`timeoutMs`、`transportMode`；
 - 提示词预设及其条目数据，以及每个预设明确的 `contentMode: "SFW" | "NSFW"` 标记；
 - 默认连接/提示词预设 ID；
-- `chat`、角色 AI 补全、角色完整创作、`soul_match`、`text_match`、`recommendation_refresh`、`group_chat`、`forum` 的功能绑定；
+- `chat`、`chat_summary`、角色 AI 补全、角色完整创作、`soul_match`、`text_match`（描述匹配）、`recommendation_refresh`、`group_chat`、`forum`、`image_match`、`service_profile_generation` 的功能绑定；
 - 个性化内容推荐开关与关键词权重。
 
 `transportMode` 仅允许 `json`、`stream`、`pseudo_stream`。旧 schema v1 和旧 v2 连接预设缺失该字段时都会安全归一化为 `json`；旧 v1–v3 提示词缺失 `contentMode` 时按明确的 NSFW ID/名称推断，否则安全地归入 SFW。导出后固定带当前字段；这不会放宽保存预设时 model 必须非空的校验。

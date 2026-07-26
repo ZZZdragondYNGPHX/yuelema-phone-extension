@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderRebookPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRepairPatch, buildServiceHistoryRolesDeletionPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import { normalizeGeneratedCandidate } from '../../recommendation/candidate.js';
 
 function adultCandidate(nickname = '林澈') {
     return {
@@ -52,9 +53,13 @@ test('service handoff atomically copies an adult local draft and opens one pendi
     assert.equal(built.value.patch[1].value.状态, '待确认');
     assert.equal(built.value.patch[1].value.服务分类, 'girl_shuren');
     assert.equal(built.value.patch[1].value.已确认边界, '');
+    assert.deepEqual(built.value.patch[1].value.合法结束条件, { 已满足: false, 摘要: '', 记录时间: '' });
     assert.equal(validateControlledPatchAgainstState(state, built.value.patch).ok, true);
     const forged = structuredClone(built.value.patch); forged[1].value.状态 = '进行中';
     assert.equal(validateControlledPatchAgainstState(state, forged).ok, false, 'UI may not forge confirmed/active status');
+    const forgedCompletion = structuredClone(built.value.patch);
+    forgedCompletion[1].value.合法结束条件 = { 已满足: true, 摘要: '伪造完成', 记录时间: '现在' };
+    assert.equal(validateControlledPatchAgainstState(state, forgedCompletion).ok, false, 'UI may not forge a satisfied completion signal');
     assert.deepEqual(state, serviceState());
 });
 
@@ -65,6 +70,28 @@ test('service handoff rejects mode/category mismatch, non-adults, and any occupi
     assert.equal(buildServiceOrderHandoffPatch(state, { candidate: minor, categoryId: 'girl_shuren' }).ok, false);
     state.角色池.npc_service_1 = null;
     assert.equal(buildServiceOrderHandoffPatch(state, { candidate: adultCandidate(), categoryId: 'girl_shuren' }).code, 'service_order_uid_conflict');
+});
+
+test('service handoff accepts every adult candidate the local generation gate accepts (no extra personal-name gate)', () => {
+    // 生成闸门（generateServiceProfileCandidate）不要求“真人姓名”风格；
+    // 下单闸门必须与其一致，否则合法成年本地角色会在下单时被 service_order_candidate_invalid 误拒。
+    for (const nickname of ['Momo酱', '小7', '咖啡师安然']) {
+        const generated = normalizeGeneratedCandidate(adultCandidate(nickname), { contentMode: 'SFW' });
+        const state = serviceState();
+        const built = buildServiceOrderHandoffPatch(state, { candidate: generated, categoryId: 'girl_shuren' });
+        assert.equal(built.ok, true, `昵称「${nickname}」的成年本地角色必须可以下单`);
+        assert.equal(built.value.patch[1].value.服务主题, `熟人商品：与${nickname}的文字协商`);
+        assert.equal(validateControlledPatchAgainstState(state, built.value.patch).ok, true, `昵称「${nickname}」的受控 Patch 必须通过白名单校验`);
+    }
+});
+
+test('dropping the name-style gate never weakens the adult gate on service handoff', () => {
+    const unverified = adultCandidate('Momo酱'); unverified.成人验证 = false;
+    assert.equal(buildServiceOrderHandoffPatch(serviceState(), { candidate: unverified, categoryId: 'girl_shuren' }).code, 'service_order_candidate_invalid');
+    const underageBand = adultCandidate('Momo酱'); underageBand.公开资料.年龄段 = '16-19';
+    assert.equal(buildServiceOrderHandoffPatch(serviceState(), { candidate: underageBand, categoryId: 'girl_shuren' }).code, 'service_order_candidate_invalid');
+    const underageActual = adultCandidate('Momo酱'); underageActual.隐藏资料.实际年龄 = 17;
+    assert.equal(buildServiceOrderHandoffPatch(serviceState(), { candidate: underageActual, categoryId: 'girl_shuren' }).code, 'service_order_candidate_invalid');
 });
 
 test('a complete terminal service order repeats exactly as a fresh pending order without stale fields or role copy', () => {
@@ -79,6 +106,7 @@ test('a complete terminal service order repeats exactly as a fresh pending order
     assert.deepEqual(second.value.patch[0].value, {
         角色UID: 'npc_service_1', 角色UID列表: ['npc_service_1'], 内容模式: 'SFW', 服务分类: 'girl_shuren', 服务主题: '熟人商品：与林澈的文字协商',
         状态: '待确认', 发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '',
+        合法结束条件: { 已满足: false, 摘要: '', 记录时间: '' },
     });
     assert.equal(validateControlledPatchAgainstState(state, second.value.patch).ok, true);
 
@@ -212,6 +240,7 @@ test('service lifecycle permits only exact start, cancel, complete, finalize, an
     assert.equal(rebook.ok, true);
     assert.equal(rebook.value.orderUid, 'service_2');
     assert.equal(rebook.value.patch[0].value.已确认边界, '');
+    assert.deepEqual(rebook.value.patch[0].value.合法结束条件, { 已满足: false, 摘要: '', 记录时间: '' });
     assert.equal(validateControlledPatchAgainstState(rebookState, rebook.value.patch).ok, true);
 
     const cancelled = serviceState();
@@ -237,6 +266,7 @@ test('three-person handoff derives ordered service roles atomically and rejects 
         ['add', '/服务订单/service_1'], ['replace', '/系统/UID计数器/角色'], ['replace', '/系统/UID计数器/服务订单'],
     ]);
     assert.deepEqual(built.value.patch[3].value.角色UID列表, built.value.npcUids);
+    assert.deepEqual(built.value.patch[3].value.合法结束条件, { 已满足: false, 摘要: '', 记录时间: '' });
     assert.equal(built.value.patch[4].value, 3);
     assert.equal(built.value.patch[5].value, 1);
     assert.equal(validateControlledPatchAgainstState(state, built.value.patch).ok, true);
@@ -261,6 +291,7 @@ test('multi-person terminal repeat and local rebook preserve the participant set
     assert.deepEqual(repeated.value.npcUids, ['npc_service_1', 'npc_service_2']);
     assert.deepEqual(repeated.value.patch[0].value.角色UID列表, ['npc_service_1', 'npc_service_2']);
     assert.equal(repeated.value.patch[0].value.已确认边界, '');
+    assert.deepEqual(repeated.value.patch[0].value.合法结束条件, { 已满足: false, 摘要: '', 记录时间: '' });
     assert.equal(repeated.value.patch[0].value.服务主题, '熟人商品：与林澈、顾晴的文字协商');
     assert.equal(validateControlledPatchAgainstState(state, repeated.value.patch).ok, true);
 
@@ -268,6 +299,7 @@ test('multi-person terminal repeat and local rebook preserve the participant set
     const rebooked = buildServiceOrderRebookPatch(state, { npcUids: ['npc_service_1', 'npc_service_2'], categoryId: 'girl_shuren' });
     assert.equal(rebooked.ok, true);
     assert.deepEqual(rebooked.value.patch[0].value.角色UID列表, ['npc_service_1', 'npc_service_2']);
+    assert.deepEqual(rebooked.value.patch[0].value.合法结束条件, { 已满足: false, 摘要: '', 记录时间: '' });
     assert.equal(buildServiceOrderRebookPatch(state, { npcUids: ['npc_service_1', 'npc_service_2', 'npc_service_3', 'npc_service_4'], categoryId: 'girl_shuren' }).code, 'service_order_rebook_invalid');
 });
 

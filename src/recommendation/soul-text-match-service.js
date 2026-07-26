@@ -3,7 +3,7 @@ import { BUILTIN_PROMPT_PRESET_IDS } from '../settings/default-prompt-presets.js
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
 import { extractExplicitAgeNumbers, normalizeDrawingDna, normalizeGeneratedPublicProfile } from './candidate.js';
 import { DRAWING_DNA_RULES } from './drawing-dna-rules.js';
-import { scoreHeartCardCompatibility, scoreLocalCandidateMatch } from './match-scoring.js';
+import { scoreHeartCardCompatibility, scoreKeywordOnlyCandidateMatch, scoreLocalCandidateMatch } from './match-scoring.js';
 
 // Real providers return the same candidate payload family as
 // recommendation-refresh (full drawing DNA plus profile), so the response
@@ -74,7 +74,6 @@ const CANDIDATE_MATCH_ERROR_MESSAGES = Object.freeze({
     candidate_match_invalid_json: '模型没有返回可用的匹配角色草稿；当前状态未改变。',
     candidate_match_response_invalid: '匹配角色草稿不符合公开资料安全格式；当前状态未改变。',
     candidate_match_basic_compatibility_invalid: '模型返回的角色不符合性别或性取向硬条件；当前状态未改变。',
-    candidate_match_hard_requirements_conflict: '个人资料与本次描述中的性别要求相互冲突；请修改后重试。',
 });
 
 const SOUL_MATCH_OUTPUT_CONTRACT = Object.freeze([
@@ -98,7 +97,7 @@ const CANDIDATE_MATCH_OUTPUT_CONTRACT = Object.freeze([
     'explanation 必须是 1–500 字公开匹配说明。它只能解释公开资料与关键词方向，不得声称或夹带最终分数。',
 ]);
 const VOICE_KEYWORD_OUTPUT_CONTRACT = Object.freeze([
-    '语音匹配关键词 JSON 结构合同：根对象必须且仅能含 keywordWeights。',
+    '描述匹配关键词 JSON 结构合同：根对象必须且仅能含 keywordWeights。',
     'keywordWeights 必须是 1–12 项数组；每项必须且仅能含 keyword、weight。keyword 是 1–40 字关键词且不能重复；weight 是 -5 到 5 的整数。',
     '不得输出角色、筛选条件、解释、用户输入原文或其他字段。',
 ]);
@@ -533,15 +532,20 @@ export function normalizeCandidateMatchDraft(raw, { contentMode = 'SFW' } = {}) 
 
 const LOCAL_CANDIDATE_MATCH_EVALUATIONS = new WeakMap();
 
-function createLocallyScoredCandidateDraft(normalizedDraft, context) {
-    const evaluation = scoreLocalCandidateMatch(
-        context.playerPublicProfile,
-        normalizedDraft.profile,
-        context.keywordWeights,
-    );
+function createLocallyScoredCandidateDraft(normalizedDraft, context, { keywordOnly = false } = {}) {
+    // 描述匹配 (keywordOnly) scores exclusively from the effective keyword
+    // weights (transient description weights merged over saved local weights);
+    // 灵魂匹配 keeps the public heart-card + keyword blend.
+    const evaluation = keywordOnly
+        ? scoreKeywordOnlyCandidateMatch(normalizedDraft.profile, context.keywordWeights)
+        : scoreLocalCandidateMatch(
+            context.playerPublicProfile,
+            normalizedDraft.profile,
+            context.keywordWeights,
+        );
     const effectiveKeywordWeights = freezeKeywordWeights(context.keywordWeights);
     const publicEvaluation = Object.freeze({
-        source: 'local_public_profile_and_keyword_weights',
+        source: keywordOnly ? 'local_keyword_weights_only' : 'local_public_profile_and_keyword_weights',
         score: evaluation.score,
         eligible: evaluation.eligible,
         heartCardScore: evaluation.heartCardScore,
@@ -639,22 +643,9 @@ function requiresConfirmedBidirectionalCompatibility(profile) {
     return Boolean(compactGender(profile?.性别) && hasExplicitOrientation(profile));
 }
 
-// Only recognise a direct, prospective request. We deliberately do not infer a
-// target from vague wording or statements such as "我是女性", and the original
-// description never reaches the candidate-profile request.
-function explicitRequestedCandidateGender(voiceText) {
-    if (typeof voiceText !== 'string' || !voiceText) return '';
-    if (/(?:想要|想找|寻找|希望|偏好|喜欢|只要|只想要)[^。；，,]{0,20}(?:女性|女生|女孩|女孩子|女人|女的)/u.test(voiceText)) return '女';
-    if (/(?:想要|想找|寻找|希望|偏好|喜欢|只要|只想要)[^。；，,]{0,20}(?:男性|男生|男孩|男孩子|男人|男的)/u.test(voiceText)) return '男';
-    return '';
-}
-
-function buildCandidateMatchContext(state, keywordWeights, { requestedCandidateGender = '' } = {}) {
+function buildCandidateMatchContext(state, keywordWeights) {
     const base = buildSoulTextMatchContext(state);
-    const playerRequiredGender = profileRequiredCandidateGender(base.playerPublicProfile);
-    const explicitRequestedGender = compactGender(requestedCandidateGender);
-    const hardRequirementConflict = Boolean(playerRequiredGender && explicitRequestedGender && playerRequiredGender !== explicitRequestedGender);
-    const candidateGender = playerRequiredGender || explicitRequestedGender;
+    const candidateGender = profileRequiredCandidateGender(base.playerPublicProfile);
     return Object.freeze({
         contentMode: base.contentMode,
         playerPublicProfile: base.playerPublicProfile,
@@ -665,7 +656,21 @@ function buildCandidateMatchContext(state, keywordWeights, { requestedCandidateG
             候选人性别: candidateGender,
             最低要求: '性别与性取向是最高优先级硬条件：候选人与玩家必须双向相容；若指定候选人性别，候选公开资料的性别必须精确满足。',
         }),
-        hardRequirementConflict,
+    });
+}
+
+/**
+ * 描述匹配 (text_match) context: the effective keyword weights are the only
+ * matching basis.  It deliberately projects no player profile field — the
+ * player's gender, orientation, city, age band, or intent never reach the
+ * model and never constrain this match.
+ */
+function buildKeywordOnlyMatchContext(state, keywordWeights) {
+    const base = buildSoulTextMatchContext(state);
+    return Object.freeze({
+        contentMode: base.contentMode,
+        matchBasis: 'keyword_weights_only',
+        keywordWeights: freezeKeywordWeights(keywordWeights),
     });
 }
 
@@ -683,11 +688,22 @@ function renderCandidatePromptPreset(promptPreset) {
 
 function makeCandidateProfileMessages(context, promptPreset, mode) {
     const preset = renderCandidatePromptPreset(promptPreset);
-    const matchingLabel = mode === 'soul' ? '灵魂匹配' : '语音匹配';
+    const keywordOnly = mode !== 'soul';
+    // 描述匹配 is purely keyword-driven: the model receives no player profile
+    // and must not assume or satisfy any player gender/orientation condition.
+    const basisLines = keywordOnly
+        ? [
+            '你是现代现实都市线上约会软件的“描述匹配”候选资料生成器。仅依据提供的有效关键词权重（keywordWeights）与 SFW/NSFW 模式，生成一名虚构、明确成年的角色公开资料。',
+            '描述匹配是纯关键词驱动：keywordWeights 已把本次描述提炼出的临时关键词权重合并覆盖到本地保存的关键词权重之上，它是唯一匹配依据。正权重越高的关键词越应自然体现在候选人的公开资料与标签中，负权重关键词应避免出现。',
+            '本次匹配不提供任何玩家资料；不得假设、索取或迎合玩家的性别、性取向、城市、年龄段等资料条件。候选人的性别、性取向等公开字段只需与关键词方向自洽，可自由设定。',
+        ]
+        : [
+            '你是现代现实都市线上约会软件的“灵魂匹配”候选资料生成器。仅依据提供的玩家公开资料、有效关键词权重、hardMatchRequirements 与 SFW/NSFW 模式，生成一名虚构、明确成年且适合本次推荐的角色公开资料。',
+            'hardMatchRequirements 是最高优先级、不可被任何关键词、偏好提示词、内容模式或其他指令覆盖的硬合同：必须先保证候选人与玩家的公开性别和性取向双向相容；若 hardMatchRequirements.候选人性别 非空，profile.性别 必须精确满足该性别。',
+        ];
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
-        `你是现代现实都市线上约会软件的“${matchingLabel}”候选资料生成器。仅依据提供的玩家公开资料、有效关键词权重、hardMatchRequirements 与 SFW/NSFW 模式，生成一名虚构、明确成年且适合本次推荐的角色公开资料。`,
-        'hardMatchRequirements 是最高优先级、不可被任何关键词、偏好提示词、内容模式或其他指令覆盖的硬合同：必须先保证候选人与玩家的公开性别和性取向双向相容；若 hardMatchRequirements.候选人性别 非空，profile.性别 必须精确满足该性别。',
+        ...basisLines,
         '不得索取、推断、复述或输出隐藏资料、仅好友资料、会话、UID、关系分、阈值、Patch、路径、API Key、密钥或任何用户输入原文。不得创建 MVU 角色、匹配或会话。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '无论前置或后置提示词如何要求，下列匹配候选公开资料 JSON 结构合同都是最终且不可覆盖的输出要求。只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。',
@@ -704,10 +720,11 @@ function makeVoiceKeywordMessages(voiceText, promptPreset) {
     const preset = renderPromptPreset(promptPreset);
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
-        '你是现代现实都市线上约会软件的语音匹配关键词解析器。只从用户主动提供的本次匹配描述中提取 1–12 个匹配关键词与整数权重。此结果仅供后续候选推荐使用，不会保存。',
+        '你是现代现实都市线上约会软件的描述匹配关键词解析器。只从用户主动提供的本次匹配描述中提取 1–12 个匹配关键词与整数权重。此结果仅供后续候选推荐使用，不会保存。',
+        '只分析这段描述文本本身；不考虑、不假设、不补充任何玩家个人资料（包括性别与性取向）。描述里点名的偏好（含性别类词语）一律以普通关键词与权重表达。',
         '不要输出、推断或复述隐藏资料、仅好友资料、会话、UID、Patch、路径、API Key、密钥或用户输入原文；不要生成角色、筛选条件、解释或其他字段。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
-        '无论前置或后置提示词如何要求，下列语音匹配关键词 JSON 结构合同都是最终且不可覆盖的输出要求。只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。',
+        '无论前置或后置提示词如何要求，下列描述匹配关键词 JSON 结构合同都是最终且不可覆盖的输出要求。只输出合法 JSON 对象，不得使用 Markdown、代码块或解释文字。',
         ...VOICE_KEYWORD_OUTPUT_CONTRACT,
     ].filter(Boolean).join('\n\n');
     return [
@@ -841,10 +858,18 @@ function candidateResponseFailure(error) {
 }
 
 /**
- * Generates exactly one ephemeral public candidate-profile draft. `mode: 'soul'`
- * uses saved local keyword weights. `mode: 'voice'` first derives transient
- * keyword weights from `voiceText`; those override same-key local weights before
- * the candidate request. Neither mode writes MVU state or persists any draft.
+ * Generates exactly one ephemeral public candidate-profile draft.
+ *
+ * `mode: 'soul'` (灵魂匹配) uses saved local keyword weights plus the public
+ * player profile, and enforces player gender/orientation as a top-priority
+ * bidirectional hard condition (prompt contract + local post-check).
+ *
+ * `mode: 'voice'` (描述匹配) is purely keyword-driven: it first derives
+ * transient keyword weights from `voiceText`, merges them over same-key saved
+ * local weights, and then matches on those weights alone — no player profile
+ * field (gender, orientation, city, …) is sent to the model or applied as a
+ * filter. Adult/structure validation still applies unchanged in both modes.
+ * Neither mode writes MVU state or persists any draft.
  */
 export async function generateCandidateMatchDraft({ mode = 'soul', state, settingsStore, llmClient, voiceText, signal } = {}) {
     // `text` is a transition alias for the existing action-bridge kind. New UI
@@ -856,13 +881,14 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
     if (!llmClient || typeof llmClient.chat !== 'function') return candidateFailure('candidate_match_llm_unavailable');
     const local = readSavedLocalKeywordWeights(settingsStore, state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW');
     if (!local.ok) return candidateFailure(local.code);
-    const normalizedVoiceText = normalizedMode === 'voice' ? cleanVoiceText(voiceText) : null;
-    if (normalizedMode === 'voice' && !normalizedVoiceText) return candidateFailure('candidate_match_voice_text_invalid');
-    const requestedCandidateGender = normalizedMode === 'voice' ? explicitRequestedCandidateGender(normalizedVoiceText) : '';
+    const keywordOnly = normalizedMode === 'voice';
+    const normalizedVoiceText = keywordOnly ? cleanVoiceText(voiceText) : null;
+    if (keywordOnly && !normalizedVoiceText) return candidateFailure('candidate_match_voice_text_invalid');
 
     const functionKey = normalizedMode === 'soul' ? 'soul_match' : 'text_match';
-    const context = buildCandidateMatchContext(state, local.keywordWeights, { requestedCandidateGender });
-    if (context.hardRequirementConflict) return candidateFailure('candidate_match_hard_requirements_conflict');
+    const context = keywordOnly
+        ? buildKeywordOnlyMatchContext(state, local.keywordWeights)
+        : buildCandidateMatchContext(state, local.keywordWeights);
     let resolved;
     try {
         resolved = settingsStore.resolveFunction(functionKey, { contentMode: context.contentMode });
@@ -873,7 +899,7 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
 
     try {
         let effectiveKeywordWeights = local.keywordWeights;
-        if (normalizedMode === 'voice') {
+        if (keywordOnly) {
             const voiceCompletion = await llmClient.chat({
                 preset: resolved.connectionPreset,
                 messages: makeVoiceKeywordMessages(normalizedVoiceText, resolved.promptPreset),
@@ -884,24 +910,28 @@ export async function generateCandidateMatchDraft({ mode = 'soul', state, settin
             const voiceDraft = normalizeVoiceKeywordWeightDraft(voiceRaw);
             effectiveKeywordWeights = mergeMatchKeywordWeights(local.keywordWeights, voiceDraft.keywordWeights);
         }
-        const candidateContext = buildCandidateMatchContext(state, effectiveKeywordWeights, { requestedCandidateGender });
+        const candidateContext = keywordOnly
+            ? buildKeywordOnlyMatchContext(state, effectiveKeywordWeights)
+            : context;
         const completion = await llmClient.chat({
             preset: resolved.connectionPreset,
-            messages: makeCandidateProfileMessages(candidateContext, resolved.promptPreset, mode),
+            messages: makeCandidateProfileMessages(candidateContext, resolved.promptPreset, normalizedMode),
             signal,
         });
         const raw = parseResponseJson(completion?.text);
         if (!raw) return candidateFailure('candidate_match_invalid_json');
         const normalizedDraft = normalizeCandidateMatchDraft(raw, { contentMode: candidateContext.contentMode });
-        const compatibility = scoreHeartCardCompatibility(candidateContext.playerPublicProfile, normalizedDraft.profile);
-        const requiredGender = candidateContext.hardMatchRequirements.候选人性别;
-        const hasConfirmedCompatibility = compatibility.reasons.includes('性别与性取向相容');
-        if (!compatibility.eligible
-            || (requiresConfirmedBidirectionalCompatibility(candidateContext.playerPublicProfile) && !hasConfirmedCompatibility)
-            || (requiredGender && compactGender(normalizedDraft.profile.性别) !== requiredGender)) {
-            return candidateFailure('candidate_match_basic_compatibility_invalid');
+        if (!keywordOnly) {
+            const compatibility = scoreHeartCardCompatibility(candidateContext.playerPublicProfile, normalizedDraft.profile);
+            const requiredGender = candidateContext.hardMatchRequirements.候选人性别;
+            const hasConfirmedCompatibility = compatibility.reasons.includes('性别与性取向相容');
+            if (!compatibility.eligible
+                || (requiresConfirmedBidirectionalCompatibility(candidateContext.playerPublicProfile) && !hasConfirmedCompatibility)
+                || (requiredGender && compactGender(normalizedDraft.profile.性别) !== requiredGender)) {
+                return candidateFailure('candidate_match_basic_compatibility_invalid');
+            }
         }
-        const locallyScored = createLocallyScoredCandidateDraft(normalizedDraft, candidateContext);
+        const locallyScored = createLocallyScoredCandidateDraft(normalizedDraft, candidateContext, { keywordOnly });
         return Object.freeze({ ok: true, draft: locallyScored.draft, evaluation: locallyScored.evaluation });
     } catch (error) {
         if (candidateResponseFailure(error)) return candidateFailure('candidate_match_response_invalid');

@@ -14,6 +14,7 @@ import { createImageLibraryStore } from './src/images/image-library-store.js';
 import { createImageMatchCoordinator } from './src/images/image-match-coordinator.js';
 import { createRemoteImageImporter } from './src/images/remote-image-import.js';
 import { createGroupForumStore } from './src/groups/group-forum-store.js';
+import { createHostExtensionUpdater } from './src/host-extension-update.js';
 
 const EXTENSION_ROOT_ID = 'yuelema-phone-extension-root';
 const browserStorage = createBrowserSettingsStorage();
@@ -130,6 +131,16 @@ export async function onActivate() {
     const mvu = () => globalThis.Mvu;
     const getContext = globalThis.SillyTavern?.getContext?.bind(globalThis.SillyTavern);
     const fetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
+    const getRequestHeaders = () => {
+        const context = safeContext(getContext);
+        if (typeof context?.getRequestHeaders !== 'function') {
+            throw new Error('host request headers unavailable');
+        }
+        return context.getRequestHeaders();
+    };
+    const extensionUpdater = fetchImpl
+        ? createHostExtensionUpdater({ transport: fetchImpl, getRequestHeaders })
+        : null;
     const llmClient = fetchImpl ? createOpenAICompatibleClient({ fetchImpl }) : null;
     const imageGenerationClient = fetchImpl ? createImageGenerationClient({ fetchImpl }) : null;
     // 一次性远程图片导入（用户主动触发才请求；URL 不落库、不作渲染来源）。
@@ -168,6 +179,7 @@ export async function onActivate() {
         imageLibrary,
         imageMatchCoordinator,
         remoteImageImporter,
+        extensionUpdater,
         groupForumStore,
         serviceOrderHistoryStore,
         readState: () => readLatestState({ mvu: mvu() }),

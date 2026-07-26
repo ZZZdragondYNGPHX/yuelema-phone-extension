@@ -31,6 +31,8 @@ const UI_LAYOUT_STORAGE_KEY = 'yuelema.ui-layout/v1';
 const LAUNCHER_POSITION_STORAGE_KEY = 'yuelema.launcher-position/v1';
 const PHONE_PANEL_POSITION_STORAGE_KEY = 'yuelema.phone-panel-position/v1';
 const PANEL_DRAG_THRESHOLD = 8;
+/** 悬浮球兜底回右下角时距可视视口边缘的安全间距（与 launcher-drag 的 edgeGap 一致）。 */
+const LAUNCHER_VIEWPORT_GAP = 12;
 const PHONE_NAV_DRAG_HOLD_MS = 360;
 const LOCAL_PAGE_COPY = Object.freeze({
     settings_image_generation: Object.freeze({ title: '生图设置' }),
@@ -117,7 +119,7 @@ function persistPhonePanelPosition(storage, position) {
 }
 
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
-export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, imageLibrary = null, imageMatchCoordinator = null, remoteImageImporter = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
+export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, imageLibrary = null, imageMatchCoordinator = null, remoteImageImporter = null, extensionUpdater = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
     const abortController = new AbortController();
     // 弹窗焦点统一由控制器管理：打开聚焦、Tab 焦点环、Escape 关栈顶、关闭礼貌回 opener。
     const dialogController = createDialogController({ documentRef });
@@ -136,6 +138,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let open = false;
     let activePage = 'home';
     let refreshing = false;
+    let extensionUpdatePending = false;
     let activeMessageSessionUid = '';
     let messageSearchQuery = '';
     let chatMoreMenuSessionUid = '';
@@ -592,7 +595,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             }
         },
     });
-    launcherDrag.restore(readLauncherPosition(layoutStorage));
+    if (!launcherDrag.restore(readLauncherPosition(layoutStorage))) ensureLauncherWithinViewport();
     let panelDrag = null;
     function viewportSize() {
         const view = documentRef.defaultView;
@@ -624,12 +627,63 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         panel.style.setProperty('--yl-phone-viewport-height', Math.max(1, Math.round(viewport.height)) + 'px');
     }
     function clampPanelPosition(left, top, width, height) {
-        const viewport = viewportSize();
-        const margin = 0;
+        // 移动端地址栏/软键盘会让可视视口偏离布局视口；钳制一律以 visualViewport 为准
+        // （无该 API 时 phoneVisualViewport 自带 window 尺寸回退，offset 为 0，行为不变）。
+        const viewport = phoneVisualViewport();
+        const minLeft = viewport.left;
+        const minTop = viewport.top;
         return {
-            left: Math.max(margin, Math.min(left, Math.max(margin, viewport.width - width - margin))),
-            top: Math.max(margin, Math.min(top, Math.max(margin, viewport.height - height - margin))),
+            left: Math.max(minLeft, Math.min(left, Math.max(minLeft, viewport.left + viewport.width - width))),
+            top: Math.max(minTop, Math.min(top, Math.max(minTop, viewport.top + viewport.height - height))),
         };
+    }
+    /** 面板在当前可视视口内的居中坐标（视口比面板小则贴视口原点，保证头部可见）。 */
+    function centeredPanelPosition(width, height) {
+        const viewport = phoneVisualViewport();
+        return {
+            left: viewport.left + Math.max(0, (viewport.width - width) / 2),
+            top: viewport.top + Math.max(0, (viewport.height - height) / 2),
+        };
+    }
+    /**
+     * 按可视视口坐标写入面板位置，并实测一次补偿宿主 transform 祖先（SillyTavern 的
+     * `html { -webkit-transform: translateZ(0) }` 会把 fixed 的包含块从视口改成宿主盒）
+     * 造成的坐标系偏移。无法实测时保留首写值。
+     */
+    function writePanelViewportPosition(left, top) {
+        setPanelPosition(left, top);
+        const check = panel.getBoundingClientRect?.();
+        const measuredLeft = Number(check?.left);
+        const measuredTop = Number(check?.top);
+        if (!Number.isFinite(measuredLeft) || !Number.isFinite(measuredTop)) return;
+        const originX = measuredLeft - left;
+        const originY = measuredTop - top;
+        if (originX || originY) setPanelPosition(left - originX, top - originY);
+    }
+    /**
+     * 悬浮球兜底定位：CSS 的 right/bottom 锚点在带 transform 的宿主上解析到宿主盒而非
+     * 可视视口，移动端可能整体跑到屏幕外。只在实测越界时介入：优先恢复持久化坐标
+     * （restore 内部会按当前视口重新钳制并补偿 transform），否则落到可视视口右下角默认位。
+     */
+    function ensureLauncherWithinViewport() {
+        if (launcherDrag.dragging) return;
+        const rect = launcher.getBoundingClientRect?.();
+        const width = Number(rect?.width);
+        const height = Number(rect?.height);
+        if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) return;
+        const viewport = phoneVisualViewport();
+        const tolerance = 1;
+        const left = Number(rect.left) || 0;
+        const top = Number(rect.top) || 0;
+        const inside = left >= viewport.left - tolerance
+            && top >= viewport.top - tolerance
+            && left + width <= viewport.left + viewport.width + tolerance
+            && top + height <= viewport.top + viewport.height + tolerance;
+        if (inside) return;
+        launcherDrag.restore(readLauncherPosition(layoutStorage) ?? {
+            left: viewport.left + viewport.width - width - LAUNCHER_VIEWPORT_GAP,
+            top: viewport.top + viewport.height - height - LAUNCHER_VIEWPORT_GAP,
+        });
     }
     function clampCustomPanelPosition() {
         // Preserve the CSS right/bottom anchor until the user has deliberately dragged.
@@ -706,14 +760,28 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let phoneNavHold = null;
     let suppressPhoneNavClick = false;
     let phoneNavClickSuppressionTimer = null;
-    function restorePhonePanelPosition() {
+    /**
+     * 手机布局面板显示定位：
+     * - 持久化坐标仍完整落在当前可视视口内 → 继续生效；
+     * - 无持久化坐标，或坐标已越出当前视口（旋转/换屏/桌面遗留）→ 居中于可视视口。
+     * 两条路径都经 writePanelViewportPosition 补偿 transform 宿主，绝不再依赖
+     * CSS right/bottom 锚点在移动宿主上的解析结果。
+     */
+    function applyPhonePanelPlacement() {
         if (uiLayoutMode !== 'phone') return false;
-        const saved = readPhonePanelPosition(layoutStorage);
         const rect = panel.getBoundingClientRect?.();
         const width = Number(rect?.width); const height = Number(rect?.height);
-        if (!saved || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return false;
-        const next = clampPanelPosition(saved.left, saved.top, width, height);
-        setPanelPosition(next.left, next.top);
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return false;
+        const saved = readPhonePanelPosition(layoutStorage);
+        if (saved) {
+            const clamped = clampPanelPosition(saved.left, saved.top, width, height);
+            if (Math.abs(clamped.left - saved.left) <= 1 && Math.abs(clamped.top - saved.top) <= 1) {
+                writePanelViewportPosition(clamped.left, clamped.top);
+                return true;
+            }
+        }
+        const centered = centeredPanelPosition(width, height);
+        writePanelViewportPosition(centered.left, centered.top);
         return true;
     }
     function beginPanelDrag(event, { dragHandle = header, allowPhone = false, rejectHeaderControls = false } = {}) {
@@ -872,7 +940,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         launcher.setAttribute('aria-label', open ? '关闭约了吗小手机' : '打开约了吗小手机');
         if (open) {
             syncPhonePanelViewport();
-            restorePhonePanelPosition();
+            applyPhonePanelPlacement();
+            ensureLauncherWithinViewport();
             refreshState();
         }
         else {
@@ -946,6 +1015,67 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         scheduleServiceOrderCompletion();
         if (open) { renderPage(); ctx.syncGroupAutoTimer(); ctx.syncForumAutoTimer(); }
         return currentView;
+    }
+    async function runExtensionUpdate() {
+        if (extensionUpdatePending) return;
+        if (!extensionUpdater || typeof extensionUpdater.checkAndUpdate !== 'function') {
+            beginOperationDialog({
+                state: 'failure',
+                visual: 'failure',
+                title: '无法检查更新',
+                message: '当前酒馆未提供可用的扩展更新服务。',
+            });
+            return;
+        }
+        extensionUpdatePending = true;
+        renderPage();
+        const operationToken = beginOperationDialog({
+            state: 'loading',
+            visual: 'connecting',
+            title: '正在检查扩展更新',
+            message: '正在通过酒馆更新服务检查并应用可用更新…',
+        });
+        try {
+            const result = await extensionUpdater.checkAndUpdate();
+            if (isDestroyed || !open || activePage !== 'about') return;
+            if (result?.outcome === 'up_to_date') {
+                updateOperationDialog(operationToken, {
+                    state: 'success',
+                    visual: 'accepted',
+                    title: '当前已是最新版本',
+                    message: '无需更新扩展。',
+                });
+            } else if (result?.outcome === 'updated') {
+                updateOperationDialog(operationToken, {
+                    state: 'success',
+                    visual: 'accepted',
+                    title: '更新已完成',
+                    message: '扩展已更新。请重新载入酒馆页面以启用新版本。',
+                });
+            } else {
+                updateOperationDialog(operationToken, {
+                    state: 'failure',
+                    visual: 'failure',
+                    title: '更新未完成',
+                    message: '酒馆更新服务返回了无法识别的结果。',
+                });
+            }
+        } catch (error) {
+            if (!isDestroyed && open && activePage === 'about') {
+                const nonGitInstallation = error?.code === 'not_git_installation';
+                updateOperationDialog(operationToken, {
+                    state: 'failure',
+                    visual: 'failure',
+                    title: '更新未完成',
+                    message: nonGitInstallation
+                        ? '此扩展不是 Git 安装，无法应用内更新。'
+                        : '检查或更新扩展失败；请在酒馆原生扩展管理中查看详情。',
+                });
+            }
+        } finally {
+            extensionUpdatePending = false;
+            if (!isDestroyed && open && activePage === 'about') renderPage();
+        }
     }
     function feedbackPresentation(message) {
         const text = String(message ?? '').slice(0, 320);
@@ -1537,6 +1667,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         chatToolLongPressTimer: { get: () => chatToolLongPressTimer, set: (value) => { chatToolLongPressTimer = value; }, enumerable: true },
         currentView: { get: () => currentView, set: (value) => { currentView = value; }, enumerable: true },
         destructiveChatKind: { get: () => destructiveChatKind, set: (value) => { destructiveChatKind = value; }, enumerable: true },
+        extensionUpdatePending: { get: () => extensionUpdatePending, enumerable: true },
         destructiveChatSessionUid: { get: () => destructiveChatSessionUid, set: (value) => { destructiveChatSessionUid = value; }, enumerable: true },
         forumAutoGeneration: { get: () => forumAutoGeneration, set: (value) => { forumAutoGeneration = value; }, enumerable: true },
         forumAutoTimer: { get: () => forumAutoTimer, set: (value) => { forumAutoTimer = value; }, enumerable: true },
@@ -1592,6 +1723,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     });
     Object.assign(ctx, {
         UI_VERSION, abortController, actionBridge, appendImagePreview, applyCloseIcon, beginOperationDialog, buildConversationImageControls, buildEmptyPlaceholder,
+        extensionUpdater, runExtensionUpdate,
         buildImageDirectiveCard, canAppendServiceExperienceDraft, candidateImageState, characterLibrary, chatDrafts, clearMatchedImageState, closeManagedDialog, content,
         dialogController, disableServiceHub, documentRef, formatDirectiveForDisplay, forumCommentDrafts, forumSettingsContent, forumSettingsDialog, forumSettingsTitle,
         groupAutoContent, groupAutoDialog, groupAutoTitle, groupForumStore, groupMemberPickerContent, groupMemberPickerDialog, groupMessageDrafts, imageAssetFailures,
@@ -1626,8 +1758,18 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(root, documentRef, 'touchcancel', (event) => endPhoneNavTouch(event, true), abortController.signal);
     const windowRef = documentRef.defaultView;
     const handleViewportChange = () => {
-        if (uiLayoutMode === 'phone') syncPhonePanelViewport();
-        else clampCustomPanelPosition();
+        if (uiLayoutMode === 'phone') {
+            syncPhonePanelViewport();
+            // 打开状态下视口变化（旋转/地址栏伸缩/软键盘）时把面板拉回可视范围；
+            // 尚未定过位（如打开时尺寸不可测）则重试一次默认居中。拖动中不干预。
+            if (open && !panelDrag) {
+                if (panelHasCustomPosition) clampCustomPanelPosition();
+                else applyPhonePanelPlacement();
+            }
+        } else {
+            clampCustomPanelPosition();
+        }
+        ensureLauncherWithinViewport();
     };
     if (windowRef?.addEventListener) listen(root, windowRef, 'resize', handleViewportChange, abortController.signal);
     if (windowRef?.visualViewport?.addEventListener) {

@@ -3121,6 +3121,22 @@
 .yl-service-order-actions { display: flex; flex-wrap: wrap; gap: var(--yl-space-2); padding-top: var(--yl-space-1); }
 .yl-service-order-actions .yl-settings-button { min-height: var(--yl-icon-hit); padding: 8px var(--yl-space-3); font-size: var(--yl-type-xs); }
 .yl-service-order-completion { color: var(--yl-luxe-text-2); font-size: var(--yl-type-xs); line-height: 1.5; }
+/* 订单列表摘要卡 + 订单详情页（对象公开资料 + 确认成交/取消订单） */
+.yl-service-order-summary { border-color: color-mix(in srgb, var(--yl-luxe-gold) 24%, transparent); }
+.yl-service-order-open-detail { align-self: flex-start; }
+.yl-service-order-detail { display: grid; gap: var(--yl-space-3); }
+.yl-service-detail-back { justify-self: start; min-height: var(--yl-icon-hit); padding: 8px var(--yl-space-3); font-size: var(--yl-type-xs); }
+.yl-service-detail-title { color: var(--yl-luxe-gold); font-size: var(--yl-type-caption); font-weight: 700; }
+.yl-service-detail-profiles { display: grid; gap: var(--yl-space-2); }
+.yl-service-detail-profile {
+    display: grid;
+    gap: var(--yl-space-2);
+    padding: var(--yl-space-3);
+    border: 1px solid var(--yl-luxe-border);
+    border-radius: var(--yl-radius-card);
+    background: var(--yl-luxe-surface);
+}
+.yl-service-detail-profile p { color: var(--yl-luxe-text-2); font-size: var(--yl-type-xs); line-height: 1.5; overflow-wrap: anywhere; }
 .yl-service-repeat-button { border-color: color-mix(in srgb, var(--yl-luxe-gold) 44%, transparent); }
 .yl-service-publication-list { display: grid; gap: var(--yl-space-2); }
 .yl-service-publication-row {

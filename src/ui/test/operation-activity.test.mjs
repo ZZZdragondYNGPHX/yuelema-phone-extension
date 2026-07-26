@@ -18,18 +18,18 @@ test('start, succeed, and fail expose only safe display fields', () => {
     });
 
     const soulMatch = activity.start('灵魂匹配', '灵魂匹配中……');
-    const voiceMatch = activity.start('语音匹配', '正在寻找合拍的声音……');
+    const voiceMatch = activity.start('描述匹配', '正在寻找合拍的描述……');
     assert.equal(typeof soulMatch, 'symbol');
     assert.equal(typeof voiceMatch, 'symbol');
 
     assert.equal(activity.succeed(soulMatch, '灵魂匹配成功，正在打开私聊。'), true);
-    assert.equal(activity.fail(voiceMatch, '语音匹配未成功，请稍后再试。'), true);
+    assert.equal(activity.fail(voiceMatch, '描述匹配未成功，请稍后再试。'), true);
 
     const result = activity.snapshot();
     assert.deepEqual(result.current, []);
     assert.deepEqual(result.entries, [
         {
-            name: '语音匹配', message: '语音匹配未成功，请稍后再试。', status: 'failure',
+            name: '描述匹配', message: '描述匹配未成功，请稍后再试。', status: 'failure',
             startedAt: '2026-07-21T08:00:01.000Z', updatedAt: '2026-07-21T08:00:03.000Z',
         },
         {

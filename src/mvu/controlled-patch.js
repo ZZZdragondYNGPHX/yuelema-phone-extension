@@ -43,6 +43,7 @@ const RELATIONSHIP_VALUE_FIELDS = Object.freeze(['好感', '信任', '戒备', '
 const BOND_VALUE_FIELDS = Object.freeze(['友情值', '心动值', '欲望值']);
 const MAX_CHAT_MESSAGE_LENGTH = 600;
 const MAX_SERVICE_ORDER_PARTICIPANTS = 3;
+const EMPTY_SERVICE_COMPLETION_SIGNAL = Object.freeze({ 已满足: false, 摘要: '', 记录时间: '' });
 const READ_WITHOUT_REPLY_NOTICE = '对方已读，但暂时没有回复。';
 const BLOCKED_CHAT_NOTICE = '对方已将你拉黑，当前会话无法继续发送消息。';
 const PLAYER_PUBLIC_TEXT_LIMITS = Object.freeze({
@@ -325,7 +326,10 @@ function normalizeServiceCandidates({ candidate, candidates } = {}) {
     const normalized = []; const names = new Set();
     for (const item of source) {
         let value;
-        try { value = normalizeGeneratedCandidate(item, { contentMode: undefined, requirePersonalName: true }); }
+        // 与本地生成闸门（generateServiceProfileCandidate）及白名单第二道防线（/角色池/npc_service_*）
+        // 保持同一套校验：完整成年与结构校验必须通过，但不附加推荐流的“真人姓名”风格闸门，
+        // 否则已通过生成校验的合法成年本地角色会在下单时被误判为 service_order_candidate_invalid。
+        try { value = normalizeGeneratedCandidate(item, { contentMode: undefined }); }
         catch { return null; }
         const name = ownRecord(value.公开资料)?.昵称?.trim().toLocaleLowerCase('zh-CN');
         if (!name || names.has(name)) return null;
@@ -390,6 +394,13 @@ function isValidServiceCompletionSignal(value, { required = false } = {}) {
     return value.已满足
         ? isBoundedText(value.摘要, 600, { required: true }) && isBoundedText(value.记录时间, 160, { required: true })
         : value.摘要 === '' && value.记录时间 === '';
+}
+
+function isEmptyServiceCompletionSignal(value) {
+    return isValidServiceCompletionSignal(value, { required: true })
+        && value.已满足 === EMPTY_SERVICE_COMPLETION_SIGNAL.已满足
+        && value.摘要 === EMPTY_SERVICE_COMPLETION_SIGNAL.摘要
+        && value.记录时间 === EMPTY_SERVICE_COMPLETION_SIGNAL.记录时间;
 }
 
 function isCompleteTerminalServiceOrder(source, { mode, categoryId, category, npcUid, profiles }) {
@@ -460,6 +471,7 @@ export function buildServiceOrderHandoffPatch(state, { candidate, candidates, ca
         角色UID: npcUids[0], 角色UID列表: npcUids, 内容模式: mode, 服务分类: categoryId,
         服务主题: serviceTopicForCandidates(normalizedCandidates, category), 状态: '待确认',
         发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '',
+        合法结束条件: EMPTY_SERVICE_COMPLETION_SIGNAL,
     });
     const patch = normalizedCandidates.map((profile, index) => ({ op: 'add', path: encodeJsonPointer(['角色池', npcUids[index]]), value: profile }));
     patch.push(
@@ -498,6 +510,7 @@ export function buildServiceOrderRepeatPatch(state, { sourceOrderUid } = {}) {
         角色UID: participants[0], 角色UID列表: Object.freeze([...participants]), 内容模式: mode, 服务分类: categoryId,
         服务主题: serviceTopicForCandidates(profiles, category), 状态: '待确认',
         发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '',
+        合法结束条件: EMPTY_SERVICE_COMPLETION_SIGNAL,
     });
     return success({ npcUid: participants[0], npcUids: Object.freeze([...participants]), orderUid, patch: [
         { op: 'add', path: encodeJsonPointer(['服务订单', orderUid]), value: order },
@@ -518,7 +531,7 @@ export function buildServiceOrderRebookPatch(state, { npcUid, npcUids, categoryI
     if (hasAnyOpenServiceOrder(orders) || participants.some((uid) => hasActiveServiceOrderForRole(orders, { sourceOrderUid: '', npcUid: uid, mode }))) return fail('service_order_conflict');
     const orderUid = `service_${orderCounter + 1}`;
     if (!isServiceOrderUid(orderUid) || Object.hasOwn(orders, orderUid)) return fail('service_order_uid_conflict');
-    const profiles = adults.map((adult) => adult.value.profile); const order = Object.freeze({ 角色UID: participants[0], 角色UID列表: participants, 内容模式: mode, 服务分类: categoryId, 服务主题: serviceTopicForCandidates(profiles, category), 状态: '待确认', 发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '' });
+    const profiles = adults.map((adult) => adult.value.profile); const order = Object.freeze({ 角色UID: participants[0], 角色UID列表: participants, 内容模式: mode, 服务分类: categoryId, 服务主题: serviceTopicForCandidates(profiles, category), 状态: '待确认', 发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '', 合法结束条件: EMPTY_SERVICE_COMPLETION_SIGNAL });
     return success({ npcUid: participants[0], npcUids: Object.freeze([...participants]), orderUid, patch: [
         { op: 'add', path: encodeJsonPointer(['服务订单', orderUid]), value: order },
         { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '服务订单']), value: orderCounter + 1 },
@@ -609,7 +622,7 @@ export function buildServiceOrderCompletePatch(state, { orderUid } = {}) {
     if (!orders || !ownRecord(order) || order.状态 !== '进行中' || order.内容模式 !== mode
         || !isBoundedText(order.开始时间, 160, { required: true })
         || !hasSerializedServiceBoundaries(order.已确认边界, { mode, participantCount: (Array.isArray(order.角色UID列表) && order.角色UID列表.length ? order.角色UID列表 : [order.角色UID]).length })
-        || !isValidServiceCompletionSignal(order.合法结束条件, { required: true })) {
+        || !isValidServiceCompletionSignal(order.合法结束条件, { required: true }) || order.合法结束条件.已满足 !== true) {
         return fail('service_order_complete_invalid');
     }
     return success([
@@ -1435,7 +1448,8 @@ export function validateControlledPatchWhitelist(patch) {
             && operation.value.角色UID列表[0] === operation.value.角色UID && operation.value.角色UID列表.every((uid) => isNpcUid(uid))
             && new Set(operation.value.角色UID列表).size === operation.value.角色UID列表.length
             && operation.value.状态 === '待确认' && operation.value.发起时间 === '待正文确认'
-            && operation.value.开始时间 === '' && operation.value.结束时间 === '' && operation.value.结束摘要 === '' && operation.value.已确认边界 === '') continue;
+            && operation.value.开始时间 === '' && operation.value.结束时间 === '' && operation.value.结束摘要 === '' && operation.value.已确认边界 === ''
+            && isEmptyServiceCompletionSignal(operation.value.合法结束条件)) continue;
         const generatedMatchRole = /^\/角色池\/(npc_match_\d+)$/u.exec(path);
         if (operation.op === 'add' && generatedMatchRole && isNpcUid(generatedMatchRole[1])) {
             try {

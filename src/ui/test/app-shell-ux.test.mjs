@@ -935,7 +935,7 @@ test('desktop header pointer drag clamps the panel, cancels cleanly, and ignores
     }
 });
 
-test('phone panel restores local placement and the bottom nav long-press drags through Touch Events', async () => {
+test('phone panel recenters an out-of-viewport saved placement and the bottom nav long-press drags through Touch Events', async () => {
     const previousDefaultView = miniDom.document.defaultView;
     const previousDocumentElement = miniDom.document.documentElement;
     miniDom.document.defaultView = {
@@ -964,8 +964,8 @@ test('phone panel restores local placement and the bottom nav long-press drags t
         const headerCapture = installPointerCaptureStub(header);
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
 
-        assert.equal(styles.left, '140px', '恢复坐标越过右边界时应按当前屏宽钳制');
-        assert.equal(styles.top, '0px', '恢复坐标越过上边界时应保持面板可见');
+        assert.equal(styles.left, '70px', '恢复坐标越出当前视口时应回到可视视口水平居中');
+        assert.equal(styles.top, '140px', '恢复坐标越出当前视口时应回到可视视口垂直居中');
         header.dispatchEvent(pointerEvent('pointerdown', { pointerId: 17, pointerType: 'touch', clientX: 180, clientY: 120 }));
         assert.equal(headerCapture.captureCalls, 0, '手机布局仍不得把头部滚动手势当成窗口拖动');
 
@@ -975,10 +975,10 @@ test('phone panel restores local placement and the bottom nav long-press drags t
         const move = touchEvent('touchmove', [{ identifier: 42, clientX: 140, clientY: 590 }]);
         miniDom.document.dispatchEvent(move);
         assert.equal(move.defaultPrevented, true, '长按成立并移动后必须阻止宿主滚动接管手势');
-        assert.equal(styles.left, '80px');
-        assert.equal(styles.top, '30px');
+        assert.equal(styles.left, '10px');
+        assert.equal(styles.top, '170px');
         miniDom.document.dispatchEvent(touchEvent('touchend', [], [{ identifier: 42, clientX: 140, clientY: 590 }]));
-        assert.deepEqual(JSON.parse(storage.getItem('yuelema.phone-panel-position/v1')), { left: 80, top: 30 }, '拖窗结束应把面板坐标保存在浏览器本地');
+        assert.deepEqual(JSON.parse(storage.getItem('yuelema.phone-panel-position/v1')), { left: 10, top: 170 }, '拖窗结束应把面板坐标保存在浏览器本地');
 
         const syntheticClick = new Event('click', { cancelable: true });
         nav.dispatchEvent(syntheticClick);

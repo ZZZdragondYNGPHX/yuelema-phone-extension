@@ -41,6 +41,14 @@ test('内置 SFW/NSFW 提示词保持一一隔离的模式映射', () => {
         assert.equal(presetById.get(nsfwId)?.contentMode, 'NSFW');
     }
 
+    // 「描述匹配」只改显示名与文案；持久化 ID 恒为 builtin_voice_match_*。
+    assert.equal(BUILTIN_PROMPT_PRESET_IDS.voiceMatchSfw, 'builtin_voice_match_sfw');
+    assert.equal(BUILTIN_PROMPT_PRESET_IDS.voiceMatchNsfw, 'builtin_voice_match_nsfw');
+    assert.equal(presetById.get(BUILTIN_PROMPT_PRESET_IDS.voiceMatchSfw).name, '内置·描述匹配·SFW');
+    assert.equal(presetById.get(BUILTIN_PROMPT_PRESET_IDS.voiceMatchNsfw).name, '内置·描述匹配·NSFW');
+    assert.doesNotMatch(presetById.get(BUILTIN_PROMPT_PRESET_IDS.voiceMatchSfw).content, /语音/u);
+    assert.doesNotMatch(presetById.get(BUILTIN_PROMPT_PRESET_IDS.voiceMatchNsfw).content, /语音/u);
+
     assert.equal(BUILTIN_PROMPT_PRESET_IDS.privateChatSfw, 'builtin_private_chat_sfw');
     assert.equal(BUILTIN_PROMPT_PRESET_IDS.privateChatNsfw, 'builtin_private_chat_nsfw');
     assert.equal(BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw, 'builtin_service_profile_sfw');
@@ -102,7 +110,7 @@ test('NSFW 内置提示词从许可式升级为指导式：各职能带具体情
         [BUILTIN_PROMPT_PRESET_IDS.characterAuthoringNsfw]: [/人格化/, /延伸或反差/, /口癖/, /钩子/, /欲望层次/],
         [BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw]: [/剧目要具体可选/, /卖点/, /感官细节/, /咬合/],
         [BUILTIN_PROMPT_PRESET_IDS.soulMatchNsfw]: [/欲望维度/, /细化/, /同一种色/],
-        [BUILTIN_PROMPT_PRESET_IDS.voiceMatchNsfw]: [/声音维度/, /气音/, /语气/],
+        [BUILTIN_PROMPT_PRESET_IDS.voiceMatchNsfw]: [/欲望信号/, /节奏与强度/, /羞耻点/],
         [BUILTIN_PROMPT_PRESET_IDS.imageMatchNsfw]: [/氛围与构图/, /光线/, /衣物细节/, /独有的色/],
     };
     const presets = presetsByMode('NSFW');

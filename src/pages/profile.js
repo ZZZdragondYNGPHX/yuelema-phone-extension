@@ -453,6 +453,25 @@ export function createProfilePage(ctx) {
         }
         section.appendChild(actions);
         section.appendChild(element('p', { className: 'yl-about-safety-note', text: 'NSFW 会开启更直接的成年人虚构服务分类与表达；它不代表同意，也不会绕过受控 MVU 写入、隐私最小化或小手机不自动发送的规则。' }));
+        const updateAvailable = Boolean(ctx.extensionUpdater && typeof ctx.runExtensionUpdate === 'function');
+        const updatePending = Boolean(ctx.extensionUpdatePending);
+        const updateEntry = element('button', {
+            className: 'yl-center-entry',
+            type: 'button',
+            name: 'about-extension-update',
+            ariaLabel: '检查并自动更新约了吗小手机扩展',
+            disabled: !updateAvailable || updatePending,
+        });
+        updateEntry.setAttribute('aria-busy', String(updatePending));
+        const updateIcon = element('span', { className: 'yl-about-entry-icon' });
+        updateIcon.appendChild(createUiIcon(ctx.documentRef, 'refresh', { className: 'yl-about-entry-svg', size: 18 }));
+        const updateTitle = updatePending ? '正在检查并更新' : '检查并更新扩展';
+        const updateNote = !updateAvailable
+            ? '当前酒馆未提供可用的扩展更新服务。'
+            : '自动检查 Git 版本，并在需要时通过酒馆更新服务完成更新。';
+        append(updateEntry, [updateIcon, element('strong', { text: updateTitle }), element('span', { text: updateNote }), ctx.openMark()]);
+        if (updateAvailable && !updatePending) listen(updateEntry, updateEntry, 'click', () => { void ctx.runExtensionUpdate(); }, ctx.abortController.signal);
+        section.appendChild(updateEntry);
         return section;
     }
     function buildOperationConsole() {
@@ -467,7 +486,7 @@ export function createProfilePage(ctx) {
         if (!snapshot.entries.length) {
             section.appendChild(createEmptyState({
                 documentRef: ctx.documentRef, variant: 'inbox',
-                title: '暂无运行记录', hint: '开始灵魂匹配、语音匹配或收藏主动私聊后，会在这里显示进度。',
+                title: '暂无运行记录', hint: '开始灵魂匹配、描述匹配或收藏主动私聊后，会在这里显示进度。',
             }));
             return section;
         }

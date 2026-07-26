@@ -604,7 +604,8 @@ function normalizeForumRefresh(value) {
     assertExactObject(value, new Set(['participants', 'posts']), new Set(['participants', 'posts']), 'INVALID_FORUM_REFRESH');
     const participants = ownData(value, 'participants', 'INVALID_FORUM_REFRESH');
     const posts = ownData(value, 'posts', 'INVALID_FORUM_REFRESH');
-    if (!Array.isArray(participants) || participants.length > 6 || !Array.isArray(posts) || posts.length !== FORUM_CHANNELS.length) fail('INVALID_FORUM_REFRESH');
+    // One new temporary author per fixed channel must be storable, so the cap follows the channel count.
+    if (!Array.isArray(participants) || participants.length > FORUM_CHANNELS.length || !Array.isArray(posts) || posts.length !== FORUM_CHANNELS.length) fail('INVALID_FORUM_REFRESH');
     const names = new Set();
     const normalizedParticipants = participants.map((profile) => {
         const normalized = normalizeGroupForumProfile(profile);

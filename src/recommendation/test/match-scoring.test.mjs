@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { scoreFavoritePrivateChatInvitation, scoreLocalCandidateMatch } from '../match-scoring.js';
+import { scoreFavoritePrivateChatInvitation, scoreKeywordOnlyCandidateMatch, scoreLocalCandidateMatch } from '../match-scoring.js';
 
 test('favourite private-chat invitation combines local keyword taste and heart-card fields before threshold comparison', () => {
     const result = scoreFavoritePrivateChatInvitation({
@@ -43,6 +43,30 @@ test('candidate matching score is local, deterministic, and uses the current eff
     const disliked = scoreLocalCandidateMatch(compatiblePlayer, compatibleNpc, { 电影: -5, 徒步: -5 });
     assert.equal(disliked.score, 70);
     assert.equal(disliked.keywordScore, 40);
+});
+
+test('描述匹配关键词评分只使用有效关键词权重，性别与其他资料字段不影响结果', () => {
+    const npc = {
+        年龄段: '25-29', 性别: '女', 性取向: '异性恋', 城市: '上海', 距离范围: '10 km', 寻找意图: '约会',
+        兴趣标签: ['电影'], 生活方式标签: ['徒步'], 性格标签: ['慢热'], 沟通风格标签: [],
+    };
+    // 电影(5)=100、徒步(2)=70、慢热未命中=50 → (100+70+50)/3 = 73（四舍五入）。
+    const scored = scoreKeywordOnlyCandidateMatch(npc, [{ keyword: '电影', weight: 5 }, { keyword: '徒步', weight: 2 }]);
+    assert.deepEqual(scored, {
+        score: 73, eligible: true, heartCardScore: null, keywordScore: 73, sharedTags: 2,
+        reasons: ['关键词命中 2 项'],
+    });
+
+    // 同一 NPC 换性别/性取向/城市，关键词分数完全不变——资料字段不参与。
+    const differentProfileFields = { ...npc, 性别: '男', 性取向: '同性恋', 城市: '北京', 年龄段: '48岁' };
+    assert.deepEqual(scoreKeywordOnlyCandidateMatch(differentProfileFields, [{ keyword: '电影', weight: 5 }, { keyword: '徒步', weight: 2 }]), scored);
+
+    // 负权重压低分数；无标签候选保持中性且不因资料被判不合格。
+    const negative = scoreKeywordOnlyCandidateMatch(npc, [{ keyword: '电影', weight: -5 }]);
+    assert.equal(negative.score, 33);
+    const noTags = scoreKeywordOnlyCandidateMatch({ ...npc, 兴趣标签: [], 生活方式标签: [], 性格标签: [], 沟通风格标签: [] }, [{ keyword: '电影', weight: 5 }]);
+    assert.equal(noTags.score, 50);
+    assert.equal(noTags.eligible, true);
 });
 
 test('concise target-gender orientation values are hard reciprocal filters', () => {

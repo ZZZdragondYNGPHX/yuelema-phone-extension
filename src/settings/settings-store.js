@@ -8,13 +8,16 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 13;
+export const SETTINGS_SCHEMA_VERSION = 14;
 // v12 rewrote the stock built-in prompt preset copy (阶段 55 内容尺度调整)，
-// v13 enriched the NSFW stock copy with concrete erotic-writing guidance.
-// A stored v11 or v12 document therefore upgrades in place: stock builtin_*
+// v13 enriched the NSFW stock copy with concrete erotic-writing guidance,
+// v14 renamed the「语音匹配」stock presets to「描述匹配」(display name and
+// prompt copy only; the persisted builtin_voice_match_* IDs and every user
+// binding that references them stay unchanged, so no binding remap is needed).
+// A stored v11–v13 document therefore upgrades in place: stock builtin_*
 // prompt presets are refreshed to the current copy, user-created presets are
 // kept verbatim. Versions before 11 stay rejected, matching the v11 cleanup.
-const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12]);
+const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13]);
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -206,10 +209,10 @@ function cleanContentMode(value) {
 
 
 /**
- * v11/v12 documents keep stock prompt-preset IDs whose source copy changed in
- * a later schema (v12 尺度调整、v13 NSFW 写作指导). Refresh only those stock
- * IDs once during the schema upgrade; user-created prompt IDs (and stock
- * presets the user deleted) remain untouched.
+ * v11–v13 documents keep stock prompt-preset IDs whose source copy changed in
+ * a later schema (v12 尺度调整、v13 NSFW 写作指导、v14 语音匹配→描述匹配 改名).
+ * Refresh only those stock IDs once during the schema upgrade; user-created
+ * prompt IDs (and stock presets the user deleted) remain untouched.
  */
 function refreshStockBuiltinPromptPresets(presets) {
     const stockById = new Map(createBuiltinPromptPresets().map((preset) => [preset.id, normalizePromptPreset(preset)]));
@@ -628,8 +631,8 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         } catch {
             fail('INVALID_IMPORT_JSON', '设置 JSON 无法解析。');
         }
-        // Persist only a normalized current v13 document; an upgradeable
-        // v11/v12 document is migrated (stock prompt copy refreshed) inside
+        // Persist only a normalized current v14 document; an upgradeable
+        // v11–v13 document is migrated (stock prompt copy refreshed) inside
         // normalize.
         return persist(parsed);
     }

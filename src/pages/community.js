@@ -351,13 +351,30 @@ export function createCommunityPage(ctx) {
         ctx.closeManagedDialog(ctx.groupAutoDialog);
         ctx.groupAutoContent.replaceChildren();
     }
-    function openGroupAutoDialog(group) {
+    /**
+     * 群设置对话框（仅在群聊房间内可达）：预设绑定（连接 + 提示词）与自动更新并列呈现，
+     * 风格与社区设置（openForumSettingsDialog）一致。绑定按当前 SFW/NSFW 分开保存，
+     * 只写入浏览器本地群缓存（groupForumStore），绝不写回可导出的设置仓库、MVU 或酒馆正文。
+     */
+    function openGroupSettingsDialog(group) {
         const thread = groupConversation(group);
         const current = thread.auto ?? DEFAULT_GROUP_AUTO_SETTINGS;
+        const contentMode = currentContentMode();
         ctx.groupAutoDialogKey = group.cacheKey;
-        ctx.groupAutoTitle.textContent = `${group.name} · 自动更新`;
+        ctx.groupAutoTitle.textContent = `${group.name} · 群设置`;
+        ctx.groupAutoDialog.setAttribute('aria-label', `${group.name}群设置`);
+        ctx.groupAutoDialog.querySelector?.('.yl-dialog-close')?.setAttribute?.('aria-label', '关闭群设置');
         ctx.groupAutoContent.replaceChildren();
-        ctx.groupAutoContent.appendChild(element('p', { className: 'yl-phone-page-description', text: '开启后，只会每隔设定秒数调用当前“聊天群”AI 预设；玩家发言不会触发额外调用。关闭时则在玩家发言后更新。' }));
+        ctx.groupAutoContent.appendChild(element('p', { className: 'yl-phone-page-description', text: '以下设置只影响当前聊天群，保存在浏览器本地缓存，不写入设置导出、MVU 或酒馆正文。' }));
+        const bindingZone = buildLocalBindingZone({
+            title: '聊天群预设',
+            description: `绑定只影响本群公开聊天的内容风格；成员、消息结构与数据框架由代码固定。此处仅保存当前 ${contentMode} 模式的绑定，另一模式独立保存、互不影响。`,
+            binding: localBindingForMode(thread.bindings, contentMode),
+            namePrefix: 'group-chat',
+        });
+        ctx.groupAutoContent.appendChild(bindingZone.zone);
+        const autoZone = element('section', { className: 'yl-forum-settings-zone' });
+        append(autoZone, [element('h3', { text: '自动更新' }), element('p', { className: 'yl-settings-summary', text: '开启后，只会每隔设定秒数调用当前“聊天群”AI 预设；玩家发言不会触发额外调用。关闭时则在玩家发言后更新。' })]);
         const enabledField = element('label', { className: 'yl-switch yl-group-auto-switch' });
         const enabled = element('input', { type: 'checkbox', checked: current.enabled === true, ariaLabel: '开启聊天群自动更新' });
         enabledField.appendChild(enabled);
@@ -365,7 +382,8 @@ export function createCommunityPage(ctx) {
         const interval = element('input', { className: 'yl-settings-control', type: 'number', min: 5, max: 3600, value: String(Number.isInteger(current.intervalSeconds) ? current.intervalSeconds : DEFAULT_GROUP_AUTO_SETTINGS.intervalSeconds), inputMode: 'numeric', ariaLabel: '自动更新时间秒数', disabled: current.enabled !== true });
         const intervalField = element('label', { className: 'yl-settings-field' }); append(intervalField, [element('span', { text: '更新时间（s）' }), interval, element('span', { className: 'yl-settings-summary', text: '关闭时不可编辑；开启后可设为 5–3600 秒。仅在当前聊天群界面打开时运行。' })]);
         listen(enabled, enabled, 'change', () => { interval.disabled = !enabled.checked; }, ctx.abortController.signal);
-        ctx.groupAutoContent.appendChild(enabledLabel); ctx.groupAutoContent.appendChild(intervalField);
+        const autoRow = element('div', { className: 'yl-forum-auto-settings-row' }); append(autoRow, [enabledLabel, intervalField]);
+        autoZone.appendChild(autoRow); ctx.groupAutoContent.appendChild(autoZone);
         const actions = element('div', { className: 'yl-settings-actions' });
         const cancel = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '取消' });
         const confirm = element('button', { className: 'yl-settings-button', type: 'button', text: '确定' });
@@ -375,28 +393,23 @@ export function createCommunityPage(ctx) {
             if (enabled.checked && (!Number.isInteger(seconds) || seconds < 5 || seconds > 3600)) { ctx.setFeedback('更新时间请填写 5–3600 秒之间的整数。'); return; }
             const intervalSeconds = Number.isInteger(seconds) && seconds >= 5 && seconds <= 3600 ? seconds : DEFAULT_GROUP_AUTO_SETTINGS.intervalSeconds;
             if (!ctx.groupForumStore?.setGroupAuto) { ctx.setFeedback('本地聊天群缓存尚未就绪。'); return; }
+            let presetSnapshot = null;
+            try { presetSnapshot = ctx.settingsStore?.snapshot?.() ?? null; } catch { presetSnapshot = null; }
+            // 预设列表不可用（快照缺失）时不写绑定，避免把已保存的绑定覆盖成空。
+            const bindingAvailable = Boolean(presetSnapshot && Array.isArray(presetSnapshot.connectionPresets) && Array.isArray(presetSnapshot.promptPresets) && ctx.groupForumStore?.setGroupBinding);
             void (async () => {
                 try {
                     await ctx.groupForumStore.setGroupAuto({ key: group.cacheKey, title: group.name, settings: { enabled: Boolean(enabled.checked), intervalSeconds } });
+                    if (bindingAvailable) await ctx.groupForumStore.setGroupBinding({ key: group.cacheKey, title: group.name, contentMode, binding: bindingZone.getBinding() });
                     await syncGroupForumSnapshot({ rerender: false });
                     closeGroupAutoDialog();
-                    ctx.setFeedback(enabled.checked ? `已开启自动更新：每 ${intervalSeconds}s。` : '已关闭自动更新；之后会在你发言后更新。');
+                    ctx.setFeedback(enabled.checked ? `群设置已保存：预设绑定仅影响本群，自动更新每 ${intervalSeconds}s。` : '群设置已保存：预设绑定仅影响本群；自动更新已关闭，之后会在你发言后更新。');
                     ctx.renderPage(); syncGroupAutoTimer();
-                } catch { ctx.setFeedback('自动更新设置没有保存，请稍后重试。'); }
+                } catch { ctx.setFeedback('群设置没有保存，请稍后重试。'); }
             })();
         }, ctx.abortController.signal);
         append(actions, [cancel, confirm]); ctx.groupAutoContent.appendChild(actions);
         ctx.dialogController.open(ctx.groupAutoDialog, { onRequestClose: closeGroupAutoDialog });
-    }
-    function openGroupPresetDialog(group) {
-        ctx.openFeatureBinding([{ key: 'group_chat', title: group.name + '聊天群' }], `${group.name} · 预设`, {
-            readBinding: (_feature, contentMode) => localBindingForMode(groupConversation(group).bindings, contentMode),
-            saveBinding: async (_feature, contentMode, binding) => {
-                if (!ctx.groupForumStore?.setGroupBinding) throw new Error('local group bindings unavailable');
-                await ctx.groupForumStore.setGroupBinding({ key: group.cacheKey, title: group.name, contentMode, binding });
-                await syncGroupForumSnapshot({ rerender: false });
-            },
-        });
     }
     function stopGroupAutoTimer() {
         if (ctx.groupAutoTimer !== null) clearInterval(ctx.groupAutoTimer);
@@ -602,13 +615,12 @@ export function createCommunityPage(ctx) {
             const menu = element('div', { className: 'yl-private-chat-more-menu yl-group-room-more-menu', ariaLabel: `${group.name}更多操作` });
             const exit = element('button', { className: 'yl-private-chat-menu-item is-danger', type: 'button', text: '退出群聊', ariaLabel: '退出群聊并删除本地群数据' });
             const clear = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '清空群历史', ariaLabel: '仅清空当前聊天群历史' });
-            const auto = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '自动更新设置', ariaLabel: '设置聊天群自动更新' });
-            const preset = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '预设', ariaLabel: `配置${group.name}的预设` });
+            // 群设置合并入口：预设绑定（连接+提示词）与自动更新在同一对话框内并列呈现，只在本群房间内可达。
+            const settings = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '群设置', ariaLabel: `打开${group.name}的群设置（预设绑定与自动更新）` });
             listen(exit, exit, 'click', () => { ctx.groupRoomMenuOpen = false; ctx.groupRoomConfirmation = 'exit'; ctx.groupRoomConfirmationKey = group.cacheKey; ctx.renderPage(); }, ctx.abortController.signal);
             listen(clear, clear, 'click', () => { ctx.groupRoomMenuOpen = false; ctx.groupRoomConfirmation = 'clear'; ctx.groupRoomConfirmationKey = group.cacheKey; ctx.renderPage(); }, ctx.abortController.signal);
-            listen(auto, auto, 'click', () => { ctx.groupRoomMenuOpen = false; ctx.renderPage(); openGroupAutoDialog(group); }, ctx.abortController.signal);
-            listen(preset, preset, 'click', () => { ctx.groupRoomMenuOpen = false; ctx.renderPage(); openGroupPresetDialog(group); }, ctx.abortController.signal);
-            append(menu, [exit, clear, auto, preset]); wrapper.appendChild(menu);
+            listen(settings, settings, 'click', () => { ctx.groupRoomMenuOpen = false; ctx.renderPage(); openGroupSettingsDialog(group); }, ctx.abortController.signal);
+            append(menu, [exit, clear, settings]); wrapper.appendChild(menu);
         }
         return wrapper;
     }
@@ -1423,8 +1435,7 @@ export function createCommunityPage(ctx) {
         closeGroupMemberPicker,
         openGroupMemberPicker,
         closeGroupAutoDialog,
-        openGroupAutoDialog,
-        openGroupPresetDialog,
+        openGroupSettingsDialog,
         stopGroupAutoTimer,
         syncGroupAutoTimer,
         runGroupAutoUpdate,

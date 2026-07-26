@@ -47,6 +47,7 @@ export function createServicePage(ctx) {
     let servicePublicationOpen = false;
     let openServiceRecordMenuId = '';
     let serviceGeneratingBatchKey = '';
+    let activeServiceOrderDetailId = '';
     const serviceOrderStepState = new Map();
     function serviceHubModeCopy(mode = ctx.currentView.mode) {
         const nsfw = mode === 'NSFW';
@@ -186,6 +187,34 @@ export function createServicePage(ctx) {
         const handoff = ctx.actionBridge.appendMeetupDraft(serviceExperienceDraft(profile, mode, orderUid));
         if (handoff?.ok) { ctx.setFeedback(successMessage, operationToken); return true; }
         ctx.setFeedback('服务记录已写入 MVU，但没有找到酒馆输入框；可稍后再次填入。', operationToken); return false;
+    }
+    // 成交提示词：面向正文的执行草稿（含对象公开信息与本次服务内容要求），绝不包含内部订单/角色 UID。
+    function serviceDealDraft(order, boundaries = null) {
+        const profiles = Array.isArray(order?.profiles) && order.profiles.length ? order.profiles : [order?.profile];
+        const names = profiles.map((profile) => typeof profile?.昵称 === 'string' && profile.昵称.trim() ? profile.昵称.trim().slice(0, 80) : '').filter(Boolean).join('、') || '已确认成年人角色';
+        const category = typeof order?.category === 'string' && order.category.trim() ? order.category.trim().slice(0, 80) : '成年人陪伴';
+        const source = boundaries && typeof boundaries === 'object' ? boundaries : null;
+        const requirements = [];
+        const topic = String(source?.主题 ?? '').trim();
+        if (topic) requirements.push(`主题「${topic.slice(0, 240)}」`);
+        for (const field of ['允许项', '排除项', '强度', '隐私处理']) {
+            const value = String(source?.[field] ?? '').trim();
+            if (value) requirements.push(`${field}：${value.slice(0, 240)}`);
+        }
+        const requirementText = requirements.length ? `本次服务内容要求：${requirements.join('；')}。` : '本次服务内容以双方在正文中已确认的结构化边界为准。';
+        const closing = '完成全部已确认的服务内容后，请在变量更新中把当前进行中的订单标记为满足合法结束条件（附摘要与记录时间），软件会自动结单；不展示内部订单编号。';
+        return order?.mode === 'NSFW'
+            ? `【订单已成交】我已确认与「${names}」成交「${category}」主题的虚构成人服务角色扮演。${requirementText}请在正文中按上述边界推进剧情，每位明确成年人仍保持自愿并可随时撤回具体未确认内容。${closing}`
+            : `【订单已成交】我已确认与「${names}」成交「${category}」租借陪伴服务。${requirementText}请在正文中按上述边界推进本次陪伴剧情，保持双方自愿与舒适。${closing}`;
+    }
+    function appendServiceDealDraft(order, boundaries = null, operationToken = null, operationEpoch = ctx.serviceOrderOperationEpoch, successMessage = '已确认成交并把成交提示词填入正文输入框；请自行发送，小手机绝不自动发送。') {
+        const mode = order?.mode;
+        if (!ctx.canAppendServiceExperienceDraft(mode, operationEpoch)) return false;
+        if ((mode !== 'SFW' && mode !== 'NSFW') || ctx.currentView.mode !== mode) { ctx.setFeedback('内容模式已改变；订单已成交，但未填入成交提示词。', operationToken); return false; }
+        if (typeof ctx.actionBridge.appendMeetupDraft !== 'function') { ctx.setFeedback('订单已成交，但当前无法接管酒馆输入框。', operationToken); return false; }
+        const handoff = ctx.actionBridge.appendMeetupDraft(serviceDealDraft(order, boundaries));
+        if (handoff?.ok) { ctx.setFeedback(successMessage, operationToken); return true; }
+        ctx.setFeedback('订单已成交，但没有找到酒馆输入框；可在订单详情重新填入成交提示词。', operationToken); return false;
     }
     function localServiceOrder(profile) {
         if (!profile?.orderUid || !Array.isArray(ctx.currentView.serviceOrders)) return null;
@@ -466,13 +495,17 @@ export function createServicePage(ctx) {
     }
     async function startServiceOrder(order) {
         if (!order || ctx.serviceOrderMutationPendingId) return;
-        const boundaries = readServiceBoundaryDraft(order); const requestId = ++ctx.interactionGeneration; ctx.serviceOrderMutationPendingId = order.id;
-        const token = ctx.setFeedback('正在确认服务边界并开始订单…'); ctx.renderPage(); let result;
+        const boundaries = readServiceBoundaryDraft(order); const requestId = ++ctx.interactionGeneration; const operationEpoch = ctx.serviceOrderOperationEpoch; ctx.serviceOrderMutationPendingId = order.id;
+        const token = ctx.setFeedback('正在确认成交并开始订单…'); ctx.renderPage(); let result;
         try { result = await ctx.actionBridge.runServiceOrderStart?.({ orderUid: order.id, boundaries, expectedContentMode: order.mode }); } catch { result = { ok: false }; }
         ctx.serviceOrderMutationPendingId = '';
         if (ctx.isDestroyed || requestId !== ctx.interactionGeneration) return;
         if (!result?.ok) { ctx.setFeedback(describeActionFailure(result), token); ctx.renderPage(); return; }
-        ctx.serviceBoundaryDrafts.delete(order.id); serviceOrderStepState.delete(order.id); ctx.refreshState(); ctx.setFeedback('已确认接单；正文剧情现在可以推进。小手机不会自动发送。', token); ctx.renderPage();
+        ctx.serviceBoundaryDrafts.delete(order.id); serviceOrderStepState.delete(order.id); ctx.refreshState();
+        // 成交后把执行提示词填入酒馆输入框；appendMeetupDraft 只写值并触发 input，绝不自动发送。
+        const filled = appendServiceDealDraft(order, boundaries, token, operationEpoch);
+        if (!filled && operationEpoch !== ctx.serviceOrderOperationEpoch) return;
+        ctx.renderPage();
     }
     async function rebookServiceHistory(record) {
         if (!record || ctx.serviceOrderMutationPendingId) return;
@@ -553,7 +586,7 @@ export function createServicePage(ctx) {
             actions.appendChild(refill);
             if (serviceOrderStep(order).step === SERVICE_ORDER_STEPS.length) {
                 const consentReady = serviceBoundariesConsented(order);
-                const confirm = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-order-start', disabled: mutationPending || !consentReady, text: mutationPending ? '正在确认…' : consentReady ? '确认接单' : '请先逐人确认同意' });
+                const confirm = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-order-start', disabled: mutationPending || !consentReady, text: mutationPending ? '正在确认…' : consentReady ? '确认成交' : '请先逐人确认同意' });
                 listen(confirm, confirm, 'click', () => { void startServiceOrder(order); }, ctx.abortController.signal);
                 actions.appendChild(confirm);
             }
@@ -563,8 +596,8 @@ export function createServicePage(ctx) {
             card.appendChild(actions);
         } else if (status === '进行中') {
             const actions = element('div', { className: 'yl-service-order-actions' });
-            const draft = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-order-refill-draft', disabled: mutationPending, text: '继续协商 / 重新填入草稿' });
-            listen(draft, draft, 'click', () => { appendServiceExperienceDraft(order, order.mode, order.id); }, ctx.abortController.signal);
+            const draft = element('button', { className: 'yl-settings-button', type: 'button', name: 'service-order-refill-draft', disabled: mutationPending, text: '重新填入成交提示词' });
+            listen(draft, draft, 'click', () => { appendServiceDealDraft(order, null, null, ctx.serviceOrderOperationEpoch, '已重新填入成交提示词；请自行发送，小手机绝不自动发送。'); }, ctx.abortController.signal);
             const completion = element('p', { className: 'yl-service-order-completion', text: order?.completionReady ? '正文已标记完整结束条件，正在自动归档。' : '等待正文写入完整结束条件；小手机不会手动伪造完成。' });
             append(actions, [draft, completion]); card.appendChild(actions);
         }
@@ -576,6 +609,48 @@ export function createServicePage(ctx) {
             card.appendChild(repeat);
         }
         return card;
+    }
+    function openServiceOrderDetail(orderId) { activeServiceOrderDetailId = typeof orderId === 'string' ? orderId : ''; ctx.renderPage(); }
+    function closeServiceOrderDetail() { activeServiceOrderDetailId = ''; ctx.renderPage(); }
+    // 详情页对象资料卡：只渲染 projectPublicProfile 投影出的公开白名单字段；非公开层与关系分绝不进入 DOM。
+    function buildServiceOrderProfileDetail(profile, index = 0) {
+        const card = element('article', { className: 'yl-service-detail-profile' });
+        card.appendChild(element('strong', { text: typeof profile?.昵称 === 'string' && profile.昵称.trim() ? profile.昵称.trim().slice(0, 80) : `第 ${index + 1} 位对象` }));
+        const facts = [profile?.年龄段 || '明确成年人', profile?.性别, profile?.城市, profile?.寻找意图].filter((item) => typeof item === 'string' && item.trim());
+        if (facts.length) { const row = element('div', { className: 'yl-service-tags' }); for (const fact of facts) row.appendChild(element('span', { text: fact })); card.appendChild(row); }
+        if (typeof profile?.简介 === 'string' && profile.简介.trim()) card.appendChild(element('p', { text: profile.简介 }));
+        const tags = Array.isArray(profile?.兴趣标签) ? profile.兴趣标签.slice(0, 6) : [];
+        if (tags.length) { const row = element('div', { className: 'yl-service-tags yl-service-detail-tags' }); for (const tag of tags) row.appendChild(element('span', { text: tag })); card.appendChild(row); }
+        return card;
+    }
+    function buildServiceOrderSummaryCard(order) {
+        const names = Array.isArray(order?.profiles) ? order.profiles.map((profile) => profile?.昵称).filter(Boolean) : [];
+        const name = names.join('、') || order?.profile?.昵称 || '已复制角色';
+        const note = order.status === '待确认'
+            ? '待处理订单：点开详情查看对象资料，并选择确认成交或取消订单。'
+            : (order?.completionReady ? '正文已标记结束条件，小手机正在自动结单。' : '进行中：等待正文推进并写入完整结束条件。');
+        const card = buildServiceHubCard(name, note, [order.category, order.status]);
+        card.classList.toggle('yl-service-order-summary', true);
+        const time = order.endedAt || order.startedAt || order.initiatedAt;
+        if (time) card.appendChild(element('span', { className: 'yl-service-order-time', text: time }));
+        const open = element('button', { className: 'yl-settings-button yl-service-order-open-detail', type: 'button', name: 'service-order-open-detail', text: '查看订单详情' });
+        open.setAttribute('aria-label', `查看订单详情：${name}`);
+        listen(open, open, 'click', () => openServiceOrderDetail(order.id), ctx.abortController.signal);
+        card.appendChild(open);
+        return card;
+    }
+    function buildServiceOrderDetailPage(order) {
+        const wrap = element('section', { className: 'yl-service-order-detail', ariaLabel: '服务订单详情' });
+        const back = element('button', { className: 'yl-settings-button yl-service-detail-back', type: 'button', name: 'service-order-detail-back', text: '返回订单列表' });
+        listen(back, back, 'click', () => closeServiceOrderDetail(), ctx.abortController.signal);
+        wrap.appendChild(back);
+        wrap.appendChild(element('strong', { className: 'yl-service-detail-title', text: `订单详情 · ${order.status}` }));
+        const profiles = Array.isArray(order?.profiles) && order.profiles.length ? order.profiles : [order?.profile];
+        const profileList = element('div', { className: 'yl-service-detail-profiles' });
+        profiles.forEach((profile, index) => profileList.appendChild(buildServiceOrderProfileDetail(profile, index)));
+        wrap.appendChild(profileList);
+        wrap.appendChild(buildServiceOrderCard(order));
+        return wrap;
     }
     function buildLocalServiceHistoryCard(record) {
         const name = record?.profile?.昵称 || '已归档服务者';
@@ -746,7 +821,17 @@ export function createServicePage(ctx) {
                 : '本页的本地生成结果不会写入 MVU；选中后才会原子复制角色与建立“待确认”服务记录。NSFW 保持明确成年人、自愿与逐人确认；小手机只留存最小订单摘要，绝不自动发送或替任一方作出同意。';
             body.appendChild(buildServiceHubCard('使用前确认', confirmationNote, ['逐次确认', '小手机不自动发送']));
         } else if (activeTab === 'orders') {
-            const active = serviceOrdersForCurrentMode().filter((order) => order.status === '待确认' || order.status === '进行中'); if (!active.length) body.appendChild(buildServiceHubCard('暂无进行中的服务', '从「精选」选择本地角色后才会创建待确认记录。确认角色复制和正文草稿后，仍须由你自行发送并在酒馆正文中推进。', ['不自动发送'])); for (const order of active) body.appendChild(buildServiceOrderCard(order)); for (const issue of (ctx.currentView.serviceOrderIssues || [])) body.appendChild(buildServiceOrderIssueCard(issue)); const boundaryNote = ctx.currentView.mode === 'SFW' ? '多人服务必须由每一位明确成年人分别同意；历史记录、关系或付款信息都不能代替当前同意。' : '多人服务必须由每一位明确成年人分别同意；历史记录、关系或既往主题都不能代替当前同意，NSFW 不会因小手机默认缩减成人表达尺度。'; body.appendChild(buildServiceHubCard('安全边界', boundaryNote, ['禁止默认同意', '禁止胁迫']));
+            const active = serviceOrdersForCurrentMode().filter((order) => order.status === '待确认' || order.status === '进行中');
+            const detailOrder = active.find((order) => order.id === activeServiceOrderDetailId) ?? null;
+            if (!detailOrder && activeServiceOrderDetailId) activeServiceOrderDetailId = ''; // 订单已结单/取消或模式切换后自动回到列表。
+            if (detailOrder) {
+                body.appendChild(buildServiceOrderDetailPage(detailOrder));
+            } else {
+                if (!active.length) body.appendChild(buildServiceHubCard('暂无进行中的服务', '从「精选」选择本地角色后才会创建待确认记录。确认角色复制和正文草稿后，仍须由你自行发送并在酒馆正文中推进。', ['不自动发送']));
+                for (const order of active) body.appendChild(buildServiceOrderSummaryCard(order));
+                for (const issue of (ctx.currentView.serviceOrderIssues || [])) body.appendChild(buildServiceOrderIssueCard(issue));
+            }
+            const boundaryNote = ctx.currentView.mode === 'SFW' ? '多人服务必须由每一位明确成年人分别同意；历史记录、关系或付款信息都不能代替当前同意。' : '多人服务必须由每一位明确成年人分别同意；历史记录、关系或既往主题都不能代替当前同意，NSFW 不会因小手机默认缩减成人表达尺度。'; body.appendChild(buildServiceHubCard('安全边界', boundaryNote, ['禁止默认同意', '禁止胁迫']));
         } else {
             const history = typeof ctx.serviceOrderHistoryStore?.list === 'function' ? ctx.serviceOrderHistoryStore.list({ includeInternal: true }).filter((record) => record.mode === ctx.currentView.mode) : [];
             if (!history.length) body.appendChild(buildServiceHubCard('暂无历史记录', '完成或取消后仅在当前浏览器保存最小记录；再次下单会建立全新的待确认订单，不继承此前边界。', ['重新确认', '最小留存']));
@@ -770,6 +855,8 @@ export function createServicePage(ctx) {
         candidateNameKey,
         generateLocalServiceProfiles,
         appendServiceExperienceDraft,
+        serviceDealDraft,
+        appendServiceDealDraft,
         localServiceOrder,
         isTerminalServiceOrder,
         selectedServiceProfiles,
@@ -796,6 +883,11 @@ export function createServicePage(ctx) {
         repairServiceOrderIssue,
         buildServiceOrderIssueCard,
         buildServiceOrderCard,
+        buildServiceOrderSummaryCard,
+        buildServiceOrderProfileDetail,
+        buildServiceOrderDetailPage,
+        openServiceOrderDetail,
+        closeServiceOrderDetail,
         buildLocalServiceHistoryCard,
         buildServicePublicationPanel,
         buildServiceXpSearchControls,

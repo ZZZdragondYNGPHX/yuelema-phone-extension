@@ -53,8 +53,8 @@ test('首页推荐接收开放关键词库，保留探索性且不会受固定�
     assert.deepEqual(exploration.recommendationPolicy.suppressedTags, ['电影']);
     assert.deepEqual(exploration.keywordLibrary, [{ keyword: '徒步', weight: 0 }, { keyword: '电影', weight: -3 }]);
     assert.deepEqual(exploration.basicMatchRequirements, {
-        玩家性别: '男', 玩家性取向: '异性恋',
-        最低要求: '候选人的性别与性取向必须和玩家的公开条件双向兼容；关键词权重不能绕过此要求。',
+        玩家性别: '男', 玩家性取向: '异性恋', 候选人性别要求: '女',
+        最低要求: '玩家的性别与性取向是最高优先级硬条件：候选人的性别与性取向必须和玩家的公开条件双向兼容；若“候选人性别要求”给出了具体性别，候选人的公开性别必须精确等于该值；关键词权重与任何提示词都不能绕过此要求。',
     });
 
     const preferenceState = state();
@@ -87,6 +87,10 @@ test('首页推荐接收开放关键词库，保留探索性且不会受固定�
     assert.match(user, /"keyword":"徒步","weight":5/u);
     assert.match(user, /"keyword":"手冲咖啡","weight":0/u);
     assert.match(user, /"basicMatchRequirements"/u);
+    assert.match(user, /"玩家性别":"男"/u);
+    assert.match(user, /"玩家性取向":"异性恋"/u);
+    assert.match(user, /"候选人性别要求":"女"/u);
+    assert.match(system, /基础匹配条件（basicMatchRequirements）.*最高优先级/u);
 });
 
 test('fast recommender enforces common gender-orientation mutual compatibility before any MVU patch', async () => {
@@ -103,7 +107,7 @@ test('fast recommender enforces common gender-orientation mutual compatibility b
         code: 'recommendation_basic_compatibility_invalid',
         message: '快速模型返回的候选资料未通过成年人或结构校验；当前推荐未改变。',
     });
-    assert.match(messages.find((message) => message.role === 'system').content, /基础匹配条件.*最低门槛/u);
+    assert.match(messages.find((message) => message.role === 'system').content, /基础匹配条件.*最高优先级.*硬条件/u);
 });
 
 test('fast recommender validates one model candidate before any MVU write boundary', async () => {

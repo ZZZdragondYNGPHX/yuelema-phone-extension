@@ -13,14 +13,16 @@ import { toPublicLlmError } from './llm/openai-compatible-client.js';
 
 const FUNCTION_LABELS = Object.freeze({
     chat: '私聊',
+    chat_summary: '对话总结',
     character_ai_completion: '角色 AI 补全',
     character_full_authoring: '角色完整创作',
     soul_match: '灵魂匹配',
-    text_match: '语音匹配',
+    text_match: '描述匹配',
     recommendation_refresh: '推荐刷新',
     group_chat: '聊天群',
     forum: '论坛',
     image_match: '图片匹配',
+    service_profile_generation: '约伴服务角色生成',
 });
 const CONTENT_MODE_LABELS = Object.freeze({ SFW: 'SFW', NSFW: 'NSFW' });
 const PROMPT_BUNDLE_SCHEMA = 'yuelema.prompt-preset-bundle';

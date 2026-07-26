@@ -249,6 +249,63 @@ test('关于页彩蛋链保留，开启专属服务后我的页出现金框入�
     }
 });
 
+async function flushUi() {
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Promise.resolve();
+}
+
+test('关于页最底部提供固定扩展检查并自动更新入口，成功后提示重新载入', async () => {
+    let resolveUpdate;
+    let calls = 0;
+    const mounted = mount('ylm-e1-extension-update', {
+        extensionUpdater: {
+            checkAndUpdate() {
+                calls += 1;
+                return new Promise((resolve) => { resolveUpdate = resolve; });
+            },
+        },
+    });
+    try {
+        openProfile();
+        click(buttonByPage('about'));
+        const section = miniDom.document.querySelector('.yl-about-page');
+        const update = miniDom.document.querySelector('[name="about-extension-update"]');
+        assert.ok(update, '关于页最底部必须有扩展更新入口');
+        assert.equal(section.childNodes.at(-1), update, '扩展更新入口必须位于关于页最底部');
+        assert.ok(update.classList.contains('yl-center-entry'), '更新入口应复用中心列表视觉');
+        assert.equal(update.disabled, false, '有宿主更新器时入口可用');
+        click(update);
+        assert.equal(calls, 1, '单击只调用一次宿主更新器');
+        const pending = miniDom.document.querySelector('[name="about-extension-update"]');
+        assert.equal(pending.disabled, true, '检查期间入口必须禁用');
+        assert.equal(pending.getAttribute('aria-busy'), 'true');
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+        assert.equal(dialog.hidden, false, '检查期间应显示统一操作弹窗');
+        assert.match(dialog.textContent, /正在检查扩展更新/u);
+        resolveUpdate({ outcome: 'updated' });
+        await flushUi();
+        assert.match(dialog.textContent, /更新已完成/u);
+        assert.match(dialog.textContent, /重新载入酒馆页面/u);
+        assert.doesNotMatch(dialog.textContent, /https?:|github|[A-Za-z]:\\/iu, '成功反馈不得暴露远程地址或本地路径');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('无宿主更新器时关于页入口保持禁用并说明不可用', () => {
+    const mounted = mount('ylm-e1-extension-update-unavailable');
+    try {
+        openProfile();
+        click(buttonByPage('about'));
+        const update = miniDom.document.querySelector('[name="about-extension-update"]');
+        assert.ok(update, '即使宿主不支持也应说明入口状态');
+        assert.equal(update.disabled, true);
+        assert.match(update.textContent, /当前酒馆未提供可用的扩展更新服务/u);
+    } finally {
+        mounted.destroy();
+    }
+});
 test('关于页版本五连点仍解锁 SFW/NSFW 滑块（彩蛋逻辑零改动）', () => {
     const mounted = mount('ylm-e1-about-easter-egg');
     try {

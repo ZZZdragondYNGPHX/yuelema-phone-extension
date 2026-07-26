@@ -821,7 +821,7 @@ test('voice match first resolves transient voice keywords and then commits the s
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual([result.npcUid, result.sessionUid], ['npc_match_6', 'chat_2']);
     assert.equal(result.matchOutcome, 'accepted');
-    assert.equal(result.matchScore, 75, '临时语音关键词应覆盖同名本地权重并参与本地评分。');
+    assert.equal(result.matchScore, 100, '描述匹配只按临时+本地关键词权重本地评分（逛展=5 → 100），玩家资料字段不参与。');
     assert.equal(modelCall, 2, '语音匹配应先解析关键词，再生成候选人');
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
     assert.equal(imageMatches.length, 1, '图片匹配拒绝不得阻塞语音角色生成与 MVU 写回。');

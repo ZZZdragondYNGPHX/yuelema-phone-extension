@@ -171,7 +171,7 @@ test('chat group menu creates a browser-local room from private-chat public prof
         assert.equal(writes.groupUpdates, 1, '关闭自动更新时，玩家发言后应调用一次群聊 AI');
 
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开周末看展小队的更多操作'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '自动更新设置'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '群设置'));
         const enabled = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启聊天群自动更新');
         const seconds = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '自动更新时间秒数');
         assert.equal(seconds.disabled, true, '关闭自动更新时，秒数输入应不可编辑');
@@ -231,7 +231,7 @@ test('enabled group auto-update invokes the selected group AI on its configured 
         await openCommunityTab('群聊');
         click(groupRow('定时测试群'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开定时测试群的更多操作'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '自动更新设置'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '群设置'));
         const enabled = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启聊天群自动更新');
         const seconds = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '自动更新时间秒数');
         assert.equal(seconds.disabled, true);
@@ -256,7 +256,7 @@ test('enabled group auto-update invokes the selected group AI on its configured 
     }
 });
 
-test('group room right-top more menu exposes exit, clear-history, automatic settings, and per-group presets without touching MVU', async () => {
+test('group room right-top more menu exposes exit, clear-history, and the combined group-settings dialog without touching MVU', async () => {
     const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
     await groupForumStore.ready();
     const member = { nickname: '林澈', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '摄影师', interests: ['摄影'], presence: '在线', matchRate: null };
@@ -273,7 +273,9 @@ test('group room right-top more menu exposes exit, clear-history, automatic sett
         await openCommunityTab('群聊');
         click(groupRow('菜单测试群'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开菜单测试群的更多操作'));
-        assert.match(miniDom.document.body.textContent, /退出群聊|清空群历史|自动更新设置|预设/u);
+        assert.match(miniDom.document.body.textContent, /退出群聊/u);
+        assert.match(miniDom.document.body.textContent, /清空群历史/u);
+        assert.match(miniDom.document.body.textContent, /群设置/u, '房间菜单必须提供合并后的「群设置」入口（预设绑定 + 自动更新）');
         const roomMoreOpen = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开菜单测试群的更多操作');
         assert.equal(roomMoreOpen.getAttribute('aria-haspopup'), null, 'Phase 69：群房间更多操作是 disclosure，不再宣称 haspopup=menu');
         assert.equal(roomMoreOpen.getAttribute('aria-expanded'), 'true');
@@ -303,7 +305,7 @@ test('group room right-top more menu exposes exit, clear-history, automatic sett
     }
 });
 
-test('group preset binding is removed from the chat-group home and saved independently for each room', async () => {
+test('group settings dialog binds connection and prompt presets per room and passes the saved binding into the next generation', async () => {
     const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
     await groupForumStore.ready();
     const member = { nickname: '林澈', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '摄影师', interests: ['摄影'], presence: '在线', matchRate: null };
@@ -311,9 +313,17 @@ test('group preset binding is removed from the chat-group home and saved indepen
     await groupForumStore.createGroup({ name: '预设乙群', members: [{ ...member, nickname: '周遥' }] });
     const settingsStore = createSettingsStore({ storage: createMemoryStorage() });
     settingsStore.addConnectionPreset(connectionPreset('group_conn', '群聊连接'));
+    const generationBindings = [];
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-group-local-binding',
-        actionBridge: { emit() {}, isPending() { return false; } }, settingsStore, llmClient: null,
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async generateGroupConversationUpdate(request) {
+                generationBindings.push(request.binding);
+                return { ok: true, update: { participants: [], messages: [{ speaker: '林澈', text: '收到，按新预设更新。' }] } };
+            },
+        },
+        settingsStore, llmClient: null,
         characterLibrary: null, groupForumStore, readState: readResult,
     });
     try {
@@ -322,22 +332,33 @@ test('group preset binding is removed from the chat-group home and saved indepen
         assert.equal(miniDom.document.querySelector('.yl-feature-options'), null, '聊天群首页不应再显示全局绑定设置');
         click(groupRow(first.name));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === `打开${first.name}的更多操作`));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '预设'));
-        const firstConnection = miniDom.document.querySelector('[name="group_chat-quick-connection"]');
-        assert.ok(firstConnection, '预设应在具体群的更多菜单内打开');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '群设置'));
+        const firstConnection = miniDom.document.querySelector('[name="group-chat-connection"]');
+        assert.ok(firstConnection, '群设置对话框应在具体群的更多菜单内打开并提供连接预设选择');
+        const firstPrompt = miniDom.document.querySelector('[name="group-chat-prompt"]');
+        assert.ok(firstPrompt, '群设置对话框应同时提供提示词预设选择');
+        assert.ok(miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('aria-label') === '开启聊天群自动更新'), '预设绑定应与自动更新在同一群设置对话框内并列呈现');
+        assert.match(miniDom.document.body.textContent, /绑定只影响本群公开聊天的内容风格/u, '对话框应说明绑定只影响内容风格，结构由代码固定');
         firstConnection.value = 'group_conn';
-        const firstPrompt = miniDom.document.querySelector('[name="group_chat-quick-prompt"]');
         firstPrompt.value = 'builtin_group_chat_sfw';
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '保存此功能绑定'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确定'));
         await flushUi();
         let snapshot = await groupForumStore.snapshot();
         assert.deepEqual(snapshot.threads.find((thread) => thread.key === first.id)?.bindings.SFW, { connectionPresetId: 'group_conn', promptPresetId: 'builtin_group_chat_sfw' });
-        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关闭功能预设选项'));
+        assert.deepEqual(snapshot.threads.find((thread) => thread.key === first.id)?.bindings.NSFW, { connectionPresetId: null, promptPresetId: null }, 'SFW 保存不得影响 NSFW 独立绑定');
+
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入群消息');
+        input.value = '按新预设聊一句。'; input.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送群消息'));
+        await flushUi();
+        assert.equal(generationBindings.length, 1, '保存绑定后发言应触发一次生成');
+        assert.deepEqual(generationBindings[0], { connectionPresetId: 'group_conn', promptPresetId: 'builtin_group_chat_sfw' }, '保存后的下一次生成必须携带本群绑定');
+
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '返回'));
         click(groupRow('预设乙群'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开预设乙群的更多操作'));
-        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '预设'));
-        assert.equal(miniDom.document.querySelector('[name="group_chat-quick-connection"]').value, '', '另一群不应继承第一群的绑定');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '群设置'));
+        assert.equal(miniDom.document.querySelector('[name="group-chat-connection"]').value, '', '另一群不应继承第一群的绑定');
         snapshot = await groupForumStore.snapshot();
         assert.equal(snapshot.threads.some((thread) => thread.key !== first.id && thread.bindings.SFW.connectionPresetId === 'group_conn'), false);
         assert.equal(settingsStore.snapshot().functionModeBindings.group_chat.SFW.connectionPresetId, null, '群内绑定不能反写到全局设置仓库');
@@ -571,6 +592,8 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         assert.doesNotMatch(miniDom.document.body.textContent, /npc_service_|service_\d/u, '页面正文不得显示内部 UID');
         assert.doesNotMatch(handoffDrafts[0], /自动发送/u);
         click(serviceTabs()[1]);
+        /* 订单 tab 先显示摘要列表；点开详情后才出现 Stepper（详情页含对象公开资料与确认成交/取消订单）。 */
+        click(miniDom.document.querySelector('[name="service-order-open-detail"]'));
         /* P2-D：结构化服务信息位于订单 Stepper 第 2 步 */
         assert.equal(miniDom.document.querySelector('[name="service-information-价格"]'), null, '第 1 步不应预渲染服务信息表单');
         click(miniDom.document.querySelector('[name="service-step-next"]'));

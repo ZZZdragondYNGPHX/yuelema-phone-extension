@@ -307,6 +307,13 @@ test('功能绑定设置页会按当前 NSFW 模式保存，不覆盖 SFW 默认
 
     assert.deepEqual(store.snapshot().functionModeBindings.chat.NSFW, { connectionPresetId: 'fast', promptPresetId: 'custom_nsfw' });
     assert.equal(store.resolveFunction('chat', { contentMode: 'SFW' }).promptPreset.id, 'builtin_private_chat_sfw');
+
+    // 每个可绑定功能行都必须有中文标签：不得出现 undefined 行，text_match 显示为「描述匹配」。
+    assert.equal(panel.textContent.includes('undefined'), false, '功能绑定行不得渲染 undefined 标签');
+    assert.equal(panel.textContent.includes('对话总结'), true, 'chat_summary 绑定行需要中文标签');
+    assert.equal(panel.textContent.includes('约伴服务角色生成'), true, 'service_profile_generation 绑定行需要中文标签');
+    assert.equal(panel.textContent.includes('描述匹配'), true, 'text_match 绑定行应显示为描述匹配');
+    assert.equal(panel.textContent.includes('语音匹配'), false, '绑定行不得再出现语音匹配旧文案');
 });
 
 test('提示词预设可标记为 NSFW，功能绑定只显示当前模式对应的预设', async () => {
