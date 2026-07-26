@@ -1033,17 +1033,19 @@
 .yl-phone-extension[data-ui-layout="phone"] .yl-phone-nav { grid-area: nav; }
 /* —— 移动宿主（粗指针）微调：手机几何显式归属 phone 布局，绝不注入 desktop —— */
 @media (max-width: 640px), (pointer: coarse) {
-    .yl-phone-extension { right: max(10px, env(safe-area-inset-right)); bottom: max(10px, env(safe-area-inset-bottom)); }
+    .yl-phone-extension { right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); }
     .yl-phone-extension[data-ui-layout="phone"] .yl-phone-panel {
-        /* 以 visualViewport 为可见边界居中：Termux/WebView 的布局视口可能大于实际屏幕。 */
+        /* fixed 已相对实际显示视口定位；叠加 visualViewport offset 会使 Termux/WebView 的底部上移到屏幕中部。 */
         position: fixed;
-        top: var(--yl-phone-viewport-top);
-        right: calc(100vw - var(--yl-phone-viewport-left) - var(--yl-phone-viewport-width));
-        bottom: calc(100vh - var(--yl-phone-viewport-top) - var(--yl-phone-viewport-height));
-        left: var(--yl-phone-viewport-left);
-        width: min(560px, calc(var(--yl-phone-viewport-width) - 16px));
-        height: min(820px, calc(var(--yl-phone-viewport-height) - 16px));
-        max-height: calc(var(--yl-phone-viewport-height) - 16px);
+        top: max(8px, env(safe-area-inset-top));
+        right: max(8px, env(safe-area-inset-right));
+        bottom: max(8px, env(safe-area-inset-bottom));
+        left: max(8px, env(safe-area-inset-left));
+        width: min(560px, calc(100vw - max(8px, env(safe-area-inset-left)) - max(8px, env(safe-area-inset-right))));
+        height: min(820px, calc(100vh - max(8px, env(safe-area-inset-top)) - max(8px, env(safe-area-inset-bottom))));
+        height: min(820px, calc(100dvh - max(8px, env(safe-area-inset-top)) - max(8px, env(safe-area-inset-bottom))));
+        max-height: calc(100vh - max(8px, env(safe-area-inset-top)) - max(8px, env(safe-area-inset-bottom)));
+        max-height: calc(100dvh - max(8px, env(safe-area-inset-top)) - max(8px, env(safe-area-inset-bottom)));
         min-height: 0;
         margin: auto;
         border-radius: var(--yl-radius-sheet);

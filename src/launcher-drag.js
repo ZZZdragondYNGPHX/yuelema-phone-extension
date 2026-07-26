@@ -129,9 +129,31 @@ export function createLauncherDragController(options) {
     const originalTouchAction = launcher.style?.touchAction ?? '';
     if (launcher.style) launcher.style.touchAction = 'none';
 
-    function pointerMatches(event) {
+    function pointerMatches(event, inputType = 'pointer') {
         return pointerState
+            && pointerState.inputType === inputType
             && (event?.pointerId === undefined || event.pointerId === pointerState.pointerId);
+    }
+
+    function touchByIdentifier(list, identifier) {
+        if (!list || typeof list.length !== 'number') return null;
+        for (let index = 0; index < list.length; index += 1) {
+            const touch = list[index];
+            if (touch && (identifier === undefined || touch.identifier === identifier)) return touch;
+        }
+        return null;
+    }
+
+    function touchPointerEvent(event, touch) {
+        return {
+            pointerId: touch?.identifier,
+            pointerType: 'touch',
+            isPrimary: true,
+            button: 0,
+            clientX: finiteNumber(touch?.clientX),
+            clientY: finiteNumber(touch?.clientY),
+            preventDefault() { event?.preventDefault?.(); },
+        };
     }
 
     function capturePointer(pointerId) {
@@ -171,7 +193,7 @@ export function createLauncherDragController(options) {
         onDragMove?.(lastPosition);
     }
 
-    function begin(event) {
+    function begin(event, inputType = 'pointer') {
         if (disposed || pointerState || event?.isPrimary === false) return;
         const button = Number(event?.button);
         if (Number.isFinite(button) && button !== 0) return;
@@ -185,6 +207,7 @@ export function createLauncherDragController(options) {
             startRect,
             engaged: false,
             cancelled: false,
+            inputType,
         };
         fixedPositionPrepared = false;
         originX = 0;
@@ -193,8 +216,8 @@ export function createLauncherDragController(options) {
         capturePointer(pointerId);
     }
 
-    function move(event) {
-        if (disposed || !pointerMatches(event)) return;
+    function move(event, inputType = 'pointer') {
+        if (disposed || !pointerMatches(event, inputType)) return;
         const deltaX = finiteNumber(event?.clientX) - pointerState.startX;
         const deltaY = finiteNumber(event?.clientY) - pointerState.startY;
         if (!pointerState.engaged) {
@@ -216,8 +239,8 @@ export function createLauncherDragController(options) {
         event?.preventDefault?.();
     }
 
-    function finish(event, cancelled = false) {
-        if (disposed || !pointerMatches(event)) return;
+    function finish(event, cancelled = false, inputType = 'pointer') {
+        if (disposed || !pointerMatches(event, inputType)) return;
         const completedState = pointerState;
         const wasDragged = completedState.engaged;
         const result = {
@@ -242,15 +265,42 @@ export function createLauncherDragController(options) {
         if (pointerMatches(event)) finish(event, true);
     }
 
+    // Some Android WebViews used by Termux expose Touch Events but do not dispatch
+    // Pointer Events reliably for a fixed button near the system gesture area. Keep
+    // the Pointer Events path as the primary path and add an isolated touch fallback.
+    function beginTouch(event) {
+        if (pointerState) return;
+        const touch = touchByIdentifier(event?.changedTouches) ?? touchByIdentifier(event?.touches);
+        if (!touch) return;
+        begin(touchPointerEvent(event, touch), 'touch');
+    }
+    function moveTouch(event) {
+        if (!pointerState || pointerState.inputType !== 'touch') return;
+        const touch = touchByIdentifier(event?.changedTouches, pointerState.pointerId)
+            ?? touchByIdentifier(event?.touches, pointerState.pointerId);
+        if (touch) move(touchPointerEvent(event, touch), 'touch');
+    }
+    function endTouch(event, cancelled = false) {
+        if (!pointerState || pointerState.inputType !== 'touch') return;
+        const touch = touchByIdentifier(event?.changedTouches, pointerState.pointerId);
+        if (touch) finish(touchPointerEvent(event, touch), cancelled, 'touch');
+    }
+
     const trackingTarget = typeof documentRef?.addEventListener === 'function' ? documentRef : launcher;
     const onPointerUp = (event) => finish(event, false);
     const onPointerCancel = (event) => finish(event, true);
+    const onTouchEnd = (event) => endTouch(event, false);
+    const onTouchCancel = (event) => endTouch(event, true);
     launcher.addEventListener('pointerdown', begin);
     launcher.addEventListener('lostpointercapture', handleLostPointerCapture);
     launcher.addEventListener('click', handleClick, true);
+    launcher.addEventListener('touchstart', beginTouch, { passive: true });
     trackingTarget.addEventListener('pointermove', move);
     trackingTarget.addEventListener('pointerup', onPointerUp);
     trackingTarget.addEventListener('pointercancel', onPointerCancel);
+    trackingTarget.addEventListener('touchmove', moveTouch, { passive: false });
+    trackingTarget.addEventListener('touchend', onTouchEnd);
+    trackingTarget.addEventListener('touchcancel', onTouchCancel);
 
     return Object.freeze({
         get dragging() { return Boolean(pointerState?.engaged); },
@@ -266,9 +316,13 @@ export function createLauncherDragController(options) {
             launcher.removeEventListener('pointerdown', begin);
             launcher.removeEventListener('lostpointercapture', handleLostPointerCapture);
             launcher.removeEventListener('click', handleClick, true);
+            launcher.removeEventListener('touchstart', beginTouch, { passive: true });
             trackingTarget.removeEventListener('pointermove', move);
             trackingTarget.removeEventListener('pointerup', onPointerUp);
             trackingTarget.removeEventListener('pointercancel', onPointerCancel);
+            trackingTarget.removeEventListener('touchmove', moveTouch, { passive: false });
+            trackingTarget.removeEventListener('touchend', onTouchEnd);
+            trackingTarget.removeEventListener('touchcancel', onTouchCancel);
             if (launcher.style) launcher.style.touchAction = originalTouchAction;
             suppressNextClick = false;
             lastPosition = null;

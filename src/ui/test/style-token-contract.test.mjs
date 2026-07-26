@@ -238,16 +238,17 @@ test('手机面板以实际可视视口居中且保留 8px 安全边界', () => 
     const coarse = balancedBlock(shell, shell.indexOf('{', coarseIndex), '粗指针媒体块');
     const panel = blockAfter(coarse.body, '.yl-phone-extension[data-ui-layout="phone"] .yl-phone-panel');
     assertDeclarations(panel, [
-        /top\s*:\s*var\(--yl-phone-viewport-top\)/u,
-        /left\s*:\s*var\(--yl-phone-viewport-left\)/u,
-        /right\s*:\s*calc\(100vw\s*-\s*var\(--yl-phone-viewport-left\)\s*-\s*var\(--yl-phone-viewport-width\)\)/u,
-        /bottom\s*:\s*calc\(100vh\s*-\s*var\(--yl-phone-viewport-top\)\s*-\s*var\(--yl-phone-viewport-height\)\)/u,
-        /width\s*:\s*min\(560px,\s*calc\(var\(--yl-phone-viewport-width\)\s*-\s*16px\)\)/u,
-        /height\s*:\s*min\(820px,\s*calc\(var\(--yl-phone-viewport-height\)\s*-\s*16px\)\)/u,
-        /max-height\s*:\s*calc\(var\(--yl-phone-viewport-height\)\s*-\s*16px\)/u,
+        /top\s*:\s*max\(8px,\s*env\(safe-area-inset-top\)\)/u,
+        /right\s*:\s*max\(8px,\s*env\(safe-area-inset-right\)\)/u,
+        /bottom\s*:\s*max\(8px,\s*env\(safe-area-inset-bottom\)\)/u,
+        /left\s*:\s*max\(8px,\s*env\(safe-area-inset-left\)\)/u,
+        /width\s*:\s*min\(560px,\s*calc\(100vw\s*-/u,
+        /height\s*:\s*min\(820px,\s*calc\(100dvh\s*-/u,
+        /max-height\s*:\s*calc\(100dvh\s*-/u,
         /margin\s*:\s*auto/u,
         /min-height\s*:\s*0/u,
     ], '手机可视视口居中面板');
+    assert.doesNotMatch(panel, /--yl-phone-viewport-(?:top|left|width|height)/u, 'fixed 面板不得重复叠加 visualViewport offset');
     assert.doesNotMatch(panel, /(?:width|height)\s*:\s*min\(100(?:d)?v[wh]\s*-/u, '不得回归为缺少 calc() 的无效 min() 表达式');
 });
 

@@ -10,6 +10,10 @@ function pointerEvent(type, properties = {}) {
     return event;
 }
 
+function touchEvent(type, touches, changedTouches = touches) {
+    return pointerEvent(type, { touches, changedTouches });
+}
+
 class TestDocument extends EventTarget {
     constructor({ width = 400, height = 300, visualViewport = null } = {}) {
         super();
@@ -130,6 +134,28 @@ test('touch and mouse Pointer Events use an 8px threshold and suppress exactly o
     assert.equal(activations, 2, '只能抑制一次，下一次真实点击必须恢复');
     assert.equal(dragEnds.at(-1).dragged, true);
 
+    controller.dispose();
+});
+
+
+test('Touch Events fallback drags the launcher when an Android WebView omits Pointer Events', () => {
+    const documentRef = new TestDocument({ width: 360, height: 640 });
+    const launcher = new TestLauncher(documentRef, { left: 272, top: 572, width: 56, height: 56 });
+    const controller = createLauncherDragController({ launcher, documentRef, edgeGap: 12 });
+    const touch = { identifier: 42, clientX: 300, clientY: 600 };
+
+    launcher.dispatchEvent(touchEvent('touchstart', [touch]));
+    const move = touchEvent('touchmove', [{ identifier: 42, clientX: 8, clientY: 8 }]);
+    documentRef.dispatchEvent(move);
+
+    assert.equal(move.defaultPrevented, true, '拖动超过阈值后必须阻止浏览器接管手势');
+    assert.equal(controller.dragging, true);
+    assert.equal(launcher.style.position, 'fixed');
+    assert.equal(launcher.style.left, '12px', 'Touch Events 后备路径也必须保留安全边距');
+    assert.equal(launcher.style.top, '12px');
+
+    documentRef.dispatchEvent(touchEvent('touchend', [], [{ identifier: 42, clientX: 8, clientY: 8 }]));
+    assert.equal(controller.dragging, false);
     controller.dispose();
 });
 

@@ -535,7 +535,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     documentRef.body.appendChild(root);
 
-    const launcherDrag = createLauncherDragController({ launcher, documentRef, threshold: 8, edgeGap: 0 });
+    const launcherDrag = createLauncherDragController({ launcher, documentRef, threshold: 8, edgeGap: 12 });
     let panelDrag = null;
     function viewportSize() {
         const view = documentRef.defaultView;
