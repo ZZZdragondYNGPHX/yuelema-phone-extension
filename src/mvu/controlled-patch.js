@@ -27,9 +27,17 @@ const CHAT_SESSION_UID_PATTERN = /^chat_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const MEETUP_UID_PATTERN = /^meetup_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const GROUP_UID_PATTERN = /^group_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const SERVICE_ORDER_UID_PATTERN = /^service_[a-z0-9][a-z0-9_-]{0,63}$/i;
-const SERVICE_CATEGORY_BY_MODE = Object.freeze({
+const SERVICE_PRODUCT_CATEGORY_LABELS = Object.freeze({
+    girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品',
+});
+const LEGACY_SERVICE_CATEGORY_BY_MODE = Object.freeze({
     SFW: Object.freeze({ coffee_walk: '咖啡与散步', arts_outing: '展览与演出', city_guide: '城市向导', hobby_day: '兴趣活动' }),
     NSFW: Object.freeze({ adult_companion: '成人直白陪伴', erotic_roleplay: '情色角色扮演', explicit_chat: '露骨文爱', private_service: '私密成人服务' }),
+});
+// Legacy activities are retained solely to validate and preserve existing history.
+const SERVICE_CATEGORY_BY_MODE = Object.freeze({
+    SFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS, ...LEGACY_SERVICE_CATEGORY_BY_MODE.SFW }),
+    NSFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS, ...LEGACY_SERVICE_CATEGORY_BY_MODE.NSFW }),
 });
 const RELATIONSHIP_VALUE_FIELDS = Object.freeze(['好感', '信任', '戒备', '面基意愿']);
 const BOND_VALUE_FIELDS = Object.freeze(['友情值', '心动值', '欲望值']);
@@ -294,6 +302,11 @@ function serviceCategoryForMode(mode, categoryId) {
     return SERVICE_CATEGORY_BY_MODE[mode][categoryId] ?? '';
 }
 
+function serviceCategoryForNewOrder(mode, categoryId) {
+    if (!['SFW', 'NSFW'].includes(mode) || typeof categoryId !== 'string') return '';
+    return SERVICE_PRODUCT_CATEGORY_LABELS[categoryId] ?? '';
+}
+
 function serviceTopicForCandidate(candidate, category) {
     return serviceTopicForCandidates([candidate], category);
 }
@@ -434,7 +447,7 @@ export function buildServiceOrderHandoffPatch(state, { candidate, candidates, ca
     const system = ownRecord(state.系统); const counters = ownRecord(system?.UID计数器);
     const rolePool = ownRecord(state.角色池); const orders = ownRecord(state.服务订单);
     const mode = ownRecord(state.软件)?.内容模式; const roleCounter = counters?.角色; const orderCounter = counters?.服务订单;
-    const category = serviceCategoryForMode(mode, categoryId);
+    const category = serviceCategoryForNewOrder(mode, categoryId);
     if (!rolePool || !orders || !category || !Number.isInteger(roleCounter) || roleCounter < 0 || roleCounter >= 999999
         || !Number.isInteger(orderCounter) || orderCounter < 0 || orderCounter >= 999999) return fail('service_order_state_invalid');
     if (hasAnyOpenServiceOrder(orders)) return fail('service_order_conflict');
@@ -470,7 +483,7 @@ export function buildServiceOrderRepeatPatch(state, { sourceOrderUid } = {}) {
     const source = orders?.[sourceOrderUid];
     if (!orders || !rolePool || !ownRecord(source) || !['已完成', '已取消'].includes(source.状态)
         || !Number.isInteger(orderCounter) || orderCounter < 0 || orderCounter >= 999999) return fail('service_order_repeat_state_invalid');
-    const categoryId = source.服务分类; const category = serviceCategoryForMode(mode, categoryId);
+    const categoryId = source.服务分类; const category = serviceCategoryForNewOrder(mode, categoryId);
     const participants = Array.isArray(source.角色UID列表) && source.角色UID列表.length ? source.角色UID列表 : [source.角色UID];
     if (!category || source.内容模式 !== mode || !participants.length || participants.length > MAX_SERVICE_ORDER_PARTICIPANTS || participants[0] !== source.角色UID || new Set(participants).size !== participants.length || !participants.every(isNpcUid)) return fail('service_order_repeat_not_available');
     const adults = participants.map((npcUid) => assertKnownAdult(state, npcUid));
@@ -497,7 +510,7 @@ export function buildServiceOrderRebookPatch(state, { npcUid, npcUids, categoryI
     if (!ownRecord(state)) return fail('service_order_rebook_invalid');
     const rolePool = ownRecord(state.角色池); const orders = ownRecord(state.服务订单);
     const mode = ownRecord(state.软件)?.内容模式; const counters = ownRecord(ownRecord(state.系统)?.UID计数器);
-    const orderCounter = counters?.服务订单; const category = serviceCategoryForMode(mode, categoryId);
+    const orderCounter = counters?.服务订单; const category = serviceCategoryForNewOrder(mode, categoryId);
     const participants = Array.isArray(npcUids) ? npcUids : (npcUid ? [npcUid] : []);
     if (!rolePool || !orders || !category || !Number.isInteger(orderCounter) || orderCounter < 0 || orderCounter >= 999999 || !participants.length || participants.length > MAX_SERVICE_ORDER_PARTICIPANTS || new Set(participants).size !== participants.length || !participants.every(isNpcUid)) return fail('service_order_rebook_invalid');
     const adults = participants.map((uid) => assertKnownAdult(state, uid));

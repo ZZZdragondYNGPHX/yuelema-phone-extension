@@ -411,15 +411,15 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         },
         async runServiceOrderHandoff({ candidates, categoryId, expectedContentMode }) {
             assert.deepEqual(candidates.map((candidate) => candidate.公开资料.昵称), ['林澄', '顾晴']);
-            assert.equal(categoryId, 'coffee_walk'); assert.equal(expectedContentMode, 'SFW');
+            assert.equal(categoryId, 'girl_shuren'); assert.equal(expectedContentMode, 'SFW');
             serviceHandoffCalls += 1;
             serviceState.角色池.npc_service_1 = structuredClone(candidates[0]);
             serviceState.角色池.npc_service_2 = structuredClone(candidates[1]);
-            serviceState.服务订单.service_1 = { 角色UID: 'npc_service_1', 角色UID列表: ['npc_service_1', 'npc_service_2'], 内容模式: 'SFW', 服务分类: 'coffee_walk', 服务主题: '咖啡与散步：与林澄、顾晴的文字协商', 状态: '待确认', 发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '' };
+            serviceState.服务订单.service_1 = { 角色UID: 'npc_service_1', 角色UID列表: ['npc_service_1', 'npc_service_2'], 内容模式: 'SFW', 服务分类: 'girl_shuren', 服务主题: '熟人商品：与林澄、顾晴的文字协商', 状态: '待确认', 发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '' };
             return { ok: true, orderUid: 'service_1', npcUids: ['npc_service_1', 'npc_service_2'] };
         },
         async runServiceOrderRebook({ npcUids, categoryId, expectedContentMode }) {
-            assert.deepEqual(npcUids, ['npc_service_1', 'npc_service_2']); assert.equal(categoryId, 'coffee_walk'); assert.equal(expectedContentMode, 'SFW'); serviceRepeatCalls += 1;
+            assert.deepEqual(npcUids, ['npc_service_1', 'npc_service_2']); assert.equal(categoryId, 'girl_shuren'); assert.equal(expectedContentMode, 'SFW'); serviceRepeatCalls += 1;
             serviceState.服务订单.service_2 = { 角色UID: 'npc_service_1', 角色UID列表: ['npc_service_1', 'npc_service_2'], 内容模式: 'SFW', 服务分类: 'coffee_walk', 服务主题: '咖啡与散步：与林澄、顾晴的文字协商', 状态: '待确认', 发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '' };
             return { ok: true, orderUid: 'service_2' };
         },
@@ -472,10 +472,10 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         const primaryNavPages = miniDom.document.querySelectorAll('.yl-phone-nav-item').map((node) => node.dataset.page);
         assert.ok(primaryNavPages.indexOf('groups') < primaryNavPages.indexOf('service_hub'));
         assert.ok(primaryNavPages.indexOf('service_hub') < primaryNavPages.indexOf('profile'));
-        assert.match(miniDom.document.body.textContent, /今日陪伴计划/u);
+        assert.match(miniDom.document.body.textContent, /今日心动档案/u);
         const serviceTabs = () => miniDom.document.querySelectorAll('.yl-service-tab');
         assert.deepEqual(serviceTabs().map((node) => node.textContent), ['⌂首页', '◇发现', '♡服务', '◷历史']);
-        const firstServiceCategory = miniDom.document.querySelector('[name="service-category-coffee_walk"]');
+        const firstServiceCategory = miniDom.document.querySelector('[name="service-category-girl_shuren"]');
         assert.ok(firstServiceCategory, '首页应显示可直接生成角色的服务分类');
         click(firstServiceCategory);
         await flushUi();
@@ -497,19 +497,24 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         assert.match(miniDom.document.body.textContent, /以已选 0 位创建服务订单/u);
         click(serviceTabs()[0]);
         assert.match(miniDom.document.body.textContent, /服务者发布服务/u);
-        assert.ok(miniDom.document.querySelector('[name="service-published-open-coffee_walk"]'));
-        assert.ok(miniDom.document.querySelector('[name="service-published-refresh-coffee_walk"]'));
-        click(miniDom.document.querySelector('[name="service-published-open-coffee_walk"]'));
+        assert.ok(miniDom.document.querySelector('[name="service-published-open-girl_shuren"]'));
+        assert.ok(miniDom.document.querySelector('[name="service-published-refresh-girl_shuren"]'));
+        click(miniDom.document.querySelector('[name="service-published-open-girl_shuren"]'));
         await flushUi();
         assert.equal(serviceGenerateCalls, 5, '查看已发布分类不得重新生成或覆盖已完成的三席');
 
         serviceState.软件.内容模式 = 'NSFW';
         mounted.refreshState();
-        assert.match(miniDom.document.body.textContent, /成人直白陪伴/u);
+        click(serviceTabs()[0]);
+        assert.match(miniDom.document.body.textContent, /夜色心动档案/u);
+        assert.match(miniDom.document.body.textContent, /熟人商品/u);
+        assert.equal(miniDom.document.querySelectorAll('.yl-phone-extension').find((node) => node.id === 'ylm-test-about').dataset.contentMode, 'NSFW');
         assert.doesNotMatch(miniDom.document.body.textContent, /林澄/u, 'SFW 候补不得泄漏到 NSFW 列表');
         serviceState.软件.内容模式 = 'SFW';
         mounted.refreshState();
+        click(miniDom.document.querySelector('[name="service-published-open-girl_shuren"]'));
         assert.match(miniDom.document.body.textContent, /林澄/u, '切回 SFW 后已完成的候补批次必须保留');
+        assert.equal(miniDom.document.querySelectorAll('.yl-phone-extension').find((node) => node.id === 'ylm-test-about').dataset.contentMode, 'SFW');
 
         const firstProfileSelect = miniDom.document.querySelector('[name="service-profile-select-service_local_1"]');
         assert.equal(handoffDrafts.length, 0, '选择前不得接管正文输入框');
@@ -526,7 +531,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         assert.equal(handoffDrafts.length, 1);
         assert.match(handoffDrafts[0], /【本次新建的待确认订单】/u);
         assert.doesNotMatch(handoffDrafts[0], /service_1/u, '正文草稿不得暴露内部订单 UID');
-        assert.match(handoffDrafts[0], /与「林澄、顾晴」体验「咖啡与散步」租借陪伴主题/u);
+        assert.match(handoffDrafts[0], /与「林澄、顾晴」体验「熟人商品」租借陪伴主题/u);
         assert.doesNotMatch(miniDom.document.body.textContent, /npc_service_|service_\d/u, '页面正文不得显示内部 UID');
         assert.doesNotMatch(handoffDrafts[0], /自动发送/u);
         click(serviceTabs()[2]);
@@ -547,7 +552,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         serviceState.服务订单.service_1.状态 = '已完成';
         serviceState.服务订单.service_1.结束时间 = '已结束';
         serviceState.服务订单.service_1.结束摘要 = '双方已确认结束，未包含现实信息。';
-        serviceHistory.push({ localId: 'history_service_1', orderUid: 'service_1', roleUid: 'npc_service_1', roleUids: ['npc_service_1', 'npc_service_2'], status: '已完成', archiveState: 'archived', mode: 'SFW', categoryId: 'coffee_walk', category: '咖啡与散步', topic: '咖啡与散步：与林澄、顾晴的文字协商', initiatedAt: '待正文确认', startedAt: '已开始', endedAt: '已结束', summary: '双方已确认结束，未包含现实信息。', profile: { 昵称: '林澄', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }, profiles: [{ 昵称: '林澄', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }, { 昵称: '顾晴', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }] });
+        serviceHistory.push({ localId: 'history_service_1', orderUid: 'service_1', roleUid: 'npc_service_1', roleUids: ['npc_service_1', 'npc_service_2'], status: '已完成', archiveState: 'archived', mode: 'SFW', categoryId: 'girl_shuren', category: '熟人商品', topic: '熟人商品：与林澄、顾晴的文字协商', initiatedAt: '待正文确认', startedAt: '已开始', endedAt: '已结束', summary: '双方已确认结束，未包含现实信息。', profile: { 昵称: '林澄', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }, profiles: [{ 昵称: '林澄', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }, { 昵称: '顾晴', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }] });
         mounted.refreshState();
         assert.match(miniDom.document.body.textContent, /暂无进行中的服务/u);
         click(serviceTabs()[3]);
@@ -576,7 +581,7 @@ test('service completion stays mode-scoped and stages only after returning to th
         角色池: { npc_service_1: adultCharacter('林澈') },
         服务订单: {
             service_1: {
-                角色UID: 'npc_service_1', 角色UID列表: ['npc_service_1'], 内容模式: 'SFW', 服务分类: 'coffee_walk', 服务主题: '咖啡与散步：与林澈的文字协商',
+                角色UID: 'npc_service_1', 角色UID列表: ['npc_service_1'], 内容模式: 'SFW', 服务分类: 'girl_shuren', 服务主题: '熟人商品：与林澈的文字协商',
                 状态: '进行中', 发起时间: '待正文确认', 开始时间: '正文第 2 轮', 结束时间: '', 结束摘要: '', 已确认边界: '已确认边界',
                 合法结束条件: { 已满足: true, 摘要: '正文已满足结束条件。', 记录时间: '正文最新回合' },
             },
@@ -642,7 +647,7 @@ test('late service-profile generation ignored after the phone closes cannot alte
         for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
         click(miniDom.document.querySelector('[name="about-service-entry"]'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
-        click(miniDom.document.querySelector('[name="service-category-coffee_walk"]'));
+        click(miniDom.document.querySelector('[name="service-category-girl_shuren"]'));
         await Promise.resolve();
         assert.equal(typeof resolveLate, 'function');
 
@@ -1092,7 +1097,7 @@ test('late service-order handoff after close preserves the MVU result without fi
         for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
         click(miniDom.document.querySelector('[name="about-service-entry"]'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
-        click(miniDom.document.querySelector('[name="service-category-coffee_walk"]'));
+        click(miniDom.document.querySelector('[name="service-category-girl_shuren"]'));
         await flushUi();
         click(miniDom.document.querySelector('[name="service-profile-select-service_local_1"]'));
         click(miniDom.document.querySelector('[name="service-order-create-selected"]'));
@@ -1153,6 +1158,73 @@ test('pending service-history archive retries finalize only and leaves rebooking
         click(miniDom.document.querySelector('[name="service-history-finalize"]'));
         await flushUi();
         assert.deepEqual(calls, { finalize: 2, archived: 1, rebook: 0 });
+    } finally {
+        mounted.destroy();
+    }
+});
+
+
+test('XP search scopes generated service drafts to the active person category and never enters the controlled order payload', async () => {
+    const state = {
+        软件: { 内容模式: 'SFW' }, 推荐: { 当前队列: [], 临时候选池: {} }, 角色池: {}, 服务订单: {},
+    };
+    const creativeBriefs = [];
+    let handoffPayload = null;
+    const candidates = [adultCharacter('姜遥'), adultCharacter('许栀'), adultCharacter('唐宁')];
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        async generateServiceProfileDraft({ creativeBrief, expectedContentMode }) {
+            creativeBriefs.push({ creativeBrief, expectedContentMode });
+            return { ok: true, candidate: candidates.shift() };
+        },
+        async runServiceOrderHandoff(payload) {
+            handoffPayload = structuredClone(payload);
+            return { ok: true, orderUid: 'service_xp_1', npcUids: ['npc_xp_1'] };
+        },
+        appendMeetupDraft() { return { ok: true }; },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-service-xp-search', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => ({ ok: true, state }),
+    });
+    try {
+        const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
+        click(launcher);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent.includes('设置')));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关于软件'));
+        for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
+        click(miniDom.document.querySelector('[name="about-service-entry"]'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
+        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '◇发现'));
+
+        const search = miniDom.document.querySelector('[name="service-xp-search"]');
+        assert.ok(search, '发现页必须提供本次 XP 搜索输入框');
+        search.value = '眼镜 制服 成熟感';
+        search.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelector('[name="service-xp-search-submit"]'));
+        await flushUi();
+
+        assert.equal(creativeBriefs.length, 3, 'XP 搜索应依次生成独立的三席草稿');
+        assert.deepEqual(creativeBriefs.map((item) => item.expectedContentMode), ['SFW', 'SFW', 'SFW']);
+        assert.equal(creativeBriefs.every((item) => item.creativeBrief.includes('眼镜 制服 成熟感')), true);
+        assert.match(miniDom.document.body.textContent, /当前 XP 搜索：眼镜 制服 成熟感/u);
+        assert.equal(miniDom.document.querySelectorAll('.yl-local-service-profile').length, 3);
+
+        click(miniDom.document.querySelector('[name="service-profile-select-service_local_1"]'));
+        click(miniDom.document.querySelector('[name="service-order-create-selected"]'));
+        await flushUi();
+        assert.equal(handoffPayload.categoryId, 'girl_shuren');
+        assert.equal(JSON.stringify(handoffPayload).includes('眼镜 制服 成熟感'), false, 'XP 搜索词不得传入受控 MVU 订单 payload');
+
+        click(miniDom.document.querySelector('[name="service-xp-search-clear"]'));
+        assert.doesNotMatch(miniDom.document.body.textContent, /当前 XP 搜索/u);
+        assert.equal(miniDom.document.querySelectorAll('.yl-local-service-profile').length, 0, '清除后必须回到不含 XP 搜索的独立候补批次');
+
+        state.软件.内容模式 = 'NSFW';
+        mounted.refreshState();
+        assert.equal(miniDom.document.querySelectorAll('.yl-phone-extension').find((node) => node.id === 'ylm-test-service-xp-search').dataset.contentMode, 'NSFW');
+        assert.equal(miniDom.document.querySelector('[name="service-xp-search"]')?.value, '', '切换模式必须清空本次 XP 搜索状态');
     } finally {
         mounted.destroy();
     }

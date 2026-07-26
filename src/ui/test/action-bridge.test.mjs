@@ -537,7 +537,7 @@ test('mode toggles wait for a service-order transaction instead of reading the s
     const { mvu, calls, releaseParse } = createMvu({ deferredParse: true, initialState: serviceOrderState() });
     const bridge = createActionBridge({ documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {} });
 
-    const handoff = bridge.runServiceOrderHandoff({ candidate: adultCandidate(), categoryId: 'coffee_walk', expectedContentMode: 'SFW' });
+    const handoff = bridge.runServiceOrderHandoff({ candidate: adultCandidate(), categoryId: 'girl_shuren', expectedContentMode: 'SFW' });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(calls.filter(([name]) => name === 'get').length, 2);
     assert.equal(calls.filter(([name]) => name === 'parse').length, 1);

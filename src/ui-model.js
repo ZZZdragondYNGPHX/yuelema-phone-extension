@@ -215,9 +215,17 @@ export function projectPrivateChatView(state) {
 
 const SERVICE_ORDER_UID_PATTERN = /^service_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const SERVICE_ORDER_STATES = new Set(['待确认', '进行中', '已完成', '已取消']);
-const SERVICE_CATEGORY_LABELS = Object.freeze({
+const SERVICE_PRODUCT_CATEGORY_LABELS = Object.freeze({
+    girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品',
+});
+const SERVICE_LEGACY_CATEGORY_LABELS = Object.freeze({
     SFW: Object.freeze({ coffee_walk: '咖啡与散步', arts_outing: '展览与演出', city_guide: '城市向导', hobby_day: '兴趣活动' }),
     NSFW: Object.freeze({ adult_companion: '成人直白陪伴', erotic_roleplay: '情色角色扮演', explicit_chat: '露骨文爱', private_service: '私密成人服务' }),
+});
+// New person categories work in both modes. Legacy activities remain display-only for historical orders.
+const SERVICE_CATEGORY_LABELS = Object.freeze({
+    SFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS, ...SERVICE_LEGACY_CATEGORY_LABELS.SFW }),
+    NSFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS, ...SERVICE_LEGACY_CATEGORY_LABELS.NSFW }),
 });
 const SERVICE_ORDER_LIFECYCLE_FIELDS = Object.freeze(['发起时间', '开始时间', '结束时间', '结束摘要', '已确认边界']);
 const SERVICE_TIME_SAFE_PATTERNS = Object.freeze([

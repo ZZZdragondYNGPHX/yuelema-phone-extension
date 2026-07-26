@@ -2435,3 +2435,251 @@ body.reduced-motion .yl-phone-extension *, body.reduced-motion .yl-phone-extensi
     .yl-phone-nav.has-service-entry .yl-nav-label { font-size: .58rem; letter-spacing: 0; }
     .yl-phone-nav.has-service-entry .yl-nav-icon { font-size: 1.06rem; }
 }
+
+/* ============================================================
+   Phase 58 — content-mode visual system
+   The app-shell supplies data-content-mode on .yl-phone-extension.
+   Default tokens deliberately use the SFW palette so the launcher stays
+   coherent while an older host has not yet projected the attribute.
+   ============================================================ */
+.yl-phone-extension,
+.yl-phone-extension[data-content-mode="SFW"] {
+    --yl-bg: #fff8f6;
+    --yl-bg-elev: #fffdfb;
+    --yl-bg-deep: #f8e8ed;
+    --yl-surface: rgb(255 255 255 / 76%);
+    --yl-surface-strong: rgb(255 234 240 / 88%);
+    --yl-text: #432b36;
+    --yl-muted: #785967;
+    --yl-faint: #a17d8b;
+    --yl-border: rgb(190 105 133 / 19%);
+    --yl-border-strong: rgb(184 91 123 / 35%);
+    --yl-accent: #df5d87;
+    --yl-accent-soft: rgb(223 93 135 / 15%);
+    --yl-accent-2: #ad6f89;
+    --yl-accent-2-soft: rgb(173 111 137 / 14%);
+    --yl-grad: linear-gradient(135deg, #ee789d 0%, #dd668c 48%, #b97991 100%);
+    --yl-gold: #ba7a37;
+    --yl-cyan: #488a9b;
+    --yl-danger: #c84e69;
+    --yl-success: #34856b;
+    --yl-shadow-sm: 0 6px 18px rgb(115 55 73 / 10%);
+    --yl-shadow-md: 0 14px 34px rgb(115 55 73 / 14%);
+    --yl-shadow-lg: 0 24px 60px rgb(97 39 60 / 19%);
+    --yl-glow-accent: 0 10px 28px rgb(223 93 135 / 25%);
+    --yl-panel-atmosphere:
+        radial-gradient(circle at 90% -8%, rgb(255 184 205 / 58%), transparent 37%),
+        radial-gradient(circle at -5% 105%, rgb(240 210 188 / 58%), transparent 42%),
+        var(--yl-bg);
+    color-scheme: light;
+}
+
+.yl-phone-extension[data-content-mode="NSFW"] {
+    --yl-bg: #190d20;
+    --yl-bg-elev: #25112c;
+    --yl-bg-deep: #100713;
+    --yl-surface: rgb(255 238 252 / 7%);
+    --yl-surface-strong: rgb(255 223 246 / 13%);
+    --yl-text: #fbf3fb;
+    --yl-muted: #d1bdd4;
+    --yl-faint: #a68cae;
+    --yl-border: rgb(244 180 232 / 16%);
+    --yl-border-strong: rgb(237 144 213 / 33%);
+    --yl-accent: #e24d91;
+    --yl-accent-soft: rgb(226 77 145 / 18%);
+    --yl-accent-2: #9b62df;
+    --yl-accent-2-soft: rgb(155 98 223 / 18%);
+    --yl-grad: linear-gradient(135deg, #6d276f 0%, #b23372 52%, #e04d91 100%);
+    --yl-gold: #e0ae5b;
+    --yl-cyan: #69c8dc;
+    --yl-danger: #ff647f;
+    --yl-success: #68d5a5;
+    --yl-shadow-sm: 0 7px 20px rgb(0 0 0 / 29%);
+    --yl-shadow-md: 0 15px 38px rgb(0 0 0 / 36%);
+    --yl-shadow-lg: 0 28px 70px rgb(0 0 0 / 52%);
+    --yl-glow-accent: 0 10px 32px rgb(226 77 145 / 34%);
+    --yl-panel-atmosphere:
+        radial-gradient(circle at 93% -5%, rgb(177 59 139 / 28%), transparent 36%),
+        radial-gradient(circle at -8% 104%, rgb(103 58 168 / 24%), transparent 43%),
+        var(--yl-bg);
+    color-scheme: dark;
+}
+
+/* Major surfaces: low-noise layering with mode tokens rather than fixed dark fills. */
+.yl-phone-panel { background: var(--yl-panel-atmosphere); }
+.yl-phone-nav { background: color-mix(in srgb, var(--yl-bg-elev) 92%, transparent); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
+.yl-phone-drag-hint,
+.yl-phone-launcher-label,
+.yl-service-tabs,
+.yl-service-card,
+.yl-about-card,
+.yl-service-hero,
+.yl-feature-binding-modal,
+.yl-operation-dialog,
+.yl-settings-modal,
+.yl-help-popover {
+    border-color: var(--yl-border);
+    background-color: var(--yl-surface);
+}
+.yl-phone-panel,
+.yl-service-card,
+.yl-about-card,
+.yl-service-hero,
+.yl-feature-binding-modal,
+.yl-operation-dialog,
+.yl-settings-modal { box-shadow: var(--yl-shadow-md); }
+
+/* Navigation and common interactive controls retain a visible, non-colour-only state. */
+.yl-phone-nav-item:hover { color: var(--yl-text); background: var(--yl-accent-soft); }
+.yl-phone-nav-item.is-active {
+    color: var(--yl-text);
+    background: linear-gradient(145deg, var(--yl-accent-soft), var(--yl-accent-2-soft));
+    box-shadow: inset 0 0 0 1px var(--yl-border);
+}
+.yl-phone-extension[data-content-mode="SFW"] .yl-phone-nav-item.is-active { color: #5a2d40; }
+.yl-phone-extension[data-content-mode="SFW"] .yl-phone-nav-item.is-active .yl-nav-icon { color: var(--yl-accent); }
+.yl-phone-close:hover,
+.yl-dialog-close:hover,
+.yl-page-back:hover,
+.yl-help-trigger:hover { color: var(--yl-text); background: var(--yl-accent-soft); border-color: var(--yl-border-strong); }
+
+.yl-settings-control,
+.yl-character-field input,
+.yl-character-field textarea,
+.yl-character-field select,
+.yl-character-template-textarea,
+.yl-image-manager-url-group input,
+.yl-image-keyword-row input,
+.yl-chat-composer .yl-settings-textarea,
+.yl-group-search-input,
+.yl-message-search-input,
+.yl-service-search-input,
+.yl-service-xp-search-input {
+    border-color: var(--yl-border);
+    color: var(--yl-text);
+    background: color-mix(in srgb, var(--yl-bg-elev) 88%, transparent);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 16%);
+}
+.yl-settings-control:focus,
+.yl-character-field input:focus,
+.yl-character-field textarea:focus,
+.yl-character-field select:focus,
+.yl-character-template-textarea:focus,
+.yl-image-manager-url-group input:focus,
+.yl-image-keyword-row input:focus,
+.yl-service-search-input:focus,
+.yl-service-xp-search-input:focus {
+    border-color: var(--yl-accent);
+    box-shadow: 0 0 0 3px var(--yl-accent-soft);
+    outline: none;
+}
+.yl-settings-control::placeholder,
+.yl-service-search-input::placeholder,
+.yl-service-xp-search-input::placeholder { color: var(--yl-faint); opacity: 1; }
+.yl-settings-control:disabled { color: var(--yl-faint); background: color-mix(in srgb, var(--yl-bg-deep) 62%, transparent); }
+
+.yl-settings-button:not(.yl-button-danger),
+.yl-service-generate-button,
+.yl-service-search-submit,
+.yl-service-xp-search-submit {
+    border-color: transparent;
+    color: #fff;
+    background: var(--yl-grad);
+    box-shadow: 0 6px 16px var(--yl-accent-soft);
+}
+.yl-settings-button:not(.yl-button-danger):hover:not(:disabled),
+.yl-service-generate-button:hover:not(:disabled),
+.yl-service-search-submit:hover:not(:disabled),
+.yl-service-xp-search-submit:hover:not(:disabled) { filter: saturate(1.06) brightness(1.03); box-shadow: var(--yl-glow-accent); }
+.yl-settings-button-secondary,
+.yl-button-ghost,
+.yl-service-search-clear,
+.yl-service-xp-search-clear {
+    color: var(--yl-text);
+    background: var(--yl-surface);
+    border-color: var(--yl-border);
+}
+.yl-settings-button-secondary:hover:not(:disabled),
+.yl-button-ghost:hover:not(:disabled),
+.yl-service-search-clear:hover:not(:disabled),
+.yl-service-xp-search-clear:hover:not(:disabled) { background: var(--yl-accent-soft); border-color: var(--yl-border-strong); }
+
+/* Service hub: category cards read as adult character archetypes, not activity tiles. */
+.yl-service-hero {
+    background:
+        radial-gradient(circle at 100% 0%, var(--yl-accent-soft), transparent 49%),
+        radial-gradient(circle at 0% 100%, var(--yl-accent-2-soft), transparent 47%),
+        var(--yl-surface);
+}
+.yl-service-mode-badge { border-color: var(--yl-border-strong); color: var(--yl-text); background: var(--yl-accent-soft); }
+.yl-service-category {
+    min-height: 72px;
+    gap: 4px;
+    align-content: center;
+    border-color: var(--yl-border);
+    color: var(--yl-text);
+    background: color-mix(in srgb, var(--yl-bg-elev) 80%, var(--yl-accent-soft));
+    box-shadow: 0 4px 14px rgb(85 32 53 / 6%);
+    cursor: pointer;
+    text-align: left;
+    transition: transform var(--yl-t-fast) var(--yl-ease), border-color var(--yl-t-fast) var(--yl-ease), background var(--yl-t-fast) var(--yl-ease), box-shadow var(--yl-t-fast) var(--yl-ease);
+}
+.yl-service-category > strong { font-size: .84rem; letter-spacing: .01em; }
+.yl-service-category > span { color: var(--yl-muted); font-size: .65rem; line-height: 1.35; }
+.yl-service-category:hover { border-color: var(--yl-border-strong); background: var(--yl-accent-soft); box-shadow: var(--yl-shadow-sm); transform: translateY(-1px); }
+.yl-service-category:active { transform: translateY(0) scale(.985); }
+
+/* XP search works with both the current and planned semantic class names. */
+.yl-service-search,
+.yl-service-xp-search,
+.yl-service-search-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 8px;
+    align-items: center;
+    padding: 9px;
+    border: 1px solid var(--yl-border);
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--yl-bg-elev) 72%, transparent);
+    box-shadow: var(--yl-shadow-sm);
+}
+.yl-service-search-input,
+.yl-service-xp-search-input,
+.yl-service-search input,
+.yl-service-xp-search input { min-width: 0; min-height: 40px; padding: 8px 11px; border-radius: 11px; font: inherit; font-size: .75rem; }
+.yl-service-search-clear,
+.yl-service-xp-search-clear,
+.yl-service-search-submit,
+.yl-service-xp-search-submit { min-height: 40px; padding: 8px 11px; border-radius: 11px; font: inherit; font-size: .7rem; font-weight: 750; white-space: nowrap; cursor: pointer; }
+.yl-service-search-hint,
+.yl-service-xp-search-hint { grid-column: 1 / -1; margin: 0 2px; color: var(--yl-faint); font-size: .65rem; line-height: 1.45; }
+
+/* Dialogs, cards, and focus states inherit adequate contrast in both palettes. */
+.yl-service-tags span,
+.yl-chip,
+.yl-conversation-image-toggle,
+.yl-group-picker-row,
+.yl-group-create-selected,
+.yl-local-participant { border-color: var(--yl-border); color: var(--yl-muted); background: var(--yl-surface); }
+.yl-image-directive-card,
+.yl-image-generation-key-status { border-color: var(--yl-border); background: linear-gradient(135deg, var(--yl-accent-2-soft), var(--yl-accent-soft)); }
+.yl-phone-extension :is(.yl-settings-control, .yl-settings-button, .yl-service-category, .yl-service-tab, .yl-phone-nav-item, .yl-page-back, .yl-dialog-close, .yl-service-search-clear, .yl-service-search-submit, .yl-service-xp-search-clear, .yl-service-xp-search-submit):focus-visible {
+    outline: 2px solid var(--yl-accent);
+    outline-offset: 3px;
+}
+
+@media (max-width: 430px) {
+    .yl-service-search,
+    .yl-service-xp-search,
+    .yl-service-search-form { grid-template-columns: minmax(0, 1fr) auto; }
+    .yl-service-search-submit,
+    .yl-service-xp-search-submit { grid-column: 1 / -1; width: 100%; }
+    .yl-service-category-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .yl-phone-extension .yl-service-category,
+    .yl-phone-extension .yl-settings-button,
+    .yl-phone-extension .yl-phone-nav-item { transition-duration: 1ms; }
+    .yl-phone-extension .yl-service-category:hover { transform: none; }
+}

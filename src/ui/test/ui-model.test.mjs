@@ -327,3 +327,33 @@ test('service order failure messages explain mode races and invalid bridge resul
     assert.equal(describeActionFailure({ code: 'service_order_mode_changed' }), '内容模式已变化，未提交服务订单更新，请刷新后重试。');
     assert.equal(describeActionFailure({ code: 'service_order_result_invalid' }), '正文返回的服务订单结果未通过校验，未写入任何数据。');
 });
+
+
+test('service order projection supports every unified person category in SFW and NSFW while preserving legacy activity history', () => {
+    const personCategories = {
+        girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品',
+    };
+    const orders = {};
+    for (const [categoryId, category] of Object.entries(personCategories)) {
+        orders[`service_sfw_${categoryId}`] = serviceOrder({
+            服务分类: categoryId, 服务主题: `${category}：与林澈的文字协商`,
+        });
+        orders[`service_nsfw_${categoryId}`] = serviceOrder({
+            内容模式: 'NSFW', 服务分类: categoryId, 服务主题: `${category}：与林澈的文字协商`,
+        });
+    }
+    orders.service_legacy_sfw = serviceOrder();
+    orders.service_legacy_nsfw = serviceOrder({
+        内容模式: 'NSFW', 服务分类: 'adult_companion', 服务主题: '成人直白陪伴：与林澈的文字协商',
+    });
+
+    const byId = Object.fromEntries(projectServiceOrderView(serviceState(orders)).map((order) => [order.id, order]));
+    for (const [categoryId, category] of Object.entries(personCategories)) {
+        assert.equal(byId[`service_sfw_${categoryId}`].category, category);
+        assert.equal(byId[`service_nsfw_${categoryId}`].category, category);
+        assert.equal(byId[`service_sfw_${categoryId}`].mode, 'SFW');
+        assert.equal(byId[`service_nsfw_${categoryId}`].mode, 'NSFW');
+    }
+    assert.equal(byId.service_legacy_sfw.category, '咖啡与散步');
+    assert.equal(byId.service_legacy_nsfw.category, '成人直白陪伴');
+});
