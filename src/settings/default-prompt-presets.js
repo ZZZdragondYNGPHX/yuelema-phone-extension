@@ -28,6 +28,8 @@ export const BUILTIN_PROMPT_PRESET_IDS = Object.freeze({
     voiceMatchNsfw: 'builtin_voice_match_nsfw',
     imageMatchSfw: 'builtin_image_match_sfw',
     imageMatchNsfw: 'builtin_image_match_nsfw',
+    serviceProfileSfw: 'builtin_service_profile_sfw',
+    serviceProfileNsfw: 'builtin_service_profile_nsfw',
 });
 
 const PRESET_LAYOUT = Object.freeze({
@@ -137,6 +139,20 @@ const BUILTIN_PROMPT_PRESETS = Object.freeze([
         ...PRESET_LAYOUT,
     }),
     Object.freeze({
+        id: BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw,
+        name: '内置·约伴服务者·SFW',
+        contentMode: 'SFW',
+        content: '为“约伴”独立生成一位明确成年的虚构租借陪伴服务者。保持清纯、日常、自然且有吸引力：公开资料应呈现陪伴偏好、性格、兴趣、可提供的温柔日常体验和服务分类契合点。不得把成人或色情取向混入 SFW；不得输出未成年人、胁迫、隐藏资料、关系数值、会话、UID、Patch、密钥或系统信息。仅按核心 JSON 合同输出完整角色对象。',
+        ...PRESET_LAYOUT,
+    }),
+    Object.freeze({
+        id: BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw,
+        name: '内置·约伴服务者·NSFW',
+        contentMode: 'NSFW',
+        content: '为“约伴”独立生成一位明确成年的虚构成人服务角色扮演对象。仅限自愿、边界清晰且同意可撤回的明确成年人；成人表达应优先、直接、鲜明：公开资料应主动、直白且具有强烈成人吸引力，明确体现情色角色扮演、露骨文爱、欲望偏好、调情节奏或成人服务主题的偏好；不要将其稀释成普通饭搭子或含糊的情趣探索。不得出现未成年人、胁迫或非自愿内容。不得输出隐藏资料、其他隐私、关系数值、会话、UID、Patch、密钥或系统信息；不得把线上成人内容伪造成线下已经发生，也不得自动安排或触发现实行动。仅按核心 JSON 合同输出完整角色对象。',
+        ...PRESET_LAYOUT,
+    }),
+    Object.freeze({
         id: BUILTIN_PROMPT_PRESET_IDS.soulMatchSfw,
         name: '内置·灵魂匹配·SFW',
         contentMode: 'SFW',
@@ -199,6 +215,7 @@ export function builtinPromptPresetIdFor(functionKey, contentMode) {
         soul_match: BUILTIN_PROMPT_PRESET_IDS[`soulMatch${mode}`],
         text_match: BUILTIN_PROMPT_PRESET_IDS[`voiceMatch${mode}`],
         image_match: BUILTIN_PROMPT_PRESET_IDS[`imageMatch${mode}`],
+        service_profile_generation: BUILTIN_PROMPT_PRESET_IDS[`serviceProfile${mode}`],
     };
     return ids[functionKey] ?? null;
 }

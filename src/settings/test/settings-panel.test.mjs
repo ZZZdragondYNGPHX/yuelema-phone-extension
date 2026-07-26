@@ -238,7 +238,7 @@ test('提示词详情不混入连接设置，文案去掉风格措辞且可安�
 
     const saved = store.snapshot().promptPresets;
     const created = saved.find((preset) => preset.name === '匹配工作流');
-    assert.equal(saved.length, 21);
+    assert.equal(saved.length, 23);
     assert.ok(created);
     assert.match(created.id, /^prompt_/u);
     const envelope = JSON.parse(created.content);
@@ -262,7 +262,7 @@ test('提示词详情不混入连接设置，文案去掉风格措辞且可安�
     byAria(importPanel, '提示词预设导入导出 JSON').value = transfer;
     await click(button(importPanel, '导入并覆盖提示词预设'));
     assert.equal(importedStore.snapshot().connectionPresets[0].id, 'preserved_connection');
-    assert.equal(importedStore.snapshot().promptPresets.length, 21);
+    assert.equal(importedStore.snapshot().promptPresets.length, 23);
     const importedCreated = importedStore.snapshot().promptPresets.find((preset) => preset.name === '匹配工作流');
     assert.ok(importedCreated);
     assert.deepEqual(JSON.parse(importedCreated.content).entries.map((entry) => entry.name), ['公开资料边界', '输出格式']);

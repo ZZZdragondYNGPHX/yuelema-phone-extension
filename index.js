@@ -1,4 +1,5 @@
 import { mountPhoneApp } from './src/app-shell.js';
+import { createServiceOrderHistoryStore } from './src/service-order-history-store.js';
 import { createActionBridge } from './src/action-bridge.js';
 import { readLatestState } from './src/mvu/adapter.js';
 import { waitForReadableMvu } from './src/mvu/readiness.js';
@@ -30,6 +31,13 @@ function safeContext(getContext) {
     } catch {
         return null;
     }
+}
+
+function serviceOrderHistoryScope(getContext) {
+    const context = safeContext(getContext) ?? {};
+    const raw = [context.chatId, context.chat_id, context.characterId, context.character_id, context.groupId, context.group_id].find((value) => typeof value === 'string' && value.trim()) ?? 'default';
+    const normalized = String(raw).replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 120);
+    return normalized || 'default';
 }
 
 /**
@@ -135,6 +143,7 @@ export async function onActivate() {
         groupForumStore = createGroupForumStore();
         await groupForumStore.ready();
     }
+    const serviceOrderHistoryStore = createServiceOrderHistoryStore({ getScope: () => serviceOrderHistoryScope(getContext) });
     const actionBridge = createActionBridge({
         documentRef,
         mvu,
@@ -156,6 +165,7 @@ export async function onActivate() {
         imageLibrary,
         imageMatchCoordinator,
         groupForumStore,
+        serviceOrderHistoryStore,
         readState: () => readLatestState({ mvu: mvu() }),
     });
 

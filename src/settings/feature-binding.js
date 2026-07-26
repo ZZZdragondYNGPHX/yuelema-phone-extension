@@ -25,6 +25,7 @@ const surfaces = [
     { id: 'character_ai_completion', functionKey: 'character_ai_completion' },
     { id: 'character_full_authoring', functionKey: 'character_full_authoring' },
     { id: 'image_match', functionKey: 'image_match' },
+    { id: 'service_profiles', functionKey: 'service_profile_generation' },
 ].map((surface) => Object.freeze(surface));
 
 /** A stable UI-neutral map from product surface IDs to settings function keys. */

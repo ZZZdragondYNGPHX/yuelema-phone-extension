@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPhoneView, describeActionFailure, projectMatchView, projectPlayerPublicProfile, projectPublicProfile, projectServiceOrderView } from '../../ui-model.js';
+import { createPhoneView, describeActionFailure, projectMatchView, projectPlayerPublicProfile, projectPublicProfile, projectServiceOrderView, projectServiceOrderIssues } from '../../ui-model.js';
 
 function profile() {
     return {
@@ -228,6 +228,39 @@ test('service order projection rejects malformed ongoing and terminal snapshots 
     assert.deepEqual(projected, []);
 });
 
+test('service order projection supports up to three public participants and only exposes a complete body signal', () => {
+    const second = profile(); second.公开资料.昵称 = '顾晴';
+    const third = profile(); third.公开资料.昵称 = '周岚';
+    const state = {
+        角色池: { npc_service_1: profile(), npc_service_2: second, npc_service_3: third },
+        服务订单: {
+            service_1: serviceOrder({
+                角色UID列表: ['npc_service_1', 'npc_service_2', 'npc_service_3'],
+                服务主题: '咖啡与散步：与林澈、顾晴、周岚的文字协商', 状态: '进行中',
+                结束时间: '', 结束摘要: '', 已确认边界: '已确认边界',
+                合法结束条件: { 已满足: true, 摘要: '正文已达成结束条件。', 记录时间: '正文最新回合' },
+            }),
+            service_2: serviceOrder({ 角色UID列表: ['npc_service_1', 'npc_service_2', 'npc_service_3', 'npc_service_4'] }),
+        },
+    };
+    const projected = projectServiceOrderView(state);
+    assert.equal(projected.length, 1);
+    assert.deepEqual(projected[0].profiles.map((item) => item.昵称), ['林澈', '顾晴', '周岚']);
+    assert.equal(projected[0].completionReady, true);
+    assert.doesNotMatch(JSON.stringify(projected), /实际年龄|私密边界/u, 'only public projection fields may be exposed to rendering');
+    assert.equal(projectServiceOrderIssues(state).length, 1, '超过三位的记录只能作为泛化损坏项处理');
+});
+
+test('completion signal requires a non-empty summary and timestamp while active orders remain viewable', () => {
+    const order = serviceOrder({ 状态: '进行中', 结束时间: '', 结束摘要: '', 已确认边界: '已确认边界' });
+    const state = serviceState({ service_1: order });
+    assert.equal(projectServiceOrderView(state)[0].completionReady, false);
+    order.合法结束条件 = { 已满足: true, 摘要: '正文结束。', 记录时间: '' };
+    assert.equal(projectServiceOrderView(state)[0].completionReady, false, 'an incomplete body signal must not schedule a bridge call that will be rejected');
+    order.合法结束条件.记录时间 = '正文最新回合';
+    assert.equal(projectServiceOrderView(state)[0].completionReady, true);
+});
+
 test('service order projection replaces unsafe time text with state-derived copy', () => {
     const unsafeInitiated = '上海市浦东新区张江路 88 号';
     const unsafeStarted = 'mail@example.com';
@@ -264,6 +297,30 @@ test('service order projection replaces an entire terminal summary when conserva
     assert.equal(projected.length, sensitiveSummaries.length);
     for (const order of projected) assert.equal(order.summary, '该记录包含不适合展示的敏感内容，已隐藏。');
     assert.doesNotMatch(JSON.stringify(projected), /qa@example[.]com|private[.]example|12345678|private_handle|张江路|收款码|尾款/u);
+});
+
+test('service order summaries apply SFW-only transaction filtering while preserving shared privacy and process limits', () => {
+    const state = serviceState({
+        service_1: serviceOrder({ 结束摘要: '本次服务涉及尾款支付安排。' }),
+        service_2: serviceOrder({
+            内容模式: 'NSFW', 服务分类: 'private_service', 服务主题: '私密成人服务：与林澈的文字协商',
+            结束摘要: '本次成人角色扮演已收尾，排期与支付安排由正文处理。',
+        }),
+        service_3: serviceOrder({
+            内容模式: 'NSFW', 服务分类: 'private_service', 服务主题: '私密成人服务：与林澈的文字协商',
+            结束摘要: '完整露骨过程不得进入本地历史。',
+        }),
+        service_4: serviceOrder({
+            内容模式: 'NSFW', 服务分类: 'private_service', 服务主题: '私密成人服务：与林澈的文字协商',
+            结束摘要: '联系邮箱 qa@example.com，其他内容不得展示。',
+        }),
+    });
+    const byId = Object.fromEntries(projectServiceOrderView(state).map((order) => [order.id, order]));
+    assert.equal(byId.service_1.summary, '该记录包含不适合展示的敏感内容，已隐藏。');
+    assert.equal(byId.service_2.summary, '本次成人角色扮演已收尾，排期与支付安排由正文处理。');
+    assert.equal(byId.service_3.summary, '该记录包含不适合展示的敏感内容，已隐藏。');
+    assert.equal(byId.service_4.summary, '该记录包含不适合展示的敏感内容，已隐藏。');
+    assert.doesNotMatch(JSON.stringify(byId), /qa@example[.]com|完整露骨过程/u);
 });
 
 test('service order failure messages explain mode races and invalid bridge results', () => {

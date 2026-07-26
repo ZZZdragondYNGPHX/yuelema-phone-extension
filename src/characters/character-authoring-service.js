@@ -19,6 +19,16 @@ const COMPLETION_ERRORS = Object.freeze({
     response_invalid: '模型返回的角色补全草稿未通过成年人或结构校验；当前草稿未改变。',
 });
 
+const SERVICE_PROFILE_ERRORS = Object.freeze({
+    input_invalid: '约伴服务分类或角色说明无效；当前候补未改变。',
+    settings_unavailable: '约伴服务设置暂不可用。',
+    settings_invalid: '约伴服务预设无效，请检查服务设置。',
+    connection_missing: '请先在“约伴”的服务设置中绑定连接预设或设置默认连接。',
+    llm_unavailable: '当前浏览器未提供约伴服务模型连接。',
+    invalid_json: '模型没有返回可用的服务角色草稿；当前候补未改变。',
+    response_invalid: '模型返回的服务角色未通过成年人或结构校验；当前候补未改变。',
+});
+
 const AUTHORING_ERRORS = Object.freeze({
     input_invalid: '完整创作说明或公开上下文无效；当前草稿未改变。',
     settings_unavailable: '角色创作设置暂不可用。',
@@ -226,4 +236,10 @@ export async function generateCharacterCompletionCandidate({ publicProfile, inst
 export async function generateCharacterAuthoringCandidate({ creativeBrief, contentMode, playerPublicProfile, settingsStore, llmClient, signal } = {}) {
     const context = buildCharacterAuthoringContext({ creativeBrief, contentMode, playerPublicProfile });
     return generateCandidate({ errors: AUTHORING_ERRORS, context, contentMode, settingsStore, llmClient, signal, makeMessages: makeAuthoringMessages, functionKey: 'character_full_authoring' });
+}
+
+/** Generates one local-only adult service profile through the dedicated service binding. */
+export async function generateServiceProfileCandidate({ creativeBrief, contentMode, playerPublicProfile, settingsStore, llmClient, signal } = {}) {
+    const context = buildCharacterAuthoringContext({ creativeBrief, contentMode, playerPublicProfile });
+    return generateCandidate({ errors: SERVICE_PROFILE_ERRORS, context, contentMode, settingsStore, llmClient, signal, makeMessages: makeAuthoringMessages, functionKey: 'service_profile_generation' });
 }

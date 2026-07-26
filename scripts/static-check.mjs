@@ -6,7 +6,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const requiredFiles = [
     'manifest.json', 'index.js', 'style.css', 'README.md', 'test/extension-lifecycle.test.mjs',
-    'src/app-shell.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
+    'src/app-shell.js', 'src/service-order-history-store.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
     'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
@@ -42,7 +42,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '0.1.36') fail('manifest.version 必须与扩展版本 0.1.36 统一');
+if (manifest.version !== '0.1.37') fail('manifest.version 必须与扩展版本 0.1.37 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -109,7 +109,7 @@ console.log('✓ API Key 仅通过专用浏览器缓存保存，并与设置导�
 const appShell = await readFile(resolve(root, 'src/app-shell.js'), 'utf8');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShell.includes("const UI_VERSION = '0.1.36'")) fail('关于软件 UI_VERSION 必须与扩展版本 0.1.36 统一');
+if (!appShell.includes("const UI_VERSION = '0.1.37'")) fail('关于软件 UI_VERSION 必须与扩展版本 0.1.37 统一');
 const index = await readFile(resolve(root, 'index.js'), 'utf8');
 if (!index.includes('export function onDisable') || !index.includes('export function onDelete') || !index.includes('clearSessionKeys()')) fail('缺少扩展禁用/删除时清理内存密钥镜像的生命周期实现');
 for (const label of ['首页', '匹配', '消息', '群组', '我的']) {
@@ -156,7 +156,7 @@ if (!controlledPatch.includes('buildRecommendationRefreshPatch')) fail('缺少�
 if (!actionBridge.includes('runRecommendationRefresh')) fail('缺少推荐刷新受控 MVU 写入桥接');
 console.log('✓ 阶段 3 推荐刷新候选校验、模型绑定与受控 Patch 接线');
 
-if (!controlledPatch.includes('buildServiceOrderHandoffPatch') || !controlledPatch.includes('buildServiceOrderRepeatPatch') || !actionBridge.includes('runServiceOrderHandoff') || !actionBridge.includes('runServiceOrderRepeat') || !appShell.includes('buildServiceHubPage')) fail('缺少约伴服务订单的受控 MVU 与 UI 接线');
+if (!controlledPatch.includes('buildServiceOrderHandoffPatch') || !controlledPatch.includes('buildServiceOrderRepeatPatch') || !controlledPatch.includes('buildServiceOrderStartPatch') || !controlledPatch.includes('buildServiceOrderCompletePatch') || !controlledPatch.includes('buildServiceOrderFinalizePatch') || !actionBridge.includes('runServiceOrderHandoff') || !actionBridge.includes('runServiceOrderStart') || !actionBridge.includes('runServiceOrderFinalize') || !index.includes('createServiceOrderHistoryStore') || !appShell.includes('buildServiceHubPage')) fail('缺少约伴服务订单的受控 MVU、本地归档或 UI 接线');
 console.log('✓ 关于子界面与约伴服务订单已纳入静态检查');
 
 const characterTemplateCodec = await readFile(resolve(root, 'src/characters/character-template-codec.js'), 'utf8');
@@ -278,7 +278,7 @@ const imageGenerationClient = await readFile(resolve(root, 'src/llm/image-genera
 const drawingDnaRules = await readFile(resolve(root, 'src/recommendation/drawing-dna-rules.js'), 'utf8');
 if (!index.includes('createImageGenerationClient') || !actionBridge.includes('generateConversationImage')) fail('缺少生图客户端注入或对话生图桥接');
 if (!appShell.includes("'settings_image_generation'") || !appShell.includes('buildConversationImageControls') || !appShell.includes('buildImageDirectiveCard') || !appShell.includes('generateConversationImage')) fail('缺少生图设置路由、会话开关或结构化指令 UI 接线');
-if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 10') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema 或逐会话自动生图隔离');
+if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 11') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema 或逐会话自动生图隔离');
 if (!settingsPanel.includes('buildImageGenerationSection') || !settingsPanel.includes('positivePrefix') || !settingsPanel.includes('negativePrompt')) fail('缺少生图固定正负提示词设置界面');
 if (!imageDirective.includes('composeImagePrompt') || !imageDirective.includes('coreDna') || !imageDirective.includes('outfitDna')) fail('缺少固定顺序的绘图 DNA 提示词组合器');
 if (!imageGenerationClient.includes('requireSessionKey') || !imageGenerationClient.includes('fetchImpl') || !imageGenerationClient.includes('readResponseBytes') || !imageGenerationClient.includes('MAX_IMAGE_BYTES') || imageGenerationClient.includes("kind: 'url'")) fail('缺少注入式生图客户端、独立 Key、有界图片响应读取或仍允许 UI 远程图片 URL');

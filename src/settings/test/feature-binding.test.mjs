@@ -62,10 +62,11 @@ test('功能入口映射覆盖全部需要预设的产品表面，角色两种 A
         'character_ai_completion',
         'character_full_authoring',
         'image_match',
+        'service_profiles',
     ]);
     assert.deepEqual(listFeatureBindingSurfaces().map((surface) => surface.functionKey), [
         'recommendation_refresh', 'soul_match', 'text_match', 'chat', 'chat_summary', 'group_chat', 'forum',
-        'character_ai_completion', 'character_full_authoring', 'image_match',
+        'character_ai_completion', 'character_full_authoring', 'image_match', 'service_profile_generation',
     ]);
     assert.deepEqual(getFeatureBindingSurface('match_soul'), {
         id: 'match_soul', functionKey: 'soul_match',
@@ -108,7 +109,7 @@ test('selector view model projects only saved preset IDs and names, never connec
         { id: 'fast', name: '快速连接' },
         { id: 'smart', name: '精细连接' },
     ]);
-    assert.equal(model.promptOptions.length, 22);
+    assert.equal(model.promptOptions.length, 24);
     assert.deepEqual(model.promptOptions.slice(-2), [
         { id: 'base', name: '默认提示词' },
         { id: 'creative', name: '创作提示词' },

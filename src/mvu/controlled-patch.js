@@ -29,11 +29,12 @@ const GROUP_UID_PATTERN = /^group_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const SERVICE_ORDER_UID_PATTERN = /^service_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const SERVICE_CATEGORY_BY_MODE = Object.freeze({
     SFW: Object.freeze({ coffee_walk: '咖啡与散步', arts_outing: '展览与演出', city_guide: '城市向导', hobby_day: '兴趣活动' }),
-    NSFW: Object.freeze({ adult_companion: '成人话题陪伴', night_date: '夜间约会沟通', private_negotiation: '私密会面前协商', roleplay_boundaries: '角色扮演边界沟通' }),
+    NSFW: Object.freeze({ adult_companion: '成人直白陪伴', erotic_roleplay: '情色角色扮演', explicit_chat: '露骨文爱', private_service: '私密成人服务' }),
 });
 const RELATIONSHIP_VALUE_FIELDS = Object.freeze(['好感', '信任', '戒备', '面基意愿']);
 const BOND_VALUE_FIELDS = Object.freeze(['友情值', '心动值', '欲望值']);
 const MAX_CHAT_MESSAGE_LENGTH = 600;
+const MAX_SERVICE_ORDER_PARTICIPANTS = 3;
 const READ_WITHOUT_REPLY_NOTICE = '对方已读，但暂时没有回复。';
 const BLOCKED_CHAT_NOTICE = '对方已将你拉黑，当前会话无法继续发送消息。';
 const PLAYER_PUBLIC_TEXT_LIMITS = Object.freeze({
@@ -294,32 +295,108 @@ function serviceCategoryForMode(mode, categoryId) {
 }
 
 function serviceTopicForCandidate(candidate, category) {
-    const nickname = ownRecord(candidate?.公开资料)?.昵称;
-    const name = typeof nickname === 'string' && nickname.trim() ? nickname.trim().slice(0, 80) : '该角色';
-    return `${category}：与${name}的文字协商`;
+    return serviceTopicForCandidates([candidate], category);
+}
+
+function serviceTopicForCandidates(candidates, category) {
+    const names = (Array.isArray(candidates) ? candidates : []).map((candidate) => {
+        const nickname = ownRecord(candidate?.公开资料)?.昵称;
+        return typeof nickname === 'string' && nickname.trim() ? nickname.trim().slice(0, 80) : '该角色';
+    }).filter(Boolean).slice(0, MAX_SERVICE_ORDER_PARTICIPANTS);
+    return `${category}：与${names.join('、') || '该角色'}的文字协商`;
+}
+
+function normalizeServiceCandidates({ candidate, candidates } = {}) {
+    const source = Array.isArray(candidates) ? candidates : (candidate ? [candidate] : []);
+    if (!source.length || source.length > MAX_SERVICE_ORDER_PARTICIPANTS) return null;
+    const normalized = []; const names = new Set();
+    for (const item of source) {
+        let value;
+        try { value = normalizeGeneratedCandidate(item, { contentMode: undefined, requirePersonalName: true }); }
+        catch { return null; }
+        const name = ownRecord(value.公开资料)?.昵称?.trim().toLocaleLowerCase('zh-CN');
+        if (!name || names.has(name)) return null;
+        names.add(name); normalized.push(value);
+    }
+    return normalized;
 }
 
 function isBoundedText(value, maximum, { required = false } = {}) {
     return typeof value === 'string' && value.length <= maximum && (!required || value.trim().length > 0);
 }
+const SERVICE_BOUNDARY_TEXT_FIELDS = Object.freeze(['主题', '允许项', '排除项', '强度', '隐私处理']);
+const SERVICE_INFORMATION_FIELDS = Object.freeze(['价格', '时长', '排期', '套餐', '评价', '投诉', '退款', '服务者信用']);
+const SERVICE_BOUNDARIES_MAX_LENGTH = 2600;
 
-function isCompleteTerminalServiceOrder(source, { mode, categoryId, category, npcUid, profile }) {
+function normalizeServiceBoundaries(value, { mode, participantCount } = {}) {
+    if (!ownRecord(value) || !['SFW', 'NSFW'].includes(mode) || !Number.isInteger(participantCount) || participantCount < 1 || participantCount > MAX_SERVICE_ORDER_PARTICIPANTS) return null;
+    const fields = ['内容模式', ...SERVICE_BOUNDARY_TEXT_FIELDS, '服务信息', '玩家已同意', 'NPC明确同意'];
+    if (Object.keys(value).some((key) => !fields.includes(key)) || value.内容模式 !== mode || value.玩家已同意 !== true
+        || !Array.isArray(value.NPC明确同意) || value.NPC明确同意.length !== participantCount || !value.NPC明确同意.every((item) => item === true)) return null;
+    const result = { 内容模式: mode, 玩家已同意: true, NPC明确同意: Object.freeze([...value.NPC明确同意]) };
+    for (const field of SERVICE_BOUNDARY_TEXT_FIELDS) {
+        const text = value[field];
+        if (typeof text !== 'string' || text.trim().length === 0 || text.length > 240) return null;
+        result[field] = text.trim();
+    }
+    const sourceInfo = value.服务信息 === undefined ? {} : value.服务信息;
+    if (!ownRecord(sourceInfo) || Object.keys(sourceInfo).some((key) => !SERVICE_INFORMATION_FIELDS.includes(key))) return null;
+    const serviceInfo = {};
+    for (const field of SERVICE_INFORMATION_FIELDS) {
+        const text = sourceInfo[field] ?? '';
+        if (typeof text !== 'string' || text.trim().length > 120) return null;
+        serviceInfo[field] = text.trim();
+    }
+    result.服务信息 = Object.freeze(serviceInfo);
+    return Object.freeze(result);
+}
+
+function serializeServiceBoundaries(value, options) {
+    const normalized = normalizeServiceBoundaries(value, options);
+    if (!normalized) return null;
+    const serialized = JSON.stringify(normalized);
+    return serialized.length <= SERVICE_BOUNDARIES_MAX_LENGTH ? serialized : null;
+}
+
+function hasSerializedServiceBoundaries(value, options) {
+    if (!isBoundedText(value, SERVICE_BOUNDARIES_MAX_LENGTH, { required: true })) return false;
+    try { return normalizeServiceBoundaries(JSON.parse(value), options) !== null; } catch { return false; }
+}
+
+function isOpenServiceOrder(order) {
+    return ownRecord(order) && ['待确认', '进行中'].includes(order.状态);
+}
+
+function hasAnyOpenServiceOrder(orders, exceptUid = '') {
+    return Object.entries(orders).some(([uid, order]) => uid !== exceptUid && isOpenServiceOrder(order));
+}
+function isValidServiceCompletionSignal(value, { required = false } = {}) {
+    if (value === undefined) return !required;
+    if (!ownRecord(value) || Object.keys(value).some((key) => !['已满足', '摘要', '记录时间'].includes(key))
+        || typeof value.已满足 !== 'boolean' || !isBoundedText(value.摘要, 600) || !isBoundedText(value.记录时间, 160)) return false;
+    return value.已满足
+        ? isBoundedText(value.摘要, 600, { required: true }) && isBoundedText(value.记录时间, 160, { required: true })
+        : value.摘要 === '' && value.记录时间 === '';
+}
+
+function isCompleteTerminalServiceOrder(source, { mode, categoryId, category, npcUid, profiles }) {
     if (!ownRecord(source) || !['已完成', '已取消'].includes(source.状态)
         || source.角色UID !== npcUid || source.内容模式 !== mode || source.服务分类 !== categoryId
-        || source.服务主题 !== serviceTopicForCandidate(profile, category)
+        || source.服务主题 !== serviceTopicForCandidates(profiles, category)
         || !isBoundedText(source.发起时间, 160, { required: true })
         || !isBoundedText(source.结束时间, 160, { required: true })
         || !isBoundedText(source.结束摘要, 600, { required: true })
         || !isBoundedText(source.开始时间, 160)
-        || !isBoundedText(source.已确认边界, 600)) return false;
+        || !isBoundedText(source.已确认边界, SERVICE_BOUNDARIES_MAX_LENGTH)
+        || !isValidServiceCompletionSignal(source.合法结束条件)) return false;
     return source.状态 !== '已完成'
         || (isBoundedText(source.开始时间, 160, { required: true })
-            && isBoundedText(source.已确认边界, 600, { required: true }));
+            && isBoundedText(source.已确认边界, SERVICE_BOUNDARIES_MAX_LENGTH, { required: true }));
 }
 
 function hasActiveServiceOrderForRole(orders, { sourceOrderUid, npcUid, mode }) {
     return Object.entries(orders).some(([orderUid, order]) => orderUid !== sourceOrderUid
-        && ownRecord(order) && order.角色UID === npcUid && order.内容模式 === mode
+        && ownRecord(order) && (order.角色UID === npcUid || (Array.isArray(order.角色UID列表) && order.角色UID列表.includes(npcUid))) && order.内容模式 === mode
         && ['待确认', '进行中'].includes(order.状态));
 }
 
@@ -352,51 +429,32 @@ function nextChatMessageNumber(sessionUid, recentMessages) {
  * fixed category id; paths, UIDs, order state and displayed topic are derived
  * here, never from model text or a caller-provided patch.
  */
-export function buildServiceOrderHandoffPatch(state, { candidate, categoryId } = {}) {
+export function buildServiceOrderHandoffPatch(state, { candidate, candidates, categoryId } = {}) {
     if (!ownRecord(state)) return fail('service_order_invalid_state');
-    const system = ownRecord(state.系统);
-    const counters = ownRecord(system?.UID计数器);
-    const rolePool = ownRecord(state.角色池);
-    const orders = ownRecord(state.服务订单);
-    const mode = ownRecord(state.软件)?.内容模式;
-    const roleCounter = counters?.角色;
-    const orderCounter = counters?.服务订单;
+    const system = ownRecord(state.系统); const counters = ownRecord(system?.UID计数器);
+    const rolePool = ownRecord(state.角色池); const orders = ownRecord(state.服务订单);
+    const mode = ownRecord(state.软件)?.内容模式; const roleCounter = counters?.角色; const orderCounter = counters?.服务订单;
     const category = serviceCategoryForMode(mode, categoryId);
     if (!rolePool || !orders || !category || !Number.isInteger(roleCounter) || roleCounter < 0 || roleCounter >= 999999
-        || !Number.isInteger(orderCounter) || orderCounter < 0 || orderCounter >= 999999) {
-        return fail('service_order_state_invalid');
-    }
-    let normalizedCandidate;
-    try { normalizedCandidate = normalizeGeneratedCandidate(candidate, { contentMode: mode, requirePersonalName: true }); }
-    catch { return fail('service_order_candidate_invalid'); }
-    const npcUid = `npc_service_${roleCounter + 1}`;
-    const orderUid = `service_${orderCounter + 1}`;
-    const candidatePool = ownRecord(ownRecord(state.推荐)?.临时候选池);
-    if (!isNpcUid(npcUid) || !isServiceOrderUid(orderUid) || Object.hasOwn(rolePool, npcUid)
-        || (candidatePool && Object.hasOwn(candidatePool, npcUid)) || Object.hasOwn(orders, orderUid)) return fail('service_order_uid_conflict');
-    const topic = serviceTopicForCandidate(normalizedCandidate, category);
+        || !Number.isInteger(orderCounter) || orderCounter < 0 || orderCounter >= 999999) return fail('service_order_state_invalid');
+    if (hasAnyOpenServiceOrder(orders)) return fail('service_order_conflict');
+    const normalizedCandidates = normalizeServiceCandidates({ candidate, candidates });
+    if (!normalizedCandidates || roleCounter + normalizedCandidates.length > 999999) return fail('service_order_candidate_invalid');
+    const npcUids = normalizedCandidates.map((_, index) => `npc_service_${roleCounter + index + 1}`);
+    const orderUid = `service_${orderCounter + 1}`; const candidatePool = ownRecord(ownRecord(state.推荐)?.临时候选池);
+    if (!isServiceOrderUid(orderUid) || Object.hasOwn(orders, orderUid) || npcUids.some((uid) => !isNpcUid(uid) || Object.hasOwn(rolePool, uid) || (candidatePool && Object.hasOwn(candidatePool, uid)))) return fail('service_order_uid_conflict');
     const order = Object.freeze({
-        角色UID: npcUid,
-        内容模式: mode,
-        服务分类: categoryId,
-        服务主题: topic,
-        状态: '待确认',
-        发起时间: '待正文确认',
-        开始时间: '',
-        结束时间: '',
-        结束摘要: '',
-        已确认边界: '',
+        角色UID: npcUids[0], 角色UID列表: npcUids, 内容模式: mode, 服务分类: categoryId,
+        服务主题: serviceTopicForCandidates(normalizedCandidates, category), 状态: '待确认',
+        发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '',
     });
-    return success({
-        npcUid,
-        orderUid,
-        patch: [
-            { op: 'add', path: encodeJsonPointer(['角色池', npcUid]), value: normalizedCandidate },
-            { op: 'add', path: encodeJsonPointer(['服务订单', orderUid]), value: order },
-            { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '角色']), value: roleCounter + 1 },
-            { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '服务订单']), value: orderCounter + 1 },
-        ],
-    });
+    const patch = normalizedCandidates.map((profile, index) => ({ op: 'add', path: encodeJsonPointer(['角色池', npcUids[index]]), value: profile }));
+    patch.push(
+        { op: 'add', path: encodeJsonPointer(['服务订单', orderUid]), value: order },
+        { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '角色']), value: roleCounter + normalizedCandidates.length },
+        { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '服务订单']), value: orderCounter + 1 },
+    );
+    return success({ npcUid: npcUids[0], npcUids: Object.freeze(npcUids), orderUid, patch });
 }
 
 /**
@@ -406,51 +464,157 @@ export function buildServiceOrderHandoffPatch(state, { candidate, categoryId } =
  */
 export function buildServiceOrderRepeatPatch(state, { sourceOrderUid } = {}) {
     if (!ownRecord(state) || !isServiceOrderUid(sourceOrderUid)) return fail('service_order_repeat_invalid');
-    const system = ownRecord(state.系统);
-    const counters = ownRecord(system?.UID计数器);
-    const orders = ownRecord(state.服务订单);
-    const rolePool = ownRecord(state.角色池);
-    const mode = ownRecord(state.软件)?.内容模式;
-    const orderCounter = counters?.服务订单;
+    const system = ownRecord(state.系统); const counters = ownRecord(system?.UID计数器);
+    const orders = ownRecord(state.服务订单); const rolePool = ownRecord(state.角色池);
+    const mode = ownRecord(state.软件)?.内容模式; const orderCounter = counters?.服务订单;
     const source = orders?.[sourceOrderUid];
     if (!orders || !rolePool || !ownRecord(source) || !['已完成', '已取消'].includes(source.状态)
         || !Number.isInteger(orderCounter) || orderCounter < 0 || orderCounter >= 999999) return fail('service_order_repeat_state_invalid');
-    const categoryId = source.服务分类;
-    const category = serviceCategoryForMode(mode, categoryId);
-    const npcUid = source.角色UID;
-    if (!category || source.内容模式 !== mode || !isNpcUid(npcUid)) return fail('service_order_repeat_not_available');
-    const adult = assertKnownAdult(state, npcUid);
-    if (!adult.ok || adult.value.location !== 'role') return fail('service_order_repeat_not_available');
-    if (!isCompleteTerminalServiceOrder(source, { mode, categoryId, category, npcUid, profile: adult.value.profile })) {
-        return fail('service_order_repeat_state_invalid');
-    }
-    if (hasActiveServiceOrderForRole(orders, { sourceOrderUid, npcUid, mode })) {
-        return fail('service_order_repeat_not_available');
-    }
+    const categoryId = source.服务分类; const category = serviceCategoryForMode(mode, categoryId);
+    const participants = Array.isArray(source.角色UID列表) && source.角色UID列表.length ? source.角色UID列表 : [source.角色UID];
+    if (!category || source.内容模式 !== mode || !participants.length || participants.length > MAX_SERVICE_ORDER_PARTICIPANTS || participants[0] !== source.角色UID || new Set(participants).size !== participants.length || !participants.every(isNpcUid)) return fail('service_order_repeat_not_available');
+    const adults = participants.map((npcUid) => assertKnownAdult(state, npcUid));
+    if (adults.some((adult) => !adult.ok || adult.value.location !== 'role')) return fail('service_order_repeat_not_available');
+    const profiles = adults.map((adult) => adult.value.profile);
+    if (!isCompleteTerminalServiceOrder(source, { mode, categoryId, category, npcUid: participants[0], profiles })
+        || source.服务主题 !== serviceTopicForCandidates(profiles, category)) return fail('service_order_repeat_state_invalid');
+    if (hasAnyOpenServiceOrder(orders, sourceOrderUid) || participants.some((npcUid) => hasActiveServiceOrderForRole(orders, { sourceOrderUid, npcUid, mode }))) return fail('service_order_conflict');
     const orderUid = `service_${orderCounter + 1}`;
     if (!isServiceOrderUid(orderUid) || Object.hasOwn(orders, orderUid)) return fail('service_order_uid_conflict');
     const order = Object.freeze({
-        角色UID: npcUid,
-        内容模式: mode,
-        服务分类: categoryId,
-        服务主题: serviceTopicForCandidate(adult.value.profile, category),
-        状态: '待确认',
-        发起时间: '待正文确认',
-        开始时间: '',
-        结束时间: '',
-        结束摘要: '',
-        已确认边界: '',
+        角色UID: participants[0], 角色UID列表: Object.freeze([...participants]), 内容模式: mode, 服务分类: categoryId,
+        服务主题: serviceTopicForCandidates(profiles, category), 状态: '待确认',
+        发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '',
     });
-    return success({
-        npcUid,
-        orderUid,
-        patch: [
-            { op: 'add', path: encodeJsonPointer(['服务订单', orderUid]), value: order },
-            { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '服务订单']), value: orderCounter + 1 },
-        ],
-    });
+    return success({ npcUid: participants[0], npcUids: Object.freeze([...participants]), orderUid, patch: [
+        { op: 'add', path: encodeJsonPointer(['服务订单', orderUid]), value: order },
+        { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '服务订单']), value: orderCounter + 1 },
+    ] });
 }
 
+/** Creates a fresh pending order from a browser-local minimal history record without restoring the old contract. */
+export function buildServiceOrderRebookPatch(state, { npcUid, npcUids, categoryId } = {}) {
+    if (!ownRecord(state)) return fail('service_order_rebook_invalid');
+    const rolePool = ownRecord(state.角色池); const orders = ownRecord(state.服务订单);
+    const mode = ownRecord(state.软件)?.内容模式; const counters = ownRecord(ownRecord(state.系统)?.UID计数器);
+    const orderCounter = counters?.服务订单; const category = serviceCategoryForMode(mode, categoryId);
+    const participants = Array.isArray(npcUids) ? npcUids : (npcUid ? [npcUid] : []);
+    if (!rolePool || !orders || !category || !Number.isInteger(orderCounter) || orderCounter < 0 || orderCounter >= 999999 || !participants.length || participants.length > MAX_SERVICE_ORDER_PARTICIPANTS || new Set(participants).size !== participants.length || !participants.every(isNpcUid)) return fail('service_order_rebook_invalid');
+    const adults = participants.map((uid) => assertKnownAdult(state, uid));
+    if (adults.some((adult) => !adult.ok || adult.value.location !== 'role')) return fail('service_order_rebook_invalid');
+    if (hasAnyOpenServiceOrder(orders) || participants.some((uid) => hasActiveServiceOrderForRole(orders, { sourceOrderUid: '', npcUid: uid, mode }))) return fail('service_order_conflict');
+    const orderUid = `service_${orderCounter + 1}`;
+    if (!isServiceOrderUid(orderUid) || Object.hasOwn(orders, orderUid)) return fail('service_order_uid_conflict');
+    const profiles = adults.map((adult) => adult.value.profile); const order = Object.freeze({ 角色UID: participants[0], 角色UID列表: participants, 内容模式: mode, 服务分类: categoryId, 服务主题: serviceTopicForCandidates(profiles, category), 状态: '待确认', 发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '' });
+    return success({ npcUid: participants[0], npcUids: Object.freeze([...participants]), orderUid, patch: [
+        { op: 'add', path: encodeJsonPointer(['服务订单', orderUid]), value: order },
+        { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '服务订单']), value: orderCounter + 1 },
+    ] });
+}
+
+/** Player confirms a pending service contract through the controlled MVU boundary. */
+/** Deletes all browser-history-linked service roles in one guarded transition. */
+export function buildServiceHistoryRolesDeletionPatch(state, { npcUids } = {}) {
+    if (!ownRecord(state) || !Array.isArray(npcUids) || !npcUids.length || npcUids.length > MAX_SERVICE_ORDER_PARTICIPANTS
+        || new Set(npcUids).size !== npcUids.length || !npcUids.every((uid) => /^npc_service_\d+$/u.test(uid))) return fail('service_history_delete_invalid');
+    const orders = ownRecord(state.服务订单); const rolePool = ownRecord(state.角色池);
+    if (!orders || !rolePool || !npcUids.every((uid) => Object.hasOwn(rolePool, uid))) return fail('service_history_delete_invalid');
+    if (npcUids.some((uid) => Object.values(orders).some((order) => isOpenServiceOrder(order) && (order.角色UID === uid || (Array.isArray(order.角色UID列表) && order.角色UID列表.includes(uid)))))) return fail('service_history_delete_open_order');
+    const operations = [];
+    for (const npcUid of npcUids) {
+        const built = buildDeleteCharacterPatch(state, { npcUid });
+        if (!built.ok || built.value.length !== 1 || built.value[0]?.op !== 'remove' || built.value[0]?.path !== encodeJsonPointer(['角色池', npcUid])) return fail('service_history_delete_not_isolated');
+        operations.push(built.value[0]);
+    }
+    return success(operations);
+}
+
+function isStrictServiceOrderForProjection(state, orderUid, raw) {
+    if (!isServiceOrderUid(orderUid) || !ownRecord(raw) || !['待确认', '进行中', '已完成', '已取消'].includes(raw.状态)
+        || !['SFW', 'NSFW'].includes(raw.内容模式) || !isNpcUid(raw.角色UID)) return false;
+    const participants = Array.isArray(raw.角色UID列表) && raw.角色UID列表.length ? raw.角色UID列表 : [raw.角色UID];
+    if (participants.length > MAX_SERVICE_ORDER_PARTICIPANTS || participants[0] !== raw.角色UID || new Set(participants).size !== participants.length || !participants.every(isNpcUid)) return false;
+    const category = serviceCategoryForMode(raw.内容模式, raw.服务分类);
+    if (!category || !isBoundedText(raw.服务主题, 240, { required: true }) || !isBoundedText(raw.发起时间, 160, { required: true })
+        || !isBoundedText(raw.开始时间, 160) || !isBoundedText(raw.结束时间, 160) || !isBoundedText(raw.结束摘要, 600) || !isBoundedText(raw.已确认边界, SERVICE_BOUNDARIES_MAX_LENGTH)
+        || !isValidServiceCompletionSignal(raw.合法结束条件)) return false;
+    const adults = participants.map((uid) => assertKnownAdult(state, uid));
+    if (adults.some((adult) => !adult.ok || adult.value.location !== 'role')) return false;
+    if (raw.服务主题 !== serviceTopicForCandidates(adults.map((adult) => adult.value.profile), category)) return false;
+    if (raw.状态 === '待确认') return raw.开始时间 === '' && raw.结束时间 === '' && raw.结束摘要 === '' && raw.已确认边界 === '';
+    if (raw.状态 === '进行中') return isBoundedText(raw.开始时间, 160, { required: true })
+        && hasSerializedServiceBoundaries(raw.已确认边界, { mode: raw.内容模式, participantCount: participants.length })
+        && raw.结束时间 === '' && raw.结束摘要 === '';
+    return isBoundedText(raw.结束时间, 160, { required: true }) && isBoundedText(raw.结束摘要, 600, { required: true });
+}
+
+/** Removes only a malformed service-order record; valid orders can never be repaired away. */
+export function buildServiceOrderRepairPatch(state, { orderUid } = {}) {
+    if (!ownRecord(state) || !isServiceOrderUid(orderUid)) return fail('service_order_repair_invalid');
+    const orders = ownRecord(state.服务订单); const raw = orders?.[orderUid];
+    if (!orders || !ownRecord(raw)) return fail('service_order_repair_invalid');
+    if (isStrictServiceOrderForProjection(state, orderUid, raw)) return fail('service_order_repair_not_needed');
+    return success([{ op: 'remove', path: encodeJsonPointer(['服务订单', orderUid]) }]);
+}
+
+export function buildServiceOrderStartPatch(state, { orderUid, boundaries } = {}) {
+    if (!ownRecord(state) || !isServiceOrderUid(orderUid)) return fail('service_order_start_invalid');
+    const orders = ownRecord(state.服务订单);
+    const mode = ownRecord(state.软件)?.内容模式;
+    const order = orders?.[orderUid];
+    const participants = Array.isArray(order?.角色UID列表) && order.角色UID列表.length ? order.角色UID列表 : [order?.角色UID];
+    const serializedBoundaries = serializeServiceBoundaries(boundaries, { mode, participantCount: participants.length });
+    if (!orders || !ownRecord(order) || order.状态 !== '待确认' || order.内容模式 !== mode || !participants.length || participants.length > MAX_SERVICE_ORDER_PARTICIPANTS || !serializedBoundaries) return fail('service_order_start_invalid');
+    if (hasAnyOpenServiceOrder(orders, orderUid)) return fail('service_order_conflict');
+    return success([
+        { op: 'replace', path: encodeJsonPointer(['服务订单', orderUid, '状态']), value: '进行中' },
+        { op: 'replace', path: encodeJsonPointer(['服务订单', orderUid, '开始时间']), value: '玩家已确认接单' },
+        { op: 'replace', path: encodeJsonPointer(['服务订单', orderUid, '已确认边界']), value: serializedBoundaries },
+    ]);
+}
+
+/** Cancels a pending service order. The UI may only cancel before the order starts. */
+export function buildServiceOrderCancelPatch(state, { orderUid } = {}) {
+    if (!ownRecord(state) || !isServiceOrderUid(orderUid)) return fail('service_order_cancel_invalid');
+    const orders = ownRecord(state.服务订单);
+    const mode = ownRecord(state.软件)?.内容模式;
+    const order = orders?.[orderUid];
+    if (!orders || !ownRecord(order) || order.状态 !== '待确认' || order.内容模式 !== mode) return fail('service_order_cancel_invalid');
+    return success([
+        { op: 'replace', path: encodeJsonPointer(['服务订单', orderUid, '状态']), value: '已取消' },
+        { op: 'replace', path: encodeJsonPointer(['服务订单', orderUid, '结束时间']), value: '玩家已取消' },
+        { op: 'replace', path: encodeJsonPointer(['服务订单', orderUid, '结束摘要']), value: '玩家在正文开始前取消了本次服务。' },
+    ]);
+}
+
+/** Completes an in-progress order after the player confirms the body has reached its ending condition. */
+export function buildServiceOrderCompletePatch(state, { orderUid } = {}) {
+    if (!ownRecord(state) || !isServiceOrderUid(orderUid)) return fail('service_order_complete_invalid');
+    const orders = ownRecord(state.服务订单);
+    const mode = ownRecord(state.软件)?.内容模式;
+    const order = orders?.[orderUid];
+    if (!orders || !ownRecord(order) || order.状态 !== '进行中' || order.内容模式 !== mode
+        || !isBoundedText(order.开始时间, 160, { required: true })
+        || !hasSerializedServiceBoundaries(order.已确认边界, { mode, participantCount: (Array.isArray(order.角色UID列表) && order.角色UID列表.length ? order.角色UID列表 : [order.角色UID]).length })
+        || !isValidServiceCompletionSignal(order.合法结束条件, { required: true })) {
+        return fail('service_order_complete_invalid');
+    }
+    return success([
+        { op: 'replace', path: encodeJsonPointer(['服务订单', orderUid, '状态']), value: '已完成' },
+        { op: 'replace', path: encodeJsonPointer(['服务订单', orderUid, '结束时间']), value: '玩家已确认正文结束' },
+        { op: 'replace', path: encodeJsonPointer(['服务订单', orderUid, '结束摘要']), value: '正文已由玩家确认结束；本地历史未保留详细过程。' },
+    ]);
+}
+
+/** Removes an already terminal order after a local minimal archive was committed. */
+export function buildServiceOrderFinalizePatch(state, { orderUid } = {}) {
+    if (!ownRecord(state) || !isServiceOrderUid(orderUid)) return fail('service_order_finalize_invalid');
+    const orders = ownRecord(state.服务订单);
+    const order = orders?.[orderUid];
+    if (!orders || !ownRecord(order) || !['已完成', '已取消'].includes(order.状态)) return fail('service_order_finalize_invalid');
+    if (!isBoundedText(order.结束时间, 160, { required: true }) || !isBoundedText(order.结束摘要, 600, { required: true })) return fail('service_order_finalize_invalid');
+    return success([{ op: 'remove', path: encodeJsonPointer(['服务订单', orderUid]) }]);
+}
 export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage, response } = {}) {
     const request = validatePrivateChatRequest({ state, sessionUid, npcUid, playerMessage });
     if (!request.ok) return fail(request.code);
@@ -1248,11 +1412,17 @@ export function validateControlledPatchWhitelist(patch) {
         if (operation.op === 'add' && serviceRole && isNpcUid(serviceRole[1])) {
             try { normalizeGeneratedCandidate(operation.value); continue; } catch { return fail('service_order_candidate_invalid'); }
         }
+        const serviceOrderField = /^\/服务订单\/(service_[A-Za-z0-9_-]{1,64})\/(状态|开始时间|结束时间|结束摘要|已确认边界)$/u.exec(path);
+        if (operation.op === 'replace' && serviceOrderField && isServiceOrderUid(serviceOrderField[1])) continue;
+        if (operation.op === 'remove' && /^\/服务订单\/service_[A-Za-z0-9_-]{1,64}$/u.test(path)) continue;
         const serviceOrder = /^\/服务订单\/(service_[A-Za-z0-9_-]{1,64})$/u.exec(path);
         if (operation.op === 'add' && serviceOrder && isServiceOrderUid(serviceOrder[1]) && ownRecord(operation.value)
             && isNpcUid(operation.value.角色UID) && ['SFW', 'NSFW'].includes(operation.value.内容模式)
             && typeof operation.value.服务分类 === 'string' && typeof operation.value.服务主题 === 'string'
-            && operation.value.服务主题.length > 0 && operation.value.服务主题.length <= 180
+            && operation.value.服务主题.length > 0 && operation.value.服务主题.length <= 240
+            && Array.isArray(operation.value.角色UID列表) && operation.value.角色UID列表.length >= 1 && operation.value.角色UID列表.length <= MAX_SERVICE_ORDER_PARTICIPANTS
+            && operation.value.角色UID列表[0] === operation.value.角色UID && operation.value.角色UID列表.every((uid) => isNpcUid(uid))
+            && new Set(operation.value.角色UID列表).size === operation.value.角色UID列表.length
             && operation.value.状态 === '待确认' && operation.value.发起时间 === '待正文确认'
             && operation.value.开始时间 === '' && operation.value.结束时间 === '' && operation.value.结束摘要 === '' && operation.value.已确认边界 === '') continue;
         const generatedMatchRole = /^\/角色池\/(npc_match_\d+)$/u.exec(path);
@@ -1413,6 +1583,11 @@ export function validateControlledPatchAgainstState(state, patch) {
         }
     }
 
+    const serviceRoleRemovals = patch.filter((operation) => operation?.op === 'remove' && /^\/角色池\/npc_service_\d+$/u.test(operation.path));
+    if (serviceRoleRemovals.length >= 1 && serviceRoleRemovals.length === patch.length) {
+        const expected = buildServiceHistoryRolesDeletionPatch(state, { npcUids: serviceRoleRemovals.map((operation) => decodeJsonPointer(operation.path).at(-1)) });
+        if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+    }
     const characterRemoval = patch.find((operation) => operation?.op === 'remove'
         && (/^\/角色池\/npc_[A-Za-z0-9_-]{1,64}$/u.test(operation.path)
             || /^\/推荐\/临时候选池\/npc_[A-Za-z0-9_-]{1,64}$/u.test(operation.path)));
@@ -1551,16 +1726,19 @@ export function validateControlledPatchAgainstState(state, patch) {
     }
 
     const serviceOrderAddition = patch.find((operation) => operation?.op === 'add' && /^\/服务订单\/service_[A-Za-z0-9_-]{1,64}$/u.test(operation.path));
-    const serviceRoleAddition = patch.find((operation) => operation?.op === 'add' && /^\/角色池\/npc_service_\d+$/u.test(operation.path));
-    if (serviceOrderAddition && serviceRoleAddition && ownRecord(serviceOrderAddition.value)) {
-        const expected = buildServiceOrderHandoffPatch(state, {
-            candidate: serviceRoleAddition.value,
-            categoryId: serviceOrderAddition.value.服务分类,
-        });
-        if (expected.ok && JSON.stringify(expected.value.patch) === JSON.stringify(patch)) return success(undefined);
-    }
-    if (serviceOrderAddition && !serviceRoleAddition && ownRecord(serviceOrderAddition.value)) {
+    const serviceRoleAdditions = patch.filter((operation) => operation?.op === 'add' && /^\/角色池\/npc_service_\d+$/u.test(operation.path));
+    if (serviceOrderAddition && serviceRoleAdditions.length && ownRecord(serviceOrderAddition.value)) {
         const nextOrder = serviceOrderAddition.value;
+        const orderedCandidates = nextOrder.角色UID列表?.map((uid) => serviceRoleAdditions.find((operation) => decodeJsonPointer(operation.path).at(-1) === uid)?.value);
+        if (Array.isArray(orderedCandidates) && orderedCandidates.every(Boolean)) {
+            const expected = buildServiceOrderHandoffPatch(state, { candidates: orderedCandidates, categoryId: nextOrder.服务分类 });
+            if (expected.ok && JSON.stringify(expected.value.patch) === JSON.stringify(patch)) return success(undefined);
+        }
+    }
+    if (serviceOrderAddition && !serviceRoleAdditions.length && ownRecord(serviceOrderAddition.value)) {
+        const nextOrder = serviceOrderAddition.value;
+        const expectedRebook = buildServiceOrderRebookPatch(state, { npcUids: nextOrder.角色UID列表, categoryId: nextOrder.服务分类 });
+        if (expectedRebook.ok && JSON.stringify(expectedRebook.value.patch) === JSON.stringify(patch)) return success(undefined);
         for (const [sourceOrderUid, source] of Object.entries(ownRecord(state.服务订单) ?? {})) {
             if (!ownRecord(source) || !['已完成', '已取消'].includes(source.状态)) continue;
             if (source.角色UID !== nextOrder.角色UID || source.服务分类 !== nextOrder.服务分类 || source.内容模式 !== nextOrder.内容模式) continue;
@@ -1569,6 +1747,33 @@ export function validateControlledPatchAgainstState(state, patch) {
         }
     }
 
+    for (const [orderUid, order] of Object.entries(ownRecord(state.服务订单) ?? {})) {
+        if (!ownRecord(order)) continue;
+        if (!isStrictServiceOrderForProjection(state, orderUid, order)) {
+            const expectedRepair = buildServiceOrderRepairPatch(state, { orderUid });
+            if (expectedRepair.ok && JSON.stringify(expectedRepair.value) === JSON.stringify(patch)) return success(undefined);
+        }
+        if (order.状态 === '进行中') {
+            const expectedComplete = buildServiceOrderCompletePatch(state, { orderUid });
+            if (expectedComplete.ok && JSON.stringify(expectedComplete.value) === JSON.stringify(patch)) return success(undefined);
+        }
+        if (order.状态 === '待确认') {
+            const paths = new Set(patch.map((operation) => operation?.path));
+            if (paths.has(`/服务订单/${orderUid}/状态`) && paths.has(`/服务订单/${orderUid}/开始时间`) && paths.has(`/服务订单/${orderUid}/已确认边界`)) {
+                const boundaryOperation = patch.find((operation) => operation?.path === `/服务订单/${orderUid}/已确认边界`);
+                let boundaries = null;
+                try { boundaries = JSON.parse(boundaryOperation?.value ?? ''); } catch { /* reject below */ }
+                const expected = buildServiceOrderStartPatch(state, { orderUid, boundaries });
+                if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+            }
+            const expectedCancel = buildServiceOrderCancelPatch(state, { orderUid });
+            if (expectedCancel.ok && JSON.stringify(expectedCancel.value) === JSON.stringify(patch)) return success(undefined);
+        }
+        if (['已完成', '已取消'].includes(order.状态)) {
+            const expectedFinalize = buildServiceOrderFinalizePatch(state, { orderUid });
+            if (expectedFinalize.ok && JSON.stringify(expectedFinalize.value) === JSON.stringify(patch)) return success(undefined);
+        }
+    }
     const playerProfileOperations = patch.filter((operation) => operation?.op === 'replace' && /^\/玩家\/公开资料\//u.test(operation.path));
     const playerProfileGate = patch.find((operation) => operation?.op === 'replace' && operation.path === '/软件/功能开关/玩家已建档');
     if (playerProfileOperations.length > 0 || playerProfileGate) {

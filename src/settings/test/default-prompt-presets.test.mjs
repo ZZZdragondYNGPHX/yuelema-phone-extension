@@ -17,6 +17,7 @@ const FUNCTION_KEYS = Object.freeze([
     'soul_match',
     'text_match',
     'image_match',
+    'service_profile_generation',
 ]);
 
 function presetsByMode(contentMode) {
@@ -27,9 +28,9 @@ test('内置 SFW/NSFW 提示词保持一一隔离的模式映射', () => {
     const presets = createBuiltinPromptPresets();
     const presetById = new Map(presets.map((preset) => [preset.id, preset]));
 
-    assert.equal(presets.length, 20);
-    assert.equal(presetsByMode('SFW').length, 10);
-    assert.equal(presetsByMode('NSFW').length, 10);
+    assert.equal(presets.length, 22);
+    assert.equal(presetsByMode('SFW').length, 11);
+    assert.equal(presetsByMode('NSFW').length, 11);
     assert.equal(new Set(presets.map((preset) => preset.id)).size, presets.length);
 
     for (const functionKey of FUNCTION_KEYS) {
@@ -42,13 +43,15 @@ test('内置 SFW/NSFW 提示词保持一一隔离的模式映射', () => {
 
     assert.equal(BUILTIN_PROMPT_PRESET_IDS.privateChatSfw, 'builtin_private_chat_sfw');
     assert.equal(BUILTIN_PROMPT_PRESET_IDS.privateChatNsfw, 'builtin_private_chat_nsfw');
+    assert.equal(BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw, 'builtin_service_profile_sfw');
+    assert.equal(BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw, 'builtin_service_profile_nsfw');
 });
 
 test('SFW 内置提示词继续限制露骨或性化内容', () => {
     for (const preset of presetsByMode('SFW')) {
         assert.match(
             preset.content,
-            /保持 SFW|不得出现成人取向|不使用露骨|不写露骨|不引入性化|不输出性化/,
+            /保持 SFW|不得出现成人取向|不得把成人或色情取向混入 SFW|不使用露骨|不写露骨|不引入性化|不输出性化/,
             `${preset.id} 缺少 SFW 非露骨限制`,
         );
         assert.doesNotMatch(

@@ -4,6 +4,7 @@ import {
     buildCharacterAuthoringContext,
     buildCharacterCompletionContext,
     generateCharacterAuthoringCandidate,
+    generateServiceProfileCandidate,
     generateCharacterCompletionCandidate,
 } from '../character-authoring-service.js';
 
@@ -50,7 +51,7 @@ function playerPublicProfile() {
 function settingsStore() {
     return {
         resolveFunction(functionKey) {
-            assert.ok(['character_ai_completion', 'character_full_authoring'].includes(functionKey));
+            assert.ok(['character_ai_completion', 'character_full_authoring', 'service_profile_generation'].includes(functionKey));
             return { connectionPreset, promptPreset: { enabled: true, content: '保持现代都市、真实克制的语气。' } };
         },
     };
@@ -131,6 +132,36 @@ test('full authoring receives no player secret or non-minimal identity data and 
     assert.match(system, /与玩家关系必须且仅能含：状态、全局账号表现/u);
 });
 
+test('service profile generation resolves only its dedicated binding and keeps player private fields out of the request', async () => {
+    let resolvedFunctionKey = '';
+    let resolvedMode = '';
+    let request;
+    const result = await generateServiceProfileCandidate({
+        creativeBrief: '创作一位明确成年、适合咖啡与散步的服务角色。',
+        contentMode: 'NSFW',
+        playerPublicProfile: playerPublicProfile(),
+        settingsStore: {
+            resolveFunction(functionKey, { contentMode }) {
+                resolvedFunctionKey = functionKey;
+                resolvedMode = contentMode;
+                return {
+                    connectionPreset: { ...connectionPreset, id: 'service-only', model: 'service-model' },
+                    promptPreset: { enabled: true, content: '约伴服务专用提示词。' },
+                };
+            },
+        },
+        llmClient: { async chat(value) { request = value; return { text: JSON.stringify(adultCandidate()) }; } },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(resolvedFunctionKey, 'service_profile_generation');
+    assert.equal(resolvedMode, 'NSFW');
+    assert.equal(request.preset.id, 'service-only');
+    const serialized = JSON.stringify(request);
+    for (const forbidden of ['player-name-must-not-leak', 'player-avatar-must-not-leak', 'player-bio-must-not-leak', 'player-hidden-secret-must-not-leak', 'player-friend-secret-must-not-leak']) {
+        assert.equal(serialized.includes(forbidden), false);
+    }
+});
 test('invalid or underage model result is a generic safe no-result without raw validation detail', async () => {
     const underage = adultCandidate();
     underage.隐藏资料.实际年龄 = 17;

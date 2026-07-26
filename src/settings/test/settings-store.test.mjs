@@ -9,6 +9,7 @@ import {
     createSettingsStore,
     normalizePromptPreset,
 } from '../settings-store.js';
+import { getFeatureBindingSurface } from '../feature-binding.js';
 
 function connection(id, name = id) {
     return {
@@ -40,18 +41,24 @@ function errorCode(code) {
     return (error) => error instanceof YueLeMaSettingsError && error.code === code;
 }
 
+test('专属服务设置表面稳定映射到独立 service_profile_generation 功能键', () => {
+    assert.deepEqual(getFeatureBindingSurface('service_profiles'), {
+        id: 'service_profiles',
+        functionKey: 'service_profile_generation',
+    });
+});
 test('默认内存存储与预设 CRUD、默认策略、功能回退', () => {
     const storage = createMemoryStorage();
     const store = createSettingsStore({ storage });
     const initial = store.load();
     assert.equal(initial.schema, 'yuelema.settings');
-    assert.equal(initial.schemaVersion, 10);
+    assert.equal(initial.schemaVersion, 11);
     assert.deepEqual(initial.personalization, { enabled: true, keywordWeightsByMode: { SFW: [], NSFW: [] } });
     assert.equal(initial.connectionPresets.length, 0);
-    assert.equal(initial.promptPresets.length, 20);
+    assert.equal(initial.promptPresets.length, 22);
     assert.ok(initial.promptPresets.every((preset) => preset.id.startsWith('builtin_')));
-    assert.equal(initial.promptPresets.filter((preset) => preset.contentMode === 'SFW').length, 10);
-    assert.equal(initial.promptPresets.filter((preset) => preset.contentMode === 'NSFW').length, 10);
+    assert.equal(initial.promptPresets.filter((preset) => preset.contentMode === 'SFW').length, 11);
+    assert.equal(initial.promptPresets.filter((preset) => preset.contentMode === 'NSFW').length, 11);
     assert.deepEqual(initial.chatSummary, { enabled: false, interval: 20, retryLimit: 2 });
     assert.match(initial.promptPresets.find((preset) => preset.id === 'builtin_recommendation_sfw').content, /仅好友资料、隐藏资料和与玩家关系/u);
     assert.match(initial.promptPresets.find((preset) => preset.id === 'builtin_recommendation_nsfw').content, /仅好友资料、隐藏资料和与玩家关系/u);
@@ -59,6 +66,8 @@ test('默认内存存储与预设 CRUD、默认策略、功能回退', () => {
     assert.equal(initial.functionModeBindings.group_chat.NSFW.promptPresetId, 'builtin_group_chat_nsfw');
     assert.equal(initial.functionModeBindings.forum.SFW.promptPresetId, 'builtin_forum_sfw');
     assert.equal(initial.functionModeBindings.forum.NSFW.promptPresetId, 'builtin_forum_nsfw');
+    assert.equal(initial.functionModeBindings.service_profile_generation.SFW.promptPresetId, 'builtin_service_profile_sfw');
+    assert.equal(initial.functionModeBindings.service_profile_generation.NSFW.promptPresetId, 'builtin_service_profile_nsfw');
     assert.deepEqual(Object.keys(initial.functionBindings), FUNCTION_KEYS);
     assert.deepEqual(Object.keys(initial.functionModeBindings), FUNCTION_KEYS);
     assert.equal(storage.getItem(SETTINGS_STORAGE_KEY) !== null, true, '首次加载应把可编辑默认预设写入本地非机密设置');
@@ -290,13 +299,13 @@ test('schema v7 共享关键词只迁移到 SFW，NSFW 保持空词库', () => {
     const storage = createMemoryStorage({ [SETTINGS_STORAGE_KEY]: JSON.stringify(legacyV7) });
     const migratedStore = createSettingsStore({ storage });
     const migrated = migratedStore.load();
-    assert.equal(migrated.schemaVersion, 10);
+    assert.equal(migrated.schemaVersion, 11);
     assert.deepEqual(migrated.personalization.keywordWeightsByMode, {
         SFW: [{ keyword: '电影', weight: 4 }, { keyword: '夜猫子', weight: -2 }],
         NSFW: [],
     });
     assert.equal(Object.hasOwn(migrated.personalization, 'keywordWeights'), false);
-    assert.equal(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 10, '加载后应把迁移结果回写为 v10。');
+    assert.equal(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 11, '加载后应把迁移结果回写为 v11。');
 });
 
 test('schema v9 导入严格要求完整且仅含 SFW/NSFW 两套词库', () => {
@@ -326,7 +335,7 @@ test('schema v9 导入严格要求完整且仅含 SFW/NSFW 两套词库', () => 
     assert.throws(() => roundTrip.importJson(JSON.stringify(extraPersonalizationField)), errorCode('INVALID_PERSONALIZATION'));
 });
 
-test('schema v1 设置可安全迁移到 v10 个性化字段、默认提示词、模式绑定与总结设置，导出固定为当前版本', () => {
+test('schema v1 设置可安全迁移到 v11 个性化字段、默认提示词、模式绑定与总结设置，导出固定为当前版本', () => {
     const legacy = {
         schema: 'yuelema.settings',
         schemaVersion: 1,
@@ -337,16 +346,16 @@ test('schema v1 设置可安全迁移到 v10 个性化字段、默认提示词�
     };
     const store = createSettingsStore({ storage: createMemoryStorage() });
     const migrated = store.importJson(JSON.stringify(legacy));
-    assert.equal(migrated.schemaVersion, 10);
+    assert.equal(migrated.schemaVersion, 11);
     assert.deepEqual(migrated.personalization, { enabled: true, keywordWeightsByMode: { SFW: [], NSFW: [] } });
-    assert.equal(migrated.promptPresets.filter((preset) => preset.id.startsWith('builtin_')).length, 20);
+    assert.equal(migrated.promptPresets.filter((preset) => preset.id.startsWith('builtin_')).length, 22);
     assert.deepEqual(migrated.chatSummary, { enabled: false, interval: 20, retryLimit: 2 });
     assert.equal(store.resolveFunction('chat', { contentMode: 'SFW' }).promptPreset.id, 'base', '已有默认提示词应优先保留');
     assert.equal(store.resolveFunction('chat', { contentMode: 'NSFW' }).promptPreset.id, 'builtin_private_chat_nsfw', '旧 SFW 默认提示词不得泄漏到 NSFW 绑定');
-    assert.equal(JSON.parse(store.exportJson()).schemaVersion, 10);
+    assert.equal(JSON.parse(store.exportJson()).schemaVersion, 11);
 });
 
-test('schema v3 迁移补齐提示词模式、历史跨模式绑定并升级到 v10', () => {
+test('schema v3 迁移补齐提示词模式、历史跨模式绑定并升级到 v11', () => {
     const legacySfw = prompt('legacy_sfw', '旧 SFW 提示词');
     delete legacySfw.contentMode;
     const legacyV3 = {
@@ -369,9 +378,9 @@ test('schema v3 迁移补齐提示词模式、历史跨模式绑定并升级到 
     const store = createSettingsStore({ storage: createMemoryStorage() });
     const migrated = store.importJson(JSON.stringify(legacyV3));
 
-    assert.equal(migrated.schemaVersion, 10);
+    assert.equal(migrated.schemaVersion, 11);
     assert.equal(migrated.promptPresets.find((preset) => preset.id === 'legacy_sfw').contentMode, 'SFW');
-    assert.equal(migrated.promptPresets.filter((preset) => preset.id.startsWith('builtin_')).length, 20);
+    assert.equal(migrated.promptPresets.filter((preset) => preset.id.startsWith('builtin_')).length, 22);
     assert.equal(store.resolveFunction('chat', { contentMode: 'SFW' }).promptPreset.id, 'legacy_sfw');
     assert.equal(store.resolveFunction('chat', { contentMode: 'NSFW' }).promptPreset.id, 'builtin_private_chat_nsfw');
 });
@@ -388,14 +397,15 @@ test('schema v6 migration seeds the dedicated group-chat and forum SFW/NSFW cont
     legacyV6.functionModeBindings.forum.NSFW.promptPresetId = null;
     const store = createSettingsStore({ storage: createMemoryStorage() });
     const migrated = store.importJson(JSON.stringify(legacyV6));
-    assert.equal(migrated.schemaVersion, 10);
+    assert.equal(migrated.schemaVersion, 11);
     assert.equal(store.resolveFunction('group_chat', { contentMode: 'SFW' }).promptPreset.id, 'builtin_group_chat_sfw');
     assert.equal(store.resolveFunction('group_chat', { contentMode: 'NSFW' }).promptPreset.id, 'builtin_group_chat_nsfw');
     assert.equal(store.resolveFunction('forum', { contentMode: 'SFW' }).promptPreset.id, 'builtin_forum_sfw');
     assert.equal(store.resolveFunction('forum', { contentMode: 'NSFW' }).promptPreset.id, 'builtin_forum_nsfw');
+
 });
 
-test('schema v8 会一次性刷新十个内置 NSFW 提示词，非内置自定义预设保持不变', () => {
+test('schema v8 会一次性刷新十一个内置 NSFW 提示词，非内置自定义预设保持不变', () => {
     const seedStore = createSettingsStore({ storage: createMemoryStorage() });
     const legacyV8 = structuredClone(seedStore.load());
     legacyV8.schemaVersion = 8;
@@ -408,9 +418,9 @@ test('schema v8 会一次性刷新十个内置 NSFW 提示词，非内置自定�
 
     const store = createSettingsStore({ storage: createMemoryStorage() });
     const migrated = store.importJson(JSON.stringify(legacyV8));
-    assert.equal(migrated.schemaVersion, 10);
+    assert.equal(migrated.schemaVersion, 11);
     const builtinNsfw = migrated.promptPresets.filter((preset) => preset.id.startsWith('builtin_') && preset.contentMode === 'NSFW');
-    assert.equal(builtinNsfw.length, 10);
+    assert.equal(builtinNsfw.length, 11);
     for (const preset of builtinNsfw) {
         assert.doesNotMatch(preset.content, /旧版 NSFW 仅允许克制/u);
         assert.match(preset.content, /优先|默认主动|主要话题|完整保留/u);
@@ -418,6 +428,27 @@ test('schema v8 会一次性刷新十个内置 NSFW 提示词，非内置自定�
     assert.equal(migrated.promptPresets.find((preset) => preset.id === 'custom_nsfw').content, '只属于用户的自定义 NSFW 提示词。');
 });
 
+test('schema v10 的已保存设置会经 load 补齐专属服务 SFW/NSFW 预设和独立绑定，并回写为 v11', () => {
+    const storage = createMemoryStorage();
+    const seedStore = createSettingsStore({ storage });
+    const legacyV10 = structuredClone(seedStore.load());
+    legacyV10.schemaVersion = 10;
+    legacyV10.promptPresets = legacyV10.promptPresets.filter((preset) => !['builtin_service_profile_sfw', 'builtin_service_profile_nsfw'].includes(preset.id));
+    legacyV10.promptPresets.push({ ...prompt('custom_service_nsfw', '用户自定义服务 NSFW', 'NSFW'), content: '用户自定义服务提示词不得被迁移覆盖。' });
+    delete legacyV10.functionBindings.service_profile_generation;
+    delete legacyV10.functionModeBindings.service_profile_generation;
+    storage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(legacyV10));
+
+    const migrated = createSettingsStore({ storage }).load();
+    assert.equal(migrated.schemaVersion, 11);
+    assert.equal(migrated.promptPresets.length, 23);
+    assert.equal(migrated.promptPresets.find((preset) => preset.id === 'builtin_service_profile_sfw')?.contentMode, 'SFW');
+    assert.equal(migrated.promptPresets.find((preset) => preset.id === 'builtin_service_profile_nsfw')?.contentMode, 'NSFW');
+    assert.equal(migrated.promptPresets.find((preset) => preset.id === 'custom_service_nsfw')?.content, '用户自定义服务提示词不得被迁移覆盖。');
+    assert.equal(migrated.functionModeBindings.service_profile_generation.SFW.promptPresetId, 'builtin_service_profile_sfw');
+    assert.equal(migrated.functionModeBindings.service_profile_generation.NSFW.promptPresetId, 'builtin_service_profile_nsfw');
+    assert.equal(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 11, 'load 迁移后必须持久化回写 v11。');
+});
 test('提示词字段、纯文本大小限制与安全错误不会回显凭据', () => {
     assert.deepEqual(normalizePromptPreset(prompt('p')), prompt('p'));
     assert.throws(() => normalizePromptPreset({ ...prompt('p'), position: 'middle' }), errorCode('INVALID_PROMPT_PRESET'));
@@ -442,7 +473,7 @@ test('清理会重建可编辑默认预设且不触及会话密钥模块', () =>
     const cleared = store.clear();
     assert.notEqual(storage.getItem(SETTINGS_STORAGE_KEY), null);
     assert.equal(cleared.connectionPresets.length, 0);
-    assert.equal(cleared.promptPresets.length, 20);
+    assert.equal(cleared.promptPresets.length, 22);
 });
 
 test('SFW/NSFW 功能绑定独立解析，默认预设可在本地删除且引用会被清理', () => {
@@ -466,6 +497,11 @@ test('SFW/NSFW 功能绑定独立解析，默认预设可在本地删除且引�
     assert.equal(store.resolveFunction('text_match', { contentMode: 'NSFW' }).promptPreset.id, 'builtin_voice_match_nsfw');
     assert.equal(store.resolveFunction('group_chat', { contentMode: 'SFW' }).promptPreset.id, 'builtin_group_chat_sfw');
     assert.equal(store.resolveFunction('forum', { contentMode: 'NSFW' }).promptPreset.id, 'builtin_forum_nsfw');
+    store.bindFunctionForContentMode('service_profile_generation', 'SFW', { connectionPresetId: 'fast', promptPresetId: 'builtin_service_profile_sfw' });
+    store.bindFunctionForContentMode('service_profile_generation', 'NSFW', { connectionPresetId: 'smart', promptPresetId: 'builtin_service_profile_nsfw' });
+    assert.equal(store.resolveFunction('service_profile_generation', { contentMode: 'SFW' }).connectionPreset.id, 'fast');
+    assert.equal(store.resolveFunction('service_profile_generation', { contentMode: 'NSFW' }).connectionPreset.id, 'smart');
+    assert.equal(store.resolveFunction('character_full_authoring', { contentMode: 'SFW' }).connectionPreset.id, 'fast', '专属服务绑定不得改写完整角色创作绑定。');
 
     store.deletePromptPreset('builtin_private_chat_nsfw');
     assert.equal(store.snapshot().functionModeBindings.chat.NSFW.promptPresetId, null);
@@ -494,10 +530,10 @@ test('browser-local group and forum binding overlays resolve without changing ex
     }), errorCode('UNKNOWN_PRESET_ID'));
 });
 
-test('生图设置 v10 严格隔离密钥并按对话类型保存自动生图开关', () => {
+test('生图设置 v11 严格隔离密钥并按对话类型保存自动生图开关', () => {
     const store = createSettingsStore({ storage: createMemoryStorage() });
     const initial = store.load();
-    assert.equal(initial.schemaVersion, 10);
+    assert.equal(initial.schemaVersion, 11);
     assert.equal(initial.imageGeneration.enabled, false);
     assert.equal(initial.imageGeneration.apiMode, 'novelai');
     assert.deepEqual(initial.imageGeneration.conversationSettings, { private: {}, group: {}, forum: {} });

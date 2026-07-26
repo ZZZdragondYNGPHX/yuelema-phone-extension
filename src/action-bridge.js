@@ -1,11 +1,11 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
+import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply, generatePrivateChatSummary } from './chat/private-chat-service.js';
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
 import { generateCandidateMatchDraft as generateCandidateMatchDraftService, generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
 import { materializeCandidateMatchDraft } from './recommendation/match-candidate-materializer.js';
-import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate } from './characters/character-authoring-service.js';
+import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate, generateServiceProfileCandidate } from './characters/character-authoring-service.js';
 import { generateGroupChatReply, generateGroupChatUpdate as generateGroupChatUpdateService } from './groups/group-chat-service.js';
 import { generateForumExistingPostsUpdate as generateForumExistingPostsUpdateService, generateForumHomeRefresh as generateForumHomeRefreshService, generateForumPostConversationUpdate as generateForumPostConversationUpdateService, generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
 import { generateLocalConversationSummary as generateLocalConversationSummaryService } from './groups/local-conversation-summary-service.js';
@@ -787,11 +787,43 @@ export function createActionBridge({
             pending.delete(key);
         }
     }
+    /** Generates exactly one local-only service candidate through the dedicated service binding. */
+    async function generateServiceProfileDraft({ creativeBrief, expectedContentMode = '', signal } = {}) {
+        const key = actionKey('service_profile_generation', '');
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        if (expectedContentMode && !CONTENT_MODES.has(expectedContentMode)) return { ok: false, status: 'rejected', code: 'service_profile_mode_invalid' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const currentMode = read.state?.软件?.内容模式;
+            if (expectedContentMode && currentMode !== expectedContentMode) return { ok: false, status: 'rejected', code: 'service_profile_mode_changed', message: '内容模式已改变，请重新生成服务角色。' };
+            const generated = await generateServiceProfileCandidate({
+                creativeBrief,
+                contentMode: currentMode,
+                playerPublicProfile: read.state?.玩家?.公开资料,
+                settingsStore,
+                llmClient,
+                signal,
+            });
+            if (!expectedContentMode || !generated?.ok) return generated;
+            const latest = readLatestState({ mvu: currentMvu });
+            if (!latest.ok) return latest;
+            if (latest.state?.软件?.内容模式 !== expectedContentMode) {
+                return { ok: false, status: 'rejected', code: 'service_profile_mode_changed', message: '内容模式已改变，请重新生成服务角色。' };
+            }
+            return generated;
+        } finally {
+            pending.delete(key);
+        }
+    }
+
     /**
      * Copies one confirmed local service profile to MVU and creates its pending
      * order atomically. No textarea draft is appended until this write succeeds.
      */
-    async function runServiceOrderHandoff({ candidate, categoryId, expectedContentMode = '' } = {}) {
+    async function runServiceOrderHandoff({ candidate, candidates, categoryId, expectedContentMode = '' } = {}) {
         const key = actionKey('service_order_handoff', '');
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
         if (expectedContentMode && !CONTENT_MODES.has(expectedContentMode)) return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
@@ -803,10 +835,10 @@ export function createActionBridge({
             if (expectedContentMode && read.state?.软件?.内容模式 !== expectedContentMode) {
                 return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
             }
-            const built = buildServiceOrderHandoffPatch(read.state, { candidate, categoryId });
+            const built = buildServiceOrderHandoffPatch(read.state, { candidate, candidates, categoryId });
             if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
             const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
-            return applied.ok ? { ...applied, npcUid: built.value.npcUid, orderUid: built.value.orderUid } : applied;
+            return applied.ok ? { ...applied, npcUid: built.value.npcUid, npcUids: built.value.npcUids, orderUid: built.value.orderUid } : applied;
         };
         try {
             return await serializeServiceModeWrite(execute);
@@ -838,6 +870,98 @@ export function createActionBridge({
         } finally {
             pending.delete(key);
         }
+    }
+
+    /** Reopens a browser-local history record as a new pending order without restoring the old contract. */
+    async function runServiceOrderRebook({ npcUid, npcUids, categoryId, expectedContentMode = '' } = {}) {
+        const key = actionKey('service_order_rebook', Array.isArray(npcUids) ? npcUids.join(',') : (npcUid || ''));
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        if (expectedContentMode && !CONTENT_MODES.has(expectedContentMode)) return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
+        pending.add(key);
+        const execute = async () => {
+            const currentMvu = resolveMvu(mvu); const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            if (expectedContentMode && read.state?.软件?.内容模式 !== expectedContentMode) return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
+            const built = buildServiceOrderRebookPatch(read.state, { npcUid, npcUids, categoryId });
+            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
+            return applied.ok ? { ...applied, npcUid: built.value.npcUid, npcUids: built.value.npcUids, orderUid: built.value.orderUid } : applied;
+        };
+        try { return await serializeServiceModeWrite(execute); }
+        finally { pending.delete(key); }
+    }
+
+    /** Moves a pending service order to in-progress after the player confirms the structured contract. */
+    async function runServiceOrderStart({ orderUid, boundaries, expectedContentMode = '' } = {}) {
+        return runServiceOrderTransition({
+            kind: 'service_order_start', orderUid, expectedContentMode,
+            build: (state) => buildServiceOrderStartPatch(state, { orderUid, boundaries }),
+        });
+    }
+
+    /** Cancels a pending service order; callers must archive locally before finalizing it away. */
+    async function runServiceOrderCancel({ orderUid, expectedContentMode = '' } = {}) {
+        return runServiceOrderTransition({
+            kind: 'service_order_cancel', orderUid, expectedContentMode,
+            build: (state) => buildServiceOrderCancelPatch(state, { orderUid }),
+        });
+    }
+
+    /** Marks an in-progress order complete only after the body writes its complete legal end signal. */
+    async function runServiceOrderComplete({ orderUid, expectedContentMode = '' } = {}) {
+        return runServiceOrderTransition({
+            kind: 'service_order_complete', orderUid, expectedContentMode,
+            build: (state) => buildServiceOrderCompletePatch(state, { orderUid }),
+        });
+    }
+
+    /** Atomically deletes all isolated service roles referenced by one local history record. */
+    async function deleteServiceHistoryRoles({ npcUids } = {}) {
+        const key = actionKey('service_history_delete', Array.isArray(npcUids) ? npcUids.join(',') : '');
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu); const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const built = buildServiceHistoryRolesDeletionPatch(read.state, { npcUids });
+            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        } finally { pending.delete(key); }
+    }
+
+    /** Removes a malformed order record through the same guarded MVU pipeline. */
+    async function repairServiceOrder({ orderUid } = {}) {
+        return runServiceOrderTransition({
+            kind: 'service_order_repair', orderUid, expectedContentMode: '',
+            build: (state) => buildServiceOrderRepairPatch(state, { orderUid }),
+        });
+    }
+    /** Deletes a terminal order only after its minimal browser-local archive is safely staged. */
+    async function runServiceOrderFinalize({ orderUid } = {}) {
+        return runServiceOrderTransition({
+            kind: 'service_order_finalize', orderUid, expectedContentMode: '',
+            build: (state) => buildServiceOrderFinalizePatch(state, { orderUid }),
+        });
+    }
+
+    async function runServiceOrderTransition({ kind, orderUid, expectedContentMode, build }) {
+        const key = actionKey(kind, orderUid || '');
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        if (expectedContentMode && !CONTENT_MODES.has(expectedContentMode)) return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
+        pending.add(key);
+        const execute = async () => {
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            if (expectedContentMode && read.state?.软件?.内容模式 !== expectedContentMode) {
+                return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
+            }
+            const built = build(read.state);
+            if (!built.ok) return { ok: false, status: 'rejected', code: built.code };
+            return applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        };
+        try { return await serializeServiceModeWrite(execute); }
+        finally { pending.delete(key); }
     }
 
     /** Registers an already validated author/import draft through the sole MVU write boundary. */
@@ -949,6 +1073,5 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, generateConversationImage, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deletePrivateChat, deleteCharacter, generateMatchDraft, generateCandidateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, isPending, appendMeetupDraft });
 }
-
