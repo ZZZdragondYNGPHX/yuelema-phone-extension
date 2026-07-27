@@ -88,6 +88,7 @@ test('client logs a bounded redacted provider error excerpt without leaking cred
             statusCode: 400,
             message: 'parameters.v4_prompt is required; another private prompt',
             authorization: 'Bearer another-secret-key',
+            echoedNegative: 'bad',
             developerHint: 'send params_version=3 with v4_prompt',
         }), {
             status: 400,
@@ -96,7 +97,7 @@ test('client logs a bounded redacted provider error excerpt without leaking cred
     });
 
     await assert.rejects(
-        () => client.generate({ settings: { ...settings, apiMode: 'novelai', presetId: 'img-log-failure' }, positivePrompt: 'another private prompt', negativePrompt: '' }),
+        () => client.generate({ settings: { ...settings, apiMode: 'novelai', presetId: 'img-log-failure' }, positivePrompt: 'another private prompt', negativePrompt: 'bad' }),
         (error) => error.code === 'IMAGE_HTTP_ERROR' && error.status === 400,
     );
 
@@ -125,6 +126,7 @@ test('client logs a bounded redacted provider error excerpt without leaking cred
     });
     const serialized = JSON.stringify(calls);
     assert.doesNotMatch(serialized, /another-secret-key|another private prompt/u);
+    assert.doesNotMatch(serialized, /"bad"/u);
 });
 
 test('client logs safe browser transport failure type without the exception message', async () => {

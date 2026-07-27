@@ -55,13 +55,18 @@ function providerErrorCategory(status, message = '') {
 }
 function redactProviderBodyExcerpt(value, sensitiveValues = []) {
     let text = String(value ?? '');
-    const fragments = sensitiveValues
-        .flatMap((item) => [String(item ?? ''), ...String(item ?? '').split(/[,|\r\n]+/u)])
-        .map((item) => item.trim())
+    const secrets = sensitiveValues.map((item) => String(item ?? '').trim()).filter(Boolean);
+    const fragments = secrets
+        .flatMap((item) => [item, ...item.split(/[,|\r\n]+/u).map((part) => part.trim())])
         .filter((item) => item.length >= 8)
-        .flatMap((item) => [item, JSON.stringify(item).slice(1, -1)])
+        .flatMap((item) => [item, JSON.stringify(item)])
         .sort((left, right) => right.length - left.length);
     for (const fragment of new Set(fragments)) text = text.split(fragment).join('[REDACTED]');
+    for (const secret of secrets.filter((item) => item.length < 8)) {
+        text = text.split(JSON.stringify(secret)).join('"[REDACTED]"');
+        const escaped = secret.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+        text = text.replace(new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'giu'), '[REDACTED]');
+    }
     return text
         .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/giu, 'Bearer [REDACTED]')
         .replace(/("(?:api[_-]?key|authorization|access[_-]?token|token|key)"\s*:\s*")[^"]+(")/giu, '$1[REDACTED]$2')
