@@ -27,11 +27,14 @@ import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
 
-const UI_VERSION = '1.0.2';
+const UI_VERSION = '1.0.3';
 const UI_LAYOUT_STORAGE_KEY = 'yuelema.ui-layout/v1';
 const LAUNCHER_POSITION_STORAGE_KEY = 'yuelema.launcher-position/v1';
 const PHONE_PANEL_POSITION_STORAGE_KEY = 'yuelema.phone-panel-position/v1';
 const PANEL_DRAG_THRESHOLD = 8;
+const LAUNCHER_TOOLS_HOLD_MS = 10_000;
+const LAUNCHER_TOOLS_MOVE_TOLERANCE = 8;
+const LAUNCHER_DIAGNOSTIC_LIMIT = 40;
 /** 悬浮球兜底回右下角时距可视视口边缘的安全间距（与 launcher-drag 的 edgeGap 一致）。 */
 const LAUNCHER_VIEWPORT_GAP = 12;
 const PHONE_NAV_DRAG_HOLD_MS = 360;
@@ -115,6 +118,14 @@ function persistPhonePanelPosition(storage, position) {
     try {
         if (!storage || !position || !isFiniteCoordinate(position.left) || !isFiniteCoordinate(position.top)) return false;
         storage.setItem(PHONE_PANEL_POSITION_STORAGE_KEY, JSON.stringify({ left: Math.round(Number(position.left)), top: Math.round(Number(position.top)) }));
+        return true;
+    } catch { return false; }
+}
+function clearStoredLayoutPosition(storage, key) {
+    try {
+        if (!storage) return false;
+        if (typeof storage.removeItem === 'function') storage.removeItem(key);
+        else storage.setItem(key, '');
         return true;
     } catch { return false; }
 }
@@ -246,6 +257,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let interactionGeneration = 0;
     let isDestroyed = false;
     let panelHasCustomPosition = false;
+    let launcherToolsHold = null;
+    let launcherToolsSuppressClick = false;
+    let lastLauncherTouchAt = 0;
+    const launcherDiagnostics = [];
 
     /** 弹窗关闭兜底：opener 已被页面重渲替换时，焦点不得滞留在隐藏弹窗内，落到当前页标题。 */
     function settleFocusAfterDialogClose(dialog) {
@@ -283,6 +298,23 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     const launcher = element('button', { className: 'yl-phone-launcher', type: 'button', ariaLabel: '打开约了吗小手机', pressed: false });
     launcher.appendChild(createUiIcon(documentRef, 'logo', { className: 'yl-launcher-logo-svg', size: 26 }));
     launcher.appendChild(element('span', { className: 'yl-phone-launcher-label', text: '约了吗' }));
+    const launcherTools = element('div', { className: 'yl-launcher-tools', ariaLabel: '悬浮球工具栏', hidden: true });
+    launcherTools.setAttribute('role', 'toolbar');
+    const resetLayoutButton = element('button', {
+        className: 'yl-launcher-tools-reset',
+        type: 'button',
+        text: '归位原位',
+        ariaLabel: '把悬浮球和小手机窗口归位原位',
+    });
+    const copyLauncherDiagnosticButton = element('button', {
+        className: 'yl-launcher-tools-diagnostic',
+        type: 'button',
+        text: '复制诊断',
+        ariaLabel: '复制悬浮球点击与小手机窗口诊断',
+    });
+    append(launcherTools, [resetLayoutButton, copyLauncherDiagnosticButton]);
+    launcher.setAttribute('aria-haspopup', 'true');
+    launcher.setAttribute('aria-expanded', 'false');
     const panel = element('aside', { className: 'yl-phone-panel', ariaLabel: '约了吗小手机窗口', hidden: true });
     panel.dataset.uiLayout = uiLayoutMode;
     panel.setAttribute('role', 'dialog');
@@ -422,7 +454,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     imageDirectiveDialogText.readOnly = true;
     append(imageDirectiveDialog, [imageDirectiveTitlebar, element('p', { className: 'yl-settings-summary', text: '这里只展示 AI 本次返回的场景结构，不包含角色绘图 DNA、固定提示词或 API Key。' }), imageDirectiveDialogText]);
 
-    append(root, [launcher, panel, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog, forumSettingsDialog, imageDirectiveDialog]);
+    append(root, [launcher, launcherTools, panel, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog, forumSettingsDialog, imageDirectiveDialog]);
 
     function formatDirectiveForDisplay(directive) {
         try { return formatImageDirective(directive); }
@@ -800,6 +832,177 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         panel.style.setProperty('right', 'auto');
         panel.style.setProperty('bottom', 'auto');
     }
+    function launcherGeometry() {
+        const rect = panel.getBoundingClientRect?.();
+        const finite = (value) => Number.isFinite(Number(value)) ? Math.round(Number(value)) : null;
+        return Object.freeze({
+            hidden: Boolean(panel.hidden),
+            rootOpen: root.classList.contains('is-open'),
+            left: finite(rect?.left),
+            top: finite(rect?.top),
+            width: finite(rect?.width),
+            height: finite(rect?.height),
+            layout: uiLayoutMode,
+        });
+    }
+    function recordLauncherDiagnostic(stage, detail = {}) {
+        const allowed = new Set([
+            'input', 'reason', 'nextOpen', 'hidden', 'rootOpen', 'left', 'top', 'width', 'height', 'layout',
+            'readOk', 'viewStatus', 'viewCode', 'page', 'childCount', 'textLength', 'errorName',
+            'candidateCount', 'matchCount', 'sessionCount', 'groupCount',
+        ]);
+        const safeDetail = {};
+        for (const [key, value] of Object.entries(detail ?? {})) {
+            if (!allowed.has(key) || !['string', 'number', 'boolean'].includes(typeof value)) continue;
+            safeDetail[key] = typeof value === 'string' ? value.slice(0, 40) : value;
+        }
+        const entry = Object.freeze({
+            at: new Date().toISOString(),
+            stage: String(stage).slice(0, 48),
+            ...safeDetail,
+        });
+        launcherDiagnostics.push(entry);
+        if (launcherDiagnostics.length > LAUNCHER_DIAGNOSTIC_LIMIT) launcherDiagnostics.shift();
+        try { documentRef.defaultView?.console?.info?.('[yuelema-launcher]', entry); } catch { /* diagnostics must never affect interaction */ }
+    }
+    function launcherDiagnosticReport() {
+        const geometry = launcherGeometry();
+        const childCount = Number(content.children?.length ?? content.childNodes?.length ?? 0);
+        const textLength = String(content.textContent ?? '').length;
+        return [
+            `约了吗小手机启动诊断 v${UI_VERSION}`,
+            `当前状态：layout=${geometry.layout} hidden=${geometry.hidden} rootOpen=${geometry.rootOpen}`,
+            `面板坐标：left=${geometry.left} top=${geometry.top} width=${geometry.width} height=${geometry.height}`,
+            `内容状态：view=${currentView?.status ?? 'unknown'} code=${currentView?.code || 'none'} page=${activePage} childCount=${childCount} textLength=${textLength}`,
+            '事件链：',
+            ...(launcherDiagnostics.length
+                ? launcherDiagnostics.map((entry) => JSON.stringify(entry))
+                : ['（尚未记录到点击事件）']),
+        ].join('\n');
+    }
+    function nodeIsWithin(node, ancestor) {
+        let current = node;
+        while (current) {
+            if (current === ancestor) return true;
+            current = current.parentNode ?? null;
+        }
+        return false;
+    }
+    function writeLauncherToolsViewportPosition(left, top) {
+        if (!launcherTools.style?.setProperty) return;
+        launcherTools.style.setProperty('position', 'fixed');
+        launcherTools.style.setProperty('left', Math.round(left) + 'px');
+        launcherTools.style.setProperty('top', Math.round(top) + 'px');
+        launcherTools.style.setProperty('right', 'auto');
+        launcherTools.style.setProperty('bottom', 'auto');
+        const measured = launcherTools.getBoundingClientRect?.();
+        const measuredLeft = Number(measured?.left);
+        const measuredTop = Number(measured?.top);
+        if (!Number.isFinite(measuredLeft) || !Number.isFinite(measuredTop)) return;
+        const originX = measuredLeft - left;
+        const originY = measuredTop - top;
+        if (originX) launcherTools.style.setProperty('left', Math.round(left - originX) + 'px');
+        if (originY) launcherTools.style.setProperty('top', Math.round(top - originY) + 'px');
+    }
+    function positionLauncherTools() {
+        if (launcherTools.hidden) return;
+        const launcherRect = launcher.getBoundingClientRect?.();
+        if (!launcherRect) return;
+        const viewport = phoneVisualViewport();
+        const toolsRect = launcherTools.getBoundingClientRect?.();
+        const width = Math.max(104, Number(toolsRect?.width) || 0);
+        const height = Math.max(44, Number(toolsRect?.height) || 0);
+        const gap = 8;
+        const leftCandidate = Number(launcherRect.left) - width - gap;
+        const rightCandidate = Number(launcherRect.right) + gap;
+        const preferredLeft = leftCandidate >= viewport.left ? leftCandidate : rightCandidate;
+        const left = Math.max(viewport.left, Math.min(preferredLeft, viewport.left + viewport.width - width));
+        const centeredTop = Number(launcherRect.top) + ((Number(launcherRect.height) - height) / 2);
+        const top = Math.max(viewport.top, Math.min(centeredTop, viewport.top + viewport.height - height));
+        writeLauncherToolsViewportPosition(left, top);
+    }
+    function closeLauncherTools({ restoreFocus = false } = {}) {
+        if (launcherTools.hidden) return;
+        launcherTools.hidden = true;
+        launcher.setAttribute('aria-expanded', 'false');
+        if (restoreFocus) {
+            try { launcher.focus?.(); } catch { /* optional host focus support */ }
+        }
+    }
+    function openLauncherTools() {
+        launcherTools.hidden = false;
+        launcher.setAttribute('aria-expanded', 'true');
+        positionLauncherTools();
+        try { resetLayoutButton.focus?.(); } catch { /* optional host focus support */ }
+    }
+    function cancelLauncherToolsHold(inputType = '') {
+        if (!launcherToolsHold || (inputType && launcherToolsHold.inputType !== inputType)) return;
+        if (launcherToolsHold.timer !== null) globalThis.clearTimeout?.(launcherToolsHold.timer);
+        launcherToolsHold = null;
+    }
+    function beginLauncherToolsHold(event, inputType) {
+        if (launcherToolsHold) return;
+        if (inputType === 'pointer' && !['touch', 'pen'].includes(String(event?.pointerType ?? ''))) return;
+        const touch = inputType === 'touch' ? (event?.changedTouches?.[0] ?? event?.touches?.[0] ?? null) : null;
+        const source = touch ?? event;
+        const pointerId = inputType === 'touch' ? touch?.identifier : event?.pointerId;
+        const startedAt = Date.now();
+        lastLauncherTouchAt = startedAt;
+        recordLauncherDiagnostic('hold_started', { input: inputType });
+        const state = {
+            inputType,
+            pointerId,
+            startX: Number(source?.clientX) || 0,
+            startY: Number(source?.clientY) || 0,
+            timer: null,
+        };
+        state.timer = globalThis.setTimeout?.(() => {
+            if (launcherToolsHold !== state || isDestroyed) return;
+            launcherToolsHold = null;
+            launcherToolsSuppressClick = true;
+            recordLauncherDiagnostic('hold_completed', { input: inputType });
+            openLauncherTools();
+        }, LAUNCHER_TOOLS_HOLD_MS) ?? null;
+        launcherToolsHold = state;
+    }
+    function moveLauncherToolsHold(event, inputType) {
+        if (!launcherToolsHold || launcherToolsHold.inputType !== inputType) return;
+        let source = event;
+        if (inputType === 'touch') {
+            source = Array.from(event?.changedTouches ?? event?.touches ?? [])
+                .find((touch) => touch?.identifier === launcherToolsHold.pointerId) ?? null;
+        }
+        if (!source) return;
+        const distance = Math.hypot(
+            (Number(source.clientX) || 0) - launcherToolsHold.startX,
+            (Number(source.clientY) || 0) - launcherToolsHold.startY,
+        );
+        if (distance >= LAUNCHER_TOOLS_MOVE_TOLERANCE) cancelLauncherToolsHold(inputType);
+    }
+    function handleLauncherContextMenu(event) {
+        event?.preventDefault?.();
+        const fromTouch = String(event?.pointerType ?? '') === 'touch'
+            || Boolean(launcherToolsHold)
+            || (Date.now() - lastLauncherTouchAt < 1_500);
+        if (fromTouch) return;
+        recordLauncherDiagnostic('contextmenu_received', { input: 'mouse' });
+        if (launcherTools.hidden) openLauncherTools();
+        else closeLauncherTools({ restoreFocus: true });
+    }
+    function resetLauncherAndPanelPlacement() {
+        cancelLauncherToolsHold();
+        clearStoredLayoutPosition(layoutStorage, LAUNCHER_POSITION_STORAGE_KEY);
+        clearStoredLayoutPosition(layoutStorage, PHONE_PANEL_POSITION_STORAGE_KEY);
+        launcherDrag.reset();
+        clearPanelCustomPosition();
+        if (open && uiLayoutMode === 'phone') {
+            syncPhonePanelViewport();
+            applyPhonePanelPlacement();
+        }
+        ensureLauncherWithinViewport();
+        recordLauncherDiagnostic('placement_reset', launcherGeometry());
+        closeLauncherTools({ restoreFocus: true });
+    }
     function isHeaderControl(target) {
         let node = target;
         while (node && node !== header) {
@@ -984,16 +1187,19 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         setActivePage('profile');
     }
     function setOpen(nextOpen) {
+        recordLauncherDiagnostic('set_open_requested', { nextOpen: Boolean(nextOpen), layout: uiLayoutMode });
         open = Boolean(nextOpen);
         panel.hidden = !open;
         root.classList.toggle('is-open', open);
         launcher.setAttribute('aria-pressed', String(open));
         launcher.setAttribute('aria-label', open ? '关闭约了吗小手机' : '打开约了吗小手机');
+        recordLauncherDiagnostic('open_state_applied', launcherGeometry());
         if (open) {
             syncPhonePanelViewport();
             applyPhonePanelPlacement();
             ensureLauncherWithinViewport();
             refreshState();
+            recordLauncherDiagnostic('open_refresh_complete', launcherGeometry());
         }
         else {
             ctx.stopGroupAutoTimer();
@@ -1059,7 +1265,31 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function refreshState() {
         const previousMode = currentView?.mode;
-        currentView = createPhoneView(readState());
+        let readResult;
+        try {
+            readResult = readState();
+            recordLauncherDiagnostic('mvu_read_complete', {
+                readOk: Boolean(readResult?.ok),
+                viewCode: typeof readResult?.code === 'string' ? readResult.code : '',
+            });
+        } catch (error) {
+            recordLauncherDiagnostic('mvu_read_failed', { errorName: String(error?.name ?? 'Error') });
+            throw error;
+        }
+        try {
+            currentView = createPhoneView(readResult);
+            recordLauncherDiagnostic('phone_view_created', {
+                viewStatus: currentView.status,
+                viewCode: currentView.code,
+                candidateCount: Number(currentView.candidates?.length ?? 0),
+                matchCount: Number(currentView.matches?.length ?? 0),
+                sessionCount: Number(currentView.messageSessions?.length ?? 0),
+                groupCount: Number(currentView.groups?.length ?? 0),
+            });
+        } catch (error) {
+            recordLauncherDiagnostic('phone_view_failed', { errorName: String(error?.name ?? 'Error') });
+            throw error;
+        }
         root.dataset.contentMode = currentView.mode === 'NSFW' ? 'NSFW' : 'SFW';
         if (previousMode && previousMode !== currentView.mode) {
             // Local discovery data is mode-scoped and never crosses SFW/NSFW.
@@ -1071,7 +1301,19 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             serviceXpSearchDraft = ''; serviceXpSearchApplied = '';
         }
         scheduleServiceOrderCompletion();
-        if (open) { renderPage(); ctx.syncGroupAutoTimer(); ctx.syncForumAutoTimer(); }
+        if (open) {
+            try {
+                renderPage();
+                ctx.syncGroupAutoTimer();
+                ctx.syncForumAutoTimer();
+            } catch (error) {
+                recordLauncherDiagnostic('open_render_failed', {
+                    page: activePage,
+                    errorName: String(error?.name ?? 'Error'),
+                });
+                throw error;
+            }
+        }
         return currentView;
     }
     async function runExtensionUpdate() {
@@ -1568,21 +1810,24 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     const expandedConsoleDetailKeys = new Set();
     function copyDiagnosticDetail(detailText) {
         const payload = String(detailText ?? '');
+        const fallbackCopy = () => {
+            try {
+                const fallback = element('textarea', { value: payload, ariaLabel: '诊断详情复制缓冲区' });
+                documentRef.body?.appendChild?.(fallback);
+                fallback.select?.();
+                documentRef.execCommand?.('copy');
+                fallback.remove?.();
+            } catch { /* execCommand 复制失败同样静默 */ }
+        };
         try {
             const clipboard = globalThis.navigator?.clipboard;
             if (clipboard && typeof clipboard.writeText === 'function') {
                 const pending = clipboard.writeText(payload);
-                if (pending && typeof pending.catch === 'function') pending.catch(() => { /* 剪贴板权限被拒时静默 */ });
+                if (pending && typeof pending.catch === 'function') pending.catch(fallbackCopy);
                 return;
             }
         } catch { /* 剪贴板 API 不可用时走 execCommand 降级 */ }
-        try {
-            const fallback = element('textarea', { value: payload, ariaLabel: '诊断详情复制缓冲区' });
-            documentRef.body?.appendChild?.(fallback);
-            fallback.select?.();
-            documentRef.execCommand?.('copy');
-            fallback.remove?.();
-        } catch { /* execCommand 复制失败同样静默 */ }
+        fallbackCopy();
     }
     function decorateOperationConsoleDetails(section) {
         const snapshot = operationActivity.snapshot();
@@ -1624,6 +1869,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return section;
     }
     function renderPage() {
+        recordLauncherDiagnostic('render_started', {
+            page: activePage,
+            viewStatus: currentView?.status ?? 'unknown',
+            viewCode: currentView?.code ?? '',
+        });
         ctx.cancelForumPullInteractions();
         imageManagerPanel?.dispose?.();
         imageManagerPanel = null;
@@ -1685,6 +1935,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 navIconWrap.appendChild(navUnreadBadge);
             }
         }
+        recordLauncherDiagnostic('render_complete', {
+            page: activePage,
+            viewStatus: currentView?.status ?? 'unknown',
+            viewCode: currentView?.code ?? '',
+            childCount: Number(content.children?.length ?? content.childNodes?.length ?? 0),
+            textLength: String(content.textContent ?? '').length,
+        });
     }
 
     function buildCharacterCreator() {
@@ -1888,7 +2145,32 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     Object.assign(ctx, createSharedHelpers(ctx));
     Object.assign(ctx, createDiscoverPage(ctx), createMatchPage(ctx), createMessagesPage(ctx), createChatPage(ctx), createCommunityPage(ctx), createServicePage(ctx), createProfilePage(ctx));
 
-    listen(launcher, launcher, 'click', () => setOpen(!open), abortController.signal);
+    listen(launcher, launcher, 'pointerdown', (event) => beginLauncherToolsHold(event, 'pointer'), abortController.signal);
+    listen(launcher, launcher, 'pointermove', (event) => moveLauncherToolsHold(event, 'pointer'), abortController.signal);
+    listen(launcher, launcher, 'pointerup', () => cancelLauncherToolsHold('pointer'), abortController.signal);
+    listen(launcher, launcher, 'pointercancel', () => cancelLauncherToolsHold('pointer'), abortController.signal);
+    listen(launcher, launcher, 'touchstart', (event) => beginLauncherToolsHold(event, 'touch'), abortController.signal);
+    listen(launcher, launcher, 'touchmove', (event) => moveLauncherToolsHold(event, 'touch'), abortController.signal);
+    listen(launcher, launcher, 'touchend', () => cancelLauncherToolsHold('touch'), abortController.signal);
+    listen(launcher, launcher, 'touchcancel', () => cancelLauncherToolsHold('touch'), abortController.signal);
+    listen(launcher, launcher, 'contextmenu', handleLauncherContextMenu, abortController.signal);
+    listen(launcher, launcher, 'click', (event) => {
+        recordLauncherDiagnostic('click_received', { input: 'click' });
+        if (launcherToolsSuppressClick) {
+            launcherToolsSuppressClick = false;
+            recordLauncherDiagnostic('click_suppressed_after_hold', { reason: 'long_press' });
+            event?.preventDefault?.();
+            event?.stopImmediatePropagation?.();
+            return;
+        }
+        closeLauncherTools();
+        setOpen(!open);
+    }, abortController.signal);
+    listen(resetLayoutButton, resetLayoutButton, 'click', resetLauncherAndPanelPlacement, abortController.signal);
+    listen(copyLauncherDiagnosticButton, copyLauncherDiagnosticButton, 'click', () => {
+        recordLauncherDiagnostic('diagnostic_copied', launcherGeometry());
+        copyDiagnosticDetail(launcherDiagnosticReport());
+    }, abortController.signal);
     listen(closeButton, closeButton, "click", () => setOpen(false), abortController.signal);
     listen(header, header, 'pointerdown', beginHeaderPanelDrag, abortController.signal);
     listen(nav, nav, 'pointerdown', (event) => beginPhoneNavHold(event, 'pointer'), abortController.signal);
@@ -1909,6 +2191,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(root, documentRef, 'touchmove', movePhonePanelTouch, abortController.signal);
     listen(root, documentRef, 'touchend', (event) => endPhoneNavTouch(event, false), abortController.signal);
     listen(root, documentRef, 'touchcancel', (event) => endPhoneNavTouch(event, true), abortController.signal);
+    listen(root, documentRef, 'pointermove', (event) => moveLauncherToolsHold(event, 'pointer'), abortController.signal);
+    listen(root, documentRef, 'pointerup', () => cancelLauncherToolsHold('pointer'), abortController.signal);
+    listen(root, documentRef, 'pointercancel', () => cancelLauncherToolsHold('pointer'), abortController.signal);
+    listen(root, documentRef, 'touchmove', (event) => moveLauncherToolsHold(event, 'touch'), abortController.signal);
+    listen(root, documentRef, 'touchend', () => cancelLauncherToolsHold('touch'), abortController.signal);
+    listen(root, documentRef, 'touchcancel', () => cancelLauncherToolsHold('touch'), abortController.signal);
     const windowRef = documentRef.defaultView;
     const handleViewportChange = () => {
         if (uiLayoutMode === 'phone') {
@@ -1923,6 +2211,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             clampCustomPanelPosition();
         }
         ensureLauncherWithinViewport();
+        positionLauncherTools();
         centerOpenDialogs();
     };
     if (windowRef?.addEventListener) listen(root, windowRef, 'resize', handleViewportChange, abortController.signal);
@@ -1942,12 +2231,18 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(avatarFileInput, avatarFileInput, 'change', () => { void saveLocalAvatarFile(avatarFileInput.files?.[0]); }, abortController.signal);
     listen(avatarRemoveButton, avatarRemoveButton, 'click', removePlayerAvatar, abortController.signal);
     listen(root, documentRef, "click", (event) => {
+        if (!launcherTools.hidden && !nodeIsWithin(event.target, launcherTools) && !nodeIsWithin(event.target, launcher)) closeLauncherTools();
         if (chatMoreMenuSessionUid && !event.target?.closest?.('.yl-private-chat-actions')) ctx.closeChatMoreMenu();
     }, abortController.signal);
     listen(root, documentRef, "keydown", (event) => {
         // 弹窗打开时 Tab / Escape 交由控制器：焦点环留在栈顶弹窗内，Escape 走各弹窗自己的关闭函数。
         if (event.key === "Tab") {
             if (dialogController.hasOpenDialog()) dialogController.handleKeydown(event);
+            return;
+        }
+        if (event.key === 'Escape' && !launcherTools.hidden) {
+            event.preventDefault?.();
+            closeLauncherTools({ restoreFocus: true });
             return;
         }
         if (event.key !== "Escape") return;
@@ -1966,6 +2261,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         refreshState,
         // 诊断接缝：安全控制台的内存台账（不持久化）。宿主与测试可注入条目，detail 已在台账层脱敏。
         operationActivity,
-        destroy() { cancelPhoneNavHold(); clearPhoneNavClickSuppression(); ctx.cancelChatToolLongPress(); ctx.clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; invalidateServiceProfileGeneration(); invalidateServiceOrderOperations(); ctx.stopGroupAutoTimer(); ctx.stopForumAutoTimer(); ctx.cancelForumPullInteractions(); ctx.clearSummaryToast(); hideOperationDialog(); ctx.closeGroupMemberPicker(); ctx.closeGroupAutoDialog(); ctx.closeForumSettingsDialog(); ctx.resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); dialogController.dispose(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { cancelLauncherToolsHold(); closeLauncherTools(); cancelPhoneNavHold(); clearPhoneNavClickSuppression(); ctx.cancelChatToolLongPress(); ctx.clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; invalidateServiceProfileGeneration(); invalidateServiceOrderOperations(); ctx.stopGroupAutoTimer(); ctx.stopForumAutoTimer(); ctx.cancelForumPullInteractions(); ctx.clearSummaryToast(); hideOperationDialog(); ctx.closeGroupMemberPicker(); ctx.closeGroupAutoDialog(); ctx.closeForumSettingsDialog(); ctx.resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); dialogController.dispose(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }

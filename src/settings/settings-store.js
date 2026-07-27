@@ -8,7 +8,7 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 16;
+export const SETTINGS_SCHEMA_VERSION = 17;
 // v12 rewrote the stock built-in prompt preset copy (阶段 55 内容尺度调整)，
 // v13 enriched the NSFW stock copy with concrete erotic-writing guidance,
 // v14 renamed the「语音匹配」stock presets to「描述匹配」(display name and
@@ -17,9 +17,10 @@ export const SETTINGS_SCHEMA_VERSION = 16;
 // v15 upgraded the SFW stock copy to dating-app-quality writing guidance
 // (NSFW stock copy stays byte-identical; all preset IDs and bindings keep).
 // v16 separates ComfyUI connection/engine/prompt values from NAI/OpenAI values.
-// A stored v11–v15 document upgrades in place; only v11–v14 refresh stock
-// prompt presets. User-created presets remain byte-identical.
-const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14, 15]);
+// v17 refreshes only the two stock service-profile presets so existing users
+// receive the gender/orientation hard contract. User-created preset IDs and
+// deleted stock presets remain untouched.
+const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14, 15, 16]);
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -219,6 +220,19 @@ function cleanContentMode(value) {
  */
 function refreshStockBuiltinPromptPresets(presets) {
     const stockById = new Map(createBuiltinPromptPresets().map((preset) => [preset.id, normalizePromptPreset(preset)]));
+    return presets.map((preset) => stockById.get(preset.id) ?? preset);
+}
+
+function refreshServiceBuiltinPromptPresets(presets) {
+    const serviceIds = new Set([
+        builtinPromptPresetIdFor('service_profile_generation', 'SFW'),
+        builtinPromptPresetIdFor('service_profile_generation', 'NSFW'),
+    ]);
+    const stockById = new Map(
+        createBuiltinPromptPresets()
+            .filter((preset) => serviceIds.has(preset.id))
+            .map((preset) => [preset.id, normalizePromptPreset(preset)]),
+    );
     return presets.map((preset) => stockById.get(preset.id) ?? preset);
 }
 
@@ -534,9 +548,12 @@ export function normalizeSettingsDocument(input) {
     }
 
     const connectionPresets = candidate.connectionPresets.map(normalizeConnectionPreset);
+    const normalizedPromptPresets = candidate.promptPresets.map(normalizePromptPreset);
     const promptPresets = isUpgradeableLegacySchema && candidate.schemaVersion <= 14
-        ? refreshStockBuiltinPromptPresets(candidate.promptPresets.map(normalizePromptPreset))
-        : candidate.promptPresets.map(normalizePromptPreset);
+        ? refreshStockBuiltinPromptPresets(normalizedPromptPresets)
+        : (isUpgradeableLegacySchema && candidate.schemaVersion <= 16
+            ? refreshServiceBuiltinPromptPresets(normalizedPromptPresets)
+            : normalizedPromptPresets);
     const connectionIds = new Set(connectionPresets.map((preset) => preset.id));
     const promptIds = new Set(promptPresets.map((preset) => preset.id));
     if (connectionIds.size !== connectionPresets.length || promptIds.size !== promptPresets.length) {
@@ -688,9 +705,9 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         } catch {
             fail('INVALID_IMPORT_JSON', '设置 JSON 无法解析。');
         }
-        // Persist only a normalized current v16 document; an upgradeable
-        // v11–v15 document is migrated (stock prompt copy refreshed only for v11–v14) inside
-        // normalize.
+        // Persist only a normalized current v17 document; an upgradeable
+        // v11–v16 document is migrated inside normalize: v11–v14 refresh all
+        // stock prompt copy, while v15–v16 refresh only the service presets.
         return persist(parsed);
     }
 

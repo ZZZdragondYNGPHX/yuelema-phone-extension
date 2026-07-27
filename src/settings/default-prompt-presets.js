@@ -41,6 +41,8 @@ const PRESET_LAYOUT = Object.freeze({
     enabled: true,
 });
 
+const SERVICE_MATCH_HARD_PROMPT = '玩家公开资料中的性别、性取向与程序给出的候选人性别要求是最高优先级硬条件；候选人必须与玩家双向性别/性取向兼容，不得为了服务分类、XP、SFW/NSFW、成人题材或创作多样性生成玩家明确不喜欢的性别。';
+
 const BUILTIN_PROMPT_PRESETS = Object.freeze([
     Object.freeze({
         id: BUILTIN_PROMPT_PRESET_IDS.recommendationSfw,
@@ -200,7 +202,12 @@ const BUILTIN_PROMPT_PRESETS = Object.freeze([
 
 /** Returns fresh plain records so callers may safely normalize or persist them. */
 export function createBuiltinPromptPresets() {
-    return BUILTIN_PROMPT_PRESETS.map((preset) => ({ ...preset }));
+    return BUILTIN_PROMPT_PRESETS.map((preset) => ({
+        ...preset,
+        content: [BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw, BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw].includes(preset.id)
+            ? `${SERVICE_MATCH_HARD_PROMPT}${preset.content}`
+            : preset.content,
+    }));
 }
 
 /** Returns the mode-specific built-in prompt ID for a supported AI function. */

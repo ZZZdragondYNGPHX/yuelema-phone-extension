@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
     buildCharacterAuthoringContext,
     buildCharacterCompletionContext,
+    buildServiceProfileContext,
     generateCharacterAuthoringCandidate,
     generateServiceProfileCandidate,
     generateCharacterCompletionCandidate,
@@ -158,9 +159,60 @@ test('service profile generation resolves only its dedicated binding and keeps p
     assert.equal(resolvedMode, 'NSFW');
     assert.equal(request.preset.id, 'service-only');
     const serialized = JSON.stringify(request);
+    const context = buildServiceProfileContext({
+        creativeBrief: '创作一位明确成年、适合咖啡与散步的服务角色。',
+        contentMode: 'NSFW',
+        playerPublicProfile: playerPublicProfile(),
+    });
+    assert.deepEqual(context.serviceMatchRequirements, {
+        玩家性别: '男',
+        玩家性取向: '异性恋',
+        候选人性别要求: '女',
+        最低要求: context.serviceMatchRequirements.最低要求,
+    });
+    assert.match(context.serviceMatchRequirements.最低要求, /最高优先级/u);
+    assert.match(context.serviceMatchRequirements.最低要求, /双向兼容/u);
+    const system = request.messages.find((message) => message.role === 'system').content;
+    assert.match(system, /serviceMatchRequirements/u);
+    assert.match(system, /候选人的公开性别必须满足候选人性别要求/u);
+    assert.match(system, /SFW\/NSFW.*不能改变此要求/u);
     for (const forbidden of ['player-name-must-not-leak', 'player-avatar-must-not-leak', 'player-bio-must-not-leak', 'player-hidden-secret-must-not-leak', 'player-friend-secret-must-not-leak']) {
         assert.equal(serialized.includes(forbidden), false);
     }
+});
+
+test('service profile rejects and retries a gender-orientation mismatch in both SFW and NSFW before it can become an order candidate', async () => {
+    for (const contentMode of ['SFW', 'NSFW']) {
+        const incompatible = adultCandidate();
+        incompatible.公开资料.性别 = '男';
+        incompatible.公开资料.性取向 = '双性恋';
+        const result = await generateServiceProfileCandidate({
+            creativeBrief: '创作一位明确成年的服务角色。',
+            contentMode,
+            playerPublicProfile: playerPublicProfile(),
+            settingsStore: settingsStore(),
+            llmClient: { async chat() { return { text: JSON.stringify(incompatible) }; } },
+        });
+        assert.equal(result.ok, false);
+        assert.equal(result.code, 'service_profile_basic_compatibility_invalid');
+        assert.equal(result.retryable, true);
+        assert.match(result.detail, /双向兼容硬条件/u);
+        assert.equal(Object.hasOwn(result, 'candidate'), false);
+        assert.equal(JSON.stringify(result).includes('男'), false);
+        assert.equal(JSON.stringify(result).includes('异性恋'), false);
+    }
+
+    const unknownOrientation = adultCandidate();
+    unknownOrientation.公开资料.性取向 = '随缘';
+    const unknown = await generateServiceProfileCandidate({
+        creativeBrief: '创作一位明确成年的服务角色。',
+        contentMode: 'SFW',
+        playerPublicProfile: playerPublicProfile(),
+        settingsStore: settingsStore(),
+        llmClient: { async chat() { return { text: JSON.stringify(unknownOrientation) }; } },
+    });
+    assert.equal(unknown.code, 'service_profile_basic_compatibility_invalid');
+    assert.equal(unknown.retryable, true);
 });
 test('invalid or underage model result keeps the generic message; detail names the field only, never the hidden value', async () => {
     const underage = adultCandidate();

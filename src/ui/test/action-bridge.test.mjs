@@ -547,6 +547,18 @@ test('service-order bridge rejects a changed expected mode before it builds or w
     assert.equal(candidateFailure.reason, '候选[1] 成年人校验未通过：字段 隐藏资料.实际年龄');
     assert.equal(JSON.stringify(candidateFailure).includes('17'), false);
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get'], 'reason 增强不得引入任何 parse/replace 写入');
+
+    const wrongGender = adultCandidate();
+    wrongGender.公开资料.性别 = '男';
+    wrongGender.公开资料.性取向 = '双性恋';
+    const compatibilityFailure = await bridge.runServiceOrderHandoff({
+        candidate: wrongGender,
+        categoryId: 'girl_shuren',
+        expectedContentMode: 'SFW',
+    });
+    assert.equal(compatibilityFailure.ok, false);
+    assert.equal(compatibilityFailure.code, 'service_order_basic_compatibility_invalid');
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get'], '性别硬冲突必须在 build/parse/replace 前拒绝');
 });
 
 test('mode toggles wait for a service-order transaction instead of reading the same MVU snapshot', async () => {

@@ -212,6 +212,25 @@ test('drag clamps to the visual viewport and compensates transformed fixed conta
     controller.dispose();
 });
 
+test('reset restores the original CSS anchor after a persisted or dragged placement', () => {
+    const documentRef = new TestDocument();
+    const launcher = new TestLauncher(documentRef, { left: 272, top: 572, width: 56, height: 56 });
+    const controller = createLauncherDragController({ launcher, documentRef, edgeGap: 12 });
+
+    assert.equal(controller.restore({ left: 120, top: 90 }), true);
+    assert.equal(launcher.style.position, 'fixed');
+    assert.deepEqual(controller.position, { left: 120, top: 90 });
+
+    assert.equal(controller.reset(), true);
+    assert.equal(launcher.style.position, '');
+    assert.equal(launcher.style.left, '');
+    assert.equal(launcher.style.top, '');
+    assert.equal(launcher.style.right, '');
+    assert.equal(launcher.style.bottom, '');
+    assert.equal(controller.position, null);
+    controller.dispose();
+});
+
 test('dispose removes listeners, restores touch behavior, and unrelated header events stay untouched', () => {
     const documentRef = new TestDocument();
     const launcher = new TestLauncher(documentRef);

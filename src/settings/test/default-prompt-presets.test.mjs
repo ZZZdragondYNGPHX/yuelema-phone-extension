@@ -53,6 +53,12 @@ test('内置 SFW/NSFW 提示词保持一一隔离的模式映射', () => {
     assert.equal(BUILTIN_PROMPT_PRESET_IDS.privateChatNsfw, 'builtin_private_chat_nsfw');
     assert.equal(BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw, 'builtin_service_profile_sfw');
     assert.equal(BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw, 'builtin_service_profile_nsfw');
+    for (const id of [BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw, BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw]) {
+        assert.match(presetById.get(id).content, /性别、性取向/u, `${id} 必须读取玩家公开匹配条件`);
+        assert.match(presetById.get(id).content, /最高优先级硬条件/u, `${id} 必须声明性别与性取向不可被覆盖`);
+        assert.match(presetById.get(id).content, /双向性别\/性取向兼容/u, `${id} 必须要求候选人与玩家双向兼容`);
+        assert.match(presetById.get(id).content, /玩家明确不喜欢的性别/u, `${id} 不得为题材多样性生成错误性别`);
+    }
 });
 
 test('SFW 内置提示词只用一句话表达日常社交尺度，不再携带硬性禁止清单', () => {
