@@ -810,6 +810,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const apiMode = selectWithOptions([
             { label: 'NovelAI', value: 'novelai' },
             { label: 'OpenAI-compatible', value: 'openai_compatible' },
+            { label: 'ComfyUI', value: 'comfyui' },
         ], image.apiMode, '生图接口模式', 'image-generation-api-mode');
         const presetId = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-preset-id', value: image.presetId, maxLength: 96, ariaLabel: '生图密钥预设 ID' });
         const apiKey = element('input', { className: 'yl-settings-control', type: 'password', name: 'image-generation-api-key', autocomplete: 'off', maxLength: 4096, placeholder: '输入后仅保存到当前浏览器', ariaLabel: '生图 API Key' });
@@ -830,13 +831,27 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const positivePrefix = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-positive-prefix', value: image.positivePrefix, maxLength: 4000, ariaLabel: '前置正面提示词' });
         const positiveSuffix = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-positive-suffix', value: image.positiveSuffix, maxLength: 4000, ariaLabel: '后置正面提示词' });
         const negativePrompt = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-negative-prompt', value: image.negativePrompt, maxLength: 4000, ariaLabel: '固定负面提示词' });
+        const comfyWorkflow = element('textarea', {
+            className: 'yl-settings-control yl-settings-textarea',
+            rows: 8,
+            name: 'image-generation-comfy-workflow',
+            value: image.comfyWorkflow,
+            maxLength: 200000,
+            placeholder: '留空使用基础工作流；或粘贴 ComfyUI “Save (API Format)” 导出的 JSON',
+            ariaLabel: 'ComfyUI API 工作流 JSON',
+        });
         const fields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
+        fields.appendChild(element('p', {
+            className: 'yl-phone-page-description',
+            text: 'ComfyUI 模式只使用“生图站点”（如 http://127.0.0.1:8188）和 API 格式工作流；不读取接口路径或 API Key。',
+        }));
         append(fields, [
             field('接口模式', apiMode), field('生图密钥预设 ID', presetId), field('生图站点', baseUrl), field('生图接口路径', endpointPath),
             field('模型', model), field('采样器', sampler), field('噪点表', noiseSchedule), field('Guidance', guidance),
             field('Guidance Rescale', guidanceRescale), field('宽度', width), field('高度', height), field('步数', steps), field('种子（0 为随机）', seed),
             field('质量标签', switchShell(qualityToggle)), field('随机性', switchShell(variety)),
             field('前置正面提示词', positivePrefix), field('后置正面提示词', positiveSuffix), field('固定负面提示词', negativePrompt),
+            field('ComfyUI API 工作流 JSON（仅 ComfyUI 模式）', comfyWorkflow),
         ]);
         section.appendChild(fields);
         section.appendChild(field('生图 API Key', apiKey));
@@ -884,6 +899,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             width: numberValue(width, image.width), height: numberValue(height, image.height), steps: numberValue(steps, image.steps), seed: numberValue(seed, image.seed),
             qualityToggle: Boolean(qualityToggle.checked), variety: Boolean(variety.checked),
             positivePrefix: positivePrefix.value, positiveSuffix: positiveSuffix.value, negativePrompt: negativePrompt.value,
+            comfyWorkflow: comfyWorkflow.value,
             conversationSettings: image.conversationSettings,
         });
         const save = actionButton('保存生图设置', async () => updateSettings(

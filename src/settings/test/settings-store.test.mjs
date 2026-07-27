@@ -438,6 +438,7 @@ test('生图设置严格隔离密钥并按对话类型保存自动生图开关',
     assert.equal(initial.schemaVersion, 15);
     assert.equal(initial.imageGeneration.enabled, false);
     assert.equal(initial.imageGeneration.apiMode, 'novelai');
+    assert.equal(initial.imageGeneration.comfyWorkflow, '');
     assert.deepEqual(initial.imageGeneration.conversationSettings, { private: {}, group: {}, forum: {} });
 
     const base = store.getImageGenerationSettings();
@@ -451,6 +452,7 @@ test('生图设置严格隔离密钥并按对话类型保存自动生图开关',
         positivePrefix: 'masterpiece',
         positiveSuffix: 'soft lighting',
         negativePrompt: 'lowres',
+        comfyWorkflow: '',
     });
     store.setConversationImageGenerationSettings('private', 'chat_1', { autoGenerate: true });
     store.setConversationImageGenerationSettings('group', 'group_1', { autoGenerate: false });

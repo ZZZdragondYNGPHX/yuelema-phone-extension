@@ -13,7 +13,8 @@ import { createEmptyState } from '../ui/empty-state.js';
 import { SERVICE_UNLOCK_STORAGE_KEY } from './shared.js';
 
 const RECENT_RELEASE_NOTES = Object.freeze([
-    'v1.0.1：发布审核版。Termux / SillyTavern 变换宿主下的二级弹窗按真实可视视口居中；审核通过后才进入 main。',
+    'v1.0.2：发布审核版。新增 ComfyUI API 工作流生图，并让格式异常的关系增量安全归零而不再丢弃有效私聊回复。',
+    'v1.0.1：Termux / SillyTavern 变换宿主下的二级弹窗按真实可视视口居中，并放宽匹配接受线。',
     'v1.0.0：正式版。安全控制台失败详情、广场底部追加、扩展应用内更新与全量 SFW 预设升级。',
     'v0.1.37：约伴服务重构、逐人同意与受控归档。',
     'v0.1.34：对话生图接口、绘图 DNA 与窄屏交互。',

@@ -55,3 +55,56 @@ test('client rejects declared oversized responses before buffering them', async 
         (error) => error?.code === 'INVALID_IMAGE_RESPONSE',
     );
 });
+
+test('ComfyUI submits an API workflow, polls history, and reads the generated image without an API key', async () => {
+    resetPersistentKeyStorage();
+    const requests = [];
+    const comfySettings = {
+        ...settings,
+        apiMode: 'comfyui',
+        baseUrl: 'http://127.0.0.1:8188',
+        model: 'portrait.safetensors',
+        sampler: 'euler',
+        noiseSchedule: 'normal',
+        comfyWorkflow: JSON.stringify({
+            1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: '%MODEL_NAME%' } },
+            2: { class_type: 'CLIPTextEncode', inputs: { text: '%prompt%', clip: ['1', 1] } },
+            3: { class_type: 'EmptyLatentImage', inputs: { width: '%width%', height: '%height%', batch_size: 1 } },
+        }),
+    };
+    const client = createImageGenerationClient({
+        fetchImpl: async (url, init) => {
+            requests.push({ url, init });
+            if (url.endsWith('/prompt')) return new Response(JSON.stringify({ prompt_id: 'task-1' }), { status: 200 });
+            if (url.endsWith('/history/task-1')) {
+                return new Response(JSON.stringify({ 'task-1': { outputs: { 9: { images: [{ filename: 'done.png', subfolder: 'ylm', type: 'output' }] } } } }), { status: 200 });
+            }
+            return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } });
+        },
+    });
+
+    const result = await client.generate({ settings: comfySettings, positivePrompt: 'adult portrait', negativePrompt: 'lowres' });
+    const submitted = JSON.parse(requests[0].init.body);
+    assert.equal(requests[0].url, 'http://127.0.0.1:8188/prompt');
+    assert.equal(requests[0].init.headers.Authorization, undefined);
+    assert.equal(submitted.prompt['1'].inputs.ckpt_name, 'portrait.safetensors');
+    assert.equal(submitted.prompt['2'].inputs.text, 'adult portrait');
+    assert.equal(submitted.prompt['3'].inputs.width, 512);
+    assert.match(requests[2].url, /\/view\?filename=done\.png&subfolder=ylm&type=output$/u);
+    assert.equal(result.mimeType, 'image/png');
+});
+
+test('ComfyUI rejects UI-format workflows and unsafe workflow keys before network access', async () => {
+    resetPersistentKeyStorage();
+    let calls = 0;
+    const client = createImageGenerationClient({ fetchImpl: async () => { calls += 1; throw new Error('must not run'); } });
+    await assert.rejects(
+        () => client.generate({ settings: { ...settings, apiMode: 'comfyui', baseUrl: 'http://127.0.0.1:8188', comfyWorkflow: '{"nodes":[]}' }, positivePrompt: 'scene', negativePrompt: '' }),
+        (error) => error?.code === 'INVALID_IMAGE_REQUEST' && /API Format/u.test(error.message),
+    );
+    await assert.rejects(
+        () => client.generate({ settings: { ...settings, apiMode: 'comfyui', baseUrl: 'http://127.0.0.1:8188', comfyWorkflow: '{"__proto__":{"x":1}}' }, positivePrompt: 'scene', negativePrompt: '' }),
+        (error) => error?.code === 'INVALID_IMAGE_REQUEST',
+    );
+    assert.equal(calls, 0);
+});

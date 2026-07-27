@@ -3,8 +3,10 @@ import { requireSessionKey, SessionKeyUnavailableError } from './session-key-sto
 const SAFE_IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_IMAGE_BYTES = 24 * 1024 * 1024;
 const MAX_JSON_RESPONSE_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1_048_576;
+const MAX_COMFY_JSON_BYTES = 2 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
+const UNSAFE_WORKFLOW_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 export class YueLeMaImageGenerationError extends Error {
     constructor(code, message, { retryable = false, status } = {}) {
@@ -29,6 +31,14 @@ function cleanInteger(value, field, min, max) {
 function cleanNumber(value, field, min, max) {
     if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) fail('INVALID_IMAGE_REQUEST', `${field}无效。`);
     return value;
+}
+function cleanWorkflow(value) {
+    if (typeof value !== 'string') fail('INVALID_IMAGE_REQUEST', 'ComfyUI 工作流必须是文本。');
+    const text = value.trim();
+    if (text.length > 200_000 || /[\u0000\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(text)) {
+        fail('INVALID_IMAGE_REQUEST', 'ComfyUI 工作流无效。');
+    }
+    return text;
 }
 function isLoopback(hostname) { return ['localhost', '127.0.0.1', '::1'].includes(hostname); }
 function safeBaseUrl(value) {
@@ -160,7 +170,9 @@ function normalizeRequest(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_IMAGE_REQUEST', '生图请求无效。');
     const settings = input.settings;
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)) fail('INVALID_IMAGE_REQUEST', '生图设置无效。');
-    const apiMode = settings.apiMode === 'openai_compatible' ? 'openai_compatible' : settings.apiMode === 'novelai' ? 'novelai' : fail('INVALID_IMAGE_REQUEST', '生图接口模式无效。');
+    const apiMode = settings.apiMode === 'openai_compatible'
+        ? 'openai_compatible'
+        : settings.apiMode === 'novelai' ? 'novelai' : settings.apiMode === 'comfyui' ? 'comfyui' : fail('INVALID_IMAGE_REQUEST', '生图接口模式无效。');
     return {
         positivePrompt: cleanText(input.positivePrompt, '正面提示词', 32_000),
         negativePrompt: cleanText(input.negativePrompt ?? '', '负面提示词', 12_000, { allowEmpty: true }),
@@ -174,6 +186,7 @@ function normalizeRequest(input) {
             steps: cleanInteger(settings.steps, '步数', 1, 100), seed: cleanInteger(settings.seed, '种子', 0, 0xffffffff),
             guidance: cleanNumber(settings.guidance, 'Prompt Guidance', 0, 30), guidanceRescale: cleanNumber(settings.guidanceRescale, 'Guidance Rescale', 0, 1),
             qualityToggle: settings.qualityToggle !== false, variety: settings.variety === true,
+            comfyWorkflow: cleanWorkflow(settings.comfyWorkflow ?? ''),
         },
     };
 }
@@ -200,17 +213,131 @@ async function parseResponse(response) {
     fail('INVALID_IMAGE_RESPONSE', '生图接口没有返回可用图片。');
 }
 
+function defaultComfyWorkflow() {
+    return {
+        3: { inputs: { seed: '%seed%', steps: '%steps%', cfg: '%cfg_scale%', sampler_name: '%sampler_name%', scheduler: '%scheduler%', denoise: 1, model: ['4', 0], positive: ['6', 0], negative: ['7', 0], latent_image: ['5', 0] }, class_type: 'KSampler' },
+        4: { inputs: { ckpt_name: '%MODEL_NAME%' }, class_type: 'CheckpointLoaderSimple' },
+        5: { inputs: { width: '%width%', height: '%height%', batch_size: 1 }, class_type: 'EmptyLatentImage' },
+        6: { inputs: { text: '%prompt%', clip: ['4', 1] }, class_type: 'CLIPTextEncode' },
+        7: { inputs: { text: '%negative_prompt%', clip: ['4', 1] }, class_type: 'CLIPTextEncode' },
+        8: { inputs: { samples: ['3', 0], vae: ['4', 2] }, class_type: 'VAEDecode' },
+        9: { inputs: { filename_prefix: 'YueLeMa', images: ['8', 0] }, class_type: 'SaveImage' },
+    };
+}
+function parseComfyWorkflow(text) {
+    if (!text) return defaultComfyWorkflow();
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { fail('INVALID_IMAGE_REQUEST', 'ComfyUI 工作流 JSON 无法解析。'); }
+    if (parsed?.nodes && Array.isArray(parsed.nodes)) {
+        fail('INVALID_IMAGE_REQUEST', '请使用 ComfyUI “Save (API Format)” 导出的工作流。');
+    }
+    parsed = parsed?.prompt && typeof parsed.prompt === 'object'
+        ? parsed.prompt
+        : parsed?.workflow && typeof parsed.workflow === 'object' ? parsed.workflow : parsed;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) fail('INVALID_IMAGE_REQUEST', 'ComfyUI 工作流必须是 API 格式 JSON 对象。');
+    return parsed;
+}
+function replaceWorkflowPlaceholders(value, replacements, depth = 0) {
+    if (depth > 32) fail('INVALID_IMAGE_REQUEST', 'ComfyUI 工作流嵌套过深。');
+    if (Array.isArray(value)) return value.map((item) => replaceWorkflowPlaceholders(item, replacements, depth + 1));
+    if (value && typeof value === 'object') {
+        const output = Object.create(null);
+        for (const [key, item] of Object.entries(value)) {
+            if (UNSAFE_WORKFLOW_KEYS.has(key)) fail('INVALID_IMAGE_REQUEST', 'ComfyUI 工作流包含不安全字段。');
+            output[key] = replaceWorkflowPlaceholders(item, replacements, depth + 1);
+        }
+        return output;
+    }
+    if (typeof value !== 'string') return value;
+    if (Object.hasOwn(replacements, value)) return replacements[value];
+    return value.replace(/%[A-Za-z0-9_]+%/gu, (token) => Object.hasOwn(replacements, token) ? String(replacements[token]) : token);
+}
+function buildComfyWorkflow(settings, positivePrompt, negativePrompt) {
+    const replacements = {
+        '%prompt%': positivePrompt, '%positive_prompt%': positivePrompt, '%negative_prompt%': negativePrompt,
+        '%width%': settings.width, '%height%': settings.height, '%steps%': settings.steps,
+        '%cfg_scale%': settings.guidance, '%cfg%': settings.guidance, '%cfg_rescale%': settings.guidanceRescale,
+        '%seed%': settings.seed, '%sampler_name%': settings.sampler, '%scheduler%': settings.noiseSchedule,
+        '%MODEL_NAME%': settings.model, '%model%': settings.model,
+    };
+    return replaceWorkflowPlaceholders(parseComfyWorkflow(settings.comfyWorkflow), replacements);
+}
+async function readJsonResponse(response, maximum = MAX_COMFY_JSON_BYTES) {
+    try {
+        const bytes = await readResponseBytes(response, maximum);
+        return JSON.parse(new TextDecoder().decode(bytes));
+    } catch (error) {
+        if (error instanceof YueLeMaImageGenerationError) throw error;
+        fail('INVALID_IMAGE_RESPONSE', 'ComfyUI 返回了无效响应。');
+    }
+}
+function comfyOutputFromHistory(payload, promptId) {
+    const root = payload?.[promptId] ?? payload;
+    for (const output of Object.values(root?.outputs ?? {})) {
+        const image = Array.isArray(output?.images) ? output.images.find((item) => typeof item?.filename === 'string' && item.filename.trim()) : null;
+        if (image) return {
+            filename: image.filename.trim(),
+            subfolder: typeof image.subfolder === 'string' ? image.subfolder : '',
+            type: typeof image.type === 'string' && image.type ? image.type : 'output',
+        };
+    }
+    return null;
+}
+async function generateWithComfyUI(fetchImpl, request, signal) {
+    const workflow = buildComfyWorkflow(request.settings, request.positivePrompt, request.negativePrompt);
+    const submitted = await fetchImpl(`${request.settings.baseUrl}/prompt`, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: workflow, client_id: `yuelema-${Date.now()}-${Math.random().toString(16).slice(2)}` }),
+        signal,
+    });
+    if (!submitted?.ok) fail('IMAGE_HTTP_ERROR', 'ComfyUI 拒绝了本次工作流，请检查设置或稍后重试。', { retryable: submitted?.status >= 500, status: Number.isInteger(submitted?.status) ? submitted.status : undefined });
+    const submission = await readJsonResponse(submitted);
+    const promptId = typeof submission?.prompt_id === 'string' ? submission.prompt_id.trim() : '';
+    if (!promptId) fail('INVALID_IMAGE_RESPONSE', 'ComfyUI 未返回任务标识。');
+
+    let image;
+    while (!signal.aborted) {
+        const history = await fetchImpl(`${request.settings.baseUrl}/history/${encodeURIComponent(promptId)}`, {
+            method: 'GET', headers: { Accept: 'application/json' }, signal,
+        });
+        if (!history?.ok) fail('IMAGE_HTTP_ERROR', '无法读取 ComfyUI 任务状态。', { retryable: history?.status >= 500, status: Number.isInteger(history?.status) ? history.status : undefined });
+        image = comfyOutputFromHistory(await readJsonResponse(history), promptId);
+        if (image) break;
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(resolve, 1_000);
+            signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')); }, { once: true });
+        });
+    }
+    if (!image) fail('IMAGE_REQUEST_ABORTED', '生图请求已取消。', { retryable: true });
+    const query = new URLSearchParams(image);
+    const output = await fetchImpl(`${request.settings.baseUrl}/view?${query.toString()}`, {
+        method: 'GET', headers: { Accept: 'image/png, image/jpeg, image/webp' }, signal,
+    });
+    if (!output?.ok) fail('IMAGE_HTTP_ERROR', '无法读取 ComfyUI 生成图片。', { retryable: output?.status >= 500, status: Number.isInteger(output?.status) ? output.status : undefined });
+    return parseResponse(output);
+}
+
 export function createImageGenerationClient({ fetchImpl } = {}) {
     if (typeof fetchImpl !== 'function') throw new TypeError('image generation client requires injected fetchImpl');
     return Object.freeze({
         async generate(input) {
             const request = normalizeRequest(input);
-            const key = requireSessionKey(request.settings.presetId);
+            const key = request.settings.apiMode === 'comfyui' ? '' : requireSessionKey(request.settings.presetId);
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort('timeout'), request.timeoutMs);
             const forwardAbort = () => controller.abort('external');
             request.signal?.addEventListener?.('abort', forwardAbort, { once: true });
             try {
+                if (request.settings.apiMode === 'comfyui') {
+                    try {
+                        return await generateWithComfyUI(fetchImpl, request, controller.signal);
+                    } catch (error) {
+                        if (error instanceof YueLeMaImageGenerationError) throw error;
+                        if (controller.signal.aborted) fail('IMAGE_REQUEST_ABORTED', request.signal?.aborted ? '生图请求已取消。' : '生图请求超时，请稍后重试。', { retryable: true });
+                        fail('IMAGE_NETWORK_ERROR', '无法连接 ComfyUI，请检查地址、服务状态或跨域配置。', { retryable: true });
+                    }
+                }
                 let response;
                 try {
                     response = await fetchImpl(request.settings.baseUrl + request.settings.endpointPath, {

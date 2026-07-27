@@ -566,12 +566,16 @@ test('生图设置只保存非机密配置，API Key 清空后留在独立浏览
     byAria(panel, '前置正面提示词').value = 'masterpiece';
     byAria(panel, '后置正面提示词').value = 'cinematic light';
     byAria(panel, '固定负面提示词').value = 'lowres';
+    byName(panel, 'image-generation-api-mode').value = 'comfyui';
+    byAria(panel, 'ComfyUI API 工作流 JSON').value = '{\n  "1": {"class_type": "SaveImage", "inputs": {}}\n}';
     await click(button(panel, '保存生图设置'));
 
     assert.equal(store.snapshot().imageGeneration.enabled, true);
     assert.equal(store.snapshot().imageGeneration.presetId, 'image_preset');
     assert.equal(store.snapshot().imageGeneration.positivePrefix, 'masterpiece');
     assert.equal(store.snapshot().imageGeneration.positiveSuffix, 'cinematic light');
+    assert.equal(store.snapshot().imageGeneration.apiMode, 'comfyui');
+    assert.match(store.snapshot().imageGeneration.comfyWorkflow, /SaveImage/u);
     assert.equal(store.exportJson().includes('image-browser-cache-secret'), false);
     assert.ok(feedback.some((message) => message.includes('生图 API Key 已保存到当前浏览器')));
 });

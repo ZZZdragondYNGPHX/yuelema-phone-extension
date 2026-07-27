@@ -370,6 +370,7 @@ export function defaultImageGenerationSettings() {
         positivePrefix: '',
         positiveSuffix: '',
         negativePrompt: '',
+        comfyWorkflow: '',
         conversationSettings: { private: {}, group: {}, forum: {} },
     };
 }
@@ -378,6 +379,23 @@ function cleanImageText(value, field, maxLength, { allowEmpty = true } = {}) {
     if (typeof value !== 'string') fail('INVALID_IMAGE_GENERATION', field + '必须是文本。');
     const cleaned = value.trim();
     if ((!allowEmpty && !cleaned) || cleaned.length > maxLength || /[\u0000-\u001F\u007F]/.test(cleaned)) fail('INVALID_IMAGE_GENERATION', field + '长度或字符不符合要求。');
+    return cleaned;
+}
+
+function cleanImageWorkflow(value) {
+    if (typeof value !== 'string') fail('INVALID_IMAGE_GENERATION', 'ComfyUI 工作流必须是文本。');
+    const cleaned = value.trim();
+    if (cleaned.length > 200_000 || /[\u0000\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(cleaned)) {
+        fail('INVALID_IMAGE_GENERATION', 'ComfyUI 工作流长度或字符不符合要求。');
+    }
+    if (cleaned) {
+        try {
+            const parsed = JSON.parse(cleaned);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
+        } catch {
+            fail('INVALID_IMAGE_GENERATION', 'ComfyUI 工作流必须是有效的 JSON 对象。');
+        }
+    }
     return cleaned;
 }
 
@@ -403,7 +421,7 @@ export function normalizeImageGenerationSettings(input) {
     if (Object.keys(candidate).some((key) => !allowed.has(key))) fail('INVALID_IMAGE_GENERATION', '生图设置包含不支持或敏感字段。');
     const value = { ...defaults, ...candidate };
     if (typeof value.enabled !== 'boolean' || typeof value.qualityToggle !== 'boolean' || typeof value.variety !== 'boolean') fail('INVALID_IMAGE_GENERATION', '生图开关必须为布尔值。');
-    if (!['novelai', 'openai_compatible'].includes(value.apiMode)) fail('INVALID_IMAGE_GENERATION', '生图接口模式不受支持。');
+    if (!['novelai', 'openai_compatible', 'comfyui'].includes(value.apiMode)) fail('INVALID_IMAGE_GENERATION', '生图接口模式不受支持。');
     const presetId = cleanId(value.presetId, '生图密钥预设 ID');
     const baseUrl = cleanImageText(value.baseUrl, '生图站点', 512, { allowEmpty: false });
     let parsedUrl;
@@ -445,6 +463,7 @@ export function normalizeImageGenerationSettings(input) {
         positivePrefix: cleanImageText(value.positivePrefix, '前置正面提示词', 4000),
         positiveSuffix: cleanImageText(value.positiveSuffix, '后置正面提示词', 4000),
         negativePrompt: cleanImageText(value.negativePrompt, '固定负面提示词', 4000),
+        comfyWorkflow: cleanImageWorkflow(value.comfyWorkflow),
         conversationSettings: normalizedConversations,
     };
 }

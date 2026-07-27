@@ -1,4 +1,4 @@
-# 约了吗小手机 v1.0.1（发布审核版）
+# 约了吗小手机 v1.0.2（发布审核版）
 
 这是现代现实都市「约了吗」MVU 角色卡的配套 SillyTavern UI 扩展。软件层承担推荐、线上短文本私聊、匹配、群组浏览、角色创作与面基约定；现实见面、约会及复杂长文本剧情仍由酒馆正文推进。
 
@@ -124,10 +124,10 @@ node --input-type=module -e "await import('./index.js'); console.log('production
 
 ## 阶段 56（v0.1.34）
 
-- 设置新增“生图设置”子页：仅保存 NovelAI / OpenAI-compatible 生图接口的非机密参数、前置/后置正面提示词与固定负面提示词；API Key 仍只通过按预设 ID 隔离的浏览器缓存保存、删除和内存清理，不进入设置导出、MVU、提示词、日志或错误反馈。正面提示词顺序固定为 `前置 → core_dna → outfit_dna → AI 场景结构 → 后置`，负面提示词保持独立。
+- 设置新增“生图设置”子页：保存 NovelAI / OpenAI-compatible / ComfyUI 生图接口的非机密参数、前置/后置正面提示词与固定负面提示词；NovelAI / OpenAI-compatible 的 API Key 仍只通过按预设 ID 隔离的浏览器缓存保存、删除和内存清理，不进入设置导出、MVU、提示词、日志或错误反馈。ComfyUI 模式使用服务根地址（本机默认可填 `http://127.0.0.1:8188`），不读取接口路径或 API Key；工作流留空时使用基础文生图工作流，也可粘贴 ComfyUI `Save (API Format)` 导出的 JSON，并用 `%prompt%`、`%negative_prompt%`、`%MODEL_NAME%`、`%width%`、`%height%`、`%steps%`、`%cfg_scale%`、`%seed%`、`%sampler_name%`、`%scheduler%` 占位。正面提示词顺序固定为 `前置 → core_dna → outfit_dna → AI 场景结构 → 后置`，负面提示词保持独立。
 - 私聊、群聊与论坛均有“生图”设置入口及各会话独立的自动生图开关。快速回复合同可附带严格的 `imageDirective` / `imageDirectives`（仅图片类型与场景结构）；结构折叠在对应对话泡下。开启自动生图时仅对新、有效的结构调用受控 bridge 一次；关闭时由用户点击“生图”。成功后以图片替换结构内容但始终保留“重新生成”，失败状态不会在重渲染后无限重试；右键或长按图片会显示本次结构化语句。
 - 角色卡、角色创建、AI 补全/完整创作、推荐刷新、灵魂/描述匹配及角色资料均增加 `绘图.core_dna` / `绘图.outfit_dna`。人物图只允许读取明确成年且可用的关联角色绘图 DNA；没有角色时仅可生成场景快照。图片生成不写入 MVU，保留为会话 UI 内存态。
-- 生图客户端只接受通过 PNG/JPEG/WebP 魔数校验的 base64、直接二进制或受控 ZIP 图片；即使接口 JSON 返回远程 `url` 也会拒绝，避免 UI 通过 `<img src>` 绕过注入式 transport 发网。真实 Response 优先按流读取，并对声明长度、累计响应和 ZIP 解压结果施加 24 MiB 图片上限；OpenAI-compatible 接口需实际支持 `b64_json` 或直接图片响应。
+- 生图客户端只接受通过 PNG/JPEG/WebP 魔数校验的 base64、直接二进制或受控 ZIP 图片；即使接口 JSON 返回远程 `url` 也会拒绝，避免 UI 通过 `<img src>` 绕过注入式 transport 发网。真实 Response 优先按流读取，并对声明长度、累计响应和 ZIP 解压结果施加 24 MiB 图片上限；OpenAI-compatible 接口需实际支持 `b64_json` 或直接图片响应。ComfyUI 复用同一安全图片边界，通过 `/prompt → /history/{prompt_id} → /view` 完成任务；浏览器直连时仍需 ComfyUI 本身允许 SillyTavern 来源的 CORS。
 - 本阶段本地验证已完成：`npm run check` 通过；全量 Node 回归 **425 / 425 通过，0 failed**；生产 ESM import 图、关键文件语法检查和 `git diff --check` 通过。角色卡构建生成 `角色卡源/dist/约了吗_MVU_v0.1.34.json`，大小 **43303 bytes**，SHA-256 `E2A40D317E37986B127E84831948F93FAEE2402A67060A0A35033E50552292F4`，读取确认 `data.character_version=0.1.34`。这些结果不等于 SillyTavern 真机验收。
 - v0.1.34 已通过 GitHub `main` 发布（功能提交 `b0f7383`）；真机仍需从 Git URL 更新扩展、导入 `约了吗_MVU_v0.1.34.json` 并新开聊天，检查真实 NovelAI / OpenAI-compatible CORS 与响应、成人角色门禁、私聊/群聊/论坛消息映射、同会话多结构自动生成、手动/重新生成、长按冲突、窄屏布局、浏览器 Key 缓存与切页/销毁后的无重复请求。
 ## 阶段 54（v0.1.32）
