@@ -14,6 +14,7 @@ export const MAX_EMBEDDED_AVATAR_DATA_URL_LENGTH = 1_048_576;
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SENSITIVE_KEY_PATTERN = /(?:api[\s_-]*key|authorization|token|secret|password|credential|private[\s_-]*key|密钥|令牌|密码|授权|凭据)/iu;
 const AVATAR_KINDS = new Set(['placeholder', 'embedded']);
+const FIELD_NAME_TRAILING_COLON_PATTERN = /[:：]$/u;
 const ERROR_PREFIX = 'character_template_validation_failed:';
 const USER_MESSAGES = Object.freeze({
     template_invalid_json: '角色模板 JSON 无法解析。',
@@ -23,6 +24,7 @@ const USER_MESSAGES = Object.freeze({
     template_dangerous_key: '角色模板包含不允许的字段。',
     template_sensitive_key: '角色模板不能包含 API Key 或其他凭据。',
     template_unknown_field: '角色模板包含不支持的字段。',
+    template_ambiguous_field: '角色模板包含重复或含义冲突的字段。',
     template_missing_field: '角色模板缺少必需字段。',
     template_accessor_or_hidden_field: '角色模板字段格式不安全。',
     template_format_invalid: '角色模板格式版本不受支持。',
@@ -58,6 +60,42 @@ function ownData(record, key, code) {
 function assertSafeKey(key) {
     if (DANGEROUS_KEYS.has(key)) fail('template_dangerous_key');
     if (SENSITIVE_KEY_PATTERN.test(key)) fail('template_sensitive_key');
+}
+
+/**
+ * Accepts the common human-authored variants "字段:", "字段：" and "字段".
+ * Only the field-name suffix is normalized; JSON syntax and field values are
+ * untouched. Collisions are rejected instead of silently choosing one value.
+ */
+function normalizePunctuatedFieldNames(value) {
+    if (value === null || typeof value !== 'object') return value;
+    const prototype = Object.getPrototypeOf(value);
+    if (Array.isArray(value)) {
+        if (prototype !== Array.prototype) fail('template_unsafe_prototype');
+    } else if (prototype !== Object.prototype && prototype !== null) {
+        fail('template_unsafe_prototype');
+    }
+
+    const output = Array.isArray(value) ? [] : Object.create(null);
+    const normalizedKeys = new Set();
+    for (const key of Reflect.ownKeys(value)) {
+        if (key === 'length' && Array.isArray(value)) continue;
+        if (typeof key !== 'string') fail('template_dangerous_key');
+        const normalizedKey = key.replace(FIELD_NAME_TRAILING_COLON_PATTERN, '');
+        if (normalizedKeys.has(normalizedKey)) fail('template_ambiguous_field');
+        normalizedKeys.add(normalizedKey);
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!descriptor || !Object.hasOwn(descriptor, 'value') || !descriptor.enumerable) {
+            fail('template_accessor_or_hidden_field');
+        }
+        Object.defineProperty(output, normalizedKey, {
+            value: normalizePunctuatedFieldNames(descriptor.value),
+            enumerable: true,
+            configurable: true,
+            writable: true,
+        });
+    }
+    return output;
 }
 
 function assertExactRecord(value, { required, optional = [] }) {
@@ -198,16 +236,17 @@ function normalizeCharacter(character) {
 
 function normalizeEnvelope(input) {
     try {
-        assertExactRecord(input, { required: ['format', 'character'], optional: ['avatar'] });
-        const format = ownData(input, 'format', 'template_format_invalid');
+        const normalizedInput = normalizePunctuatedFieldNames(input);
+        assertExactRecord(normalizedInput, { required: ['format', 'character'], optional: ['avatar'] });
+        const format = ownData(normalizedInput, 'format', 'template_format_invalid');
         if (format !== CHARACTER_TEMPLATE_FORMAT) fail('template_format_invalid');
 
         const normalized = {
             format: CHARACTER_TEMPLATE_FORMAT,
-            character: normalizeCharacter(ownData(input, 'character', 'template_character_invalid')),
+            character: normalizeCharacter(ownData(normalizedInput, 'character', 'template_character_invalid')),
         };
-        if (Object.hasOwn(input, 'avatar')) {
-            normalized.avatar = normalizeAvatar(ownData(input, 'avatar', 'template_avatar_invalid'));
+        if (Object.hasOwn(normalizedInput, 'avatar')) {
+            normalized.avatar = normalizeAvatar(ownData(normalizedInput, 'avatar', 'template_avatar_invalid'));
         }
         return normalized;
     } catch (error) {

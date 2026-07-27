@@ -93,6 +93,7 @@ test('private chat image directives use the bridge, keep regenerate available, a
         generateConversationImage(request) {
             imageRequests.push(request);
             if (imageRequests.length === 1) return Promise.resolve({ ok: true, image: { src: 'data:image/png;base64,iVBORw0KGgo=' } });
+            if (imageRequests.length === 2) return Promise.resolve({ ok: false, code: 'INVALID_IMAGE_REQUEST', message: '请使用 ComfyUI “Save (API Format)” 导出的工作流。' });
             return Promise.resolve({ ok: false, code: 'image_generation_failed' });
         },
     };
@@ -146,6 +147,11 @@ test('private chat image directives use the bridge, keep regenerate available, a
         const directiveDialog = miniDom.document.querySelector('.yl-image-directive-dialog');
         assert.equal(directiveDialog.hidden, false);
         assert.match(byAria(directiveDialog, '当前图片结构化语句').value, /rainy Shanghai street/u);
+        click(byAria(miniDom.document, '关闭生图结构化语句'));
+        click(byAria(miniDom.document, '重新生成图片'));
+        await flushUi();
+        assert.match(miniDom.document.body.textContent, /Save \(API Format\)/u, '手动生图失败弹窗应显示客户端提供的安全具体原因');
+        click(byAria(miniDom.document, '关闭操作提示'));
 
         automatic.checked = true;
         automatic.dispatchEvent(new Event('change'));
@@ -157,13 +163,13 @@ test('private chat image directives use the bridge, keep regenerate available, a
         click(byAria(miniDom.document, '发送消息'));
         await flushUi();
 
-        assert.equal(imageRequests.length, 3, '开启自动生图后，同一会话的两条新结构都应各自交给 bridge');
-        assert.deepEqual(imageRequests.slice(1).map((request) => request.messageId).sort(), ['m_image_auto', 'm_image_auto_second']);
+        assert.equal(imageRequests.length, 4, '开启自动生图后，同一会话的两条新结构都应各自交给 bridge');
+        assert.deepEqual(imageRequests.slice(2).map((request) => request.messageId).sort(), ['m_image_auto', 'm_image_auto_second']);
         const failed = miniDom.document.querySelectorAll('.yl-image-directive-card').find((node) => node.dataset.status === 'failed');
         assert.ok(failed, '自动生成失败应保留可重试的失败状态');
         mounted.refreshState();
         await flushUi();
-        assert.equal(imageRequests.length, 3, '失败状态重渲染后不得自动无限重试');
+        assert.equal(imageRequests.length, 4, '失败状态重渲染后不得自动无限重试');
     } finally {
         mounted.destroy();
     }

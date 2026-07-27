@@ -4,9 +4,11 @@ const SAFE_IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_IMAGE_BYTES = 24 * 1024 * 1024;
 const MAX_JSON_RESPONSE_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1_048_576;
 const MAX_COMFY_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_COMFY_OBJECT_INFO_BYTES = 32 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
 const UNSAFE_WORKFLOW_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+let imageRequestSequence = 0;
 
 export class YueLeMaImageGenerationError extends Error {
     constructor(code, message, { retryable = false, status } = {}) {
@@ -18,6 +20,26 @@ export class YueLeMaImageGenerationError extends Error {
     }
 }
 function fail(code, message, details) { throw new YueLeMaImageGenerationError(code, message, details); }
+function emitImageDiagnostic(logger, level, event, details) {
+    const method = logger?.[level];
+    if (typeof method !== 'function') return;
+    try {
+        method.call(logger, `[约了吗][生图] ${event}`, Object.freeze({ ...details }));
+    } catch {
+        // Diagnostics must never change the generation result.
+    }
+}
+function imageErrorDetails(error) {
+    if (error instanceof YueLeMaImageGenerationError || error instanceof SessionKeyUnavailableError) {
+        return {
+            code: error.code ?? 'SESSION_KEY_LOCKED',
+            message: error.message,
+            retryable: Boolean(error.retryable),
+            status: Number.isInteger(error.status) ? error.status : undefined,
+        };
+    }
+    return { code: 'IMAGE_UNKNOWN_ERROR', retryable: false, status: undefined };
+}
 function cleanText(value, field, maxLength, { allowEmpty = false } = {}) {
     if (typeof value !== 'string') fail('INVALID_IMAGE_REQUEST', `${field}必须是文本。`);
     const text = value.trim();
@@ -83,15 +105,18 @@ function imageResultFromBytes(bytes) {
     if (!mimeType) fail('INVALID_IMAGE_RESPONSE', '生图接口返回了不受支持的图片格式。');
     return Object.freeze({ kind: 'data_url', mimeType, src: `data:${mimeType};base64,${bytesToBase64(bytes)}` });
 }
-function declaredResponseLength(response, maximum) {
+function responseTooLarge(code, message) {
+    fail(code ?? 'INVALID_IMAGE_RESPONSE', message ?? '生图接口返回的图片过大。');
+}
+function declaredResponseLength(response, maximum, tooLarge = {}) {
     const raw = response.headers?.get?.('content-length');
     if (raw === null || raw === undefined || raw === '') return null;
     if (!/^[0-9]+$/u.test(String(raw))) fail('INVALID_IMAGE_RESPONSE', '生图接口返回了无效图片。');
     const length = Number(raw);
-    if (!Number.isSafeInteger(length) || length > maximum) fail('INVALID_IMAGE_RESPONSE', '生图接口返回的图片过大。');
+    if (!Number.isSafeInteger(length) || length > maximum) responseTooLarge(tooLarge.code, tooLarge.message);
     return length;
 }
-async function readReadableStreamBytes(stream, maximum) {
+async function readReadableStreamBytes(stream, maximum, tooLarge = {}) {
     const reader = stream?.getReader?.();
     if (!reader) return null;
     const chunks = [];
@@ -102,7 +127,7 @@ async function readReadableStreamBytes(stream, maximum) {
             if (done) break;
             const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
             total += chunk.length;
-            if (total > maximum) fail('INVALID_IMAGE_RESPONSE', '生图接口返回的图片过大。');
+            if (total > maximum) responseTooLarge(tooLarge.code, tooLarge.message);
             chunks.push(chunk);
         }
     } finally {
@@ -113,12 +138,12 @@ async function readReadableStreamBytes(stream, maximum) {
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
     return bytes;
 }
-async function readResponseBytes(response, maximum) {
-    declaredResponseLength(response, maximum);
-    const streamed = await readReadableStreamBytes(response.body, maximum);
+async function readResponseBytes(response, maximum, tooLarge = {}) {
+    declaredResponseLength(response, maximum, tooLarge);
+    const streamed = await readReadableStreamBytes(response.body, maximum, tooLarge);
     if (streamed) return streamed;
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.length > maximum) fail('INVALID_IMAGE_RESPONSE', '生图接口返回的图片过大。');
+    if (bytes.length > maximum) responseTooLarge(tooLarge.code, tooLarge.message);
     return bytes;
 }
 function readU16(bytes, offset) { return bytes[offset] | (bytes[offset + 1] << 8); }
@@ -273,9 +298,9 @@ function buildComfyWorkflow(settings, positivePrompt, negativePrompt) {
     };
     return replaceWorkflowPlaceholders(parseComfyWorkflow(settings.comfyWorkflow), replacements);
 }
-async function readJsonResponse(response, maximum = MAX_COMFY_JSON_BYTES) {
+async function readJsonResponse(response, maximum = MAX_COMFY_JSON_BYTES, tooLarge = {}) {
     try {
-        const bytes = await readResponseBytes(response, maximum);
+        const bytes = await readResponseBytes(response, maximum, tooLarge);
         return JSON.parse(new TextDecoder().decode(bytes));
     } catch (error) {
         if (error instanceof YueLeMaImageGenerationError) throw error;
@@ -294,25 +319,64 @@ function comfyOutputFromHistory(payload, promptId) {
     }
     return null;
 }
-async function generateWithComfyUI(fetchImpl, request, signal) {
+async function generateWithComfyUI(fetchImpl, request, signal, {
+    diagnosticLogger,
+    requestId,
+    startedAt,
+    setPhase,
+} = {}) {
+    setPhase?.('workflow_prepare');
     const workflow = buildComfyWorkflow(request.settings, request.positivePrompt, request.negativePrompt);
+    const body = JSON.stringify({ prompt: workflow, client_id: `yuelema-${Date.now()}-${Math.random().toString(16).slice(2)}` });
+    emitImageDiagnostic(diagnosticLogger, 'info', 'ComfyUI 工作流准备完成', {
+        requestId,
+        customWorkflow: Boolean(request.settings.comfyWorkflow),
+        nodeCount: Object.keys(workflow).length,
+        requestBytes: new TextEncoder().encode(body).length,
+        elapsedMs: Date.now() - startedAt,
+    });
+    setPhase?.('prompt_submit');
     const submitted = await fetchImpl(`${request.settings.baseUrl}/prompt`, {
         method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: workflow, client_id: `yuelema-${Date.now()}-${Math.random().toString(16).slice(2)}` }),
+        body,
         signal,
     });
+    emitImageDiagnostic(diagnosticLogger, submitted?.ok ? 'info' : 'error', 'ComfyUI 工作流提交响应', {
+        requestId,
+        status: Number.isInteger(submitted?.status) ? submitted.status : undefined,
+        ok: Boolean(submitted?.ok),
+        contentType: String(submitted?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined,
+        contentLength: String(submitted?.headers?.get?.('content-length') ?? '') || undefined,
+        elapsedMs: Date.now() - startedAt,
+    });
     if (!submitted?.ok) fail('IMAGE_HTTP_ERROR', 'ComfyUI 拒绝了本次工作流，请检查设置或稍后重试。', { retryable: submitted?.status >= 500, status: Number.isInteger(submitted?.status) ? submitted.status : undefined });
+    setPhase?.('prompt_response_parse');
     const submission = await readJsonResponse(submitted);
     const promptId = typeof submission?.prompt_id === 'string' ? submission.prompt_id.trim() : '';
     if (!promptId) fail('INVALID_IMAGE_RESPONSE', 'ComfyUI 未返回任务标识。');
+    emitImageDiagnostic(diagnosticLogger, 'info', 'ComfyUI 任务已接受', {
+        requestId,
+        elapsedMs: Date.now() - startedAt,
+    });
 
     let image;
+    let pollAttempt = 0;
     while (!signal.aborted) {
+        pollAttempt += 1;
+        setPhase?.('history_request');
         const history = await fetchImpl(`${request.settings.baseUrl}/history/${encodeURIComponent(promptId)}`, {
             method: 'GET', headers: { Accept: 'application/json' }, signal,
         });
+        emitImageDiagnostic(diagnosticLogger, history?.ok ? 'info' : 'error', 'ComfyUI 任务状态响应', {
+            requestId,
+            attempt: pollAttempt,
+            status: Number.isInteger(history?.status) ? history.status : undefined,
+            ok: Boolean(history?.ok),
+            elapsedMs: Date.now() - startedAt,
+        });
         if (!history?.ok) fail('IMAGE_HTTP_ERROR', '无法读取 ComfyUI 任务状态。', { retryable: history?.status >= 500, status: Number.isInteger(history?.status) ? history.status : undefined });
+        setPhase?.('history_response_parse');
         image = comfyOutputFromHistory(await readJsonResponse(history), promptId);
         if (image) break;
         await new Promise((resolve, reject) => {
@@ -322,10 +386,20 @@ async function generateWithComfyUI(fetchImpl, request, signal) {
     }
     if (!image) fail('IMAGE_REQUEST_ABORTED', '生图请求已取消。', { retryable: true });
     const query = new URLSearchParams(image);
+    setPhase?.('image_fetch');
     const output = await fetchImpl(`${request.settings.baseUrl}/view?${query.toString()}`, {
         method: 'GET', headers: { Accept: 'image/png, image/jpeg, image/webp' }, signal,
     });
+    emitImageDiagnostic(diagnosticLogger, output?.ok ? 'info' : 'error', 'ComfyUI 图片读取响应', {
+        requestId,
+        status: Number.isInteger(output?.status) ? output.status : undefined,
+        ok: Boolean(output?.ok),
+        contentType: String(output?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined,
+        contentLength: String(output?.headers?.get?.('content-length') ?? '') || undefined,
+        elapsedMs: Date.now() - startedAt,
+    });
     if (!output?.ok) fail('IMAGE_HTTP_ERROR', '无法读取 ComfyUI 生成图片。', { retryable: output?.status >= 500, status: Number.isInteger(output?.status) ? output.status : undefined });
+    setPhase?.('image_response_parse');
     return parseResponse(output);
 }
 
@@ -344,48 +418,124 @@ function comfyObjectOptions(objectInfo, classTypes, inputNames) {
     return Object.freeze(values);
 }
 
-async function fetchComfyUIResources(fetchImpl, baseUrl, signal) {
-    const response = await fetchImpl(`${safeBaseUrl(baseUrl)}/object_info`, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        signal,
-    });
-    if (!response?.ok) {
-        fail('IMAGE_HTTP_ERROR', '无法读取 ComfyUI 资源列表。', {
-            retryable: response?.status >= 500,
+async function fetchComfyUIResources(fetchImpl, baseUrl, signal, diagnosticLogger) {
+    const requestId = `comfy-resources-${Date.now().toString(36)}-${(++imageRequestSequence).toString(36)}`;
+    const startedAt = Date.now();
+    let endpoint;
+    let phase = 'request_validation';
+    try {
+        endpoint = `${safeBaseUrl(baseUrl)}/object_info`;
+        phase = 'network_request';
+        emitImageDiagnostic(diagnosticLogger, 'info', 'ComfyUI 资源读取开始', { requestId, endpoint });
+        let response;
+        try {
+            response = await fetchImpl(endpoint, {
+                method: 'GET',
+                headers: { Accept: 'application/json' },
+                signal,
+            });
+        } catch {
+            if (signal?.aborted) fail('IMAGE_REQUEST_ABORTED', 'ComfyUI 数据读取已取消。', { retryable: true });
+            fail('IMAGE_NETWORK_ERROR', '无法连接 ComfyUI，请检查地址、服务状态或跨域配置。', { retryable: true });
+        }
+        phase = 'http_response';
+        emitImageDiagnostic(diagnosticLogger, response?.ok ? 'info' : 'error', 'ComfyUI 资源收到响应', {
+            requestId,
             status: Number.isInteger(response?.status) ? response.status : undefined,
+            ok: Boolean(response?.ok),
+            contentType: String(response?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined,
+            contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined,
+            maximumBytes: MAX_COMFY_OBJECT_INFO_BYTES,
+            elapsedMs: Date.now() - startedAt,
         });
+        if (!response?.ok) {
+            fail('IMAGE_HTTP_ERROR', '无法读取 ComfyUI 资源列表。', {
+                retryable: response?.status >= 500,
+                status: Number.isInteger(response?.status) ? response.status : undefined,
+            });
+        }
+        phase = 'response_parse';
+        const objectInfo = await readJsonResponse(response, MAX_COMFY_OBJECT_INFO_BYTES, {
+            code: 'COMFY_RESOURCE_RESPONSE_TOO_LARGE',
+            message: 'ComfyUI 资源列表过大；这与图片分辨率无关，请减少自定义节点后重试。',
+        });
+        if (!objectInfo || typeof objectInfo !== 'object' || Array.isArray(objectInfo)) {
+            fail('INVALID_IMAGE_RESPONSE', 'ComfyUI object_info 响应无效。');
+        }
+        const resources = Object.freeze({
+            models: comfyObjectOptions(objectInfo, ['CheckpointLoaderSimple', 'CheckpointLoader', 'UNETLoader'], ['ckpt_name', 'unet_name']),
+            samplers: comfyObjectOptions(objectInfo, ['KSampler', 'KSamplerAdvanced'], ['sampler_name']),
+            schedulers: comfyObjectOptions(objectInfo, ['KSampler', 'KSamplerAdvanced'], ['scheduler']),
+            vae: comfyObjectOptions(objectInfo, ['VAELoader'], ['vae_name']),
+            clips: comfyObjectOptions(objectInfo, ['CLIPLoader', 'DualCLIPLoader'], ['clip_name', 'clip_name1', 'clip_name2']),
+        });
+        emitImageDiagnostic(diagnosticLogger, 'info', 'ComfyUI 资源读取完成', {
+            requestId,
+            models: resources.models.length,
+            samplers: resources.samplers.length,
+            schedulers: resources.schedulers.length,
+            vae: resources.vae.length,
+            clips: resources.clips.length,
+            elapsedMs: Date.now() - startedAt,
+        });
+        return resources;
+    } catch (error) {
+        emitImageDiagnostic(diagnosticLogger, 'error', 'ComfyUI 资源读取失败', {
+            requestId,
+            phase,
+            ...imageErrorDetails(error),
+            elapsedMs: Date.now() - startedAt,
+        });
+        throw error;
     }
-    const objectInfo = await readJsonResponse(response);
-    if (!objectInfo || typeof objectInfo !== 'object' || Array.isArray(objectInfo)) {
-        fail('INVALID_IMAGE_RESPONSE', 'ComfyUI object_info 响应无效。');
-    }
-    return Object.freeze({
-        models: comfyObjectOptions(objectInfo, ['CheckpointLoaderSimple', 'CheckpointLoader', 'UNETLoader'], ['ckpt_name', 'unet_name']),
-        samplers: comfyObjectOptions(objectInfo, ['KSampler', 'KSamplerAdvanced'], ['sampler_name']),
-        schedulers: comfyObjectOptions(objectInfo, ['KSampler', 'KSamplerAdvanced'], ['scheduler']),
-        vae: comfyObjectOptions(objectInfo, ['VAELoader'], ['vae_name']),
-        clips: comfyObjectOptions(objectInfo, ['CLIPLoader', 'DualCLIPLoader'], ['clip_name', 'clip_name1', 'clip_name2']),
-    });
 }
 
-export function createImageGenerationClient({ fetchImpl } = {}) {
+export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null } = {}) {
     if (typeof fetchImpl !== 'function') throw new TypeError('image generation client requires injected fetchImpl');
     return Object.freeze({
         fetchComfyUIResources({ baseUrl, signal } = {}) {
-            return fetchComfyUIResources(fetchImpl, baseUrl, signal);
+            return fetchComfyUIResources(fetchImpl, baseUrl, signal, diagnosticLogger);
         },
         async generate(input) {
-            const request = normalizeRequest(input);
-            const key = request.settings.apiMode === 'comfyui' ? '' : requireSessionKey(request.settings.presetId);
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort('timeout'), request.timeoutMs);
-            const forwardAbort = () => controller.abort('external');
-            request.signal?.addEventListener?.('abort', forwardAbort, { once: true });
+            const requestId = `image-${Date.now().toString(36)}-${(++imageRequestSequence).toString(36)}`;
+            const startedAt = Date.now();
+            let request;
+            let controller;
+            let timer;
+            let forwardAbort;
+            let phase = 'request_validation';
             try {
+                request = normalizeRequest(input);
+                phase = 'credential_lookup';
+                const key = request.settings.apiMode === 'comfyui' ? '' : requireSessionKey(request.settings.presetId);
+                controller = new AbortController();
+                timer = setTimeout(() => controller.abort('timeout'), request.timeoutMs);
+                forwardAbort = () => controller.abort('external');
+                request.signal?.addEventListener?.('abort', forwardAbort, { once: true });
+                emitImageDiagnostic(diagnosticLogger, 'info', '请求开始', {
+                    requestId,
+                    provider: request.settings.apiMode,
+                    endpoint: request.settings.apiMode === 'comfyui'
+                        ? `${request.settings.baseUrl}/prompt`
+                        : request.settings.baseUrl + request.settings.endpointPath,
+                    model: request.settings.model,
+                    width: request.settings.width,
+                    height: request.settings.height,
+                    timeoutMs: request.timeoutMs,
+                });
                 if (request.settings.apiMode === 'comfyui') {
                     try {
-                        return await generateWithComfyUI(fetchImpl, request, controller.signal);
+                        const generated = await generateWithComfyUI(fetchImpl, request, controller.signal, {
+                            diagnosticLogger,
+                            requestId,
+                            startedAt,
+                            setPhase: (nextPhase) => { phase = nextPhase; },
+                        });
+                        emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', {
+                            requestId, provider: request.settings.apiMode, mimeType: generated.mimeType,
+                            elapsedMs: Date.now() - startedAt,
+                        });
+                        return generated;
                     } catch (error) {
                         if (error instanceof YueLeMaImageGenerationError) throw error;
                         if (controller.signal.aborted) fail('IMAGE_REQUEST_ABORTED', request.signal?.aborted ? '生图请求已取消。' : '生图请求超时，请稍后重试。', { retryable: true });
@@ -393,6 +543,7 @@ export function createImageGenerationClient({ fetchImpl } = {}) {
                     }
                 }
                 let response;
+                phase = 'network_request';
                 try {
                     response = await fetchImpl(request.settings.baseUrl + request.settings.endpointPath, {
                         method: 'POST', headers: { Accept: 'application/json, image/png, image/jpeg, image/webp, application/zip', 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
@@ -402,11 +553,36 @@ export function createImageGenerationClient({ fetchImpl } = {}) {
                     if (controller.signal.aborted) fail('IMAGE_REQUEST_ABORTED', request.signal?.aborted ? '生图请求已取消。' : '生图请求超时，请稍后重试。', { retryable: true });
                     fail('IMAGE_NETWORK_ERROR', '无法连接生图服务，请检查 URL、网络或跨域配置。', { retryable: true });
                 }
+                phase = 'http_response';
+                emitImageDiagnostic(diagnosticLogger, response?.ok ? 'info' : 'error', '收到响应', {
+                    requestId,
+                    provider: request.settings.apiMode,
+                    status: Number.isInteger(response?.status) ? response.status : undefined,
+                    ok: Boolean(response?.ok),
+                    contentType: String(response?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined,
+                    contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined,
+                    elapsedMs: Date.now() - startedAt,
+                });
                 if (!response?.ok) fail('IMAGE_HTTP_ERROR', '生图服务拒绝了本次请求，请检查接口设置或稍后重试。', { retryable: response?.status >= 500, status: Number.isInteger(response?.status) ? response.status : undefined });
-                return await parseResponse(response);
+                phase = 'response_parse';
+                const generated = await parseResponse(response);
+                emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', {
+                    requestId, provider: request.settings.apiMode, mimeType: generated.mimeType,
+                    elapsedMs: Date.now() - startedAt,
+                });
+                return generated;
+            } catch (error) {
+                emitImageDiagnostic(diagnosticLogger, 'error', '请求失败', {
+                    requestId,
+                    provider: request?.settings?.apiMode,
+                    phase,
+                    ...imageErrorDetails(error),
+                    elapsedMs: Date.now() - startedAt,
+                });
+                throw error;
             } finally {
-                clearTimeout(timer);
-                request.signal?.removeEventListener?.('abort', forwardAbort);
+                if (timer !== undefined) clearTimeout(timer);
+                if (forwardAbort) request?.signal?.removeEventListener?.('abort', forwardAbort);
             }
         },
     });

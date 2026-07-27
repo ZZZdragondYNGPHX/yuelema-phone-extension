@@ -9,7 +9,7 @@ import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandida
 import { generateGroupChatReply, generateGroupChatUpdate as generateGroupChatUpdateService } from './groups/group-chat-service.js';
 import { generateForumExistingPostsUpdate as generateForumExistingPostsUpdateService, generateForumHomeRefresh as generateForumHomeRefreshService, generateForumPostConversationUpdate as generateForumPostConversationUpdateService, generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
 import { generateLocalConversationSummary as generateLocalConversationSummaryService } from './groups/local-conversation-summary-service.js';
-import { composeImagePrompt } from './images/image-directive.js';
+import { composeImagePrompt, ImageDirectiveError } from './images/image-directive.js';
 import { toPublicImageGenerationError } from './llm/image-generation-client.js';
 
 const PASSIVE_KINDS = new Set([
@@ -24,6 +24,17 @@ const PERSONALIZATION_PUBLIC_TAG_FIELDS = Object.freeze(['兴趣标签', '生活
 const IMAGE_CONVERSATION_KINDS = new Set(['private', 'group', 'forum']);
 const CONTENT_MODES = new Set(['SFW', 'NSFW']);
 const SERVICE_MODE_WRITE_KINDS = new Set(['advance_content_mode_gate', 'toggle_content_mode']);
+let conversationImageRequestSequence = 0;
+
+function emitConversationImageDiagnostic(logger, level, event, details) {
+    const method = logger?.[level];
+    if (typeof method !== 'function') return;
+    try {
+        method.call(logger, `[约了吗][生图] ${event}`, Object.freeze({ ...details }));
+    } catch {
+        // Diagnostics must never change the bridge result.
+    }
+}
 
 /**
  * 2026-07-27 控制台诊断增强：把受控管线 build/validate 失败里的可选 detail/reason
@@ -108,7 +119,7 @@ function seedGeneratedCandidateKeywords(settingsStore, state, candidate) {
  * The sole UI-to-MVU write boundary. Browser UI can express only named actions;
  * it cannot provide a JSON Pointer, patch, state object, or arbitrary value.
  *
- * @param {{ documentRef: Document, mvu?: unknown, eventEmit?: unknown, getContext?: (() => unknown)|undefined, settingsStore?: unknown, llmClient?: unknown, imageGenerationClient?: unknown, imageMatchCoordinator?: unknown, onControlledAction?: (command: Readonly<{kind:string, payload:Readonly<Record<string,string>>}>) => void }} options
+ * @param {{ documentRef: Document, mvu?: unknown, eventEmit?: unknown, getContext?: (() => unknown)|undefined, settingsStore?: unknown, llmClient?: unknown, imageGenerationClient?: unknown, imageMatchCoordinator?: unknown, diagnosticLogger?: unknown, onControlledAction?: (command: Readonly<{kind:string, payload:Readonly<Record<string,string>>}>) => void }} options
  */
 export function createActionBridge({
     documentRef,
@@ -119,6 +130,7 @@ export function createActionBridge({
     llmClient = null,
     imageGenerationClient = null,
     imageMatchCoordinator = null,
+    diagnosticLogger = null,
     onControlledAction = () => {},
 }) {
     const pending = new Set();
@@ -996,32 +1008,57 @@ export function createActionBridge({
      * may omit a character UID, but person-focused directives require one.
      */
     async function generateConversationImage({ kind, conversationId, messageId, characterUid = '', directive, signal } = {}) {
+        const requestId = `conversation-image-${Date.now().toString(36)}-${(++conversationImageRequestSequence).toString(36)}`;
+        const startedAt = Date.now();
+        const reject = (result, phase) => {
+            emitConversationImageDiagnostic(diagnosticLogger, 'error', '对话生图前置拒绝', {
+                requestId,
+                phase,
+                kind: IMAGE_CONVERSATION_KINDS.has(kind) ? kind : undefined,
+                directiveKind: typeof directive?.kind === 'string' ? directive.kind : undefined,
+                code: result.code,
+                message: result.message,
+                elapsedMs: Date.now() - startedAt,
+            });
+            return result;
+        };
+        let phase = 'request_received';
+        emitConversationImageDiagnostic(diagnosticLogger, 'info', '对话生图请求接收', {
+            requestId,
+            kind: IMAGE_CONVERSATION_KINDS.has(kind) ? kind : undefined,
+            directiveKind: typeof directive?.kind === 'string' ? directive.kind : undefined,
+            hasCharacter: Boolean(characterUid),
+        });
         if (!IMAGE_CONVERSATION_KINDS.has(kind) || typeof conversationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(conversationId)
             || typeof messageId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(messageId)) {
-            return { ok: false, status: 'rejected', code: 'image_conversation_invalid', message: '当前对话无法生成图片。' };
+            return reject({ ok: false, status: 'rejected', code: 'image_conversation_invalid', message: '当前对话无法生成图片。' }, 'conversation_validation');
         }
         const key = actionKey('conversation_image', `${kind}:${conversationId}:${messageId}`);
-        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending', message: '图片正在生成，请稍候。' };
+        if (pending.has(key)) return reject({ ok: false, status: 'rejected', code: 'ui_action_pending', message: '图片正在生成，请稍候。' }, 'pending_guard');
         pending.add(key);
         try {
+            phase = 'settings_read';
             const settings = settingsStore?.getImageGenerationSettings?.();
-            if (!settings?.enabled) return { ok: false, status: 'rejected', code: 'image_generation_disabled', message: '请先在设置中启用生图接口。' };
-            if (typeof imageGenerationClient?.generate !== 'function') return { ok: false, status: 'rejected', code: 'image_generation_unavailable', message: '生图服务当前不可用。' };
+            phase = 'settings_gate';
+            if (!settings?.enabled) return reject({ ok: false, status: 'rejected', code: 'image_generation_disabled', message: '请先在设置中启用生图接口。' }, 'settings_gate');
+            if (typeof imageGenerationClient?.generate !== 'function') return reject({ ok: false, status: 'rejected', code: 'image_generation_unavailable', message: '生图服务当前不可用。' }, 'client_gate');
 
             let coreDna = '';
             let outfitDna = '';
             const uid = typeof characterUid === 'string' ? characterUid : '';
             if (uid) {
+                phase = 'character_state_read';
                 const read = readLatestState({ mvu: resolveMvu(mvu) });
-                if (!read.ok) return read;
+                if (!read.ok) return reject(read, 'character_state_read');
                 const character = read.state?.角色池?.[uid];
                 if (!character || character.成人验证 !== true || Number(character.隐藏资料?.实际年龄) < 18) {
-                    return { ok: false, status: 'rejected', code: 'image_character_unavailable', message: '只能为已确认的成年角色生成图片。' };
+                    return reject({ ok: false, status: 'rejected', code: 'image_character_unavailable', message: '只能为已确认的成年角色生成图片。' }, 'adult_character_gate');
                 }
                 coreDna = typeof character.绘图?.core_dna === 'string' ? character.绘图.core_dna : '';
                 outfitDna = typeof character.绘图?.outfit_dna === 'string' ? character.绘图.outfit_dna : '';
             }
 
+            phase = 'prompt_compose';
             const useComfyUiPrompts = settings.apiMode === 'comfyui';
             const prompt = composeImagePrompt({
                 positivePrefix: useComfyUiPrompts ? settings.comfyPositivePrefix : settings.positivePrefix,
@@ -1032,17 +1069,47 @@ export function createActionBridge({
                 negativePrompt: useComfyUiPrompts ? settings.comfyNegativePrompt : settings.negativePrompt,
             });
             if (!uid && prompt.directive.kind !== 'scene_snapshot') {
-                return { ok: false, status: 'rejected', code: 'image_character_required', message: '人物图片需要关联一位已确认的成年角色。' };
+                return reject({ ok: false, status: 'rejected', code: 'image_character_required', message: '人物图片需要关联一位已确认的成年角色。' }, 'adult_character_gate');
             }
+            emitConversationImageDiagnostic(diagnosticLogger, 'info', '对话生图进入客户端', {
+                requestId,
+                provider: settings.apiMode,
+                kind,
+                directiveKind: prompt.directive.kind,
+                hasCharacter: Boolean(uid),
+                elapsedMs: Date.now() - startedAt,
+            });
+            phase = 'client_generation';
             const generated = await imageGenerationClient.generate({
                 settings, positivePrompt: prompt.positivePrompt, negativePrompt: prompt.negativePrompt, signal,
+            });
+            phase = 'result_projection';
+            emitConversationImageDiagnostic(diagnosticLogger, 'info', '对话生图完成', {
+                requestId,
+                provider: settings.apiMode,
+                mimeType: generated.mimeType,
+                elapsedMs: Date.now() - startedAt,
             });
             return {
                 ok: true, status: 'generated', directive: prompt.directive,
                 image: Object.freeze({ src: generated.src, dataUrl: generated.kind === 'data_url' ? generated.src : '', mimeType: generated.mimeType ?? '', kind: generated.kind }),
             };
         } catch (error) {
-            const publicError = toPublicImageGenerationError(error);
+            const publicError = error instanceof ImageDirectiveError
+                ? { code: error.code, message: error.message, retryable: false, status: undefined }
+                : toPublicImageGenerationError(error);
+            emitConversationImageDiagnostic(diagnosticLogger, 'error', '对话生图失败', {
+                requestId,
+                phase,
+                code: publicError.code,
+                message: publicError.message,
+                errorType: error instanceof ImageDirectiveError
+                    ? 'ImageDirectiveError'
+                    : ['TypeError', 'ReferenceError', 'RangeError', 'SyntaxError', 'DOMException'].includes(error?.name) ? error.name : undefined,
+                status: publicError.status,
+                retryable: publicError.retryable,
+                elapsedMs: Date.now() - startedAt,
+            });
             return { ok: false, status: 'failed', ...publicError };
         } finally {
             pending.delete(key);

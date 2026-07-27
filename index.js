@@ -142,7 +142,10 @@ export async function onActivate() {
         ? createHostExtensionUpdater({ transport: fetchImpl, getRequestHeaders })
         : null;
     const llmClient = fetchImpl ? createOpenAICompatibleClient({ fetchImpl }) : null;
-    const imageGenerationClient = fetchImpl ? createImageGenerationClient({ fetchImpl }) : null;
+    const imageGenerationClient = fetchImpl ? createImageGenerationClient({
+        fetchImpl,
+        diagnosticLogger: globalThis.console,
+    }) : null;
     // 一次性远程图片导入（用户主动触发才请求；URL 不落库、不作渲染来源）。
     const remoteImageImporter = fetchImpl ? createRemoteImageImporter({ fetchImpl }) : null;
     // Resolve the host's localforage adapter at activation time because SillyTavern may publish libs after module import.
@@ -167,6 +170,7 @@ export async function onActivate() {
         llmClient,
         imageGenerationClient,
         imageMatchCoordinator,
+        diagnosticLogger: globalThis.console,
     });
     appInstance = mountPhoneApp({
         documentRef,

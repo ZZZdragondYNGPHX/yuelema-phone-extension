@@ -22,6 +22,23 @@ test('prompt composition preserves the required order and separate negative prom
     assert.match(formatImageDirective(result.directive), /"scene"/u);
 });
 
+test('prompt composition permits bounded LoRA tokens but still rejects HTML', () => {
+    const result = composeImagePrompt({
+        positivePrefix: String.raw`amagi hana, <lora:detailer\Loraeyes_V1:1>, <lora:detailer\hairdetailer:0.8>`,
+        directive: { kind: 'private_photo', scene: 'adult woman portrait' },
+        positiveSuffix: 'masterpiece',
+    });
+    assert.match(result.positivePrompt, /<lora:detailer\\Loraeyes_V1:1>/u);
+    assert.throws(() => composeImagePrompt({
+        positivePrefix: '<img src=x onerror=alert(1)>',
+        directive: { kind: 'private_photo', scene: 'adult woman portrait' },
+    }));
+    assert.throws(() => composeImagePrompt({
+        positivePrefix: '<lora:detailer:1><script>alert(1)</script>',
+        directive: { kind: 'private_photo', scene: 'adult woman portrait' },
+    }));
+});
+
 test('dangerous and secret-shaped fields are rejected without invoking getters', () => {
     const input = Object.create(null);
     Object.defineProperty(input, 'kind', { enumerable: true, get() { throw new Error('getter called'); } });
