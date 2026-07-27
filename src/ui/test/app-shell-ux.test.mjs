@@ -981,6 +981,113 @@ test('launcher tools open by desktop right-click or a 10-second mobile hold and 
     }
 });
 
+test('bottom-right handle resizes from the original minimum to the full visual viewport and reset clears the saved size', () => {
+    const previousDefaultView = miniDom.document.defaultView;
+    miniDom.document.defaultView = { innerWidth: 360, innerHeight: 740 };
+    const storage = createMemoryStorage();
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-panel-resize', uiLayoutStorage: storage,
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null,
+        readState: () => ({ ok: false, code: 'mvu_get_unavailable' }),
+    });
+    try {
+        const launcher = miniDom.document.querySelector('.yl-phone-launcher');
+        const panel = miniDom.document.querySelector('.yl-phone-panel');
+        const handle = miniDom.document.querySelector('.yl-phone-resize-handle');
+        const styles = installStyleRecorder(panel);
+        panel.getBoundingClientRect = () => {
+            const width = Number.parseFloat(styles.width || '328');
+            const height = Number.parseFloat(styles.height || '628');
+            const left = Number.parseFloat(styles.left || '16');
+            const top = Number.parseFloat(styles.top || '56');
+            return { left, top, right: left + width, bottom: top + height, width, height };
+        };
+        installPointerCaptureStub(handle);
+        click(launcher);
+
+        handle.dispatchEvent(pointerEvent('pointerdown', {
+            pointerId: 72, pointerType: 'mouse', clientX: 344, clientY: 684,
+        }));
+        miniDom.document.dispatchEvent(pointerEvent('pointermove', {
+            pointerId: 72, pointerType: 'mouse', clientX: 520, clientY: 920,
+        }));
+        miniDom.document.dispatchEvent(pointerEvent('pointerup', {
+            pointerId: 72, pointerType: 'mouse', clientX: 520, clientY: 920,
+        }));
+
+        assert.equal(styles.width, '360px');
+        assert.equal(styles.height, '740px');
+        assert.equal(styles.left, '0px');
+        assert.equal(styles.top, '0px');
+        assert.equal(panel.classList.contains('is-viewport-fill'), true);
+        assert.deepEqual(JSON.parse(storage.getItem('yuelema.phone-panel-size/v1')), {
+            phone: { width: 360, height: 740 },
+        });
+
+        launcher.dispatchEvent(pointerEvent('contextmenu', { pointerType: 'mouse', button: 2 }));
+        click(miniDom.document.querySelector('.yl-launcher-tools-reset'));
+        assert.equal(storage.getItem('yuelema.phone-panel-size/v1'), null);
+        assert.equal(styles.width ?? '', '');
+        assert.equal(styles.height ?? '', '');
+        assert.equal(panel.classList.contains('is-viewport-fill'), false);
+    } finally {
+        mounted.destroy();
+        miniDom.document.defaultView = previousDefaultView;
+    }
+});
+
+test('touch resize requires a long press before movement can change the panel size', () => {
+    const previousDefaultView = miniDom.document.defaultView;
+    const previousSetTimeout = globalThis.setTimeout;
+    const previousClearTimeout = globalThis.clearTimeout;
+    miniDom.document.defaultView = { innerWidth: 390, innerHeight: 800 };
+    const timers = [];
+    globalThis.setTimeout = (callback, delay) => {
+        const timer = { callback, delay, cleared: false };
+        timers.push(timer);
+        return timer;
+    };
+    globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-touch-panel-resize', uiLayoutStorage: createMemoryStorage(),
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null,
+        readState: () => ({ ok: false, code: 'mvu_get_unavailable' }),
+    });
+    try {
+        const panel = miniDom.document.querySelector('.yl-phone-panel');
+        const handle = miniDom.document.querySelector('.yl-phone-resize-handle');
+        const styles = installStyleRecorder(panel);
+        panel.getBoundingClientRect = () => {
+            const width = Number.parseFloat(styles.width || '358');
+            const height = Number.parseFloat(styles.height || '688');
+            const left = Number.parseFloat(styles.left || '16');
+            const top = Number.parseFloat(styles.top || '56');
+            return { left, top, right: left + width, bottom: top + height, width, height };
+        };
+        installPointerCaptureStub(handle);
+        click(miniDom.document.querySelector('.yl-phone-launcher'));
+        handle.dispatchEvent(pointerEvent('pointerdown', {
+            pointerId: 73, pointerType: 'touch', clientX: 374, clientY: 744,
+        }));
+        const hold = timers.at(-1);
+        assert.equal(hold.delay, 500);
+        assert.equal(styles.width ?? '', '', 'pressing alone must not resize');
+        hold.callback();
+        miniDom.document.dispatchEvent(pointerEvent('pointermove', {
+            pointerId: 73, pointerType: 'touch', clientX: 390, clientY: 800,
+        }));
+        assert.equal(styles.width, '374px');
+        assert.equal(styles.height, '744px');
+    } finally {
+        mounted.destroy();
+        globalThis.setTimeout = previousSetTimeout;
+        globalThis.clearTimeout = previousClearTimeout;
+        miniDom.document.defaultView = previousDefaultView;
+    }
+});
+
 test('desktop header pointer drag clamps the panel, cancels cleanly, and ignores the close button', () => {
     const previousDefaultView = miniDom.document.defaultView;
     const previousDocumentElement = miniDom.document.documentElement;
@@ -1944,7 +2051,7 @@ test('extension update failure surfaces HTTP status and host text in the dialog 
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'loading');
         assert.match(dialog.textContent, /正在检查扩展更新/u);
-        assert.match(dialog.textContent, /当前版本 v1\.0\.4/u, 'loading 弹窗应展示当前版本');
+        assert.match(dialog.textContent, /当前版本 v1\.0\.5/u, 'loading 弹窗应展示当前版本');
 
         gate.reject(new HostExtensionUpdateError('request_failed_http', {
             status: 500,
@@ -2004,7 +2111,7 @@ test('extension update success states show the current version and non-git insta
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'success');
         assert.match(dialog.textContent, /当前已是最新版本/u);
-        assert.match(dialog.textContent, /v1\.0\.4 已是最新版本/u, '最新结果应展示当前版本号');
+        assert.match(dialog.textContent, /v1\.0\.5 已是最新版本/u, '最新结果应展示当前版本号');
 
         result = Promise.resolve({ outcome: 'updated' });
         click(updateEntry());

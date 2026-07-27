@@ -950,6 +950,35 @@
 .yl-phone-panel[hidden] { display: none; }
 .yl-phone-panel.is-dragging { animation: none; }
 .yl-phone-panel.is-dragging .yl-phone-header { cursor: grabbing; }
+.yl-phone-panel.is-resizing { animation: none; user-select: none; }
+.yl-phone-panel.is-viewport-fill { border-radius: 0; }
+.yl-phone-resize-handle {
+    position: absolute;
+    z-index: 18;
+    right: 0;
+    bottom: 0;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 0 0 26px 0;
+    background: transparent;
+    cursor: nwse-resize;
+    touch-action: none;
+}
+.yl-phone-resize-handle::after {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    width: 13px;
+    height: 13px;
+    border-right: 2px solid color-mix(in srgb, var(--yl-text-2) 72%, transparent);
+    border-bottom: 2px solid color-mix(in srgb, var(--yl-text-2) 72%, transparent);
+    content: "";
+}
+.yl-phone-resize-handle:hover::after,
+.yl-phone-resize-handle:focus-visible::after { border-color: var(--yl-accent); }
+.yl-phone-panel.is-viewport-fill .yl-phone-resize-handle { border-radius: 0; }
 /* —— 窗口 chrome（减薄） —— */
 .yl-phone-header {
     display: flex;

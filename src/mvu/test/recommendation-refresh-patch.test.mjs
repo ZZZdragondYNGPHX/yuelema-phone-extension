@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCharacterRegistrationPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import { buildCharacterRegistrationPatch, buildCustomCandidateMatchPatch, buildExistingCandidateRecommendationPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
 
 function candidate() {
     return {
@@ -61,19 +61,47 @@ test('refresh refuses a candidate that is no longer in the visible queue', () =>
     assert.deepEqual(result, { ok: false, code: 'recommendation_refresh_source_not_queued', detail: '' });
     assert.deepEqual(current, before);
 });
-test('registers a complete user-authored adult candidate through one exact add-only patch', () => {
+test('registers a complete user-authored adult candidate off-screen until local discovery selects it', () => {
     const before = state();
     const candidateInput = candidate();
     const patch = buildCharacterRegistrationPatch(before, { candidate: candidateInput });
 
     assert.equal(patch.ok, true);
     assert.deepEqual(patch.value.map((operation) => operation.path), [
-        '/推荐/临时候选池/npc_custom_13', '/推荐/当前队列/-', '/系统/UID计数器/角色',
+        '/推荐/临时候选池/npc_custom_13', '/系统/UID计数器/角色',
     ]);
     assert.equal(validateControlledPatchAgainstState(before, patch.value).ok, true);
     assert.equal(JSON.stringify(patch.value).includes('私人备注'), true);
     assert.deepEqual(before, state());
     assert.deepEqual(candidateInput, candidate());
+});
+
+test('an existing custom candidate can be shown by refresh or promoted by a successful match through exact patches', () => {
+    const current = state();
+    current.系统.UID计数器.会话 = 4;
+    current.会话 = {};
+    current.推荐.临时候选池.npc_custom_13 = candidate();
+
+    const recommendation = buildExistingCandidateRecommendationPatch(current, {
+        candidateUid: 'npc_custom_13',
+        replacedNpcUid: 'npc_old',
+    });
+    assert.equal(recommendation.ok, true);
+    assert.deepEqual(recommendation.value.map((operation) => operation.path), [
+        '/推荐/冷却角色UID/-', '/推荐/当前队列/0', '/推荐/当前队列/-',
+    ]);
+    assert.equal(validateControlledPatchAgainstState(current, recommendation.value).ok, true);
+
+    const matched = buildCustomCandidateMatchPatch(current, { candidateUid: 'npc_custom_13', matchScore: 73 });
+    assert.equal(matched.ok, true);
+    assert.deepEqual(matched.value.map((operation) => [operation.op, operation.path]), [
+        ['move', '/角色池/npc_custom_13'],
+        ['replace', '/角色池/npc_custom_13/与玩家关系/NPC专属匹配度'],
+        ['replace', '/角色池/npc_custom_13/与玩家关系/状态'],
+        ['add', '/会话/chat_5'],
+        ['replace', '/系统/UID计数器/会话'],
+    ]);
+    assert.equal(validateControlledPatchAgainstState(current, matched.value).ok, true);
 });
 
 test('registration rejects forged uid and incomplete candidate data before MVU parsing', () => {

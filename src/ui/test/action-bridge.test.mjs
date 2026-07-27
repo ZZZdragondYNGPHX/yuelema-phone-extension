@@ -287,6 +287,34 @@ test('user-authored adult character is registered only through the controlled MV
     const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
     assert.match(wrappedPatch, /npc_custom_13/u);
     assert.match(wrappedPatch, /临时候选池/u);
+    assert.doesNotMatch(wrappedPatch, /当前队列/u, '创建后应等待关键词相近的刷新或匹配，而不是立刻强制展示');
+});
+
+test('home refresh selects a positive-keyword custom character before any model request', async () => {
+    const initialState = recommendationState();
+    initialState.推荐.临时候选池.npc_custom_13 = adultCandidate();
+    let modelCalls = 0;
+    const { mvu, calls } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: {
+            snapshot() {
+                return { personalization: { keywordWeightsByMode: { SFW: [{ keyword: '电影', weight: 4 }], NSFW: [] } } };
+            },
+        },
+        llmClient: { async chat() { modelCalls += 1; return { text: '{}' }; } },
+    });
+
+    const result = await bridge.runRecommendationRefresh('npc_ava');
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.candidateSource, 'custom');
+    assert.equal(result.npcUid, 'npc_custom_13');
+    assert.equal(modelCalls, 0);
+    const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
+    assert.match(wrappedPatch, /npc_custom_13/u);
+    assert.doesNotMatch(wrappedPatch, /npc_llm_/u);
 });
 
 test('invalid user-authored character never enters the MVU write pipeline', async () => {
@@ -833,6 +861,38 @@ test('soul match creates an independent npc_match session and never promotes a f
     assert.deepEqual(imageMatches[0][1], { contentMode: 'SFW', signal });
 });
 
+test('soul match promotes a positive-keyword custom character and preserves its authored identity without model generation', async () => {
+    const initialState = recommendationState();
+    initialState.会话 = {};
+    initialState.系统 = { UID计数器: { 角色: 13, 会话: 4 } };
+    initialState.推荐.临时候选池.npc_custom_13 = adultCandidate();
+    let modelCalls = 0;
+    const { mvu, calls, data } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: {
+            snapshot() {
+                return { personalization: { keywordWeightsByMode: { SFW: [{ keyword: '电影', weight: 4 }], NSFW: [] } } };
+            },
+        },
+        llmClient: { async chat() { modelCalls += 1; return { text: '{}' }; } },
+    });
+
+    const result = await bridge.runCandidateMatch('soul');
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.candidateSource, 'custom');
+    assert.equal(result.npcUid, 'npc_custom_13');
+    assert.equal(result.sessionUid, 'chat_5');
+    assert.equal(result.matchOutcome, 'accepted');
+    assert.equal(modelCalls, 0);
+    const committed = calls.find(([name]) => name === 'replace')[1].stat_data;
+    assert.equal(committed.角色池.npc_custom_13.公开资料.昵称, '林澈');
+    assert.equal(committed.推荐.临时候选池.npc_custom_13, undefined);
+    assert.equal(committed.会话.chat_5.对象UID, 'npc_custom_13');
+});
+
 test('voice match first resolves transient voice keywords and then commits the same independent mutual-match session', async () => {
     const initialState = recommendationState();
     initialState.会话 = {};
@@ -875,6 +935,51 @@ test('voice match first resolves transient voice keywords and then commits the s
     assert.equal(imageMatches.length, 1, '图片匹配拒绝不得阻塞语音角色生成与 MVU 写回。');
     assert.equal(imageMatches[0][0].昵称, '顾言');
     assert.deepEqual(imageMatches[0][1], { contentMode: 'SFW', signal });
+});
+
+test('description match uses its transient positive weights to encounter an authored custom character', async () => {
+    const initialState = recommendationState();
+    initialState.会话 = {};
+    initialState.系统 = { UID计数器: { 角色: 13, 会话: 2 } };
+    initialState.推荐.临时候选池.npc_custom_13 = adultCandidate();
+    let modelCall = 0;
+    const { mvu, calls } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: {
+            snapshot() {
+                return { personalization: { keywordWeightsByMode: { SFW: [], NSFW: [] } } };
+            },
+            resolveFunction() {
+                return { connectionPreset, promptPreset: { enabled: true, content: '' } };
+            },
+        },
+        llmClient: { async chat() {
+            modelCall += 1;
+            if (modelCall === 1) return { text: '{"keywordWeights":[{"keyword":"电影","weight":5}]}' };
+            return { text: JSON.stringify({
+                profile: {
+                    昵称: '临时生成者', 年龄段: '25-29', 性别: '女', 性取向: '双性恋',
+                    城市: '上海', 距离范围: '10 km', 寻找意图: '聊天', 简介: '临时资料。',
+                    兴趣标签: ['电影'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
+                },
+                drawing: { core_dna: 'adult woman, black hair, brown eyes', outfit_dna: 'cream cardigan, dark skirt' },
+                explanation: '关键词接近。',
+            }) };
+        } },
+    });
+
+    const result = await bridge.runCandidateMatch('voice', { voiceText: '想找喜欢电影的人。' });
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.candidateSource, 'custom');
+    assert.equal(result.npcUid, 'npc_custom_13');
+    assert.equal(result.sessionUid, 'chat_3');
+    assert.equal(modelCall, 2, '描述匹配仍须先提取本次临时关键词，再判断自建角色');
+    const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
+    assert.match(wrappedPatch, /npc_custom_13/u);
+    assert.doesNotMatch(wrappedPatch, /npc_match_/u);
 });
 
 test('candidate match rejects a hard gender-orientation mismatch without any MVU write', async () => {

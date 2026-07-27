@@ -306,9 +306,35 @@ export function buildCharacterRegistrationPatch(state, { candidate } = {}) {
     }
     return success([
         { op: 'add', path: encodeJsonPointer(['推荐', '临时候选池', uid]), value: normalizedCandidate },
-        { op: 'add', path: encodeJsonPointer(['推荐', '当前队列', '-']), value: uid },
         { op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '角色']), value: roleCounter + 1 },
     ]);
+}
+
+/** Shows an existing authored candidate only after local positive-keyword selection. */
+export function buildExistingCandidateRecommendationPatch(state, { candidateUid, replacedNpcUid = '' } = {}) {
+    if (!ownRecord(state) || !/^npc_custom_\d+$/u.test(candidateUid)) return fail('custom_recommendation_invalid_command');
+    const candidate = assertKnownAdult(state, candidateUid);
+    if (!candidate.ok || candidate.value.location !== 'candidate') return fail('custom_recommendation_candidate_invalid');
+    const queue = arrayAt(state, '当前队列');
+    const cooldown = arrayAt(state, '冷却角色UID');
+    const disliked = arrayAt(state, '不喜欢角色UID');
+    const blocked = arrayAt(state, '拉黑角色UID');
+    if (!queue || !cooldown || !disliked || !blocked) return fail('custom_recommendation_state_invalid');
+    if (queue.includes(candidateUid) || cooldown.includes(candidateUid) || disliked.includes(candidateUid) || blocked.includes(candidateUid)) {
+        return fail('custom_recommendation_candidate_unavailable');
+    }
+    const operations = [];
+    if (replacedNpcUid) {
+        const current = assertKnownAdult(state, replacedNpcUid);
+        const oldIndex = queue.indexOf(replacedNpcUid);
+        if (!current.ok || current.value.location !== 'candidate' || oldIndex < 0) return fail('custom_recommendation_source_invalid');
+        if (!cooldown.includes(replacedNpcUid)) operations.push({ op: 'add', path: encodeJsonPointer(['推荐', '冷却角色UID', '-']), value: replacedNpcUid });
+        operations.push({ op: 'remove', path: encodeJsonPointer(['推荐', '当前队列', String(oldIndex)]) });
+    } else if (queue.length !== 0) {
+        return fail('custom_recommendation_queue_not_empty');
+    }
+    operations.push({ op: 'add', path: encodeJsonPointer(['推荐', '当前队列', '-']), value: candidateUid });
+    return success(operations);
 }
 function isChatSessionUid(value) {
     return typeof value === 'string' && CHAT_SESSION_UID_PATTERN.test(value);
@@ -1304,6 +1330,38 @@ export function buildCandidateMatchSessionPatch(state, { candidate } = {}) {
     return buildCandidateMatchOutcomePatch(state, { candidate, accepted: true });
 }
 
+/** Promotes one existing authored candidate and establishes its first matched session. */
+export function buildCustomCandidateMatchPatch(state, { candidateUid, matchScore } = {}) {
+    if (!ownRecord(state) || !/^npc_custom_\d+$/u.test(candidateUid)
+        || !Number.isInteger(matchScore) || matchScore < MATCH_ACCEPTANCE_THRESHOLD || matchScore > 100) {
+        return fail('custom_candidate_match_invalid_command');
+    }
+    const candidate = assertKnownAdult(state, candidateUid);
+    const rolePool = ownRecord(state.角色池);
+    const sessions = ownRecord(state.会话);
+    const queue = arrayAt(state, '当前队列');
+    const sessionCounter = ownRecord(state.系统)?.UID计数器?.会话;
+    if (!candidate.ok || candidate.value.location !== 'candidate' || !rolePool || !sessions || !queue
+        || !Number.isInteger(sessionCounter) || sessionCounter < 0 || sessionCounter >= 999999) {
+        return fail('custom_candidate_match_state_invalid');
+    }
+    const sessionUid = `chat_${sessionCounter + 1}`;
+    if (!isChatSessionUid(sessionUid) || sessions[sessionUid] || rolePool[candidateUid]) return fail('custom_candidate_match_uid_conflict');
+    const operations = [];
+    const queueIndex = queue.indexOf(candidateUid);
+    if (queueIndex >= 0) operations.push({ op: 'remove', path: encodeJsonPointer(['推荐', '当前队列', String(queueIndex)]) });
+    operations.push({
+        op: 'move',
+        from: encodeJsonPointer(['推荐', '临时候选池', candidateUid]),
+        path: encodeJsonPointer(['角色池', candidateUid]),
+    });
+    operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', candidateUid, '与玩家关系', 'NPC专属匹配度']), value: matchScore });
+    operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', candidateUid, '与玩家关系', '状态']), value: '已匹配' });
+    operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid]), value: matchedSession(candidateUid) });
+    operations.push({ op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '会话']), value: sessionCounter + 1 });
+    return success(operations);
+}
+
 const PREFERENCE_TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
 
 function publicTagsForPreference(profile) {
@@ -1723,11 +1781,15 @@ export function validateControlledPatchAgainstState(state, patch) {
     const queueRemoval = patch.find((operation) => operation?.op === 'remove' && /^\/推荐\/当前队列\/(0|[1-9]\d*)$/u.test(operation.path));
     const queueAddition = patch.find((operation) => operation?.op === 'add' && operation.path === '/推荐/当前队列/-');
     const candidateAddition = patch.find((operation) => operation?.op === 'add' && /^\/推荐\/临时候选池\/npc_[A-Za-z0-9_-]{1,64}$/u.test(operation.path));
+    if (candidateAddition && !queueAddition && /^\/推荐\/临时候选池\/npc_custom_\d+$/u.test(candidateAddition.path)) {
+        const expected = buildCharacterRegistrationPatch(state, { candidate: candidateAddition.value });
+        if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+    }
     if (candidateAddition && queueAddition && !queueRemoval) {
         const candidateUid = decodeJsonPointer(candidateAddition.path).at(-1);
         const expected = /^npc_llm_\d+$/u.test(candidateUid)
             ? buildRecommendationInitialCandidatePatch(state, { candidate: candidateAddition.value })
-            : buildCharacterRegistrationPatch(state, { candidate: candidateAddition.value });
+            : fail('recommendation_initial_uid_invalid');
         if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
     }
     if (queueRemoval && candidateAddition) {
@@ -1736,6 +1798,26 @@ export function validateControlledPatchAgainstState(state, patch) {
         const expected = Array.isArray(queue) && typeof queue[oldIndex] === 'string'
             ? buildRecommendationRefreshPatch(state, { replacedNpcUid: queue[oldIndex], candidate: candidateAddition.value })
             : fail('recommendation_refresh_source_not_queued');
+        if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+    }
+    if (queueAddition && !candidateAddition) {
+        const candidateUid = queueAddition.value;
+        const oldIndex = queueRemoval ? Number(queueRemoval.path.split('/').at(-1)) : -1;
+        const queue = arrayAt(state, '当前队列');
+        const expected = buildExistingCandidateRecommendationPatch(state, {
+            candidateUid,
+            replacedNpcUid: oldIndex >= 0 && Array.isArray(queue) ? queue[oldIndex] : '',
+        });
+        if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+    }
+    const customMove = patch.find((operation) => operation?.op === 'move'
+        && /^\/推荐\/临时候选池\/npc_custom_\d+$/u.test(operation.from ?? '')
+        && /^\/角色池\/npc_custom_\d+$/u.test(operation.path));
+    if (customMove) {
+        const candidateUid = decodeJsonPointer(customMove.path).at(-1);
+        const scoreOperation = patch.find((operation) => operation?.op === 'replace'
+            && operation.path === encodeJsonPointer(['角色池', candidateUid, '与玩家关系', 'NPC专属匹配度']));
+        const expected = buildCustomCandidateMatchPatch(state, { candidateUid, matchScore: scoreOperation?.value });
         if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
     }
     const matchRoleAddition = patch.find((operation) => operation?.op === 'add' && /^\/角色池\/npc_match_\d+$/u.test(operation.path));

@@ -1,10 +1,11 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
+import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply, generatePrivateChatSummary } from './chat/private-chat-service.js';
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
 import { generateCandidateMatchDraft as generateCandidateMatchDraftService, generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
 import { materializeCandidateMatchDraft } from './recommendation/match-candidate-materializer.js';
+import { selectCustomCandidateEncounter } from './recommendation/custom-candidate-encounter.js';
 import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate, generateServiceProfileCandidate, isServiceProfileCompatible } from './characters/character-authoring-service.js';
 import { generateGroupChatReply, generateGroupChatUpdate as generateGroupChatUpdateService } from './groups/group-chat-service.js';
 import { generateForumExistingPostsUpdate as generateForumExistingPostsUpdateService, generateForumHomeRefresh as generateForumHomeRefreshService, generateForumPostConversationUpdate as generateForumPostConversationUpdateService, generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
@@ -218,6 +219,21 @@ export function createActionBridge({
      * read the latest state again and commit one exact atomic Patch. A model error
      * therefore cannot cool/remove the current candidate or leave a half object.
      */
+    async function tryCustomRecommendation(currentMvu, state, replacedNpcUid = '') {
+        const firstSelection = selectCustomCandidateEncounter(state, { settingsStore });
+        if (!firstSelection) return null;
+        const latest = readLatestState({ mvu: currentMvu });
+        if (!latest.ok) return latest;
+        const selected = selectCustomCandidateEncounter(latest.state, { settingsStore });
+        if (!selected) return null;
+        const built = buildExistingCandidateRecommendationPatch(latest.state, {
+            candidateUid: selected.uid,
+            replacedNpcUid,
+        });
+        if (!built.ok) return rejectedFromBuild(built);
+        const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        return applied.ok ? { ...applied, candidateSource: 'custom', npcUid: selected.uid, matchScore: selected.score } : applied;
+    }
     async function runRecommendationRefresh(replacedNpcUid, { signal } = {}) {
         const key = actionKey('refresh', replacedNpcUid);
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
@@ -226,6 +242,8 @@ export function createActionBridge({
             const currentMvu = resolveMvu(mvu);
             const firstRead = readLatestState({ mvu: currentMvu });
             if (!firstRead.ok) return firstRead;
+            const custom = await tryCustomRecommendation(currentMvu, firstRead.state, replacedNpcUid);
+            if (custom) return custom;
             const generated = await generateRecommendationCandidate({
                 state: firstRead.state, settingsStore, llmClient, signal,
             });
@@ -264,6 +282,8 @@ export function createActionBridge({
             const currentMvu = resolveMvu(mvu);
             const firstRead = readLatestState({ mvu: currentMvu });
             if (!firstRead.ok) return firstRead;
+            const custom = await tryCustomRecommendation(currentMvu, firstRead.state);
+            if (custom) return custom;
             const generated = await generateRecommendationCandidate({
                 state: firstRead.state, settingsStore, llmClient, signal,
             });
@@ -488,6 +508,45 @@ export function createActionBridge({
      * voice-derived weights, then records the locally scored accepted/declined
      * outcome. Only an accepted outcome atomically creates a chat session.
      */
+    async function tryCustomCandidateMatch(currentMvu, state, {
+        keywordOnly = false,
+        effectiveKeywordWeights,
+    } = {}) {
+        const firstSelection = selectCustomCandidateEncounter(state, {
+            settingsStore,
+            effectiveKeywordWeights,
+            keywordOnly,
+            allowQueued: true,
+        });
+        if (!firstSelection) return null;
+        const latest = readLatestState({ mvu: currentMvu });
+        if (!latest.ok) return latest;
+        const selected = selectCustomCandidateEncounter(latest.state, {
+            settingsStore,
+            effectiveKeywordWeights,
+            keywordOnly,
+            allowQueued: true,
+        });
+        if (!selected) return null;
+        const built = buildCustomCandidateMatchPatch(latest.state, {
+            candidateUid: selected.uid,
+            matchScore: selected.score,
+        });
+        if (!built.ok) return rejectedFromBuild(built);
+        const sessionOperation = built.value.find((operation) => operation?.op === 'add'
+            && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}$/u.test(operation.path));
+        const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        if (!applied.ok) return applied;
+        return {
+            ...applied,
+            npcUid: selected.uid,
+            sessionUid: sessionOperation?.path.split('/')[2] ?? '',
+            matchOutcome: 'accepted',
+            explanation: '关键词权重相近，遇见了你创建的角色。',
+            matchScore: selected.score,
+            candidateSource: 'custom',
+        };
+    }
     async function runCandidateMatch(mode, { voiceText, signal } = {}) {
         if (!['soul', 'voice'].includes(mode)) return { ok: false, status: 'rejected', code: 'candidate_match_mode_invalid' };
         const key = actionKey('candidate_match_' + mode, '');
@@ -497,8 +556,19 @@ export function createActionBridge({
             const currentMvu = resolveMvu(mvu);
             const firstRead = readLatestState({ mvu: currentMvu });
             if (!firstRead.ok) return firstRead;
+            if (mode === 'soul') {
+                const custom = await tryCustomCandidateMatch(currentMvu, firstRead.state);
+                if (custom) return custom;
+            }
             const generated = await generateCandidateMatchDraftService({ mode, state: firstRead.state, settingsStore, llmClient, voiceText, signal });
             if (!generated.ok) return { ok: false, status: 'rejected', code: generated.code, message: generated.message };
+            if (mode === 'voice') {
+                const custom = await tryCustomCandidateMatch(currentMvu, firstRead.state, {
+                    keywordOnly: true,
+                    effectiveKeywordWeights: generated.evaluation?.effectiveKeywordWeights,
+                });
+                if (custom) return custom;
+            }
             const contentMode = firstRead.state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
             let materialized;
             try {
