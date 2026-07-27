@@ -995,10 +995,15 @@ test('conversation image bridge blocks disabled requests and never exposes unexp
     const { mvu, calls } = createMvu({ initialState: state() });
     let enabled = false;
     let imageCalls = 0;
+    const diagnostics = [];
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
         settingsStore: { getImageGenerationSettings() { return { enabled }; } },
         imageGenerationClient: { async generate() { imageCalls += 1; throw new Error('api-key-secret'); } },
+        diagnosticLogger: {
+            info: (...args) => diagnostics.push(['info', ...args]),
+            error: (...args) => diagnostics.push(['error', ...args]),
+        },
     });
     const request = { kind: 'group', conversationId: 'group_city', messageId: 'message_city_1', directive: { kind: 'scene_snapshot', scene: 'city park at dusk' } };
     const disabled = await bridge.generateConversationImage(request);
@@ -1011,6 +1016,11 @@ test('conversation image bridge blocks disabled requests and never exposes unexp
     assert.doesNotMatch(JSON.stringify(failed), /api-key-secret|secret/iu);
     assert.equal(imageCalls, 1);
     assert.deepEqual(calls, []);
+    assert.ok(diagnostics.some(([, label, detail]) => label === '[约了吗][生图] 对话生图前置拒绝'
+        && detail.phase === 'settings_gate' && detail.code === 'image_generation_disabled'));
+    assert.ok(diagnostics.some(([, label, detail]) => label === '[约了吗][生图] 对话生图失败'
+        && detail.code === 'IMAGE_UNKNOWN_ERROR'));
+    assert.doesNotMatch(JSON.stringify(diagnostics), /group_city|message_city_1|city park at dusk|api-key-secret/iu);
 });
 
 

@@ -70,6 +70,7 @@ test('client logs safe HTTP failure code, phase, and status without response bod
         provider: 'openai_compatible',
         phase: 'http_response',
         code: 'IMAGE_HTTP_ERROR',
+        message: '生图服务拒绝了本次请求，请检查接口设置或稍后重试。',
         retryable: false,
         status: 401,
         elapsedMs: failure?.[2]?.elapsedMs,
@@ -132,6 +133,7 @@ test('client rejects declared oversized responses before buffering them', async 
 test('ComfyUI submits an API workflow, polls history, and reads the generated image without an API key', async () => {
     resetPersistentKeyStorage();
     const requests = [];
+    const diagnostics = [];
     const comfySettings = {
         ...settings,
         apiMode: 'comfyui',
@@ -155,6 +157,10 @@ test('ComfyUI submits an API workflow, polls history, and reads the generated im
         }),
     };
     const client = createImageGenerationClient({
+        diagnosticLogger: {
+            info: (...args) => diagnostics.push(['info', ...args]),
+            error: (...args) => diagnostics.push(['error', ...args]),
+        },
         fetchImpl: async (url, init) => {
             requests.push({ url, init });
             if (url.endsWith('/prompt')) return new Response(JSON.stringify({ prompt_id: 'task-1' }), { status: 200 });
@@ -176,12 +182,28 @@ test('ComfyUI submits an API workflow, polls history, and reads the generated im
     assert.equal(submitted.prompt['5'].inputs.clip_name, 'clip-l.safetensors');
     assert.match(requests[2].url, /\/view\?filename=done\.png&subfolder=ylm&type=output$/u);
     assert.equal(result.mimeType, 'image/png');
+    assert.deepEqual(diagnostics.map(([, label]) => label), [
+        '[约了吗][生图] 请求开始',
+        '[约了吗][生图] ComfyUI 工作流准备完成',
+        '[约了吗][生图] ComfyUI 工作流提交响应',
+        '[约了吗][生图] ComfyUI 任务已接受',
+        '[约了吗][生图] ComfyUI 任务状态响应',
+        '[约了吗][生图] ComfyUI 图片读取响应',
+        '[约了吗][生图] 请求完成',
+    ]);
+    assert.equal(diagnostics[1][2].customWorkflow, true);
+    assert.equal(diagnostics[1][2].nodeCount, 5);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /adult portrait|lowres|task-1|done\.png/u);
 });
 
 test('ComfyUI rejects UI-format workflows and unsafe workflow keys before network access', async () => {
     resetPersistentKeyStorage();
     let calls = 0;
-    const client = createImageGenerationClient({ fetchImpl: async () => { calls += 1; throw new Error('must not run'); } });
+    const diagnostics = [];
+    const client = createImageGenerationClient({
+        diagnosticLogger: { error: (...args) => diagnostics.push(args) },
+        fetchImpl: async () => { calls += 1; throw new Error('must not run'); },
+    });
     await assert.rejects(
         () => client.generate({ settings: { ...settings, apiMode: 'comfyui', baseUrl: 'http://127.0.0.1:8188', comfyWorkflow: '{"nodes":[]}' }, positivePrompt: 'scene', negativePrompt: '' }),
         (error) => error?.code === 'INVALID_IMAGE_REQUEST' && /API Format/u.test(error.message),
@@ -191,6 +213,9 @@ test('ComfyUI rejects UI-format workflows and unsafe workflow keys before networ
         (error) => error?.code === 'INVALID_IMAGE_REQUEST',
     );
     assert.equal(calls, 0);
+    assert.equal(diagnostics[0]?.[1]?.phase, 'workflow_prepare');
+    assert.equal(diagnostics[0]?.[1]?.code, 'INVALID_IMAGE_REQUEST');
+    assert.match(diagnostics[0]?.[1]?.message, /API Format/u);
 });
 
 test('ComfyUI resource refresh reads bounded object_info choices through the injected transport', async () => {

@@ -170,6 +170,7 @@ export async function onActivate() {
         llmClient,
         imageGenerationClient,
         imageMatchCoordinator,
+        diagnosticLogger: globalThis.console,
     });
     appInstance = mountPhoneApp({
         documentRef,

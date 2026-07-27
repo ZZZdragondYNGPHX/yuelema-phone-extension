@@ -555,6 +555,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (result?.code === 'image_generation_disabled') return '请先在生图设置中启用接口。';
         if (result?.code === 'image_character_required' || result?.code === 'image_character_unavailable') return '这张人物图片暂时没有可用的成年角色绘图资料。';
         if (result?.code === 'ui_action_pending') return '当前会话已有图片正在生成，请稍候。';
+        if (typeof result?.message === 'string' && result.message.trim()) return result.message.trim().slice(0, 200);
         return '图片未生成，请稍后重试或检查生图设置。';
     }
     async function generateConversationImage({ kind, conversationId, messageId, characterUid = '', directive, automatic = false }) {

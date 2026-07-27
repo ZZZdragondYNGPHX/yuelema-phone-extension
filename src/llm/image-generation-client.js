@@ -33,6 +33,7 @@ function imageErrorDetails(error) {
     if (error instanceof YueLeMaImageGenerationError || error instanceof SessionKeyUnavailableError) {
         return {
             code: error.code ?? 'SESSION_KEY_LOCKED',
+            message: error.message,
             retryable: Boolean(error.retryable),
             status: Number.isInteger(error.status) ? error.status : undefined,
         };
@@ -318,25 +319,64 @@ function comfyOutputFromHistory(payload, promptId) {
     }
     return null;
 }
-async function generateWithComfyUI(fetchImpl, request, signal) {
+async function generateWithComfyUI(fetchImpl, request, signal, {
+    diagnosticLogger,
+    requestId,
+    startedAt,
+    setPhase,
+} = {}) {
+    setPhase?.('workflow_prepare');
     const workflow = buildComfyWorkflow(request.settings, request.positivePrompt, request.negativePrompt);
+    const body = JSON.stringify({ prompt: workflow, client_id: `yuelema-${Date.now()}-${Math.random().toString(16).slice(2)}` });
+    emitImageDiagnostic(diagnosticLogger, 'info', 'ComfyUI 工作流准备完成', {
+        requestId,
+        customWorkflow: Boolean(request.settings.comfyWorkflow),
+        nodeCount: Object.keys(workflow).length,
+        requestBytes: new TextEncoder().encode(body).length,
+        elapsedMs: Date.now() - startedAt,
+    });
+    setPhase?.('prompt_submit');
     const submitted = await fetchImpl(`${request.settings.baseUrl}/prompt`, {
         method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: workflow, client_id: `yuelema-${Date.now()}-${Math.random().toString(16).slice(2)}` }),
+        body,
         signal,
     });
+    emitImageDiagnostic(diagnosticLogger, submitted?.ok ? 'info' : 'error', 'ComfyUI 工作流提交响应', {
+        requestId,
+        status: Number.isInteger(submitted?.status) ? submitted.status : undefined,
+        ok: Boolean(submitted?.ok),
+        contentType: String(submitted?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined,
+        contentLength: String(submitted?.headers?.get?.('content-length') ?? '') || undefined,
+        elapsedMs: Date.now() - startedAt,
+    });
     if (!submitted?.ok) fail('IMAGE_HTTP_ERROR', 'ComfyUI 拒绝了本次工作流，请检查设置或稍后重试。', { retryable: submitted?.status >= 500, status: Number.isInteger(submitted?.status) ? submitted.status : undefined });
+    setPhase?.('prompt_response_parse');
     const submission = await readJsonResponse(submitted);
     const promptId = typeof submission?.prompt_id === 'string' ? submission.prompt_id.trim() : '';
     if (!promptId) fail('INVALID_IMAGE_RESPONSE', 'ComfyUI 未返回任务标识。');
+    emitImageDiagnostic(diagnosticLogger, 'info', 'ComfyUI 任务已接受', {
+        requestId,
+        elapsedMs: Date.now() - startedAt,
+    });
 
     let image;
+    let pollAttempt = 0;
     while (!signal.aborted) {
+        pollAttempt += 1;
+        setPhase?.('history_request');
         const history = await fetchImpl(`${request.settings.baseUrl}/history/${encodeURIComponent(promptId)}`, {
             method: 'GET', headers: { Accept: 'application/json' }, signal,
         });
+        emitImageDiagnostic(diagnosticLogger, history?.ok ? 'info' : 'error', 'ComfyUI 任务状态响应', {
+            requestId,
+            attempt: pollAttempt,
+            status: Number.isInteger(history?.status) ? history.status : undefined,
+            ok: Boolean(history?.ok),
+            elapsedMs: Date.now() - startedAt,
+        });
         if (!history?.ok) fail('IMAGE_HTTP_ERROR', '无法读取 ComfyUI 任务状态。', { retryable: history?.status >= 500, status: Number.isInteger(history?.status) ? history.status : undefined });
+        setPhase?.('history_response_parse');
         image = comfyOutputFromHistory(await readJsonResponse(history), promptId);
         if (image) break;
         await new Promise((resolve, reject) => {
@@ -346,10 +386,20 @@ async function generateWithComfyUI(fetchImpl, request, signal) {
     }
     if (!image) fail('IMAGE_REQUEST_ABORTED', '生图请求已取消。', { retryable: true });
     const query = new URLSearchParams(image);
+    setPhase?.('image_fetch');
     const output = await fetchImpl(`${request.settings.baseUrl}/view?${query.toString()}`, {
         method: 'GET', headers: { Accept: 'image/png, image/jpeg, image/webp' }, signal,
     });
+    emitImageDiagnostic(diagnosticLogger, output?.ok ? 'info' : 'error', 'ComfyUI 图片读取响应', {
+        requestId,
+        status: Number.isInteger(output?.status) ? output.status : undefined,
+        ok: Boolean(output?.ok),
+        contentType: String(output?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined,
+        contentLength: String(output?.headers?.get?.('content-length') ?? '') || undefined,
+        elapsedMs: Date.now() - startedAt,
+    });
     if (!output?.ok) fail('IMAGE_HTTP_ERROR', '无法读取 ComfyUI 生成图片。', { retryable: output?.status >= 500, status: Number.isInteger(output?.status) ? output.status : undefined });
+    setPhase?.('image_response_parse');
     return parseResponse(output);
 }
 
@@ -474,9 +524,13 @@ export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null
                     timeoutMs: request.timeoutMs,
                 });
                 if (request.settings.apiMode === 'comfyui') {
-                    phase = 'comfyui_generation';
                     try {
-                        const generated = await generateWithComfyUI(fetchImpl, request, controller.signal);
+                        const generated = await generateWithComfyUI(fetchImpl, request, controller.signal, {
+                            diagnosticLogger,
+                            requestId,
+                            startedAt,
+                            setPhase: (nextPhase) => { phase = nextPhase; },
+                        });
                         emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', {
                             requestId, provider: request.settings.apiMode, mimeType: generated.mimeType,
                             elapsedMs: Date.now() - startedAt,
