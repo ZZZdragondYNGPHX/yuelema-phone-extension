@@ -8,7 +8,7 @@
  */
 import { normalizeGeneratedCandidate } from './candidate.js';
 import { getLocalCandidateMatchEvaluation, normalizeCandidateMatchDraft } from './soul-text-match-service.js';
-import { scoreLocalCandidateMatch } from './match-scoring.js';
+import { MATCH_ACCEPTANCE_THRESHOLD, scoreLocalCandidateMatch } from './match-scoring.js';
 import {
     RECOMMENDATION_DIAGNOSTIC_SCOPES,
     recordRecommendationDiagnostics,
@@ -95,7 +95,7 @@ function materializeCandidateMatchDraftUnchecked(draft, {
         // Matching should remain selective without turning neutral public-tag
         // differences into near-certain rejection. Hard adult and reciprocal
         // gender/orientation gates are enforced before this local score gate.
-        取消匹配阈值: 60,
+        取消匹配阈值: MATCH_ACCEPTANCE_THRESHOLD,
         ...inferRhythmThresholdsFromTraits(publicProfile),
         与玩家关系: {
             状态: '陌生',

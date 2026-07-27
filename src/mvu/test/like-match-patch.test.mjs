@@ -77,8 +77,8 @@ test('a saved favourite is no longer a homepage like target but can still be dis
     assert.equal(validateControlledPatchAgainstState(dislikedState, disliked.value).ok, true);
 });
 
-test('a favourite can become a private chat without becoming a mutual-match list item', () => {
-    const favoriteState = state();
+test('a compatible favourite clears a high role threshold through the shared loose acceptance line', () => {
+    const favoriteState = state({ threshold: 95 });
     favoriteState.角色池.npc_case = favoriteState.推荐.临时候选池.npc_case;
     delete favoriteState.推荐.临时候选池.npc_case;
     favoriteState.推荐.当前队列 = [];
@@ -97,8 +97,9 @@ test('a favourite can become a private chat without becoming a mutual-match list
     assert.equal(validateControlledPatchAgainstState(favoriteState, result.value).ok, true);
 });
 
-test('a favourite invitation below the role refusal threshold removes the favourite and records a rejection without a session', () => {
+test('a favourite invitation below the shared acceptance line still records a rejection without a session', () => {
     const favoriteState = state({ threshold: 95 });
+    favoriteState.玩家.推荐偏好.标签权重.SFW = { 电影: -5, 夜猫子: -5, 直接: -5, 慢热: -5 };
     favoriteState.角色池.npc_case = favoriteState.推荐.临时候选池.npc_case;
     delete favoriteState.推荐.临时候选池.npc_case;
     favoriteState.推荐.当前队列 = [];

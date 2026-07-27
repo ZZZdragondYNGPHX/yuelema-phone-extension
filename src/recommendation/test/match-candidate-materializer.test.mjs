@@ -43,7 +43,7 @@ test('materialized match candidate ignores model score, derives local score, and
         { 友情值: 0, 心动值: 0, 欲望值: 0 },
     );
     assert.equal(result.matchScore, 94);
-    assert.equal(result.cancellationThreshold, 60);
+    assert.equal(result.cancellationThreshold, 50);
     assert.equal(result.meetsCancellationThreshold, true);
     assert.equal(result.shouldEstablishSession, true);
     assert.equal(result.evaluation.heartCardScore, 90);
@@ -59,6 +59,22 @@ test('materializer never falls back to an unattested legacy model matchScore', (
     assert.equal(result.candidate.与玩家关系.NPC专属匹配度, 41);
     assert.equal(result.meetsCancellationThreshold, false);
     assert.equal(result.shouldEstablishSession, false);
+});
+
+test('a 57 percent compatible candidate now clears the shared loose acceptance line', () => {
+    const result = materializeCandidateMatchDraft(draft(), {
+        playerPublicProfile: {
+            城市: '上海', 寻找意图: '认真约会',
+            兴趣标签: [], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
+        },
+        effectiveKeywordWeights: [
+            { keyword: '独立电影', weight: -1 },
+            { keyword: '夜行散步', weight: -1 },
+        ],
+    });
+    assert.equal(result.matchScore, 57);
+    assert.equal(result.cancellationThreshold, 50);
+    assert.equal(result.shouldEstablishSession, true);
 });
 
 test('materialized match candidate rejects occupational names and concrete addresses before any MVU write', () => {
@@ -123,7 +139,7 @@ test('物化器按生成人设标签三档映射压力阈值，匹配分闸门�
     for (const result of [tolerantResult, guardedResult, mixedResult, neutralResult]) {
         // 拒绝/取消匹配阈值是本地匹配分闸门，人设映射不得改动它们的语义。
         assert.equal(result.candidate.拒绝阈值, 50);
-        assert.equal(result.candidate.取消匹配阈值, 60);
+        assert.equal(result.candidate.取消匹配阈值, 50);
         // 三档都必须满足生成约束：拉黑 ≥60 且高于已读不回。
         assert.ok(result.candidate.拉黑阈值 >= 60);
         assert.ok(result.candidate.拉黑阈值 > result.candidate.已读不回阈值);

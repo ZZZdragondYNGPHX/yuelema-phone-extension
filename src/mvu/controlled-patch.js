@@ -15,7 +15,7 @@ import {
     normalizeGeneratedConversationSummary,
     summaryRecordSource,
 } from '../chat/conversation-summary.js';
-import { scoreFavoritePrivateChatInvitation } from '../recommendation/match-scoring.js';
+import { MATCH_ACCEPTANCE_THRESHOLD, scoreFavoritePrivateChatInvitation } from '../recommendation/match-scoring.js';
 import { normalizeSoulMatchDraft } from '../recommendation/soul-text-match-service.js';
 
 export const LATEST_MESSAGE_SCOPE = Object.freeze({ type: 'message', message_id: 'latest' });
@@ -1403,7 +1403,10 @@ export function buildFavoritePrivateChatPatch(state, { npcUid } = {}) {
     if (!invitation || !Number.isInteger(invitation.score) || invitation.score < 0 || invitation.score > 100) {
         return fail('favorite_private_chat_score_invalid');
     }
-    const accepted = invitation.eligible && invitation.score >= refusalThreshold;
+    // 收藏主动私聊与灵魂/描述匹配共用偏宽松的接受线；角色更低的
+    // 自定义阈值仍可生效，但高挑阈值不再让普通兼容邀请几乎必拒。
+    const acceptanceThreshold = Math.min(refusalThreshold, MATCH_ACCEPTANCE_THRESHOLD);
+    const accepted = invitation.eligible && invitation.score >= acceptanceThreshold;
     const operations = [
         { op: 'remove', path: encodeJsonPointer(['推荐', '收藏角色UID', String(favoriteIndex)]) },
         { op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', 'NPC专属匹配度']), value: invitation.score },

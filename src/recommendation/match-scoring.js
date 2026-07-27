@@ -7,6 +7,7 @@
  * two-layer score yields an immediate mutual match.
  */
 const TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
+export const MATCH_ACCEPTANCE_THRESHOLD = 50;
 
 function record(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {};
