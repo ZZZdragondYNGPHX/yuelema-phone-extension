@@ -214,6 +214,8 @@ test('NSFW core contract permits consensual adult chat without treating explicit
     assert.match(request.messages[0].content, /不得仅因内容成人化降低好感或信任、提高戒备/u);
     assert.match(request.messages[0].content, /明确的拒绝或撤回同意、已知边界冲突、胁迫、非自愿、隐私侵犯/u);
     assert.match(request.messages[0].content, /同意或边界不清时应先用线上文字澄清/u);
+    assert.match(request.messages[0].content, /NSFW 允许 none\/friendly\/romantic_flirt\/romantic_desire\/sexual_desire/u);
+    assert.match(request.messages[0].content, /普通问候或日常友好交流应使用 none 或 friendly/u);
 });
 
 test('private chat summary uses its dedicated preset and returns only validated in-memory text and anchors', async () => {
