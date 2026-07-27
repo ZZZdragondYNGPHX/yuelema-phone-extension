@@ -78,6 +78,15 @@ function expectCode(action, code) {
     });
 }
 
+function withTrailingFieldColons(value, depth = 0) {
+    if (Array.isArray(value)) return value.map((item) => withTrailingFieldColons(item, depth + 1));
+    if (value === null || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.entries(value).map(([key, item], index) => [
+        `${key}${(depth + index) % 2 === 0 ? ':' : '：'}`,
+        withTrailingFieldColons(item, depth + 1),
+    ]));
+}
+
 test('imports the yuelema.character/v1 envelope and returns an isolated adult clone', () => {
     const source = template({ kind: 'placeholder' });
     const imported = importCharacterTemplate(JSON.stringify(source));
@@ -88,6 +97,23 @@ test('imports the yuelema.character/v1 envelope and returns an isolated adult cl
     assert.notStrictEqual(imported.character.公开资料.兴趣标签, source.character.公开资料.兴趣标签);
     source.character.公开资料.兴趣标签.push('篡改');
     assert.deepEqual(imported.character.公开资料.兴趣标签, ['电影', '夜跑']);
+});
+
+test('accepts half-width or full-width trailing colons on field names at every template level', () => {
+    const source = template({ kind: 'placeholder' });
+    const imported = importCharacterTemplate(JSON.stringify(withTrailingFieldColons(source)));
+    assert.deepEqual(imported, source);
+});
+
+test('rejects canonical field collisions and punctuation that is not a supported trailing colon', () => {
+    const collision = template();
+    collision['format：'] = collision.format;
+    expectCode(() => importCharacterTemplate(collision), 'template_ambiguous_field');
+
+    const unsupported = template();
+    unsupported['character，'] = unsupported.character;
+    delete unsupported.character;
+    expectCode(() => importCharacterTemplate(unsupported), 'template_unknown_field');
 });
 
 test('supports only placeholder and signature-verified embedded data URL avatars; kind url is rejected', () => {
