@@ -20,6 +20,35 @@ test('client sends injected request and accepts JSON base64 image', async () => 
     assert.match(result.src, /^data:image\/png;base64,/u);
 });
 
+test('NovelAI V4 models receive the V4 caption contract while V3 keeps the legacy shape', async () => {
+    const bodies = [];
+    const client = createImageGenerationClient({
+        fetchImpl: async (_url, init) => {
+            bodies.push(JSON.parse(init.body));
+            return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } });
+        },
+    });
+    const naiSettings = {
+        ...settings,
+        apiMode: 'novelai',
+        endpointPath: '/ai/generate-image',
+        model: 'nai-diffusion-4-5-full',
+        sampler: 'k_euler',
+        noiseSchedule: 'native',
+    };
+    await client.generate({ settings: naiSettings, positivePrompt: 'adult portrait', negativePrompt: 'lowres' });
+    await client.generate({ settings: { ...naiSettings, model: 'nai-diffusion-3' }, positivePrompt: 'adult portrait', negativePrompt: 'lowres' });
+
+    assert.equal(bodies[0].parameters.params_version, 3);
+    assert.equal(bodies[0].parameters.v4_prompt.caption.base_caption, 'adult portrait');
+    assert.deepEqual(bodies[0].parameters.v4_prompt.caption.char_captions, []);
+    assert.equal(bodies[0].parameters.v4_negative_prompt.caption.base_caption, 'lowres');
+    assert.equal(bodies[0].parameters.v4_prompt.use_order, true);
+    assert.equal(bodies[0].parameters.legacy, false);
+    assert.equal(bodies[1].parameters.v4_prompt, undefined);
+    assert.equal(bodies[1].parameters.params_version, undefined);
+});
+
 test('client emits safe stage diagnostics without logging credentials or prompts', async () => {
     unlockSessionKey('img-log-test', 'secret-image-key-never-log');
     const calls = [];
@@ -50,7 +79,7 @@ test('client emits safe stage diagnostics without logging credentials or prompts
     assert.match(serialized, /"mimeType":"image\/png"/u);
 });
 
-test('client logs a bounded safe provider error summary without response bodies', async () => {
+test('client logs a bounded redacted provider error excerpt without leaking credentials or prompts', async () => {
     unlockSessionKey('img-log-failure', 'another-secret-key');
     const calls = [];
     const client = createImageGenerationClient({
@@ -58,7 +87,8 @@ test('client logs a bounded safe provider error summary without response bodies'
         fetchImpl: async () => new Response(JSON.stringify({
             statusCode: 400,
             message: 'parameters.v4_prompt is required; another private prompt',
-            secretPayload: 'upstream-private-error-body',
+            authorization: 'Bearer another-secret-key',
+            developerHint: 'send params_version=3 with v4_prompt',
         }), {
             status: 400,
             headers: { 'content-type': 'application/json' },
@@ -80,6 +110,8 @@ test('client logs a bounded safe provider error summary without response bodies'
     assert.equal(summary?.[2]?.providerMessageChars, 56);
     assert.deepEqual(summary?.[2]?.responseSchemaFields, ['statusCode', 'message']);
     assert.deepEqual(summary?.[2]?.providerValidationFields, ['parameters', 'v4_prompt']);
+    assert.match(summary?.[2]?.providerBodyExcerpt, /params_version=3 with v4_prompt/u);
+    assert.match(summary?.[2]?.providerBodyExcerpt, /\[REDACTED\]/u);
     const failure = calls.find(([, label]) => label === '[约了吗][生图] 请求失败');
     assert.deepEqual(failure?.[2], {
         requestId: failure?.[2]?.requestId,
@@ -92,7 +124,7 @@ test('client logs a bounded safe provider error summary without response bodies'
         elapsedMs: failure?.[2]?.elapsedMs,
     });
     const serialized = JSON.stringify(calls);
-    assert.doesNotMatch(serialized, /another-secret-key|another private prompt|upstream-private-error-body/u);
+    assert.doesNotMatch(serialized, /another-secret-key|another private prompt/u);
 });
 
 test('client logs safe browser transport failure type without the exception message', async () => {

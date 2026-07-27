@@ -53,16 +53,34 @@ function providerErrorCategory(status, message = '') {
     if (status >= 500) return 'provider_unavailable';
     return 'http_error';
 }
-async function safeHttpErrorDiagnostic(response) {
+function redactProviderBodyExcerpt(value, sensitiveValues = []) {
+    let text = String(value ?? '');
+    const fragments = sensitiveValues
+        .flatMap((item) => [String(item ?? ''), ...String(item ?? '').split(/[,|\r\n]+/u)])
+        .map((item) => item.trim())
+        .filter((item) => item.length >= 8)
+        .flatMap((item) => [item, JSON.stringify(item).slice(1, -1)])
+        .sort((left, right) => right.length - left.length);
+    for (const fragment of new Set(fragments)) text = text.split(fragment).join('[REDACTED]');
+    return text
+        .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/giu, 'Bearer [REDACTED]')
+        .replace(/("(?:api[_-]?key|authorization|access[_-]?token|token|key)"\s*:\s*")[^"]+(")/giu, '$1[REDACTED]$2')
+        .replace(/[A-Za-z0-9+/]{80,}={0,2}/gu, '[REDACTED_LONG_DATA]')
+        .replace(/[\u0000-\u001f\u007f]+/gu, ' ')
+        .trim()
+        .slice(0, 1200);
+}
+async function safeHttpErrorDiagnostic(response, sensitiveValues = []) {
     const status = Number.isInteger(response?.status) ? response.status : undefined;
     const fallback = { providerCategory: providerErrorCategory(status), bodyInspection: 'unavailable' };
     try {
         const copy = typeof response?.clone === 'function' ? response.clone() : response;
         const bytes = await readResponseBytes(copy, MAX_HTTP_ERROR_DIAGNOSTIC_BYTES);
         const text = new TextDecoder().decode(bytes);
+        const providerBodyExcerpt = redactProviderBodyExcerpt(text, sensitiveValues) || undefined;
         let payload;
         try { payload = JSON.parse(text); } catch {
-            return { ...fallback, bodyInspection: 'non_json', bodyBytes: bytes.length };
+            return { ...fallback, bodyInspection: 'non_json', bodyBytes: bytes.length, providerBodyExcerpt };
         }
         const record = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
         const message = [record.message, record.detail, record.title, typeof record.error === 'string' ? record.error : ''].find((value) => typeof value === 'string') ?? '';
@@ -78,9 +96,11 @@ async function safeHttpErrorDiagnostic(response) {
             providerMessageChars: message.length || undefined,
             providerValidationFields: validationFields.length ? validationFields : undefined,
             providerErrorCount: Array.isArray(record.errors) ? record.errors.length : undefined,
+            providerBodyExcerpt,
         };
     } catch (error) { return { ...fallback, bodyInspection: error instanceof YueLeMaImageGenerationError ? 'too_large_or_invalid' : 'read_failed' }; }
 }
+function isNovelAIV4Model(model) { return /^nai-diffusion-4(?:-|$)/iu.test(String(model ?? '').trim()); }
 function cleanText(value, field, maxLength, { allowEmpty = false } = {}) {
     if (typeof value !== 'string') fail('INVALID_IMAGE_REQUEST', `${field}必须是文本。`);
     const text = value.trim();
@@ -211,16 +231,33 @@ async function extractFirstZipImage(bytes) {
 }
 function buildBody(settings, positivePrompt, negativePrompt) {
     if (settings.apiMode === 'novelai') {
+        const parameters = {
+            width: settings.width, height: settings.height, scale: settings.guidance,
+            cfg_rescale: settings.guidanceRescale, steps: settings.steps, sampler: settings.sampler,
+            noise_schedule: settings.noiseSchedule, seed: settings.seed, negative_prompt: negativePrompt,
+            qualityToggle: settings.qualityToggle, sm: settings.variety, sm_dyn: settings.variety,
+            n_samples: 1, ucPreset: 0,
+        };
+        if (isNovelAIV4Model(settings.model)) {
+            Object.assign(parameters, {
+                params_version: 3, prefer_brownian: true, dynamic_thresholding: false,
+                controlnet_strength: 1, legacy: false, add_original_image: false,
+                legacy_v3_extend: false, deliberate_euler_ancestral_bug: false,
+                v4_prompt: {
+                    caption: { base_caption: positivePrompt, char_captions: [] },
+                    use_coords: false, use_order: true, legacy_uc: false,
+                },
+                v4_negative_prompt: {
+                    caption: { base_caption: negativePrompt, char_captions: [] },
+                    use_coords: false, use_order: true, legacy_uc: false,
+                },
+            });
+        }
         return {
             input: positivePrompt,
             model: settings.model,
             action: 'generate',
-            parameters: {
-                width: settings.width, height: settings.height, scale: settings.guidance,
-                cfg_rescale: settings.guidanceRescale, steps: settings.steps, sampler: settings.sampler,
-                noise_schedule: settings.noiseSchedule, seed: settings.seed, negative_prompt: negativePrompt,
-                qualityToggle: settings.qualityToggle, sm: settings.variety, sm_dyn: settings.variety, n_samples: 1,
-            },
+            parameters,
         };
     }
     return {
@@ -628,7 +665,7 @@ export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null
                         requestId,
                         provider: request.settings.apiMode,
                         status: Number.isInteger(response?.status) ? response.status : undefined,
-                        ...await safeHttpErrorDiagnostic(response),
+                        ...await safeHttpErrorDiagnostic(response, [key, request.positivePrompt, request.negativePrompt]),
                         elapsedMs: Date.now() - startedAt,
                     });
                     fail('IMAGE_HTTP_ERROR', '生图服务拒绝了本次请求，请检查接口设置或稍后重试。', { retryable: response?.status >= 500, status: Number.isInteger(response?.status) ? response.status : undefined });
