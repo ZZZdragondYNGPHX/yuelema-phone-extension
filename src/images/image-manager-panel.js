@@ -91,6 +91,7 @@ export function createImageManagerPanel({
     onChange = noop,
     onConfigure = noop,
     dialogController = null,
+    openDialog = null,
     // 一次性链接导入能力（url → Blob）。未注入时不渲染任何链接入口；
     // 下载结果仍必须走注入压缩链变成 embedded data URL，URL 本身不落库。
     importRemoteImageFile = null,
@@ -168,7 +169,7 @@ export function createImageManagerPanel({
     contextMenu.appendChild(editMenuButton);
 
     const editorBackdrop = createElement(documentRef, 'div', { className: 'yl-image-keyword-backdrop', hidden: true });
-    const editor = createElement(documentRef, 'section', { className: 'yl-image-keyword-editor' });
+    const editor = createElement(documentRef, 'section', { className: 'yl-image-keyword-editor', hidden: true });
     editor.setAttribute('role', 'dialog');
     editor.setAttribute('aria-modal', 'true');
     editor.setAttribute('aria-label', '编辑图片匹配关键词');
@@ -379,6 +380,7 @@ export function createImageManagerPanel({
         // 有控制器时先把编辑器移出焦点栈（controller.close 自带礼貌回焦 opener），再清理瞬态，
         // 避免回焦时机落在已清空的子树之后；controller.close 不会回调 onRequestClose，故与本函数无递归。
         if (dialogController && !editorBackdrop.hidden) dialogController.close(editor);
+        editor.hidden = true;
         editorBackdrop.hidden = true;
         activeImageId = null;
         keywordRows.replaceChildren();
@@ -417,15 +419,16 @@ export function createImageManagerPanel({
         editorPreview.replaceChildren(makePreview(record, 'yl-image-keyword-preview-frame'));
         for (const entry of record.keywordWeights) addKeywordRow(entry.keyword, entry.weight);
         if (record.keywordWeights.length === 0) addKeywordRow('', 0);
+        editor.hidden = false;
         editorBackdrop.hidden = false;
         // 控制器 open 自带 aria-modal、Tab 焦点环与首个可聚焦元素聚焦（编辑器内即首行关键词输入）；
         // opener 为触发的图片卡片，关闭时由控制器礼貌回焦。无控制器时保持旧的 hidden 切换降级。
-        if (dialogController) {
-            dialogController.open(editor, {
-                opener: opener ?? cardForRecord(record.id),
-                onRequestClose: () => closeEditor(),
-            });
-        }
+        const dialogOptions = {
+            opener: opener ?? cardForRecord(record.id),
+            onRequestClose: () => closeEditor(),
+        };
+        if (typeof openDialog === 'function') openDialog(editor, dialogOptions);
+        else if (dialogController) dialogController.open(editor, dialogOptions);
     }
 
     function enqueueOperation(action) {

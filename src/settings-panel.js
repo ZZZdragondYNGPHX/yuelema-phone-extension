@@ -257,7 +257,7 @@ function readPromptBundle(rawJson) {
  * Builds the settings console. Connection configuration stays export-safe, while
  * API Keys live only in the separate browser-local key cache and are never shown.
  */
-export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender, onNavigate, view, contentMode, dialogController }) {
+export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender, onNavigate, view, contentMode, dialogController, openDialog = null }) {
     const panel = element('section', { className: 'yl-settings-panel' });
     const activeView = normalizeSettingsView(view);
     const activeContentMode = normalizeContentMode(contentMode);
@@ -969,7 +969,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
                 }
                 enabled.checked = true;
                 // 控制器 open 自带 hidden=false、aria-modal 与首个可聚焦元素聚焦；Escape/Tab 由 app-shell 全局委托。
-                if (dialogController) dialogController.open(notice, { opener: enabled, onRequestClose: closeNotice });
+                if (typeof openDialog === 'function') openDialog(notice, { opener: enabled, onRequestClose: closeNotice });
+                else if (dialogController) dialogController.open(notice, { opener: enabled, onRequestClose: closeNotice });
                 else notice.hidden = false;
             }, signal);
             return section;

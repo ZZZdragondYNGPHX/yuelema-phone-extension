@@ -124,6 +124,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     const abortController = new AbortController();
     // 弹窗焦点统一由控制器管理：打开聚焦、Tab 焦点环、Escape 关栈顶、关闭礼貌回 opener。
     const dialogController = createDialogController({ documentRef });
+    // 所有由壳层打开的二级 dialog 都登记在这里，保证 visualViewport 变化时
+    // （Termux 地址栏、软键盘、横竖屏）能统一重新定位到真实可见屏幕中心。
+    const managedDialogs = new Set();
     const root = documentRef.createElement('section');
     root.id = rootId;
     root.className = 'yl-phone-extension';
@@ -261,6 +264,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function closeManagedDialog(dialog) {
         dialogController.close(dialog);
+        managedDialogs.delete(dialog);
         settleFocusAfterDialogClose(dialog);
     }
     /** 结构性关闭图标：本地 SVG 白名单，不再依赖 Unicode “×” 字符渲染。 */
@@ -430,7 +434,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function openImageDirectiveDialog(directive) {
         imageDirectiveDialogText.value = formatDirectiveForDisplay(directive) || '结构化语句当前不可用。';
-        dialogController.open(imageDirectiveDialog, { onRequestClose: closeImageDirectiveDialog });
+        openManagedDialog(imageDirectiveDialog, { onRequestClose: closeImageDirectiveDialog });
     }
     function clearImageDirectiveLongPressTimers() {
         for (const timer of imageDirectiveLongPressTimers) clearTimeout(timer);
@@ -626,6 +630,52 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         panel.style.setProperty('--yl-phone-viewport-top', Math.round(viewport.top) + 'px');
         panel.style.setProperty('--yl-phone-viewport-width', Math.max(1, Math.round(viewport.width)) + 'px');
         panel.style.setProperty('--yl-phone-viewport-height', Math.max(1, Math.round(viewport.height)) + 'px');
+    }
+    /**
+     * 把二级弹窗实测居中到实际可视视口，并补偿 SillyTavern/Termux 可能给 html
+     * 加入的 transform（它会让 fixed 元素错误地相对宿主盒而非手机屏幕定位）。
+     * 宽高同时受 visualViewport 限制，软键盘、横竖屏变化时仍可完整滚动和关闭。
+     */
+    function centerDialogInViewport(dialog) {
+        if (!dialog || dialog.hidden || !dialog.style?.setProperty) return;
+        const viewport = phoneVisualViewport();
+        const availableWidth = Math.max(1, Math.floor(viewport.width - 28));
+        const availableHeight = Math.max(1, Math.floor(viewport.height - 28));
+        dialog.style.setProperty('max-width', availableWidth + 'px');
+        dialog.style.setProperty('max-height', availableHeight + 'px');
+
+        const targetCenterX = viewport.left + (viewport.width / 2);
+        const targetCenterY = viewport.top + (viewport.height / 2);
+        dialog.style.setProperty('left', Math.round(targetCenterX) + 'px');
+        dialog.style.setProperty('top', Math.round(targetCenterY) + 'px');
+
+        const rect = dialog.getBoundingClientRect?.();
+        const width = Number(rect?.width);
+        const height = Number(rect?.height);
+        const measuredLeft = Number(rect?.left);
+        const measuredTop = Number(rect?.top);
+        if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0
+            || !Number.isFinite(measuredLeft) || !Number.isFinite(measuredTop)) return;
+
+        const targetLeft = targetCenterX - (width / 2);
+        const targetTop = targetCenterY - (height / 2);
+        const originX = measuredLeft - targetLeft;
+        const originY = measuredTop - targetTop;
+        if (originX || originY) {
+            dialog.style.setProperty('left', Math.round(targetCenterX - originX) + 'px');
+            dialog.style.setProperty('top', Math.round(targetCenterY - originY) + 'px');
+        }
+    }
+    function openManagedDialog(dialog, options = {}) {
+        dialogController.open(dialog, options);
+        managedDialogs.add(dialog);
+        centerDialogInViewport(dialog);
+    }
+    function centerOpenDialogs() {
+        for (const dialog of managedDialogs) {
+            if (dialog?.hidden) { managedDialogs.delete(dialog); continue; }
+            centerDialogInViewport(dialog);
+        }
     }
     function clampPanelPosition(left, top, width, height) {
         // 移动端地址栏/软键盘会让可视视口偏离布局视口；钳制一律以 visualViewport 为准
@@ -1281,7 +1331,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         operationClose.hidden = false;
         operationClose.textContent = state === 'loading' ? '关闭提示' : '关闭';
         // 仅在“关闭 → 打开”过渡时接管焦点；状态更新（loading → success 等）不反复抢焦点。
-        if (wasHidden) dialogController.open(operationDialog, { initialFocus: operationClose, onRequestClose: hideOperationDialog });
+        if (wasHidden) openManagedDialog(operationDialog, { initialFocus: operationClose, onRequestClose: hideOperationDialog });
         if (Number.isFinite(autoCloseMs) && autoCloseMs > 0) {
             const delay = Math.max(1000, Math.min(10000, Math.round(autoCloseMs)));
             operationAutoCloseTimer = globalThis.setTimeout(() => {
@@ -1460,7 +1510,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             }, abortController.signal);
             row.appendChild(save); bindingDialogContent.appendChild(row);
         }
-        dialogController.open(bindingDialog, { onRequestClose: closeFeatureBindingDialog });
+        openManagedDialog(bindingDialog, { onRequestClose: closeFeatureBindingDialog });
     }
     function buildFeatureOptionsButton(pageId) {
         // group_forum 已无壳层「设置」钮：社区广场的设置入口由 community.js topbar「⋯」自建。
@@ -1669,7 +1719,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             setFeedback('本地头像存储尚未就绪。');
             return;
         }
-        dialogController.open(avatarDialog, { onRequestClose: closeAvatarDialog });
+        openManagedDialog(avatarDialog, { onRequestClose: closeAvatarDialog });
     }
     async function saveLocalAvatarFile(file) {
         if (!file || avatarUploadPending || !playerAvatarStore || typeof playerAvatarStore.setAvatar !== 'function') return;
@@ -1703,6 +1753,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 documentRef,
                 imageLibrary,
                 dialogController,
+                openDialog: openManagedDialog,
                 // 链接导入 = 一次性下载字节，随后仍走同一条本地压缩链；URL 不落库。
                 importRemoteImageFile: remoteImageImporter ? (url) => remoteImageImporter.importImageFile(url) : null,
                 compressImageFile: async (file) => (await compressLocalAvatar(file)).dataUrl,
@@ -1721,7 +1772,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const section = element('section', { className: 'yl-settings-detail' });
         section.appendChild(buildSettingsPanel({
             settingsStore, llmClient, signal: abortController.signal, view,
-            contentMode: currentView.mode, dialogController,
+            contentMode: currentView.mode, dialogController, openDialog: openManagedDialog,
             onFeedback: createOperationFeedbackHandler(), onRerender: renderPage, onNavigate: setActivePage,
         }));
         return section;
@@ -1827,7 +1878,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         UI_VERSION, abortController, actionBridge, appendImagePreview, applyCloseIcon, beginOperationDialog, buildConversationImageControls, buildEmptyPlaceholder,
         extensionUpdater, runExtensionUpdate,
         buildImageDirectiveCard, canAppendServiceExperienceDraft, candidateImageState, characterLibrary, chatDrafts, clearMatchedImageState, closeManagedDialog, content,
-        dialogController, disableServiceHub, documentRef, formatDirectiveForDisplay, forumCommentDrafts, forumSettingsContent, forumSettingsDialog, forumSettingsTitle,
+        dialogController, disableServiceHub, openManagedDialog, documentRef, formatDirectiveForDisplay, forumCommentDrafts, forumSettingsContent, forumSettingsDialog, forumSettingsTitle,
         groupAutoContent, groupAutoDialog, groupAutoTitle, groupForumStore, groupMemberPickerContent, groupMemberPickerDialog, groupMessageDrafts, imageAssetFailures,
         imageAssetsReady, imageMatchPending, imageProfileKey, localProfileCharacterUid, matchedImageFor, meetupDrafts, nav, openAvatarDialog,
         openFeatureBinding, openMark, operationActivity, playerAvatarStore, privateImageDirectives, refreshState, renderPage, retryCandidateImage,
@@ -1872,6 +1923,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             clampCustomPanelPosition();
         }
         ensureLauncherWithinViewport();
+        centerOpenDialogs();
     };
     if (windowRef?.addEventListener) listen(root, windowRef, 'resize', handleViewportChange, abortController.signal);
     if (windowRef?.visualViewport?.addEventListener) {

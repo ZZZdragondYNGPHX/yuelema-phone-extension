@@ -381,7 +381,7 @@ export function createCommunityPage(ctx) {
             append(actions, [cancel, confirm]); ctx.groupMemberPickerContent.appendChild(actions);
         }
         ctx.groupMemberPickerOpen = true;
-        ctx.dialogController.open(ctx.groupMemberPickerDialog, { onRequestClose: closeGroupMemberPicker });
+        ctx.openManagedDialog(ctx.groupMemberPickerDialog, { onRequestClose: closeGroupMemberPicker });
     }
     function closeGroupAutoDialog() {
         ctx.groupAutoDialogKey = '';
@@ -446,7 +446,7 @@ export function createCommunityPage(ctx) {
             })();
         }, ctx.abortController.signal);
         append(actions, [cancel, confirm]); ctx.groupAutoContent.appendChild(actions);
-        ctx.dialogController.open(ctx.groupAutoDialog, { onRequestClose: closeGroupAutoDialog });
+        ctx.openManagedDialog(ctx.groupAutoDialog, { onRequestClose: closeGroupAutoDialog });
     }
     function stopGroupAutoTimer() {
         if (ctx.groupAutoTimer !== null) clearInterval(ctx.groupAutoTimer);
@@ -583,7 +583,7 @@ export function createCommunityPage(ctx) {
             })();
         }, ctx.abortController.signal);
         append(actions, [cancel, save]); ctx.forumSettingsContent.appendChild(actions);
-        ctx.dialogController.open(ctx.forumSettingsDialog, { onRequestClose: closeForumSettingsDialog });
+        ctx.openManagedDialog(ctx.forumSettingsDialog, { onRequestClose: closeForumSettingsDialog });
     }
     function stopForumAutoTimer() {
         if (ctx.forumAutoTimer !== null) clearInterval(ctx.forumAutoTimer);
