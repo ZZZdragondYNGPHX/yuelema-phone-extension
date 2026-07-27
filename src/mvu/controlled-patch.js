@@ -168,7 +168,11 @@ export function buildPlayerPublicProfilePatch(state, { profile } = {}) {
     const current = ownRecord(player?.公开资料);
     const switches = ownRecord(state.软件)?.功能开关;
     const normalized = normalizePlayerPublicProfile(profile);
-    if (!player || player.成人验证 !== true || !current || !switches || typeof switches.玩家已建档 !== 'boolean' || !normalized) {
+    // "玩家已建档" is an optional bookkeeping gate, not part of the public
+    // profile contract. Older chats can lack this later-added field; their
+    // fully validated public profile must remain editable without attempting
+    // to add or infer any unknown state shape.
+    if (!player || player.成人验证 !== true || !current || !normalized) {
         return fail('player_profile_invalid');
     }
     const operations = [];
@@ -180,7 +184,7 @@ export function buildPlayerPublicProfilePatch(state, { profile } = {}) {
     }
     // A bare "已建档" flip is not a profile save. Requiring at least one
     // controlled public-field change prevents a forged gate-only UI patch.
-    if (operations.length > 0 && !switches.玩家已建档) {
+    if (operations.length > 0 && switches?.玩家已建档 === false) {
         operations.push({ op: 'replace', path: encodeJsonPointer(['软件', '功能开关', '玩家已建档']), value: true });
     }
     return operations.length ? success(operations) : fail('player_profile_no_change');

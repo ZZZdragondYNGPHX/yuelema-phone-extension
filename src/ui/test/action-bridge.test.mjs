@@ -686,6 +686,24 @@ test('player public profile save uses only the MVU get to parse to replace to ev
     assert.doesNotMatch(wrappedPatch, /隐藏资料|实际年龄|replaceVariables|chat_metadata/u);
 });
 
+test('player public profile save keeps the official pipeline when an older chat lacks the optional profile gate', async () => {
+    const initialState = recommendationState();
+    initialState.软件.功能开关 = undefined;
+    initialState.玩家.成人验证 = true;
+    initialState.玩家.公开资料 = structuredClone(adultCandidate().公开资料);
+    const { mvu, calls } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+    });
+    const profile = { ...adultCandidate().公开资料, 昵称: '兼容旧聊天的昵称' };
+    const result = await bridge.runSavePlayerPublicProfile(profile);
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'parse', 'replace', 'event']);
+    const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
+    assert.match(wrappedPatch, /玩家\/公开资料\/昵称/u);
+    assert.doesNotMatch(wrappedPatch, /玩家已建档/u);
+});
 function groupDraftState() {
     const current = recommendationState();
     current.角色池 = { npc_group: adultCandidate() };
