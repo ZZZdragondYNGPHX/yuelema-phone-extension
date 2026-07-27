@@ -20,6 +20,79 @@ test('client sends injected request and accepts JSON base64 image', async () => 
     assert.match(result.src, /^data:image\/png;base64,/u);
 });
 
+test('client emits safe stage diagnostics without logging credentials or prompts', async () => {
+    unlockSessionKey('img-log-test', 'secret-image-key-never-log');
+    const calls = [];
+    const diagnosticLogger = {
+        info: (...args) => calls.push(['info', ...args]),
+        error: (...args) => calls.push(['error', ...args]),
+    };
+    const client = createImageGenerationClient({
+        diagnosticLogger,
+        fetchImpl: async () => new Response(JSON.stringify({
+            data: [{ b64_json: Buffer.from(png).toString('base64') }],
+        }), { status: 200, headers: { 'content-type': 'application/json', 'content-length': '123' } }),
+    });
+
+    await client.generate({ settings: { ...settings, presetId: 'img-log-test' }, positivePrompt: 'private prompt never log', negativePrompt: 'private negative never log' });
+
+    assert.deepEqual(calls.map(([level, label]) => [level, label]), [
+        ['info', '[约了吗][生图] 请求开始'],
+        ['info', '[约了吗][生图] 收到响应'],
+        ['info', '[约了吗][生图] 请求完成'],
+    ]);
+    const serialized = JSON.stringify(calls);
+    assert.doesNotMatch(serialized, /secret-image-key-never-log|private prompt never log|private negative never log/u);
+    assert.match(serialized, /"provider":"openai_compatible"/u);
+    assert.match(serialized, /"status":200/u);
+    assert.match(serialized, /"mimeType":"image\/png"/u);
+});
+
+test('client logs safe HTTP failure code, phase, and status without response bodies', async () => {
+    unlockSessionKey('img-log-failure', 'another-secret-key');
+    const calls = [];
+    const client = createImageGenerationClient({
+        diagnosticLogger: { info: (...args) => calls.push(['info', ...args]), error: (...args) => calls.push(['error', ...args]) },
+        fetchImpl: async () => new Response('upstream-private-error-body', {
+            status: 401,
+            headers: { 'content-type': 'application/json' },
+        }),
+    });
+
+    await assert.rejects(
+        () => client.generate({ settings: { ...settings, presetId: 'img-log-failure' }, positivePrompt: 'another private prompt', negativePrompt: '' }),
+        (error) => error.code === 'IMAGE_HTTP_ERROR' && error.status === 401,
+    );
+
+    const failure = calls.find(([, label]) => label === '[约了吗][生图] 请求失败');
+    assert.deepEqual(failure?.[2], {
+        requestId: failure?.[2]?.requestId,
+        provider: 'openai_compatible',
+        phase: 'http_response',
+        code: 'IMAGE_HTTP_ERROR',
+        retryable: false,
+        status: 401,
+        elapsedMs: failure?.[2]?.elapsedMs,
+    });
+    const serialized = JSON.stringify(calls);
+    assert.doesNotMatch(serialized, /another-secret-key|another private prompt|upstream-private-error-body/u);
+});
+
+test('credential diagnostics preserve the locked-key error when an external signal exists', async () => {
+    resetPersistentKeyStorage();
+    const calls = [];
+    const client = createImageGenerationClient({
+        diagnosticLogger: { error: (...args) => calls.push(args) },
+        fetchImpl: async () => assert.fail('locked credentials must fail before transport'),
+    });
+    await assert.rejects(
+        () => client.generate({ settings: { ...settings, presetId: 'missing-key' }, positivePrompt: 'scene', negativePrompt: '', signal: new AbortController().signal }),
+        (error) => error.code === 'SESSION_KEY_LOCKED',
+    );
+    assert.equal(calls[0]?.[1]?.phase, 'credential_lookup');
+    assert.equal(calls[0]?.[1]?.code, 'SESSION_KEY_LOCKED');
+});
+
 test('client accepts a direct image response and rejects unsafe non-loopback http', async () => {
     const client = createImageGenerationClient({ fetchImpl: async () => new Response(png, { status: 200, headers: { 'content-type': 'image/png' } }) });
     assert.equal((await client.generate({ settings, positivePrompt: 'scene', negativePrompt: '' })).mimeType, 'image/png');
@@ -122,7 +195,13 @@ test('ComfyUI rejects UI-format workflows and unsafe workflow keys before networ
 
 test('ComfyUI resource refresh reads bounded object_info choices through the injected transport', async () => {
     let request;
+    const diagnostics = [];
+    const padding = 'x'.repeat(2 * 1024 * 1024);
     const client = createImageGenerationClient({
+        diagnosticLogger: {
+            info: (...args) => diagnostics.push(['info', ...args]),
+            error: (...args) => diagnostics.push(['error', ...args]),
+        },
         fetchImpl: async (url, init) => {
             request = { url, init };
             return new Response(JSON.stringify({
@@ -130,6 +209,7 @@ test('ComfyUI resource refresh reads bounded object_info choices through the inj
                 KSampler: { input: { required: { sampler_name: [['euler', 'dpmpp_2m']], scheduler: [['normal', 'karras']] } } },
                 VAELoader: { input: { required: { vae_name: [['vae.safetensors']] } } },
                 DualCLIPLoader: { input: { required: { clip_name1: [['clip-l.safetensors']], clip_name2: [['t5xxl.safetensors']] } } },
+                customNodeMetadata: padding,
             }), { status: 200, headers: { 'content-type': 'application/json' } });
         },
     });
@@ -141,4 +221,52 @@ test('ComfyUI resource refresh reads bounded object_info choices through the inj
     assert.deepEqual(resources.schedulers, ['normal', 'karras']);
     assert.deepEqual(resources.vae, ['vae.safetensors']);
     assert.deepEqual(resources.clips, ['clip-l.safetensors', 't5xxl.safetensors']);
+    assert.deepEqual(diagnostics.map(([level, label]) => [level, label]), [
+        ['info', '[约了吗][生图] ComfyUI 资源读取开始'],
+        ['info', '[约了吗][生图] ComfyUI 资源收到响应'],
+        ['info', '[约了吗][生图] ComfyUI 资源读取完成'],
+    ]);
+    assert.equal(diagnostics[2][2].models, 2);
+    assert.equal(diagnostics[2][2].clips, 2);
+});
+
+test('ComfyUI resource refresh reports oversized object_info without calling it an oversized image', async () => {
+    const diagnostics = [];
+    const client = createImageGenerationClient({
+        diagnosticLogger: { error: (...args) => diagnostics.push(args) },
+        fetchImpl: async () => new Response('{}', {
+            status: 200,
+            headers: {
+                'content-type': 'application/json',
+                'content-length': String((32 * 1024 * 1024) + 1),
+            },
+        }),
+    });
+
+    await assert.rejects(
+        () => client.fetchComfyUIResources({ baseUrl: 'http://127.0.0.1:8188' }),
+        (error) => error?.code === 'COMFY_RESOURCE_RESPONSE_TOO_LARGE'
+            && /资源列表过大/u.test(error.message)
+            && !/图片过大/u.test(error.message),
+    );
+    assert.equal(diagnostics[0]?.[0], '[约了吗][生图] ComfyUI 资源读取失败');
+    assert.equal(diagnostics[0]?.[1]?.phase, 'response_parse');
+    assert.equal(diagnostics[0]?.[1]?.code, 'COMFY_RESOURCE_RESPONSE_TOO_LARGE');
+});
+
+test('ComfyUI resource refresh turns transport failures into safe staged diagnostics', async () => {
+    const diagnostics = [];
+    const client = createImageGenerationClient({
+        diagnosticLogger: { error: (...args) => diagnostics.push(args) },
+        fetchImpl: async () => { throw new Error('private browser transport details'); },
+    });
+
+    await assert.rejects(
+        () => client.fetchComfyUIResources({ baseUrl: 'http://127.0.0.1:8188' }),
+        (error) => error?.code === 'IMAGE_NETWORK_ERROR' && error.retryable === true,
+    );
+    assert.equal(diagnostics[0]?.[0], '[约了吗][生图] ComfyUI 资源读取失败');
+    assert.equal(diagnostics[0]?.[1]?.phase, 'network_request');
+    assert.equal(diagnostics[0]?.[1]?.code, 'IMAGE_NETWORK_ERROR');
+    assert.doesNotMatch(JSON.stringify(diagnostics), /private browser transport details/u);
 });
