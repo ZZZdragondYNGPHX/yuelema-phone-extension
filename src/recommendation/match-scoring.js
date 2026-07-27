@@ -151,8 +151,11 @@ export function scoreKeywordCompatibility(playerProfile, npcProfile, tagWeights)
         weightTotal += 50 + ((weights.get(tag) ?? 0) * 10);
     }
     const learnedScore = weightTotal / npcTags.length;
-    const overlapScore = (sharedTags / npcTags.length) * 100;
-    return Object.freeze({ score: clampInteger((learnedScore * 0.6) + (overlapScore * 0.4), 0, 100), sharedTags });
+    const overlapBonus = (sharedTags / npcTags.length) * 25;
+    // Zero learned weight is a genuinely neutral 50. Exact public-tag overlap
+    // is a bounded bonus instead of a second multiplier that used to collapse
+    // an otherwise neutral no-overlap result from 50 to 30.
+    return Object.freeze({ score: clampInteger(learnedScore + overlapBonus, 0, 100), sharedTags });
 }
 
 /**

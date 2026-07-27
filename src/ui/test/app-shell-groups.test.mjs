@@ -1163,6 +1163,70 @@ test('forum top refresh replaces old posts and bottom loading appends posts only
     }
 });
 
+test('forum wheel can append when a one-post channel is too short to create a scroll range', async () => {
+    const previousSetTimeout = globalThis.setTimeout;
+    const previousClearTimeout = globalThis.clearTimeout;
+    const timers = [];
+    globalThis.setTimeout = (callback, delay) => {
+        const timer = { callback, delay, cleared: false };
+        timers.push(timer);
+        return timer;
+    };
+    globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
+    const profile = { nickname: '短列表作者', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '编辑', interests: ['阅读'], presence: '在线', matchRate: null };
+    const appendedProfile = { ...profile, nickname: '追加作者' };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    await groupForumStore.addForumRefresh({ communityProfiles: [], update: { participants: [profile], posts: forumRefreshPosts('短列表作者') } });
+    const requests = [];
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-short-channel-append',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async generateForumHomeRefresh(request) {
+                requests.push(request);
+                return {
+                    ok: true, communityProfiles: [],
+                    update: { participants: [appendedProfile], posts: forumRefreshPosts('追加作者').map((post) => ({ ...post, title: `追加：${post.title}` })) },
+                };
+            },
+        }, settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('广场');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('data-forum-channel') === 'city_moments'));
+        assert.match(miniDom.document.body.textContent, /同城瞬间 · 1 条本地帖子/u);
+        const content = miniDom.document.querySelector('.yl-phone-content');
+        Object.defineProperties(content, {
+            clientHeight: { value: 500, configurable: true },
+            scrollHeight: { value: 260, configurable: true },
+            scrollTop: { value: 0, writable: true, configurable: true },
+        });
+        content.dispatchEvent(wheel(100));
+        content.dispatchEvent(wheel(100));
+        const release = timers.at(-1);
+        assert.equal(release.delay, 180);
+        release.callback();
+        await flushUi();
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0].refreshMode, 'append');
+        assert.equal((await groupForumStore.snapshot()).posts.length, 16);
+
+        const shortSurface = miniDom.document.querySelector('.yl-forum-home');
+        shortSurface.dispatchEvent(pointer('pointerdown', 100, 61));
+        shortSurface.dispatchEvent(pointer('pointermove', 0, 61));
+        shortSurface.dispatchEvent(pointer('pointerup', 0, 61));
+        await flushUi();
+        assert.equal(requests.length, 2);
+        assert.equal(requests[1].refreshMode, 'append', '短列表同时位于顶部和底部时，触摸上拉必须按移动方向选择追加');
+    } finally {
+        mounted.destroy();
+        globalThis.setTimeout = previousSetTimeout;
+        globalThis.clearTimeout = previousClearTimeout;
+    }
+});
+
 test('forum bottom append keeps the scroll anchor, shows bottom progress, lands new posts at the feed end and reports success', async () => {
     const previousSetTimeout = globalThis.setTimeout;
     const previousClearTimeout = globalThis.clearTimeout;

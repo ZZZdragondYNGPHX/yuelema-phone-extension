@@ -809,7 +809,7 @@ test('soul match creates an independent npc_match session and never promotes a f
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual([result.npcUid, result.sessionUid], ['npc_match_13', 'chat_5']);
     assert.equal(result.matchOutcome, 'accepted');
-    assert.equal(result.matchScore, 86, '决策分数必须来自本地算法而不是模型自报的 1。');
+    assert.equal(result.matchScore, 91, '决策分数必须来自本地算法而不是模型自报的 1。');
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'get', 'parse', 'replace', 'event']);
     const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
     assert.match(wrappedPatch, /角色池\/npc_match_13|角色池~1npc_match_13/u);

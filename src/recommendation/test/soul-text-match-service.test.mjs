@@ -217,8 +217,8 @@ test('candidate soul matching reads saved local keywords and returns a public pr
     assert.equal(result.draft.explanation, candidateRaw().explanation);
     assert.deepEqual(result.draft.drawing, candidateRaw().drawing);
     assert.equal(Object.isFrozen(result.draft.drawing), true);
-    assert.equal(result.draft.matchScore, 62, '模型自报 91 必须被本地算法覆盖');
-    assert.equal(result.evaluation.score, 62);
+    assert.equal(result.draft.matchScore, 68, '模型自报 91 必须被本地算法覆盖');
+    assert.equal(result.evaluation.score, 68);
     assert.equal(result.evaluation.source, 'local_public_profile_and_keyword_weights');
     assert.deepEqual(result.evaluation.effectiveKeywordWeights, [
         { keyword: '电影', weight: 1 }, { keyword: '咖啡', weight: 2 },
@@ -269,8 +269,8 @@ test('candidate generation accepts the new public-only model contract and ignore
         }));
     }
     assert.deepEqual(results.map((result) => result.ok), [true, true, true]);
-    assert.deepEqual(results.map((result) => result.draft.matchScore), [62, 62, 62]);
-    assert.deepEqual(results.map((result) => result.evaluation.score), [62, 62, 62]);
+    assert.deepEqual(results.map((result) => result.draft.matchScore), [68, 68, 68]);
+    assert.deepEqual(results.map((result) => result.evaluation.score), [68, 68, 68]);
 });
 
 test('candidate drawing DNA contract accepts the project DNA format but keeps credential/PII bans and preserves legacy matchScore', () => {
