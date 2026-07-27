@@ -866,6 +866,8 @@
     background: var(--yl-grad);
     box-shadow: var(--yl-shadow-2), var(--yl-glow-brand);
     transition: transform var(--yl-dur-1) var(--yl-ease), box-shadow var(--yl-dur-1) var(--yl-ease);
+    -webkit-touch-callout: none;
+    user-select: none;
 }
 .yl-phone-launcher:hover { transform: translateY(-2px) scale(1.04); }
 .yl-phone-launcher:active { transform: scale(.94); }
@@ -895,6 +897,36 @@
     line-height: 1.25;
     white-space: nowrap;
 }
+.yl-launcher-tools[hidden] { display: none; }
+.yl-launcher-tools {
+    position: fixed;
+    z-index: 100060;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 104px;
+    padding: 6px;
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-ctrl);
+    background: color-mix(in srgb, var(--yl-surface) 94%, transparent);
+    box-shadow: var(--yl-shadow-2);
+}
+.yl-launcher-tools-reset,
+.yl-launcher-tools-diagnostic {
+    min-width: 92px;
+    min-height: 44px;
+    padding: 8px 12px;
+    border: 0;
+    border-radius: calc(var(--yl-radius-ctrl) - 4px);
+    color: var(--yl-on-accent);
+    background: var(--yl-grad);
+    font: 650 var(--yl-type-caption)/1.25 var(--yl-font-body);
+    white-space: nowrap;
+}
+.yl-launcher-tools-reset:hover,
+.yl-launcher-tools-diagnostic:hover { filter: brightness(1.04); }
+.yl-launcher-tools-reset:active,
+.yl-launcher-tools-diagnostic:active { transform: scale(.97); }
 /* —— 手机窗体 —— */
 .yl-phone-panel {
     position: fixed;

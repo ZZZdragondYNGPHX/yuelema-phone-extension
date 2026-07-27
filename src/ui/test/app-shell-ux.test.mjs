@@ -882,6 +882,105 @@ test('launcher drag is wired into app-shell, suppresses the drag click, and keep
     }
 });
 
+test('launcher tools open by desktop right-click or a 10-second mobile hold and reset both saved placements', () => {
+    const previousDefaultView = miniDom.document.defaultView;
+    const previousSetTimeout = globalThis.setTimeout;
+    const previousClearTimeout = globalThis.clearTimeout;
+    const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {} });
+    const execCalls = [];
+    miniDom.document.execCommand = (command) => {
+        execCalls.push([command, miniDom.document.body.childNodes.at(-1)?.value ?? '']);
+        return true;
+    };
+    miniDom.document.defaultView = { innerWidth: 360, innerHeight: 740 };
+    const storage = createMemoryStorage();
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-launcher-tools', uiLayoutStorage: storage,
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null,
+        readState: () => ({ ok: false, code: 'mvu_get_unavailable' }),
+    });
+    try {
+        const launcher = miniDom.document.querySelector('.yl-phone-launcher');
+        const tools = miniDom.document.querySelector('.yl-launcher-tools');
+        const reset = miniDom.document.querySelector('.yl-launcher-tools-reset');
+        const panel = miniDom.document.querySelector('.yl-phone-panel');
+        const launcherStyles = installStyleRecorder(launcher);
+        const panelStyles = installStyleRecorder(panel);
+        launcher.getBoundingClientRect = () => {
+            const left = Number.parseFloat(launcherStyles.left || '292');
+            const top = Number.parseFloat(launcherStyles.top || '672');
+            return { left, top, right: left + 56, bottom: top + 56, width: 56, height: 56 };
+        };
+        tools.getBoundingClientRect = () => ({ left: 180, top: 678, right: 284, bottom: 722, width: 104, height: 44 });
+
+        const contextMenu = pointerEvent('contextmenu', { pointerType: 'mouse', button: 2, clientX: 310, clientY: 690 });
+        launcher.dispatchEvent(contextMenu);
+        assert.equal(contextMenu.defaultPrevented, true);
+        assert.equal(tools.hidden, false, '电脑右键应在悬浮球旁打开工具栏');
+        assert.equal(launcher.getAttribute('aria-expanded'), 'true');
+        assert.ok(reset);
+
+        storage.setItem('yuelema.launcher-position/v1', JSON.stringify({ left: 80, top: 90 }));
+        storage.setItem('yuelema.phone-panel-position/v1', JSON.stringify({ left: 40, top: 50 }));
+        launcherStyles.position = 'fixed';
+        launcherStyles.left = '80px';
+        launcherStyles.top = '90px';
+        panelStyles.left = '40px';
+        panelStyles.top = '50px';
+        panelStyles.right = 'auto';
+        panelStyles.bottom = 'auto';
+        click(reset);
+
+        assert.equal(storage.getItem('yuelema.launcher-position/v1'), null);
+        assert.equal(storage.getItem('yuelema.phone-panel-position/v1'), null);
+        assert.equal(launcherStyles.position, '', '归位应恢复悬浮球原始 CSS 锚点');
+        assert.equal(launcherStyles.left, '');
+        assert.equal(panelStyles.left ?? '', '', '关闭状态下归位应清除面板自定义坐标');
+        assert.equal(panelStyles.top ?? '', '');
+        assert.equal(tools.hidden, true);
+
+        click(launcher);
+        click(launcher);
+        assert.equal(panel.hidden, true);
+
+        const timers = [];
+        globalThis.setTimeout = (callback, delay) => {
+            const timer = { callback, delay, cleared: false };
+            timers.push(timer);
+            return timer;
+        };
+        globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
+        launcher.dispatchEvent(pointerEvent('pointerdown', {
+            pointerId: 41, pointerType: 'touch', clientX: 310, clientY: 690,
+        }));
+        const holdTimer = timers.at(-1);
+        assert.equal(holdTimer.delay, 10_000, '手机必须持续长按十秒才显示归位工具栏');
+        holdTimer.callback();
+        assert.equal(tools.hidden, false);
+        click(miniDom.document.querySelector('.yl-launcher-tools-diagnostic'));
+        assert.equal(execCalls.at(-1)?.[0], 'copy');
+        assert.match(execCalls.at(-1)?.[1] ?? '', /mvu_read_complete/u);
+        assert.match(execCalls.at(-1)?.[1] ?? '', /phone_view_created/u);
+        assert.match(execCalls.at(-1)?.[1] ?? '', /render_complete/u);
+        assert.match(execCalls.at(-1)?.[1] ?? '', /内容状态：view=unavailable code=mvu_get_unavailable/u);
+
+        const postHoldClick = new Event('click', { cancelable: true });
+        launcher.dispatchEvent(postHoldClick);
+        assert.equal(postHoldClick.defaultPrevented, true, '长按完成后的合成 click 不得顺带打开小手机');
+        assert.equal(panel.hidden, true);
+    } finally {
+        mounted.destroy();
+        globalThis.setTimeout = previousSetTimeout;
+        globalThis.clearTimeout = previousClearTimeout;
+        miniDom.document.defaultView = previousDefaultView;
+        delete miniDom.document.execCommand;
+        if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+        else delete globalThis.navigator;
+    }
+});
+
 test('desktop header pointer drag clamps the panel, cancels cleanly, and ignores the close button', () => {
     const previousDefaultView = miniDom.document.defaultView;
     const previousDocumentElement = miniDom.document.documentElement;
@@ -1845,7 +1944,7 @@ test('extension update failure surfaces HTTP status and host text in the dialog 
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'loading');
         assert.match(dialog.textContent, /正在检查扩展更新/u);
-        assert.match(dialog.textContent, /当前版本 v1\.0\.2/u, 'loading 弹窗应展示当前版本');
+        assert.match(dialog.textContent, /当前版本 v1\.0\.3/u, 'loading 弹窗应展示当前版本');
 
         gate.reject(new HostExtensionUpdateError('request_failed_http', {
             status: 500,
@@ -1905,7 +2004,7 @@ test('extension update success states show the current version and non-git insta
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'success');
         assert.match(dialog.textContent, /当前已是最新版本/u);
-        assert.match(dialog.textContent, /v1\.0\.2 已是最新版本/u, '最新结果应展示当前版本号');
+        assert.match(dialog.textContent, /v1\.0\.3 已是最新版本/u, '最新结果应展示当前版本号');
 
         result = Promise.resolve({ outcome: 'updated' });
         click(updateEntry());

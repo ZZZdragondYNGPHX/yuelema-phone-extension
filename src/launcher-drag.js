@@ -127,6 +127,13 @@ export function createLauncherDragController(options) {
 
     // Changing touch-action is behavioral only; restore the caller's inline value on dispose.
     const originalTouchAction = launcher.style?.touchAction ?? '';
+    const originalPlacement = Object.freeze({
+        position: launcher.style?.position ?? '',
+        left: launcher.style?.left ?? '',
+        top: launcher.style?.top ?? '',
+        right: launcher.style?.right ?? '',
+        bottom: launcher.style?.bottom ?? '',
+    });
     if (launcher.style) launcher.style.touchAction = 'none';
 
     function pointerMatches(event, inputType = 'pointer') {
@@ -280,6 +287,24 @@ export function createLauncherDragController(options) {
         return true;
     }
 
+    /**
+     * Drop the locally dragged placement and restore the launcher's original CSS anchor.
+     * This resets browser-only UI geometry; it never touches application or MVU state.
+     */
+    function reset() {
+        if (disposed || pointerState) return false;
+        for (const [property, value] of Object.entries(originalPlacement)) {
+            if (!launcher.style) break;
+            launcher.style[property] = value;
+        }
+        fixedPositionPrepared = false;
+        originX = 0;
+        originY = 0;
+        lastPosition = null;
+        suppressNextClick = false;
+        return true;
+    }
+
     function handleClick(event) {
         if (!suppressNextClick) return;
         suppressNextClick = false;
@@ -332,6 +357,7 @@ export function createLauncherDragController(options) {
         get dragging() { return Boolean(pointerState?.engaged); },
         get position() { return lastPosition ? { ...lastPosition } : null; },
         restore,
+        reset,
         dispose() {
             if (disposed) return;
             disposed = true;
