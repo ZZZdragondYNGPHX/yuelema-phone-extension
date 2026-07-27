@@ -482,6 +482,17 @@ test('生图设置严格隔离密钥并按对话类型保存自动生图开关',
     assert.equal(initial.schemaVersion, 17);
     assert.equal(initial.imageGeneration.enabled, false);
     assert.equal(initial.imageGeneration.apiMode, 'novelai');
+    assert.equal(initial.imageGeneration.baseUrl, 'https://image.novelai.net');
+    assert.equal(initial.imageGeneration.endpointPath, '/ai/generate-image');
+    assert.equal(initial.imageGeneration.model, 'nai-diffusion-4-5-full');
+    assert.equal(initial.imageGeneration.sampler, 'k_euler');
+    assert.equal(initial.imageGeneration.noiseSchedule, 'native');
+    assert.equal(initial.imageGeneration.guidance, 7);
+    assert.equal(initial.imageGeneration.guidanceRescale, 0);
+    assert.equal(initial.imageGeneration.width, 1024);
+    assert.equal(initial.imageGeneration.height, 1024);
+    assert.equal(initial.imageGeneration.steps, 28);
+    assert.equal(initial.imageGeneration.variety, false);
     assert.equal(initial.imageGeneration.comfyWorkflow, '');
     assert.deepEqual(initial.imageGeneration.conversationSettings, { private: {}, group: {}, forum: {} });
 
