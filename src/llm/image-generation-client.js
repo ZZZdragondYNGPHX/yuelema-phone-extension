@@ -212,15 +212,53 @@ async function readResponseBytes(response, maximum, tooLarge = {}) {
 }
 function readU16(bytes, offset) { return bytes[offset] | (bytes[offset + 1] << 8); }
 function readU32(bytes, offset) { return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0; }
+function findCentralZipImage(bytes) {
+    const decoder = new TextDecoder();
+    const minimum = Math.max(0, bytes.length - 65_557);
+    let eocd = -1;
+    for (let offset = bytes.length - 22; offset >= minimum; offset -= 1) {
+        if (readU32(bytes, offset) === 0x06054b50) { eocd = offset; break; }
+    }
+    if (eocd < 0) return null;
+    const entries = readU16(bytes, eocd + 10);
+    const directorySize = readU32(bytes, eocd + 12);
+    let offset = readU32(bytes, eocd + 16);
+    if (entries === 0xffff || directorySize === 0xffffffff || offset + directorySize > eocd) return null;
+    let best = null;
+    for (let index = 0; index < entries; index += 1) {
+        if (offset + 46 > bytes.length || readU32(bytes, offset) !== 0x02014b50) return null;
+        const flags = readU16(bytes, offset + 8);
+        const method = readU16(bytes, offset + 10);
+        const compressedSize = readU32(bytes, offset + 20);
+        const uncompressedSize = readU32(bytes, offset + 24);
+        const filenameLength = readU16(bytes, offset + 28);
+        const extraLength = readU16(bytes, offset + 30);
+        const commentLength = readU16(bytes, offset + 32);
+        const localOffset = readU32(bytes, offset + 42);
+        const next = offset + 46 + filenameLength + extraLength + commentLength;
+        if (next > bytes.length) return null;
+        const filename = decoder.decode(bytes.slice(offset + 46, offset + 46 + filenameLength));
+        if ((flags & 1) === 0 && /\.(?:png|jpe?g|webp)$/iu.test(filename)
+            && [0, 8].includes(method) && compressedSize > 0
+            && compressedSize <= MAX_IMAGE_BYTES && uncompressedSize <= MAX_IMAGE_BYTES
+            && localOffset + 30 <= bytes.length && readU32(bytes, localOffset) === 0x04034b50) {
+            const start = localOffset + 30 + readU16(bytes, localOffset + 26) + readU16(bytes, localOffset + 28);
+            if (start + compressedSize <= bytes.length && (!best || uncompressedSize > best.uncompressedSize)) {
+                best = { method, compressedSize, uncompressedSize, start };
+            }
+        }
+        offset = next;
+    }
+    return best;
+}
 async function extractFirstZipImage(bytes) {
     if (bytes.length < 30 || readU32(bytes, 0) !== 0x04034b50) return null;
+    const central = findCentralZipImage(bytes);
     const flags = readU16(bytes, 6);
-    const method = readU16(bytes, 8);
-    const compressedSize = readU32(bytes, 18);
-    const filenameLength = readU16(bytes, 26);
-    const extraLength = readU16(bytes, 28);
-    if ((flags & 0x08) !== 0 || compressedSize < 1 || compressedSize > MAX_IMAGE_BYTES) return null;
-    const start = 30 + filenameLength + extraLength;
+    const method = central?.method ?? readU16(bytes, 8);
+    const compressedSize = central?.compressedSize ?? readU32(bytes, 18);
+    const start = central?.start ?? 30 + readU16(bytes, 26) + readU16(bytes, 28);
+    if ((!central && (flags & 0x08) !== 0) || compressedSize < 1 || compressedSize > MAX_IMAGE_BYTES) return null;
     const end = start + compressedSize;
     if (end > bytes.length) return null;
     const payload = bytes.slice(start, end);
@@ -308,7 +346,7 @@ function normalizeRequest(input) {
 async function parseResponse(response) {
     const contentType = String(response.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase();
     if (SAFE_IMAGE_MIME.has(contentType)) return imageResultFromBytes(await readResponseBytes(response, MAX_IMAGE_BYTES));
-    if (contentType === 'application/zip' || contentType === 'application/x-zip-compressed' || contentType === 'application/octet-stream') {
+    if (contentType === 'application/zip' || contentType === 'application/x-zip-compressed' || contentType === 'application/octet-stream' || contentType === 'binary/octet-stream') {
         const bytes = await readResponseBytes(response, MAX_IMAGE_BYTES);
         const direct = detectMime(bytes) ? imageResultFromBytes(bytes) : await extractFirstZipImage(bytes);
         if (direct) return direct;

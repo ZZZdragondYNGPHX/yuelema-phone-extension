@@ -7,6 +7,31 @@ const png = Uint8Array.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0]);
 const settings = { apiMode: 'openai_compatible', presetId: 'image_generation_default', baseUrl: 'https://img.example.test', endpointPath: '/v1/images/generations', model: 'model', sampler: 'euler', noiseSchedule: 'native', width: 512, height: 512, steps: 20, seed: 0, guidance: 7, guidanceRescale: 0, qualityToggle: true, variety: false };
 
 function storage() { const m = new Map(); return { getItem:k=>m.get(k)??null, setItem:(k,v)=>m.set(k,String(v)), removeItem:k=>m.delete(k) }; }
+function zipWithDataDescriptor(filename, payload) {
+    const name = Buffer.from(filename);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(0x08, 6);
+    local.writeUInt16LE(name.length, 26);
+    const descriptor = Buffer.alloc(16);
+    descriptor.writeUInt32LE(0x08074b50, 0);
+    descriptor.writeUInt32LE(payload.length, 8);
+    descriptor.writeUInt32LE(payload.length, 12);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(0x08, 8);
+    central.writeUInt32LE(payload.length, 20);
+    central.writeUInt32LE(payload.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    const directoryOffset = local.length + name.length + payload.length + descriptor.length;
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0);
+    eocd.writeUInt16LE(1, 8);
+    eocd.writeUInt16LE(1, 10);
+    eocd.writeUInt32LE(central.length + name.length, 12);
+    eocd.writeUInt32LE(directoryOffset, 16);
+    return Buffer.concat([local, name, payload, descriptor, central, name, eocd]);
+}
 
 test.beforeEach(() => { configurePersistentKeyStorage(storage()); unlockSessionKey('image_generation_default', 'secret-key'); });
 test.afterEach(() => resetPersistentKeyStorage());
@@ -17,6 +42,16 @@ test('client sends injected request and accepts JSON base64 image', async () => 
     const result = await client.generate({ settings, positivePrompt: 'best quality', negativePrompt: 'bad' });
     assert.equal(request.url, 'https://img.example.test/v1/images/generations');
     assert.match(request.init.headers.Authorization, /^Bearer /u);
+    assert.match(result.src, /^data:image\/png;base64,/u);
+});
+
+test('client extracts a NovelAI ZIP whose local entry sizes are supplied by a data descriptor', async () => {
+    const archive = zipWithDataDescriptor('image_0.png', Buffer.from(png));
+    const client = createImageGenerationClient({
+        fetchImpl: async () => new Response(archive, { status: 200, headers: { 'content-type': 'binary/octet-stream' } }),
+    });
+    const result = await client.generate({ settings, positivePrompt: 'scene', negativePrompt: '' });
+    assert.equal(result.mimeType, 'image/png');
     assert.match(result.src, /^data:image\/png;base64,/u);
 });
 
