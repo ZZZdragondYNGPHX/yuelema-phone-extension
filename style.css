@@ -3642,6 +3642,47 @@
 /* 生图设置 */
 .yl-image-generation-settings { gap: var(--yl-space-3); }
 .yl-image-generation-settings .yl-phone-page-description { margin-bottom: 1px; }
+.yl-image-provider-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--yl-space-1);
+    padding: var(--yl-space-1);
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-ctrl);
+    background: var(--yl-surface-2);
+}
+.yl-image-provider-tab {
+    min-height: var(--yl-icon-hit);
+    border: 1px solid transparent;
+    border-radius: calc(var(--yl-radius-ctrl) - 2px);
+    color: var(--yl-text-2);
+    background: transparent;
+    font: inherit;
+    font-size: var(--yl-type-caption);
+    font-weight: 700;
+    cursor: pointer;
+}
+.yl-image-provider-tab.is-active {
+    border-color: color-mix(in srgb, var(--yl-accent) 34%, transparent);
+    color: var(--yl-accent);
+    background: var(--yl-accent-soft);
+}
+.yl-image-provider-panel {
+    display: grid;
+    gap: var(--yl-space-3);
+    padding: var(--yl-space-3);
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-card);
+    background: var(--yl-surface);
+}
+.yl-image-provider-panel[hidden], .yl-image-generation-key-actions[hidden] { display: none !important; }
+.yl-image-provider-title {
+    margin: 0;
+    color: var(--yl-text);
+    font-family: var(--yl-font-display);
+    font-size: var(--yl-type-body);
+}
+.yl-comfyui-provider-panel > .yl-settings-button { width: 100%; }
 .yl-image-generation-fields { align-items: start; }
 .yl-image-generation-fields .yl-settings-field:has([name="image-generation-positive-prefix"]),
 .yl-image-generation-fields .yl-settings-field:has([name="image-generation-positive-suffix"]),

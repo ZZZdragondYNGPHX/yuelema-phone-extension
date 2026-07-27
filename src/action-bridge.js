@@ -1013,13 +1013,14 @@ export function createActionBridge({
                 outfitDna = typeof character.绘图?.outfit_dna === 'string' ? character.绘图.outfit_dna : '';
             }
 
+            const useComfyUiPrompts = settings.apiMode === 'comfyui';
             const prompt = composeImagePrompt({
-                positivePrefix: settings.positivePrefix,
+                positivePrefix: useComfyUiPrompts ? settings.comfyPositivePrefix : settings.positivePrefix,
                 coreDna,
                 outfitDna,
                 directive,
-                positiveSuffix: settings.positiveSuffix,
-                negativePrompt: settings.negativePrompt,
+                positiveSuffix: useComfyUiPrompts ? settings.comfyPositiveSuffix : settings.positiveSuffix,
+                negativePrompt: useComfyUiPrompts ? settings.comfyNegativePrompt : settings.negativePrompt,
             });
             if (!uid && prompt.directive.kind !== 'scene_snapshot') {
                 return { ok: false, status: 'rejected', code: 'image_character_required', message: '人物图片需要关联一位已确认的成年角色。' };

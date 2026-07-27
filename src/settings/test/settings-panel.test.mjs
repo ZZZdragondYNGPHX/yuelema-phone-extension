@@ -579,3 +579,57 @@ test('生图设置只保存非机密配置，API Key 清空后留在独立浏览
     assert.equal(store.exportJson().includes('image-browser-cache-secret'), false);
     assert.ok(feedback.some((message) => message.includes('生图 API Key 已保存到当前浏览器')));
 });
+
+test('生图供应商按钮只显示对应专属面板并独立保存 ComfyUI 参数', async () => {
+    const imageGenerationClient = {
+        async fetchComfyUIResources({ baseUrl }) {
+            assert.equal(baseUrl, 'http://127.0.0.1:8188');
+            return {
+                models: ['portrait.safetensors'],
+                samplers: ['euler', 'dpmpp_2m'],
+                schedulers: ['normal', 'karras'],
+                vae: ['vae.safetensors'],
+                clips: ['clip-l.safetensors'],
+            };
+        },
+    };
+    const { panel, store, feedback } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), {
+        view: 'image_generation',
+        imageGenerationClient,
+    });
+    const keyPanel = panel.querySelectorAll('.yl-image-provider-panel').find((node) => node.getAttribute('id') === 'yl-key-provider-panel');
+    const comfyPanel = panel.querySelectorAll('.yl-image-provider-panel').find((node) => node.getAttribute('id') === 'yl-comfyui-provider-panel');
+    const naiTab = byName(panel, 'image-provider-novelai');
+    const comfyTab = byName(panel, 'image-provider-comfyui');
+    assert.equal(naiTab.getAttribute('aria-selected'), 'true');
+    assert.equal(keyPanel.hidden, false);
+    assert.equal(comfyPanel.hidden, true);
+    assert.match(keyPanel.textContent, /NAI 专属配置/u);
+
+    await click(comfyTab);
+    assert.equal(comfyTab.getAttribute('aria-selected'), 'true');
+    assert.equal(keyPanel.hidden, true);
+    assert.equal(comfyPanel.hidden, false);
+    assert.equal(byName(panel, 'image-generation-api-mode').value, 'comfyui');
+    assert.equal(byAria(panel, '生图 API Key').parentNode.parentNode.hidden, true, 'ComfyUI 不得显示 Key 专属面板');
+
+    byAria(panel, 'ComfyUI 前置正面提示词').value = 'comfy prefix';
+    byAria(panel, 'ComfyUI 固定负面提示词').value = 'comfy negative';
+    await click(button(panel, '连接并刷新 ComfyUI 数据'));
+    assert.equal(byAria(panel, 'ComfyUI 模型').value, 'portrait.safetensors');
+    assert.ok(feedback.some((message) => message.includes('ComfyUI 数据已刷新')));
+    await click(button(panel, '保存生图设置'));
+
+    const saved = store.snapshot().imageGeneration;
+    assert.equal(saved.apiMode, 'comfyui');
+    assert.equal(saved.comfyModel, 'portrait.safetensors');
+    assert.equal(saved.comfyPositivePrefix, 'comfy prefix');
+    assert.equal(saved.comfyNegativePrompt, 'comfy negative');
+    assert.equal(saved.baseUrl, 'https://image.novelai.net', 'NAI 连接必须保持独立');
+    assert.equal(saved.positivePrefix, '', 'NAI 提示词必须保持独立');
+
+    const keyboard = keyEvent('ArrowLeft');
+    comfyTab.dispatchEvent(keyboard);
+    assert.equal(keyboard.defaultPrevented, true);
+    assert.equal(byName(panel, 'image-provider-openai').getAttribute('aria-selected'), 'true');
+});

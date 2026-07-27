@@ -173,19 +173,28 @@ function normalizeRequest(input) {
     const apiMode = settings.apiMode === 'openai_compatible'
         ? 'openai_compatible'
         : settings.apiMode === 'novelai' ? 'novelai' : settings.apiMode === 'comfyui' ? 'comfyui' : fail('INVALID_IMAGE_REQUEST', '生图接口模式无效。');
+    const comfy = apiMode === 'comfyui';
     return {
         positivePrompt: cleanText(input.positivePrompt, '正面提示词', 32_000),
         negativePrompt: cleanText(input.negativePrompt ?? '', '负面提示词', 12_000, { allowEmpty: true }),
         signal: input.signal,
         timeoutMs: input.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : cleanInteger(input.timeoutMs, '超时时间', 1_000, 300_000),
         settings: {
-            apiMode, presetId: cleanText(settings.presetId, '生图连接 ID', 96), baseUrl: safeBaseUrl(settings.baseUrl),
-            endpointPath: safeEndpointPath(settings.endpointPath), model: cleanText(settings.model, '生图模型', 160),
-            sampler: cleanText(settings.sampler, '采样器', 80), noiseSchedule: cleanText(settings.noiseSchedule, '噪点表', 80),
-            width: cleanInteger(settings.width, '宽度', 64, 4096), height: cleanInteger(settings.height, '高度', 64, 4096),
-            steps: cleanInteger(settings.steps, '步数', 1, 100), seed: cleanInteger(settings.seed, '种子', 0, 0xffffffff),
-            guidance: cleanNumber(settings.guidance, 'Prompt Guidance', 0, 30), guidanceRescale: cleanNumber(settings.guidanceRescale, 'Guidance Rescale', 0, 1),
+            apiMode, presetId: cleanText(settings.presetId, '生图连接 ID', 96),
+            baseUrl: safeBaseUrl(comfy ? (settings.comfyBaseUrl ?? settings.baseUrl) : settings.baseUrl),
+            endpointPath: safeEndpointPath(settings.endpointPath),
+            model: cleanText(comfy ? (settings.comfyModel ?? settings.model) : settings.model, '生图模型', 160, { allowEmpty: comfy }),
+            sampler: cleanText(comfy ? (settings.comfySampler ?? settings.sampler) : settings.sampler, '采样器', 80),
+            noiseSchedule: cleanText(comfy ? (settings.comfyScheduler ?? settings.noiseSchedule) : settings.noiseSchedule, '噪点表', 80),
+            width: cleanInteger(comfy ? (settings.comfyWidth ?? settings.width) : settings.width, '宽度', 64, 4096),
+            height: cleanInteger(comfy ? (settings.comfyHeight ?? settings.height) : settings.height, '高度', 64, 4096),
+            steps: cleanInteger(comfy ? (settings.comfySteps ?? settings.steps) : settings.steps, '步数', 1, 100),
+            seed: cleanInteger(comfy ? (settings.comfySeed ?? settings.seed) : settings.seed, '种子', 0, 0xffffffff),
+            guidance: cleanNumber(comfy ? (settings.comfyGuidance ?? settings.guidance) : settings.guidance, 'Prompt Guidance', 0, 30),
+            guidanceRescale: cleanNumber(settings.guidanceRescale, 'Guidance Rescale', 0, 1),
             qualityToggle: settings.qualityToggle !== false, variety: settings.variety === true,
+            comfyVae: cleanText(settings.comfyVae ?? '', 'ComfyUI VAE', 160, { allowEmpty: true }),
+            comfyClip: cleanText(settings.comfyClip ?? '', 'ComfyUI CLIP', 160, { allowEmpty: true }),
             comfyWorkflow: cleanWorkflow(settings.comfyWorkflow ?? ''),
         },
     };
@@ -259,6 +268,8 @@ function buildComfyWorkflow(settings, positivePrompt, negativePrompt) {
         '%cfg_scale%': settings.guidance, '%cfg%': settings.guidance, '%cfg_rescale%': settings.guidanceRescale,
         '%seed%': settings.seed, '%sampler_name%': settings.sampler, '%scheduler%': settings.noiseSchedule,
         '%MODEL_NAME%': settings.model, '%model%': settings.model,
+        '%VAE_NAME%': settings.comfyVae, '%vae_name%': settings.comfyVae,
+        '%CLIP_NAME%': settings.comfyClip, '%clip_name%': settings.comfyClip,
     };
     return replaceWorkflowPlaceholders(parseComfyWorkflow(settings.comfyWorkflow), replacements);
 }
@@ -318,9 +329,52 @@ async function generateWithComfyUI(fetchImpl, request, signal) {
     return parseResponse(output);
 }
 
+function comfyObjectOptions(objectInfo, classTypes, inputNames) {
+    const values = [];
+    for (const classType of classTypes) {
+        for (const inputName of inputNames) {
+            const descriptor = objectInfo?.[classType]?.input?.required?.[inputName]
+                ?? objectInfo?.[classType]?.input?.optional?.[inputName];
+            const candidates = Array.isArray(descriptor) && Array.isArray(descriptor[0]) ? descriptor[0] : [];
+            for (const value of candidates) {
+                if (typeof value === 'string' && value.trim() && !values.includes(value.trim())) values.push(value.trim());
+            }
+        }
+    }
+    return Object.freeze(values);
+}
+
+async function fetchComfyUIResources(fetchImpl, baseUrl, signal) {
+    const response = await fetchImpl(`${safeBaseUrl(baseUrl)}/object_info`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal,
+    });
+    if (!response?.ok) {
+        fail('IMAGE_HTTP_ERROR', '无法读取 ComfyUI 资源列表。', {
+            retryable: response?.status >= 500,
+            status: Number.isInteger(response?.status) ? response.status : undefined,
+        });
+    }
+    const objectInfo = await readJsonResponse(response);
+    if (!objectInfo || typeof objectInfo !== 'object' || Array.isArray(objectInfo)) {
+        fail('INVALID_IMAGE_RESPONSE', 'ComfyUI object_info 响应无效。');
+    }
+    return Object.freeze({
+        models: comfyObjectOptions(objectInfo, ['CheckpointLoaderSimple', 'CheckpointLoader', 'UNETLoader'], ['ckpt_name', 'unet_name']),
+        samplers: comfyObjectOptions(objectInfo, ['KSampler', 'KSamplerAdvanced'], ['sampler_name']),
+        schedulers: comfyObjectOptions(objectInfo, ['KSampler', 'KSamplerAdvanced'], ['scheduler']),
+        vae: comfyObjectOptions(objectInfo, ['VAELoader'], ['vae_name']),
+        clips: comfyObjectOptions(objectInfo, ['CLIPLoader', 'DualCLIPLoader'], ['clip_name', 'clip_name1', 'clip_name2']),
+    });
+}
+
 export function createImageGenerationClient({ fetchImpl } = {}) {
     if (typeof fetchImpl !== 'function') throw new TypeError('image generation client requires injected fetchImpl');
     return Object.freeze({
+        fetchComfyUIResources({ baseUrl, signal } = {}) {
+            return fetchComfyUIResources(fetchImpl, baseUrl, signal);
+        },
         async generate(input) {
             const request = normalizeRequest(input);
             const key = request.settings.apiMode === 'comfyui' ? '' : requireSessionKey(request.settings.presetId);

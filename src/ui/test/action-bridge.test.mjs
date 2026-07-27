@@ -941,6 +941,44 @@ test('conversation image bridge composes immutable drawing prompts and never wri
     assert.deepEqual(calls.map(([name]) => name), ['get']);
 });
 
+test('conversation image bridge uses ComfyUI-specific prompts without borrowing NAI prompt settings', async () => {
+    let request;
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null },
+        mvu: createMvu({ initialState: state() }).mvu,
+        settingsStore: {
+            getImageGenerationSettings() {
+                return {
+                    enabled: true,
+                    apiMode: 'comfyui',
+                    positivePrefix: 'nai prefix',
+                    positiveSuffix: 'nai suffix',
+                    negativePrompt: 'nai negative',
+                    comfyPositivePrefix: 'comfy prefix',
+                    comfyPositiveSuffix: 'comfy suffix',
+                    comfyNegativePrompt: 'comfy negative',
+                };
+            },
+        },
+        imageGenerationClient: {
+            async generate(input) {
+                request = input;
+                return { kind: 'data_url', mimeType: 'image/png', src: 'data:image/png;base64,iVBORw0KGgo=' };
+            },
+        },
+    });
+    const result = await bridge.generateConversationImage({
+        kind: 'forum',
+        conversationId: 'post_city',
+        messageId: 'message_city_1',
+        directive: { kind: 'scene_snapshot', scene: 'rainy city street' },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(request.positivePrompt, 'comfy prefix, rainy city street, comfy suffix');
+    assert.equal(request.negativePrompt, 'comfy negative');
+    assert.doesNotMatch(request.positivePrompt, /nai/u);
+});
+
 test('conversation image bridge blocks disabled requests and never exposes unexpected client errors', async () => {
     const { mvu, calls } = createMvu({ initialState: state() });
     let enabled = false;
