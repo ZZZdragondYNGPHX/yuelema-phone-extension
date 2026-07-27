@@ -4553,10 +4553,12 @@
     .yl-phone-extension[data-ui-layout="desktop"] .yl-page-character_creator .yl-character-journey { display: none; }
 }
 /* 三列断点（§7.3）：≥1080 视口面板达最大宽，私聊工作台升级为真 master-detail——
-   最左常驻会话列（复用消息页行组件）+ 会话主列 + 公开资料上下文栏。
+   最左常驻会话列只保留头像 + 姓名，把横向空间优先交给会话主列；公开资料栏保持次要窄列。
    760–1080 间会话列保持 display:none，上下文栏维持 .62fr 第二列。 */
 @media (min-width: 1080px) {
-    .yl-phone-extension[data-ui-layout="desktop"] .yl-private-chat-workbench { grid-template-columns: minmax(236px, .54fr) minmax(0, 1.46fr) minmax(248px, .56fr); }
+    .yl-phone-extension[data-ui-layout="desktop"] .yl-private-chat-workbench {
+        grid-template-columns: minmax(136px, 148px) minmax(0, 1fr) minmax(204px, 216px);
+    }
     .yl-phone-extension[data-ui-layout="desktop"] .yl-chat-session-rail {
         position: sticky;
         top: var(--yl-space-2);
@@ -4571,6 +4573,23 @@
         background: var(--yl-surface-2);
         box-shadow: var(--yl-shadow-1);
     }
+    .yl-phone-extension[data-ui-layout="desktop"] .yl-chat-session-rail .yl-chat-session {
+        gap: var(--yl-space-2);
+        min-height: 56px;
+        padding: var(--yl-space-2);
+    }
+    .yl-phone-extension[data-ui-layout="desktop"] .yl-chat-session-rail .yl-session-avatar {
+        width: 44px;
+        height: 44px;
+        font-size: var(--yl-type-body);
+    }
+    .yl-phone-extension[data-ui-layout="desktop"] .yl-chat-session-rail :is(
+        .yl-session-preview,
+        .yl-session-meta,
+        .yl-session-pin,
+        .yl-session-status
+    ) { display: none; }
+    .yl-phone-extension[data-ui-layout="desktop"] .yl-chat-session-rail .yl-session-copy { gap: 0; }
     .yl-phone-extension[data-ui-layout="desktop"] .yl-chat-session-rail .yl-chat-session.is-active {
         border-color: color-mix(in srgb, var(--yl-accent) 45%, transparent);
         background: var(--yl-accent-soft);
