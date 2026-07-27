@@ -13,12 +13,13 @@ test('image directive accepts only the closed kind/scene contract', () => {
 
 test('prompt composition preserves the required order and separate negative prompt', () => {
     const result = composeImagePrompt({
-        positivePrefix: 'best quality', coreDna: 'black hair; blue eyes', outfitDna: 'white shirt',
+        positivePrefix: 'best quality\nmasterpiece', coreDna: 'black hair; blue eyes', outfitDna: 'white shirt',
         directive: { kind: 'share_photo', scene: 'cafe window, candid smile' },
-        positiveSuffix: 'soft lighting', negativePrompt: 'low quality',
+        positiveSuffix: 'soft lighting', negativePrompt: 'low quality\nbad anatomy',
     });
-    assert.equal(result.positivePrompt, 'best quality, black hair; blue eyes, white shirt, cafe window, candid smile, soft lighting');
-    assert.equal(result.negativePrompt, 'low quality');
+    assert.equal(result.positivePrompt, 'best quality\nmasterpiece, black hair; blue eyes, white shirt, cafe window, candid smile, soft lighting');
+    assert.equal(result.negativePrompt, 'low quality\nbad anatomy');
+    assert.throws(() => composeImagePrompt({ positivePrefix: 'safe\u000bunsafe', directive: { kind: 'selfie', scene: 'portrait' } }));
     assert.match(formatImageDirective(result.directive), /"scene"/u);
 });
 

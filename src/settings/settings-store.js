@@ -403,10 +403,13 @@ export function defaultImageGenerationSettings() {
     };
 }
 
-function cleanImageText(value, field, maxLength, { allowEmpty = true } = {}) {
+function cleanImageText(value, field, maxLength, { allowEmpty = true, allowLineBreaks = false } = {}) {
     if (typeof value !== 'string') fail('INVALID_IMAGE_GENERATION', field + '必须是文本。');
     const cleaned = value.trim();
-    if ((!allowEmpty && !cleaned) || cleaned.length > maxLength || /[\u0000-\u001F\u007F]/.test(cleaned)) fail('INVALID_IMAGE_GENERATION', field + '长度或字符不符合要求。');
+    const unsafeControls = allowLineBreaks
+        ? /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u
+        : /[\u0000-\u001F\u007F]/u;
+    if ((!allowEmpty && !cleaned) || cleaned.length > maxLength || unsafeControls.test(cleaned)) fail('INVALID_IMAGE_GENERATION', field + '长度或字符不符合要求。');
     return cleaned;
 }
 
@@ -494,9 +497,9 @@ export function normalizeImageGenerationSettings(input) {
         seed: cleanInteger(value.seed, '种子', 0, 4294967295),
         qualityToggle: value.qualityToggle,
         variety: value.variety,
-        positivePrefix: cleanImageText(value.positivePrefix, '前置正面提示词', 4000),
-        positiveSuffix: cleanImageText(value.positiveSuffix, '后置正面提示词', 4000),
-        negativePrompt: cleanImageText(value.negativePrompt, '固定负面提示词', 4000),
+        positivePrefix: cleanImageText(value.positivePrefix, '前置正面提示词', 4000, { allowLineBreaks: true }),
+        positiveSuffix: cleanImageText(value.positiveSuffix, '后置正面提示词', 4000, { allowLineBreaks: true }),
+        negativePrompt: cleanImageText(value.negativePrompt, '固定负面提示词', 4000, { allowLineBreaks: true }),
         comfyBaseUrl,
         comfyModel: cleanImageText(value.comfyModel, 'ComfyUI 模型', 160),
         comfySampler: cleanImageText(value.comfySampler, 'ComfyUI 采样器', 80, { allowEmpty: false }),
@@ -508,9 +511,9 @@ export function normalizeImageGenerationSettings(input) {
         comfyHeight: cleanInteger(value.comfyHeight, 'ComfyUI 图片高度', 256, 2048),
         comfySteps: cleanInteger(value.comfySteps, 'ComfyUI 步数', 1, 100),
         comfySeed: cleanInteger(value.comfySeed, 'ComfyUI 种子', 0, 4294967295),
-        comfyPositivePrefix: cleanImageText(value.comfyPositivePrefix, 'ComfyUI 前置正面提示词', 4000),
-        comfyPositiveSuffix: cleanImageText(value.comfyPositiveSuffix, 'ComfyUI 后置正面提示词', 4000),
-        comfyNegativePrompt: cleanImageText(value.comfyNegativePrompt, 'ComfyUI 固定负面提示词', 4000),
+        comfyPositivePrefix: cleanImageText(value.comfyPositivePrefix, 'ComfyUI 前置正面提示词', 4000, { allowLineBreaks: true }),
+        comfyPositiveSuffix: cleanImageText(value.comfyPositiveSuffix, 'ComfyUI 后置正面提示词', 4000, { allowLineBreaks: true }),
+        comfyNegativePrompt: cleanImageText(value.comfyNegativePrompt, 'ComfyUI 固定负面提示词', 4000, { allowLineBreaks: true }),
         comfyWorkflow: cleanImageWorkflow(value.comfyWorkflow),
         conversationSettings: normalizedConversations,
     };

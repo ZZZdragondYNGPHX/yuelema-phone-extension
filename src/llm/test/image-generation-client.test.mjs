@@ -39,9 +39,11 @@ test.afterEach(() => resetPersistentKeyStorage());
 test('client sends injected request and accepts JSON base64 image', async () => {
     let request;
     const client = createImageGenerationClient({ fetchImpl: async (url, init) => { request = { url, init }; return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from(png).toString('base64') }] }), { status: 200, headers: { 'content-type': 'application/json' } }); } });
-    const result = await client.generate({ settings, positivePrompt: 'best quality', negativePrompt: 'bad' });
+    const result = await client.generate({ settings, positivePrompt: 'best quality\nmasterpiece', negativePrompt: 'bad\nlowres' });
     assert.equal(request.url, 'https://img.example.test/v1/images/generations');
     assert.match(request.init.headers.Authorization, /^Bearer /u);
+    assert.equal(JSON.parse(request.init.body).prompt, 'best quality\nmasterpiece');
+    assert.equal(JSON.parse(request.init.body).negative_prompt, 'bad\nlowres');
     assert.match(result.src, /^data:image\/png;base64,/u);
 });
 

@@ -185,6 +185,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let refreshing = false;
     let extensionUpdatePending = false;
     let activeMessageSessionUid = '';
+    let renderedPrivateChatSessionUid = '';
     let messageSearchQuery = '';
     let chatMoreMenuSessionUid = '';
     let chatConfirmationSessionUid = '';
@@ -2060,6 +2061,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return section;
     }
     function renderPage() {
+        const privateChatScroll = activePage === 'private_chat'
+            && renderedPrivateChatSessionUid === activeMessageSessionUid
+            && content.querySelector?.('.yl-private-chat-screen')
+            ? {
+                top: Math.max(0, Number(content.scrollTop) || 0),
+                followBottom: (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0) - (Number(content.scrollTop) || 0) <= 24,
+            }
+            : null;
         recordLauncherDiagnostic('render_started', {
             page: activePage,
             viewStatus: currentView?.status ?? 'unknown',
@@ -2108,6 +2117,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'settings_privacy') page.appendChild(ctx.buildPrivacySettings());
         else if (activePage === 'candidate_detail') page.appendChild(ctx.buildCandidateDetail());
         content.appendChild(page);
+        renderedPrivateChatSessionUid = activePage === 'private_chat' ? activeMessageSessionUid : '';
+        if (privateChatScroll) {
+            const bottom = Math.max(0, (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0));
+            content.scrollTop = privateChatScroll.followBottom ? bottom : Math.min(privateChatScroll.top, bottom);
+        }
         for (const [id, button] of navButtons) {
             const selected = id === primaryPage(activePage);
             button.classList.toggle('is-active', selected);
