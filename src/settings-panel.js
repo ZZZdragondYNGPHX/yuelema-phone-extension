@@ -10,6 +10,7 @@ import {
     unlockSessionKey,
 } from './llm/session-key-store.js';
 import { toPublicLlmError } from './llm/openai-compatible-client.js';
+import { toPublicImageGenerationError } from './llm/image-generation-client.js';
 
 const FUNCTION_LABELS = Object.freeze({
     chat: '私聊',
@@ -257,7 +258,7 @@ function readPromptBundle(rawJson) {
  * Builds the settings console. Connection configuration stays export-safe, while
  * API Keys live only in the separate browser-local key cache and are never shown.
  */
-export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedback, onRerender, onNavigate, view, contentMode, dialogController, openDialog = null }) {
+export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationClient = null, signal, onFeedback, onRerender, onNavigate, view, contentMode, dialogController, openDialog = null }) {
     const panel = element('section', { className: 'yl-settings-panel' });
     const activeView = normalizeSettingsView(view);
     const activeContentMode = normalizeContentMode(contentMode);
@@ -807,10 +808,33 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
 
         const enabled = element('input', { className: 'yl-settings-checkbox', type: 'checkbox', checked: image.enabled, name: 'image-generation-enabled', ariaLabel: '启用生图接口' });
         section.appendChild(field('启用生图接口', switchShell(enabled)));
-        const apiMode = selectWithOptions([
-            { label: 'NovelAI', value: 'novelai' },
-            { label: 'OpenAI-compatible', value: 'openai_compatible' },
-        ], image.apiMode, '生图接口模式', 'image-generation-api-mode');
+
+        const apiMode = element('input', { type: 'hidden', name: 'image-generation-api-mode', value: image.apiMode });
+        section.appendChild(apiMode);
+        const providerTabs = element('div', { className: 'yl-image-provider-tabs' });
+        providerTabs.setAttribute('role', 'tablist');
+        providerTabs.setAttribute('aria-label', '生图接口模式');
+        const providerButtons = new Map();
+        for (const provider of [
+            { id: 'novelai', label: 'NAI' },
+            { id: 'openai_compatible', label: 'OpenAI' },
+            { id: 'comfyui', label: 'ComfyUI' },
+        ]) {
+            const button = element('button', {
+                className: 'yl-image-provider-tab',
+                id: `yl-image-provider-tab-${provider.id}`,
+                type: 'button',
+                text: provider.label,
+                name: `image-provider-${provider.id.replace('_compatible', '')}`,
+                ariaLabel: `${provider.label} 专属配置`,
+            });
+            button.setAttribute('role', 'tab');
+            button.setAttribute('aria-controls', provider.id === 'comfyui' ? 'yl-comfyui-provider-panel' : 'yl-key-provider-panel');
+            providerButtons.set(provider.id, button);
+            providerTabs.appendChild(button);
+        }
+        section.appendChild(providerTabs);
+
         const presetId = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-preset-id', value: image.presetId, maxLength: 96, ariaLabel: '生图密钥预设 ID' });
         const apiKey = element('input', { className: 'yl-settings-control', type: 'password', name: 'image-generation-api-key', autocomplete: 'off', maxLength: 4096, placeholder: '输入后仅保存到当前浏览器', ariaLabel: '生图 API Key' });
         const keyStatus = element('p', { className: 'yl-image-generation-key-status' });
@@ -830,17 +854,107 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         const positivePrefix = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-positive-prefix', value: image.positivePrefix, maxLength: 4000, ariaLabel: '前置正面提示词' });
         const positiveSuffix = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-positive-suffix', value: image.positiveSuffix, maxLength: 4000, ariaLabel: '后置正面提示词' });
         const negativePrompt = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-negative-prompt', value: image.negativePrompt, maxLength: 4000, ariaLabel: '固定负面提示词' });
-        const fields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
-        append(fields, [
-            field('接口模式', apiMode), field('生图密钥预设 ID', presetId), field('生图站点', baseUrl), field('生图接口路径', endpointPath),
+
+        const keyProviderPanel = element('div', { className: 'yl-image-provider-panel', id: 'yl-key-provider-panel' });
+        keyProviderPanel.setAttribute('role', 'tabpanel');
+        const keyProviderTitle = element('h3', { className: 'yl-image-provider-title' });
+        const keyProviderDescription = element('p', { className: 'yl-phone-page-description' });
+        append(keyProviderPanel, [keyProviderTitle, keyProviderDescription]);
+        const keyFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
+        append(keyFields, [
+            field('生图密钥预设 ID', presetId), field('生图站点', baseUrl), field('生图接口路径', endpointPath),
             field('模型', model), field('采样器', sampler), field('噪点表', noiseSchedule), field('Guidance', guidance),
             field('Guidance Rescale', guidanceRescale), field('宽度', width), field('高度', height), field('步数', steps), field('种子（0 为随机）', seed),
             field('质量标签', switchShell(qualityToggle)), field('随机性', switchShell(variety)),
             field('前置正面提示词', positivePrefix), field('后置正面提示词', positiveSuffix), field('固定负面提示词', negativePrompt),
         ]);
-        section.appendChild(fields);
-        section.appendChild(field('生图 API Key', apiKey));
-        section.appendChild(keyStatus);
+        keyProviderPanel.appendChild(keyFields);
+        keyProviderPanel.appendChild(field('生图 API Key', apiKey));
+        keyProviderPanel.appendChild(keyStatus);
+
+        const comfyBaseUrl = element('input', { className: 'yl-settings-control', type: 'url', name: 'image-generation-comfy-base-url', value: image.comfyBaseUrl, maxLength: 512, ariaLabel: 'ComfyUI 地址' });
+        const resourceSelect = (value, ariaLabel, name, emptyLabel) => selectWithOptions(
+            [{ label: value || emptyLabel, value: value || '' }],
+            value || '',
+            ariaLabel,
+            name,
+        );
+        const comfyModel = resourceSelect(image.comfyModel, 'ComfyUI 模型', 'image-generation-comfy-model', '未选择模型');
+        const comfySampler = resourceSelect(image.comfySampler, 'ComfyUI 采样器', 'image-generation-comfy-sampler', 'euler');
+        const comfyScheduler = resourceSelect(image.comfyScheduler, 'ComfyUI 调度器', 'image-generation-comfy-scheduler', 'normal');
+        const comfyVae = resourceSelect(image.comfyVae, 'ComfyUI VAE', 'image-generation-comfy-vae', '不指定 VAE');
+        const comfyClip = resourceSelect(image.comfyClip, 'ComfyUI CLIP', 'image-generation-comfy-clip', '不指定 CLIP');
+        const comfyGuidance = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-comfy-guidance', value: String(image.comfyGuidance), min: 0, max: 30, ariaLabel: 'ComfyUI CFG' });
+        const comfyWidth = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-comfy-width', value: String(image.comfyWidth), min: 256, max: 2048, ariaLabel: 'ComfyUI 图片宽度' });
+        const comfyHeight = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-comfy-height', value: String(image.comfyHeight), min: 256, max: 2048, ariaLabel: 'ComfyUI 图片高度' });
+        const comfySteps = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-comfy-steps', value: String(image.comfySteps), min: 1, max: 100, ariaLabel: 'ComfyUI 步数' });
+        const comfySeed = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-comfy-seed', value: String(image.comfySeed), min: 0, max: 4294967295, ariaLabel: 'ComfyUI 种子' });
+        const comfyPositivePrefix = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-comfy-positive-prefix', value: image.comfyPositivePrefix, maxLength: 4000, ariaLabel: 'ComfyUI 前置正面提示词' });
+        const comfyPositiveSuffix = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-comfy-positive-suffix', value: image.comfyPositiveSuffix, maxLength: 4000, ariaLabel: 'ComfyUI 后置正面提示词' });
+        const comfyNegativePrompt = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 3, name: 'image-generation-comfy-negative-prompt', value: image.comfyNegativePrompt, maxLength: 4000, ariaLabel: 'ComfyUI 固定负面提示词' });
+        const comfyWorkflow = element('textarea', {
+            className: 'yl-settings-control yl-settings-textarea',
+            rows: 8,
+            name: 'image-generation-comfy-workflow',
+            value: image.comfyWorkflow,
+            maxLength: 200000,
+            placeholder: '留空使用基础工作流；或粘贴 ComfyUI “Save (API Format)” 导出的 JSON',
+            ariaLabel: 'ComfyUI API 工作流 JSON',
+        });
+
+        const comfyProviderPanel = element('div', { className: 'yl-image-provider-panel yl-comfyui-provider-panel', id: 'yl-comfyui-provider-panel' });
+        comfyProviderPanel.setAttribute('role', 'tabpanel');
+        append(comfyProviderPanel, [
+            element('h3', { className: 'yl-image-provider-title', text: 'ComfyUI 专属配置' }),
+            element('p', { className: 'yl-phone-page-description', text: '独立保存 ComfyUI 地址与引擎参数；不读取 NAI/OpenAI 的接口路径或 API Key。' }),
+        ]);
+        const comfyConnectionFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
+        comfyConnectionFields.appendChild(field('本地或 HTTPS ComfyUI 地址', comfyBaseUrl));
+        comfyProviderPanel.appendChild(comfyConnectionFields);
+        const resourceStatus = element('p', { className: 'yl-image-generation-key-status', text: '连接后可从 /object_info 读取模型、采样器、调度器、VAE 与 CLIP。' });
+        const replaceResourceOptions = (select, values, emptyLabel) => {
+            const selected = String(select.value ?? '');
+            const choices = selected && !values.includes(selected) ? [selected, ...values] : values;
+            select.replaceChildren();
+            if (!selected || !choices.length) select.appendChild(element('option', { text: emptyLabel, value: '' }));
+            for (const value of choices) select.appendChild(element('option', { text: value, value }));
+            select.value = choices.includes(selected) ? selected : (choices[0] ?? '');
+        };
+        const refreshResources = actionButton('连接并刷新 ComfyUI 数据', async () => {
+            if (typeof imageGenerationClient?.fetchComfyUIResources !== 'function') {
+                onFeedback('当前浏览器未提供 ComfyUI 资源读取能力。');
+                return;
+            }
+            resourceStatus.textContent = '正在连接 ComfyUI 并读取 /object_info…';
+            try {
+                const resources = await imageGenerationClient.fetchComfyUIResources({ baseUrl: comfyBaseUrl.value, signal });
+                replaceResourceOptions(comfyModel, resources.models, '未读取到模型');
+                replaceResourceOptions(comfySampler, resources.samplers, '未读取到采样器');
+                replaceResourceOptions(comfyScheduler, resources.schedulers, '未读取到调度器');
+                replaceResourceOptions(comfyVae, resources.vae, '不指定 VAE');
+                replaceResourceOptions(comfyClip, resources.clips, '不指定 CLIP');
+                resourceStatus.textContent = `已读取：模型 ${resources.models.length}、采样器 ${resources.samplers.length}、调度器 ${resources.schedulers.length}、VAE ${resources.vae.length}、CLIP ${resources.clips.length}。`;
+                onFeedback('ComfyUI 数据已刷新；保存后用于后续生图。');
+            } catch (error) {
+                const projected = toPublicImageGenerationError(error);
+                resourceStatus.textContent = 'ComfyUI 数据读取失败，请检查服务、地址与 CORS。';
+                onFeedback(projected.message);
+            }
+        }, signal, { name: 'image-generation-comfy-refresh' });
+        comfyProviderPanel.appendChild(refreshResources);
+        comfyProviderPanel.appendChild(resourceStatus);
+        const comfyFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
+        append(comfyFields, [
+            field('模型', comfyModel), field('采样器', comfySampler), field('调度器', comfyScheduler),
+            field('VAE', comfyVae), field('CLIP', comfyClip), field('CFG', comfyGuidance),
+            field('宽度', comfyWidth), field('高度', comfyHeight), field('步数', comfySteps), field('种子（0 为随机）', comfySeed),
+            field('固定前置提示词', comfyPositivePrefix), field('固定后置提示词', comfyPositiveSuffix),
+            field('负面提示词', comfyNegativePrompt), field('工作流 JSON', comfyWorkflow),
+        ]);
+        comfyProviderPanel.appendChild(comfyFields);
+        section.appendChild(keyProviderPanel);
+        section.appendChild(comfyProviderPanel);
+
         const keyActions = element('div', { className: 'yl-settings-actions yl-image-generation-key-actions' });
         const refreshKeyStatus = () => {
             const id = String(presetId.value ?? '').trim();
@@ -877,6 +991,43 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
         refreshKeyStatus();
         listen(presetId, presetId, 'input', refreshKeyStatus, signal);
 
+        const setProvider = (provider) => {
+            apiMode.value = provider;
+            const comfy = provider === 'comfyui';
+            keyProviderPanel.hidden = comfy;
+            comfyProviderPanel.hidden = !comfy;
+            keyActions.hidden = comfy;
+            keyProviderTitle.textContent = provider === 'novelai' ? 'NAI 专属配置' : 'OpenAI-compatible 专属配置';
+            keyProviderDescription.textContent = provider === 'novelai'
+                ? '仅显示 NovelAI 的连接、采样、尺寸、提示词与浏览器 Key 配置。'
+                : '仅显示 OpenAI-compatible 的接口、模型、尺寸、提示词与浏览器 Key 配置。';
+            keyProviderPanel.setAttribute('aria-labelledby', `yl-image-provider-tab-${provider}`);
+            comfyProviderPanel.setAttribute('aria-labelledby', 'yl-image-provider-tab-comfyui');
+            for (const [id, button] of providerButtons) {
+                const active = id === provider;
+                button.setAttribute('aria-selected', String(active));
+                button.setAttribute('tabindex', active ? '0' : '-1');
+                button.className = `yl-image-provider-tab${active ? ' is-active' : ''}`;
+            }
+        };
+        for (const [provider, button] of providerButtons) {
+            listen(button, button, 'click', () => setProvider(provider), signal);
+            listen(button, button, 'keydown', (event) => {
+                const providers = [...providerButtons.keys()];
+                const current = providers.indexOf(apiMode.value);
+                let next = current;
+                if (event.key === 'ArrowRight') next = (current + 1) % providers.length;
+                else if (event.key === 'ArrowLeft') next = (current - 1 + providers.length) % providers.length;
+                else if (event.key === 'Home') next = 0;
+                else if (event.key === 'End') next = providers.length - 1;
+                else return;
+                event.preventDefault();
+                setProvider(providers[next]);
+                providerButtons.get(providers[next])?.focus?.();
+            }, signal);
+        }
+        setProvider(image.apiMode);
+
         const formSettings = () => ({
             enabled: Boolean(enabled.checked), presetId: presetId.value, apiMode: apiMode.value, baseUrl: baseUrl.value, endpointPath: endpointPath.value,
             model: model.value, sampler: sampler.value, noiseSchedule: noiseSchedule.value,
@@ -884,6 +1035,13 @@ export function buildSettingsPanel({ settingsStore, llmClient, signal, onFeedbac
             width: numberValue(width, image.width), height: numberValue(height, image.height), steps: numberValue(steps, image.steps), seed: numberValue(seed, image.seed),
             qualityToggle: Boolean(qualityToggle.checked), variety: Boolean(variety.checked),
             positivePrefix: positivePrefix.value, positiveSuffix: positiveSuffix.value, negativePrompt: negativePrompt.value,
+            comfyBaseUrl: comfyBaseUrl.value, comfyModel: comfyModel.value, comfySampler: comfySampler.value, comfyScheduler: comfyScheduler.value,
+            comfyVae: comfyVae.value, comfyClip: comfyClip.value,
+            comfyGuidance: numberValue(comfyGuidance, image.comfyGuidance),
+            comfyWidth: numberValue(comfyWidth, image.comfyWidth), comfyHeight: numberValue(comfyHeight, image.comfyHeight),
+            comfySteps: numberValue(comfySteps, image.comfySteps), comfySeed: numberValue(comfySeed, image.comfySeed),
+            comfyPositivePrefix: comfyPositivePrefix.value, comfyPositiveSuffix: comfyPositiveSuffix.value, comfyNegativePrompt: comfyNegativePrompt.value,
+            comfyWorkflow: comfyWorkflow.value,
             conversationSettings: image.conversationSettings,
         });
         const save = actionButton('保存生图设置', async () => updateSettings(

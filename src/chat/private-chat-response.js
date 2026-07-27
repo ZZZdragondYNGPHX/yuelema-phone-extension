@@ -165,15 +165,14 @@ function normalizeImageDirectives(value, replyCount) {
 
 function normalizeRelationship(value) {
     try {
-        assertExactRecord(value, RELATIONSHIP_FIELDS);
+        assertExactRecord(value, [], RELATIONSHIP_FIELDS);
         const normalized = {};
         for (const field of RELATIONSHIP_FIELDS) {
-            const score = ownEnumerableData(value, field);
-            if (!Number.isInteger(score) || score < -10 || score > 10) {
-                // 硬线：只报字段名与允许区间，绝不带出模型给的具体增量数值。
-                fail('private_chat_response_relationship_invalid', { field: `relationship.${field}`, expected: '-10..10 整数增量', hint: '关系增量校验失败（具体数值不进入诊断详情）' });
-            }
-            normalized[field] = score;
+            const score = Object.hasOwn(value, field) ? ownEnumerableData(value, field) : 0;
+            // relationship 是附属建议，不应因模型漏字段、字符串或越界值
+            // 丢弃已经通过安全校验的回复。无效单项按 fail-closed 语义归零，
+            // 仍只有经过范围校验的整数能够进入后续受控 Patch。
+            normalized[field] = Number.isInteger(score) && score >= -10 && score <= 10 ? score : 0;
         }
         return normalized;
     } catch (error) {

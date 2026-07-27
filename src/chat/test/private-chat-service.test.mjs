@@ -305,22 +305,15 @@ test('llm transport failures leave a consumable diagnostic with stage, code and 
     assert.equal(consumePrivateChatDiagnostics('private_chat', 'chat_1').length, 0);
 });
 
-test('relationship delta violations report only the field name and range, never the model value', async () => {
+test('malformed relationship deltas fail closed to zero without discarding a valid reply', async () => {
     consumePrivateChatDiagnostics('private_chat', 'chat_1');
     const result = await generatePrivateChatReply({
         state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好', settingsStore: settingsStore(),
-        llmClient: { async chat() { return { text: JSON.stringify({ ...response(), relationship: { 好感: 97, 信任: 1, 戒备: 0, 面基意愿: 0 } }) }; } },
+        llmClient: { async chat() { return { text: JSON.stringify({ ...response(), relationship: { 好感: 97, 信任: 1, 戒备: '0' } }) }; } },
     });
-    assert.equal(result.code, 'private_chat_response_relationship_invalid');
-    const records = consumePrivateChatDiagnostics('private_chat', 'chat_1');
-    assert.equal(records.length, 1);
-    assert.equal(records[0].stage, '响应校验');
-    assert.equal(records[0].field, 'relationship.好感');
-    assert.match(records[0].expected, /-10\.\.10/u);
-    // 硬线：模型给的越界增量数值绝不进入诊断记录
-    assert.doesNotMatch(JSON.stringify(records), /97/u);
-    // 超长错误码按空格分词呈现，避免控制台脱敏器把它当作凭据 token
-    assert.equal(records[0].code, 'private chat response relationship invalid');
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.response.relationship, { 好感: 0, 信任: 1, 戒备: 0, 面基意愿: 0 });
+    assert.equal(consumePrivateChatDiagnostics('private_chat', 'chat_1').length, 0);
 });
 
 test('bondAssessment whitelist violations name the field and allowed kinds without conversation text', async () => {

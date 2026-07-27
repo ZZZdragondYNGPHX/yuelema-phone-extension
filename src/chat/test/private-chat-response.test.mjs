@@ -99,13 +99,15 @@ test('strictly validates each reply bubble, array shape, and aggregate length li
     expectCode(() => normalizePrivateChatResponse(response({ replies: exotic })), 'private_chat_response_unsafe_prototype');
 });
 
-test('strictly validates optional summary safety and relationship deltas', () => {
+test('strictly validates optional summary safety and fail-closes malformed relationship deltas to zero', () => {
     expectCode(() => normalizePrivateChatResponse(response({ sessionSummary: '<script>private</script>' })), 'private_chat_response_reply_invalid');
     expectCode(() => normalizePrivateChatResponse(response({ sessionSummary: 'x'.repeat(MAX_PRIVATE_CHAT_SESSION_SUMMARY_LENGTH + 1) })), 'private_chat_response_reply_invalid');
-    expectCode(() => normalizePrivateChatResponse(response({ relationship: { 好感: 0, 信任: 0, 戒备: 0 } })), 'private_chat_response_relationship_invalid');
+    assert.deepEqual(
+        normalizePrivateChatResponse(response({ relationship: { 好感: 2, 信任: '1', 戒备: 10.5 } })).relationship,
+        { 好感: 2, 信任: 0, 戒备: 0, 面基意愿: 0 },
+    );
     expectCode(() => normalizePrivateChatResponse(response({ relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0, 好友度: 1 } })), 'private_chat_response_unknown_field');
-    expectCode(() => normalizePrivateChatResponse(response({ relationship: { 好感: 10.5, 信任: 0, 戒备: 0, 面基意愿: 0 } })), 'private_chat_response_relationship_invalid');
-    expectCode(() => normalizePrivateChatResponse(response({ relationship: { 好感: -11, 信任: 0, 戒备: 0, 面基意愿: 0 } })), 'private_chat_response_relationship_invalid');
+    assert.equal(normalizePrivateChatResponse(response({ relationship: { 好感: -11, 信任: 0, 戒备: 0, 面基意愿: 0 } })).relationship.好感, 0);
     assert.equal(normalizePrivateChatResponse(response({ relationship: { 好感: -10, 信任: 10, 戒备: 0, 面基意愿: 10 } })).relationship.信任, 10);
 });
 
@@ -154,17 +156,8 @@ test('projects stable safe errors without exposing model source or underlying er
 // —— 阶段 77：控制台诊断投影 ——
 
 test('codec errors carry a value-free diagnostic that projects for the safety console', () => {
-    try {
-        normalizePrivateChatResponse(response({ relationship: { 好感: 88, 信任: 1, 戒备: 0, 面基意愿: 0 } }));
-        assert.fail('必须抛出关系增量校验错误');
-    } catch (error) {
-        const diagnostic = projectPrivateChatResponseDiagnostic(error);
-        assert.equal(diagnostic.code, 'private_chat_response_relationship_invalid');
-        assert.equal(diagnostic.field, 'relationship.好感');
-        assert.match(diagnostic.expected, /-10\.\.10/u);
-        // 硬线：模型增量数值绝不出现在诊断里
-        assert.doesNotMatch(JSON.stringify(diagnostic), /88/u);
-    }
+    const normalized = normalizePrivateChatResponse(response({ relationship: { 好感: 88, 信任: 1, 戒备: '0', 面基意愿: 0 } }));
+    assert.deepEqual(normalized.relationship, { 好感: 0, 信任: 1, 戒备: 0, 面基意愿: 0 });
     try {
         normalizePrivateChatResponse(response({ bondAssessment: { kind: 'romantic_desire', intensity: 1 } }), { contentMode: 'SFW' });
         assert.fail('必须抛出白名单校验错误');

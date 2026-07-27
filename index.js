@@ -178,6 +178,7 @@ export async function onActivate() {
         playerAvatarStore,
         imageLibrary,
         imageMatchCoordinator,
+        imageGenerationClient,
         remoteImageImporter,
         extensionUpdater,
         groupForumStore,

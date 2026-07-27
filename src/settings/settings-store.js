@@ -8,7 +8,7 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 15;
+export const SETTINGS_SCHEMA_VERSION = 16;
 // v12 rewrote the stock built-in prompt preset copy (阶段 55 内容尺度调整)，
 // v13 enriched the NSFW stock copy with concrete erotic-writing guidance,
 // v14 renamed the「语音匹配」stock presets to「描述匹配」(display name and
@@ -16,10 +16,10 @@ export const SETTINGS_SCHEMA_VERSION = 15;
 // binding that references them stay unchanged, so no binding remap is needed),
 // v15 upgraded the SFW stock copy to dating-app-quality writing guidance
 // (NSFW stock copy stays byte-identical; all preset IDs and bindings keep).
-// A stored v11–v14 document therefore upgrades in place: stock builtin_*
-// prompt presets are refreshed to the current copy, user-created presets are
-// kept verbatim. Versions before 11 stay rejected, matching the v11 cleanup.
-const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14]);
+// v16 separates ComfyUI connection/engine/prompt values from NAI/OpenAI values.
+// A stored v11–v15 document upgrades in place; only v11–v14 refresh stock
+// prompt presets. User-created presets remain byte-identical.
+const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14, 15]);
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -370,6 +370,21 @@ export function defaultImageGenerationSettings() {
         positivePrefix: '',
         positiveSuffix: '',
         negativePrompt: '',
+        comfyBaseUrl: 'http://127.0.0.1:8188',
+        comfyModel: '',
+        comfySampler: 'euler',
+        comfyScheduler: 'normal',
+        comfyVae: '',
+        comfyClip: '',
+        comfyGuidance: 7,
+        comfyWidth: 1024,
+        comfyHeight: 1024,
+        comfySteps: 20,
+        comfySeed: 0,
+        comfyPositivePrefix: '',
+        comfyPositiveSuffix: '',
+        comfyNegativePrompt: '',
+        comfyWorkflow: '',
         conversationSettings: { private: {}, group: {}, forum: {} },
     };
 }
@@ -378,6 +393,23 @@ function cleanImageText(value, field, maxLength, { allowEmpty = true } = {}) {
     if (typeof value !== 'string') fail('INVALID_IMAGE_GENERATION', field + '必须是文本。');
     const cleaned = value.trim();
     if ((!allowEmpty && !cleaned) || cleaned.length > maxLength || /[\u0000-\u001F\u007F]/.test(cleaned)) fail('INVALID_IMAGE_GENERATION', field + '长度或字符不符合要求。');
+    return cleaned;
+}
+
+function cleanImageWorkflow(value) {
+    if (typeof value !== 'string') fail('INVALID_IMAGE_GENERATION', 'ComfyUI 工作流必须是文本。');
+    const cleaned = value.trim();
+    if (cleaned.length > 200_000 || /[\u0000\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(cleaned)) {
+        fail('INVALID_IMAGE_GENERATION', 'ComfyUI 工作流长度或字符不符合要求。');
+    }
+    if (cleaned) {
+        try {
+            const parsed = JSON.parse(cleaned);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
+        } catch {
+            fail('INVALID_IMAGE_GENERATION', 'ComfyUI 工作流必须是有效的 JSON 对象。');
+        }
+    }
     return cleaned;
 }
 
@@ -403,13 +435,20 @@ export function normalizeImageGenerationSettings(input) {
     if (Object.keys(candidate).some((key) => !allowed.has(key))) fail('INVALID_IMAGE_GENERATION', '生图设置包含不支持或敏感字段。');
     const value = { ...defaults, ...candidate };
     if (typeof value.enabled !== 'boolean' || typeof value.qualityToggle !== 'boolean' || typeof value.variety !== 'boolean') fail('INVALID_IMAGE_GENERATION', '生图开关必须为布尔值。');
-    if (!['novelai', 'openai_compatible'].includes(value.apiMode)) fail('INVALID_IMAGE_GENERATION', '生图接口模式不受支持。');
+    if (!['novelai', 'openai_compatible', 'comfyui'].includes(value.apiMode)) fail('INVALID_IMAGE_GENERATION', '生图接口模式不受支持。');
     const presetId = cleanId(value.presetId, '生图密钥预设 ID');
-    const baseUrl = cleanImageText(value.baseUrl, '生图站点', 512, { allowEmpty: false });
-    let parsedUrl;
-    try { parsedUrl = new URL(baseUrl); } catch { fail('INVALID_IMAGE_GENERATION', '生图站点必须是有效 URL。'); }
-    const loopback = ['localhost', '127.0.0.1', '::1'].includes(parsedUrl.hostname);
-    if (!['https:', 'http:'].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash || (parsedUrl.protocol === 'http:' && !loopback)) fail('INVALID_IMAGE_GENERATION', '生图站点必须使用 HTTPS；仅本机回环地址允许 HTTP。');
+    const normalizeImageBaseUrl = (raw, field) => {
+        const baseUrl = cleanImageText(raw, field, 512, { allowEmpty: false });
+        let parsedUrl;
+        try { parsedUrl = new URL(baseUrl); } catch { fail('INVALID_IMAGE_GENERATION', `${field}必须是有效 URL。`); }
+        const loopback = ['localhost', '127.0.0.1', '::1'].includes(parsedUrl.hostname);
+        if (!['https:', 'http:'].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash || (parsedUrl.protocol === 'http:' && !loopback)) {
+            fail('INVALID_IMAGE_GENERATION', `${field}必须使用 HTTPS；仅本机回环地址允许 HTTP。`);
+        }
+        return parsedUrl.toString().replace(/\/$/, '');
+    };
+    const baseUrl = normalizeImageBaseUrl(value.baseUrl, '生图站点');
+    const comfyBaseUrl = normalizeImageBaseUrl(value.comfyBaseUrl, 'ComfyUI 地址');
     const endpointPath = cleanImageText(value.endpointPath, '生图接口路径', 256, { allowEmpty: false });
     if (!endpointPath.startsWith('/') || endpointPath.startsWith('//') || endpointPath.includes('..') || endpointPath.includes('?') || endpointPath.includes('#')) fail('INVALID_IMAGE_GENERATION', '生图接口路径必须是安全的站内绝对路径。');
     const conversationSettings = safeClone(value.conversationSettings);
@@ -429,7 +468,7 @@ export function normalizeImageGenerationSettings(input) {
         enabled: value.enabled,
         presetId,
         apiMode: value.apiMode,
-        baseUrl: parsedUrl.toString().replace(/\/$/, ''),
+        baseUrl,
         endpointPath,
         model: cleanImageText(value.model, '生图模型', 160, { allowEmpty: false }),
         sampler: cleanImageText(value.sampler, '采样器', 80, { allowEmpty: false }),
@@ -445,6 +484,21 @@ export function normalizeImageGenerationSettings(input) {
         positivePrefix: cleanImageText(value.positivePrefix, '前置正面提示词', 4000),
         positiveSuffix: cleanImageText(value.positiveSuffix, '后置正面提示词', 4000),
         negativePrompt: cleanImageText(value.negativePrompt, '固定负面提示词', 4000),
+        comfyBaseUrl,
+        comfyModel: cleanImageText(value.comfyModel, 'ComfyUI 模型', 160),
+        comfySampler: cleanImageText(value.comfySampler, 'ComfyUI 采样器', 80, { allowEmpty: false }),
+        comfyScheduler: cleanImageText(value.comfyScheduler, 'ComfyUI 调度器', 80, { allowEmpty: false }),
+        comfyVae: cleanImageText(value.comfyVae, 'ComfyUI VAE', 160),
+        comfyClip: cleanImageText(value.comfyClip, 'ComfyUI CLIP', 160),
+        comfyGuidance: cleanFiniteNumber(value.comfyGuidance, 'ComfyUI CFG', 0, 30),
+        comfyWidth: cleanInteger(value.comfyWidth, 'ComfyUI 图片宽度', 256, 2048),
+        comfyHeight: cleanInteger(value.comfyHeight, 'ComfyUI 图片高度', 256, 2048),
+        comfySteps: cleanInteger(value.comfySteps, 'ComfyUI 步数', 1, 100),
+        comfySeed: cleanInteger(value.comfySeed, 'ComfyUI 种子', 0, 4294967295),
+        comfyPositivePrefix: cleanImageText(value.comfyPositivePrefix, 'ComfyUI 前置正面提示词', 4000),
+        comfyPositiveSuffix: cleanImageText(value.comfyPositiveSuffix, 'ComfyUI 后置正面提示词', 4000),
+        comfyNegativePrompt: cleanImageText(value.comfyNegativePrompt, 'ComfyUI 固定负面提示词', 4000),
+        comfyWorkflow: cleanImageWorkflow(value.comfyWorkflow),
         conversationSettings: normalizedConversations,
     };
 }
@@ -480,7 +534,7 @@ export function normalizeSettingsDocument(input) {
     }
 
     const connectionPresets = candidate.connectionPresets.map(normalizeConnectionPreset);
-    const promptPresets = isUpgradeableLegacySchema
+    const promptPresets = isUpgradeableLegacySchema && candidate.schemaVersion <= 14
         ? refreshStockBuiltinPromptPresets(candidate.promptPresets.map(normalizePromptPreset))
         : candidate.promptPresets.map(normalizePromptPreset);
     const connectionIds = new Set(connectionPresets.map((preset) => preset.id));
@@ -634,8 +688,8 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         } catch {
             fail('INVALID_IMPORT_JSON', '设置 JSON 无法解析。');
         }
-        // Persist only a normalized current v15 document; an upgradeable
-        // v11–v14 document is migrated (stock prompt copy refreshed) inside
+        // Persist only a normalized current v16 document; an upgradeable
+        // v11–v15 document is migrated (stock prompt copy refreshed only for v11–v14) inside
         // normalize.
         return persist(parsed);
     }

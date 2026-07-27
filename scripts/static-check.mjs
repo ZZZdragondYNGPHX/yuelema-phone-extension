@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.0.1') fail('manifest.version 必须与扩展版本 1.0.1 统一');
+if (manifest.version !== '1.0.2') fail('manifest.version 必须与扩展版本 1.0.2 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -121,7 +121,7 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.0.1'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.1 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.0.2'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.2 统一（必须位于壳层 app-shell.js）');
 const index = await readFile(resolve(root, 'index.js'), 'utf8');
 const hostExtensionUpdater = await readFile(resolve(root, 'src/host-extension-update.js'), 'utf8');
 if (!hostExtensionUpdater.includes("HOST_EXTENSION_DIRECTORY = 'yuelema-phone-extension'") || !hostExtensionUpdater.includes("VERSION_ENDPOINT = '/api/extensions/version'") || !hostExtensionUpdater.includes("UPDATE_ENDPOINT = '/api/extensions/update'")) fail('宿主扩展更新器必须固定约了吗目录与原生检查/更新端点');
@@ -306,7 +306,7 @@ const imageGenerationClient = await readFile(resolve(root, 'src/llm/image-genera
 const drawingDnaRules = await readFile(resolve(root, 'src/recommendation/drawing-dna-rules.js'), 'utf8');
 if (!index.includes('createImageGenerationClient') || !actionBridge.includes('generateConversationImage')) fail('缺少生图客户端注入或对话生图桥接');
 if (!appShell.includes("'settings_image_generation'") || !appShell.includes('buildConversationImageControls') || !appShell.includes('buildImageDirectiveCard') || !appShell.includes('generateConversationImage')) fail('缺少生图设置路由、会话开关或结构化指令 UI 接线');
-if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 15') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema 或逐会话自动生图隔离');
+if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 16') || !settingsStore.includes('comfyBaseUrl') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema、ComfyUI 专属配置或逐会话自动生图隔离');
 if (!settingsPanel.includes('buildImageGenerationSection') || !settingsPanel.includes('positivePrefix') || !settingsPanel.includes('negativePrompt')) fail('缺少生图固定正负提示词设置界面');
 if (!imageDirective.includes('composeImagePrompt') || !imageDirective.includes('coreDna') || !imageDirective.includes('outfitDna')) fail('缺少固定顺序的绘图 DNA 提示词组合器');
 if (!imageGenerationClient.includes('requireSessionKey') || !imageGenerationClient.includes('fetchImpl') || !imageGenerationClient.includes('readResponseBytes') || !imageGenerationClient.includes('MAX_IMAGE_BYTES') || imageGenerationClient.includes("kind: 'url'")) fail('缺少注入式生图客户端、独立 Key、有界图片响应读取或仍允许 UI 远程图片 URL');
