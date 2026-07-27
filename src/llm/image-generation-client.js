@@ -8,7 +8,6 @@ const MAX_COMFY_OBJECT_INFO_BYTES = 32 * 1024 * 1024;
 const MAX_HTTP_ERROR_DIAGNOSTIC_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
-const MULTILINE_CONTROL_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const UNSAFE_WORKFLOW_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SAFE_PROVIDER_ERROR_FIELDS = Object.freeze(['input', 'model', 'action', 'parameters', 'v4_prompt', 'v4_negative_prompt', 'negative_prompt', 'width', 'height', 'scale', 'cfg_rescale', 'steps', 'sampler', 'noise_schedule', 'seed']);
 let imageRequestSequence = 0;
@@ -107,11 +106,10 @@ async function safeHttpErrorDiagnostic(response, sensitiveValues = []) {
     } catch (error) { return { ...fallback, bodyInspection: error instanceof YueLeMaImageGenerationError ? 'too_large_or_invalid' : 'read_failed' }; }
 }
 function isNovelAIV4Model(model) { return /^nai-diffusion-4(?:-|$)/iu.test(String(model ?? '').trim()); }
-function cleanText(value, field, maxLength, { allowEmpty = false, allowLineBreaks = false } = {}) {
+function cleanText(value, field, maxLength, { allowEmpty = false } = {}) {
     if (typeof value !== 'string') fail('INVALID_IMAGE_REQUEST', `${field}必须是文本。`);
     const text = value.trim();
-    const unsafeControls = allowLineBreaks ? MULTILINE_CONTROL_PATTERN : CONTROL_PATTERN;
-    if ((!allowEmpty && !text) || text.length > maxLength || unsafeControls.test(text)) fail('INVALID_IMAGE_REQUEST', `${field}无效。`);
+    if ((!allowEmpty && !text) || text.length > maxLength || CONTROL_PATTERN.test(text)) fail('INVALID_IMAGE_REQUEST', `${field}无效。`);
     return text;
 }
 function cleanInteger(value, field, min, max) {
@@ -321,8 +319,8 @@ function normalizeRequest(input) {
         : settings.apiMode === 'novelai' ? 'novelai' : settings.apiMode === 'comfyui' ? 'comfyui' : fail('INVALID_IMAGE_REQUEST', '生图接口模式无效。');
     const comfy = apiMode === 'comfyui';
     return {
-        positivePrompt: cleanText(input.positivePrompt, '正面提示词', 32_000, { allowLineBreaks: true }),
-        negativePrompt: cleanText(input.negativePrompt ?? '', '负面提示词', 12_000, { allowEmpty: true, allowLineBreaks: true }),
+        positivePrompt: cleanText(input.positivePrompt, '正面提示词', 32_000),
+        negativePrompt: cleanText(input.negativePrompt ?? '', '负面提示词', 12_000, { allowEmpty: true }),
         signal: input.signal,
         timeoutMs: input.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : cleanInteger(input.timeoutMs, '超时时间', 1_000, 300_000),
         settings: {

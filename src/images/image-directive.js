@@ -14,7 +14,6 @@ const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SENSITIVE_PATTERN = /(?:api[\s_-]*key|authorization|token|secret|password|credential|private[\s_-]*key|密钥|令牌|密码|授权|凭据)/iu;
 const HTML_PATTERN = /<!--|<\s*\/?\s*[a-z][^>]*>/iu;
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
-const MULTILINE_CONTROL_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const LORA_PROMPT_TOKEN_PATTERN = /<lora:[^:<>\u0000-\u001f\u007f]{1,200}:-?(?:\d+(?:\.\d+)?|\.\d+)>/giu;
 
 export class ImageDirectiveError extends Error {
@@ -67,7 +66,7 @@ function cleanOwnedPrompt(value, field, maxLength) {
     if (typeof value !== 'string') fail('IMAGE_DIRECTIVE_TEXT_INVALID', `${field}必须是文本。`);
     const text = value.trim();
     const withoutLoraTokens = text.replace(LORA_PROMPT_TOKEN_PATTERN, '');
-    if (text.length > maxLength || MULTILINE_CONTROL_PATTERN.test(text) || HTML_PATTERN.test(withoutLoraTokens)) {
+    if (text.length > maxLength || CONTROL_PATTERN.test(text) || HTML_PATTERN.test(withoutLoraTokens)) {
         fail('IMAGE_DIRECTIVE_TEXT_INVALID', `${field}包含不允许的内容。`);
     }
     return text;
