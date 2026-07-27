@@ -38,45 +38,77 @@ test('client emits safe stage diagnostics without logging credentials or prompts
 
     assert.deepEqual(calls.map(([level, label]) => [level, label]), [
         ['info', '[约了吗][生图] 请求开始'],
+        ['info', '[约了吗][生图] 请求体准备完成'],
         ['info', '[约了吗][生图] 收到响应'],
         ['info', '[约了吗][生图] 请求完成'],
     ]);
     const serialized = JSON.stringify(calls);
     assert.doesNotMatch(serialized, /secret-image-key-never-log|private prompt never log|private negative never log/u);
     assert.match(serialized, /"provider":"openai_compatible"/u);
+    assert.match(serialized, /"positivePromptChars":24/u);
     assert.match(serialized, /"status":200/u);
     assert.match(serialized, /"mimeType":"image\/png"/u);
 });
 
-test('client logs safe HTTP failure code, phase, and status without response bodies', async () => {
+test('client logs a bounded safe provider error summary without response bodies', async () => {
     unlockSessionKey('img-log-failure', 'another-secret-key');
     const calls = [];
     const client = createImageGenerationClient({
         diagnosticLogger: { info: (...args) => calls.push(['info', ...args]), error: (...args) => calls.push(['error', ...args]) },
-        fetchImpl: async () => new Response('upstream-private-error-body', {
-            status: 401,
+        fetchImpl: async () => new Response(JSON.stringify({
+            statusCode: 400,
+            message: 'parameters.v4_prompt is required; another private prompt',
+            secretPayload: 'upstream-private-error-body',
+        }), {
+            status: 400,
             headers: { 'content-type': 'application/json' },
         }),
     });
 
     await assert.rejects(
-        () => client.generate({ settings: { ...settings, presetId: 'img-log-failure' }, positivePrompt: 'another private prompt', negativePrompt: '' }),
-        (error) => error.code === 'IMAGE_HTTP_ERROR' && error.status === 401,
+        () => client.generate({ settings: { ...settings, apiMode: 'novelai', presetId: 'img-log-failure' }, positivePrompt: 'another private prompt', negativePrompt: '' }),
+        (error) => error.code === 'IMAGE_HTTP_ERROR' && error.status === 400,
     );
 
+    const summary = calls.find(([, label]) => label === '[约了吗][生图] 错误响应摘要');
+    const requestShape = calls.find(([, label]) => label === '[约了吗][生图] 请求体准备完成');
+    assert.equal(requestShape?.[2]?.provider, 'novelai');
+    assert.ok(requestShape?.[2]?.parameterFields.includes('negative_prompt'));
+    assert.equal(summary?.[2]?.providerCategory, 'request_validation');
+    assert.equal(summary?.[2]?.bodyInspection, 'structured_json');
+    assert.equal(summary?.[2]?.providerStatusCode, 400);
+    assert.equal(summary?.[2]?.providerMessageChars, 56);
+    assert.deepEqual(summary?.[2]?.responseSchemaFields, ['statusCode', 'message']);
+    assert.deepEqual(summary?.[2]?.providerValidationFields, ['parameters', 'v4_prompt']);
     const failure = calls.find(([, label]) => label === '[约了吗][生图] 请求失败');
     assert.deepEqual(failure?.[2], {
         requestId: failure?.[2]?.requestId,
-        provider: 'openai_compatible',
+        provider: 'novelai',
         phase: 'http_response',
         code: 'IMAGE_HTTP_ERROR',
         message: '生图服务拒绝了本次请求，请检查接口设置或稍后重试。',
         retryable: false,
-        status: 401,
+        status: 400,
         elapsedMs: failure?.[2]?.elapsedMs,
     });
     const serialized = JSON.stringify(calls);
     assert.doesNotMatch(serialized, /another-secret-key|another private prompt|upstream-private-error-body/u);
+});
+
+test('client logs safe browser transport failure type without the exception message', async () => {
+    const calls = [];
+    const client = createImageGenerationClient({
+        diagnosticLogger: { info: (...args) => calls.push(['info', ...args]), error: (...args) => calls.push(['error', ...args]) },
+        fetchImpl: async () => { throw new TypeError('CORS detail with secret-image-key-never-log'); },
+    });
+    await assert.rejects(
+        () => client.generate({ settings, positivePrompt: 'private prompt never log', negativePrompt: '' }),
+        (error) => error?.code === 'IMAGE_NETWORK_ERROR',
+    );
+    const transport = calls.find(([, label]) => label === '[约了吗][生图] 传输失败');
+    assert.equal(transport?.[2]?.errorType, 'TypeError');
+    assert.equal(transport?.[2]?.aborted, false);
+    assert.doesNotMatch(JSON.stringify(calls), /CORS detail|secret-image-key|private prompt never log/u);
 });
 
 test('credential diagnostics preserve the locked-key error when an external signal exists', async () => {

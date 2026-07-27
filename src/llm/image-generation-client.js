@@ -5,9 +5,11 @@ const MAX_IMAGE_BYTES = 24 * 1024 * 1024;
 const MAX_JSON_RESPONSE_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1_048_576;
 const MAX_COMFY_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_COMFY_OBJECT_INFO_BYTES = 32 * 1024 * 1024;
+const MAX_HTTP_ERROR_DIAGNOSTIC_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
 const UNSAFE_WORKFLOW_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+const SAFE_PROVIDER_ERROR_FIELDS = Object.freeze(['input', 'model', 'action', 'parameters', 'v4_prompt', 'v4_negative_prompt', 'negative_prompt', 'width', 'height', 'scale', 'cfg_rescale', 'steps', 'sampler', 'noise_schedule', 'seed']);
 let imageRequestSequence = 0;
 
 export class YueLeMaImageGenerationError extends Error {
@@ -39,6 +41,45 @@ function imageErrorDetails(error) {
         };
     }
     return { code: 'IMAGE_UNKNOWN_ERROR', retryable: false, status: undefined };
+}
+function safeErrorType(error) { return ['TypeError', 'ReferenceError', 'RangeError', 'SyntaxError', 'DOMException'].includes(error?.name) ? error.name : undefined; }
+function providerErrorCategory(status, message = '') {
+    const text = String(message).toLowerCase();
+    if (/anlas|balance|credit|quota|subscription|payment/u.test(text) || status === 402) return 'subscription_or_quota';
+    if (/api.?key|access.?token|auth|unauthor/u.test(text) || status === 401) return 'authentication';
+    if (/rate.?limit|too many requests/u.test(text) || status === 429) return 'rate_limit';
+    if (/model/u.test(text)) return 'model_validation';
+    if (status === 400 || /valid|parameter|prompt|sampler|schedule|width|height|steps|seed|cfg/u.test(text)) return 'request_validation';
+    if (status >= 500) return 'provider_unavailable';
+    return 'http_error';
+}
+async function safeHttpErrorDiagnostic(response) {
+    const status = Number.isInteger(response?.status) ? response.status : undefined;
+    const fallback = { providerCategory: providerErrorCategory(status), bodyInspection: 'unavailable' };
+    try {
+        const copy = typeof response?.clone === 'function' ? response.clone() : response;
+        const bytes = await readResponseBytes(copy, MAX_HTTP_ERROR_DIAGNOSTIC_BYTES);
+        const text = new TextDecoder().decode(bytes);
+        let payload;
+        try { payload = JSON.parse(text); } catch {
+            return { ...fallback, bodyInspection: 'non_json', bodyBytes: bytes.length };
+        }
+        const record = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+        const message = [record.message, record.detail, record.title, typeof record.error === 'string' ? record.error : ''].find((value) => typeof value === 'string') ?? '';
+        const code = typeof record.code === 'string' && /^[A-Za-z0-9_.:/-]{1,120}$/u.test(record.code) ? record.code : undefined;
+        const validationFields = SAFE_PROVIDER_ERROR_FIELDS.filter((field) => message.toLowerCase().includes(field.toLowerCase()));
+        return {
+            providerCategory: providerErrorCategory(status, message),
+            bodyInspection: 'structured_json',
+            bodyBytes: bytes.length,
+            responseSchemaFields: ['statusCode', 'message', 'detail', 'title', 'error', 'errors', 'code', 'type'].filter((field) => Object.hasOwn(record, field)),
+            providerStatusCode: Number.isInteger(record.statusCode) ? record.statusCode : undefined,
+            providerErrorCode: code,
+            providerMessageChars: message.length || undefined,
+            providerValidationFields: validationFields.length ? validationFields : undefined,
+            providerErrorCount: Array.isArray(record.errors) ? record.errors.length : undefined,
+        };
+    } catch (error) { return { ...fallback, bodyInspection: error instanceof YueLeMaImageGenerationError ? 'too_large_or_invalid' : 'read_failed' }; }
 }
 function cleanText(value, field, maxLength, { allowEmpty = false } = {}) {
     if (typeof value !== 'string') fail('INVALID_IMAGE_REQUEST', `${field}必须是文本。`);
@@ -544,12 +585,31 @@ export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null
                 }
                 let response;
                 phase = 'network_request';
+                const requestBody = buildBody(request.settings, request.positivePrompt, request.negativePrompt);
+                const serializedBody = JSON.stringify(requestBody);
+                emitImageDiagnostic(diagnosticLogger, 'info', '请求体准备完成', {
+                    requestId,
+                    provider: request.settings.apiMode,
+                    requestBytes: new TextEncoder().encode(serializedBody).length,
+                    positivePromptChars: request.positivePrompt.length,
+                    negativePromptChars: request.negativePrompt.length,
+                    requestFields: Object.keys(requestBody),
+                    parameterFields: request.settings.apiMode === 'novelai' ? Object.keys(requestBody.parameters) : undefined,
+                });
                 try {
                     response = await fetchImpl(request.settings.baseUrl + request.settings.endpointPath, {
                         method: 'POST', headers: { Accept: 'application/json, image/png, image/jpeg, image/webp, application/zip', 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-                        body: JSON.stringify(buildBody(request.settings, request.positivePrompt, request.negativePrompt)), signal: controller.signal,
+                        body: serializedBody, signal: controller.signal,
                     });
                 } catch (error) {
+                    emitImageDiagnostic(diagnosticLogger, 'error', '传输失败', {
+                        requestId,
+                        provider: request.settings.apiMode,
+                        errorType: safeErrorType(error),
+                        aborted: controller.signal.aborted,
+                        abortSource: controller.signal.aborted ? (request.signal?.aborted ? 'external' : 'timeout') : undefined,
+                        elapsedMs: Date.now() - startedAt,
+                    });
                     if (controller.signal.aborted) fail('IMAGE_REQUEST_ABORTED', request.signal?.aborted ? '生图请求已取消。' : '生图请求超时，请稍后重试。', { retryable: true });
                     fail('IMAGE_NETWORK_ERROR', '无法连接生图服务，请检查 URL、网络或跨域配置。', { retryable: true });
                 }
@@ -563,7 +623,16 @@ export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null
                     contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined,
                     elapsedMs: Date.now() - startedAt,
                 });
-                if (!response?.ok) fail('IMAGE_HTTP_ERROR', '生图服务拒绝了本次请求，请检查接口设置或稍后重试。', { retryable: response?.status >= 500, status: Number.isInteger(response?.status) ? response.status : undefined });
+                if (!response?.ok) {
+                    emitImageDiagnostic(diagnosticLogger, 'error', '错误响应摘要', {
+                        requestId,
+                        provider: request.settings.apiMode,
+                        status: Number.isInteger(response?.status) ? response.status : undefined,
+                        ...await safeHttpErrorDiagnostic(response),
+                        elapsedMs: Date.now() - startedAt,
+                    });
+                    fail('IMAGE_HTTP_ERROR', '生图服务拒绝了本次请求，请检查接口设置或稍后重试。', { retryable: response?.status >= 500, status: Number.isInteger(response?.status) ? response.status : undefined });
+                }
                 phase = 'response_parse';
                 const generated = await parseResponse(response);
                 emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', {
