@@ -93,7 +93,7 @@ function publicProfileFromForm(form) {
 }
 function avatarFromForm(form, localAvatar) {
     return readNamed(form, 'avatar-kind') === 'embedded' && localAvatar
-        ? localAvatar
+        ? { kind: 'embedded', dataUrl: localAvatar.dataUrl }
         : { kind: 'placeholder' };
 }
 

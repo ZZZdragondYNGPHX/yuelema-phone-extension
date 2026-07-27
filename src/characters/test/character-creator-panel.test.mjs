@@ -470,19 +470,28 @@ test('未注入链接导入器时不渲染任何链接导入控件', () => {
 
 test('链接导入成功：一次性下载结果压缩为 embedded 头像并同步预览，链接不落任何草稿', async () => {
     const importedUrls = [];
+    const savedTemplates = [];
+    const registeredCharacters = [];
     const panel = buildCharacterCreatorPanel({
         documentRef: miniDom.document,
-        actionBridge: { async registerCharacter() { return { ok: true }; } },
-        characterLibrary: { list: () => [] },
+        actionBridge: {
+            async generateCharacterCompletionDraft() { return { ok: true, candidate: adultCandidate() }; },
+            async registerCharacter(character) { registeredCharacters.push(structuredClone(character)); return { ok: true }; },
+        },
+        characterLibrary: {
+            list: () => [],
+            saveTemplate(input) { savedTemplates.push(structuredClone(input.template)); return { id: 'avatar-template' }; },
+        },
         signal: new AbortController().signal,
         onFeedback() {},
         importAvatarFromUrl: async (url) => {
             importedUrls.push(url);
-            return { kind: 'embedded', dataUrl: 'data:image/webp;base64,AAAA', width: 64, height: 64, mimeType: 'image/webp' };
+            return { kind: 'embedded', dataUrl: 'data:image/webp;base64,UklGRgwAAABXRUJQ', width: 64, height: 64, mimeType: 'image/webp' };
         },
     });
-    control(panel, 'public-昵称').value = '林夏';
-    control(panel, 'public-昵称').dispatchEvent(new Event('input'));
+    fillExistingDraft(panel);
+    completionButton(panel).dispatchEvent(new Event('click'));
+    await flushUi();
     const urlInput = panel.querySelector('[name="avatar-import-url"]');
     assert.ok(urlInput, '注入能力后应有链接输入框');
     assert.equal(urlInput.getAttribute('type') ?? urlInput.type, 'text', '链接输入必须是 text，避免原生 url 校验阻塞整表单提交');
@@ -497,6 +506,17 @@ test('链接导入成功：一次性下载结果压缩为 embedded 头像并同�
     const previewAvatar = panel.querySelector('.yl-character-preview-avatar');
     assert.ok(previewAvatar, '预览应重建头像节点');
     assert.equal(panel.textContent.includes('example.com'), false, '面板任何可见文本不得回显链接');
+
+    buttonByText(panel, '只保存当前草稿到本地模板库').dispatchEvent(new Event('click'));
+    assert.deepEqual(savedTemplates[0].avatar, {
+        kind: 'embedded',
+        dataUrl: 'data:image/webp;base64,UklGRgwAAABXRUJQ',
+    }, '压缩尺寸和 MIME 只供编辑器提示，模板保存只携带 codec 允许的头像字段');
+
+    control(panel, 'save-local').checked = false;
+    panel.querySelector('form').dispatchEvent(new Event('submit'));
+    await flushUi();
+    assert.equal(registeredCharacters.length, 1, '带压缩头像的草稿应能通过模板校验并登记角色');
 });
 
 test('链接导入失败：保持原头像草稿并显示安全投影文案', async () => {
