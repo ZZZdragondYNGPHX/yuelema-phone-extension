@@ -285,7 +285,7 @@ export function createDiscoverPage(ctx) {
         }
         if (!advancesCandidate) {
             ctx.refreshing = false;
-            const message = isRefresh ? '下一位候选人已生成。' : '已取消收藏。';
+            const message = isRefresh ? '下一位候选人已生成。' : kind === 'favorite' ? '已加入收藏夹。' : '已取消收藏。';
             if (refreshActivityHandle) ctx.operationActivity.succeed(refreshActivityHandle, '下一位候选人已生成。');
             ctx.setFeedback(message, operationToken);
             if (isRefresh) ctx.showAiResult(true, message, operationToken);

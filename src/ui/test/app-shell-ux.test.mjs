@@ -1931,3 +1931,34 @@ test('extension update success states show the current version and non-git insta
         mounted.destroy();
     }
 });
+
+
+test('homepage favourite confirmation describes saving, not removing, the candidate', async () => {
+    const readResult = readyReadResult();
+    const calls = [];
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        async runMvuAction(kind, npcUid) {
+            calls.push([kind, npcUid]);
+            return { ok: true };
+        },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-favourite-confirmation-copy', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '收藏'));
+        await flushUi();
+
+        assert.deepEqual(calls, [['favorite', 'npc_1']]);
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+        assert.equal(dialog.hidden, false);
+        assert.equal(dialog.dataset.state, 'success');
+        assert.match(dialog.textContent, /已加入收藏夹。/u);
+        assert.doesNotMatch(dialog.textContent, /已取消收藏。/u);
+    } finally {
+        mounted.destroy();
+    }
+});
