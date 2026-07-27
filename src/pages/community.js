@@ -971,13 +971,19 @@ export function createCommunityPage(ctx) {
         return !(Number.isFinite(contentTop) && contentTop > 0) && !(Number.isFinite(surfaceTop) && surfaceTop > 0);
     }
     function forumIsAtBottom(surface) {
-        const candidates = [ctx.content, surface].map((node) => ({
+        const measurements = [ctx.content, surface].map((node) => ({
             scrollTop: Number(node?.scrollTop),
             scrollHeight: Number(node?.scrollHeight),
             clientHeight: Number(node?.clientHeight),
-        })).filter((item) => Number.isFinite(item.scrollHeight) && Number.isFinite(item.clientHeight) && item.scrollHeight > item.clientHeight);
-        if (!candidates.length) return false;
-        return candidates.some((item) => Math.max(0, item.scrollTop || 0) >= item.scrollHeight - item.clientHeight - 2);
+        })).filter((item) => Number.isFinite(item.scrollHeight) && Number.isFinite(item.clientHeight) && item.clientHeight > 0);
+        const overflowing = measurements.filter((item) => item.scrollHeight > item.clientHeight);
+        if (overflowing.length) {
+            return overflowing.some((item) => Math.max(0, item.scrollTop || 0) >= item.scrollHeight - item.clientHeight - 2);
+        }
+        // A filtered channel may contain only one post and therefore have no
+        // scroll range. It is already both the top and the bottom: allow a
+        // downward wheel / upward touch pull to request the next local batch.
+        return measurements.some((item) => item.scrollHeight > 0 && item.scrollHeight <= item.clientHeight);
     }
     // 指示器视觉现代化（§8.2-3）：字符箭头 ↻/↓ 换本地 refresh SVG + 文案，品牌色旋转由 community 子区 CSS 承担。
     function setForumPullIndicatorContent(indicator, text) {
@@ -1033,7 +1039,9 @@ export function createCommunityPage(ctx) {
         ctx.forumInteractionAbortController = controller;
         const start = (event) => {
             if (ctx.forumRefreshing || event?.isPrimary === false || event?.pointerType === 'mouse') return;
-            const kind = forumIsAtTop(surface) ? 'replace' : (forumIsAtBottom(surface) ? 'append' : '');
+            const atTop = forumIsAtTop(surface);
+            const atBottom = forumIsAtBottom(surface);
+            const kind = atTop && atBottom ? 'pending' : (atTop ? 'replace' : (atBottom ? 'append' : ''));
             if (!kind) return;
             cancelForumWheelPull();
             ctx.forumPullState = {
@@ -1042,8 +1050,8 @@ export function createCommunityPage(ctx) {
                 peak: 0,
                 cancelled: false,
                 kind,
-                direction: kind === 'append' ? -1 : 1,
-                indicator: kind === 'append' ? appendIndicator : replacementIndicator,
+                direction: kind === 'append' ? -1 : (kind === 'replace' ? 1 : 0),
+                indicator: kind === 'append' ? appendIndicator : (kind === 'replace' ? replacementIndicator : null),
                 inputType: event?.inputType === 'touch' ? 'touch' : 'pointer',
             };
             if (ctx.forumPullState.inputType === 'pointer') surface.setPointerCapture?.(event?.pointerId);
@@ -1051,7 +1059,14 @@ export function createCommunityPage(ctx) {
         const move = (event) => {
             const state = ctx.forumPullState;
             if (!state || (state.pointerId !== undefined && event?.pointerId !== undefined && state.pointerId !== event.pointerId)) return;
-            const distance = ((Number(event?.clientY) || 0) - state.startY) * state.direction;
+            const movement = (Number(event?.clientY) || 0) - state.startY;
+            if (state.kind === 'pending') {
+                if (movement === 0) return;
+                state.kind = movement < 0 ? 'append' : 'replace';
+                state.direction = state.kind === 'append' ? -1 : 1;
+                state.indicator = state.kind === 'append' ? appendIndicator : replacementIndicator;
+            }
+            const distance = movement * state.direction;
             const stillAtBoundary = state.kind === 'replace' ? forumIsAtTop(surface) : forumIsAtBottom(surface);
             if (!stillAtBoundary || distance <= 0 || distance < state.peak - 4) {
                 if (state.peak > 0) state.cancelled = true;

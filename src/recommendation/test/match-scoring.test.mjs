@@ -41,8 +41,27 @@ test('candidate matching score is local, deterministic, and uses the current eff
     });
 
     const disliked = scoreLocalCandidateMatch(compatiblePlayer, compatibleNpc, { 电影: -5, 徒步: -5 });
-    assert.equal(disliked.score, 70);
-    assert.equal(disliked.keywordScore, 40);
+    assert.equal(disliked.score, 64);
+    assert.equal(disliked.keywordScore, 25);
+});
+
+test('neutral keyword weights stay neutral and sparse overlap is a bounded bonus', () => {
+    const player = {
+        年龄段: '26-30', 性别: '男', 性取向: '异性恋', 城市: '上海', 距离范围: '10 km', 寻找意图: '认真约会',
+        兴趣标签: ['电影'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
+    };
+    const npc = {
+        年龄段: '25-29', 性别: '女', 性取向: '异性恋', 城市: '上海', 距离范围: '10 km', 寻找意图: '约会',
+        兴趣标签: ['电影', '徒步'], 生活方式标签: ['夜猫子'], 性格标签: ['慢热'], 沟通风格标签: ['长消息'],
+    };
+    const neutral = scoreFavoritePrivateChatInvitation(player, npc, {});
+    assert.equal(neutral.heartCardScore, 90);
+    assert.equal(neutral.keywordScore, 55, '五项中一项重合应从中性 50 获得有限加分，而非因未重合项跌到 30 分附近');
+    assert.equal(neutral.score, 76);
+
+    const noOverlap = scoreFavoritePrivateChatInvitation({ ...player, 兴趣标签: [] }, npc, {});
+    assert.equal(noOverlap.keywordScore, 50, '零权重且无重合必须保持中性 50');
+    assert.equal(noOverlap.score, 74);
 });
 
 test('描述匹配关键词评分只使用有效关键词权重，性别与其他资料字段不影响结果', () => {

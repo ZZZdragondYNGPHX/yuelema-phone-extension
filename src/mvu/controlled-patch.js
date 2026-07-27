@@ -15,7 +15,7 @@ import {
     normalizeGeneratedConversationSummary,
     summaryRecordSource,
 } from '../chat/conversation-summary.js';
-import { scoreFavoritePrivateChatInvitation } from '../recommendation/match-scoring.js';
+import { MATCH_ACCEPTANCE_THRESHOLD, scoreFavoritePrivateChatInvitation } from '../recommendation/match-scoring.js';
 import { normalizeSoulMatchDraft } from '../recommendation/soul-text-match-service.js';
 
 export const LATEST_MESSAGE_SCOPE = Object.freeze({ type: 'message', message_id: 'latest' });
@@ -168,7 +168,11 @@ export function buildPlayerPublicProfilePatch(state, { profile } = {}) {
     const current = ownRecord(player?.公开资料);
     const switches = ownRecord(state.软件)?.功能开关;
     const normalized = normalizePlayerPublicProfile(profile);
-    if (!player || player.成人验证 !== true || !current || !switches || typeof switches.玩家已建档 !== 'boolean' || !normalized) {
+    // "玩家已建档" is an optional bookkeeping gate, not part of the public
+    // profile contract. Older chats can lack this later-added field; their
+    // fully validated public profile must remain editable without attempting
+    // to add or infer any unknown state shape.
+    if (!player || player.成人验证 !== true || !current || !normalized) {
         return fail('player_profile_invalid');
     }
     const operations = [];
@@ -180,7 +184,7 @@ export function buildPlayerPublicProfilePatch(state, { profile } = {}) {
     }
     // A bare "已建档" flip is not a profile save. Requiring at least one
     // controlled public-field change prevents a forged gate-only UI patch.
-    if (operations.length > 0 && !switches.玩家已建档) {
+    if (operations.length > 0 && switches?.玩家已建档 === false) {
         operations.push({ op: 'replace', path: encodeJsonPointer(['软件', '功能开关', '玩家已建档']), value: true });
     }
     return operations.length ? success(operations) : fail('player_profile_no_change');
@@ -1399,7 +1403,10 @@ export function buildFavoritePrivateChatPatch(state, { npcUid } = {}) {
     if (!invitation || !Number.isInteger(invitation.score) || invitation.score < 0 || invitation.score > 100) {
         return fail('favorite_private_chat_score_invalid');
     }
-    const accepted = invitation.eligible && invitation.score >= refusalThreshold;
+    // 收藏主动私聊与灵魂/描述匹配共用偏宽松的接受线；角色更低的
+    // 自定义阈值仍可生效，但高挑阈值不再让普通兼容邀请几乎必拒。
+    const acceptanceThreshold = Math.min(refusalThreshold, MATCH_ACCEPTANCE_THRESHOLD);
+    const accepted = invitation.eligible && invitation.score >= acceptanceThreshold;
     const operations = [
         { op: 'remove', path: encodeJsonPointer(['推荐', '收藏角色UID', String(favoriteIndex)]) },
         { op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', 'NPC专属匹配度']), value: invitation.score },

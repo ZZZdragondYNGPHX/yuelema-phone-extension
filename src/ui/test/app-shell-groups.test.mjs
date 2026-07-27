@@ -486,7 +486,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             click(version());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /当前版本：1.0.0/u);
+            assert.match(dialog.textContent, /当前版本：1.0.1/u);
         }
         const modeEntry = miniDom.document.querySelector('[name="about-content-mode-entry"]');
         assert.ok(modeEntry, '连续五次版本信息后应显示内容模式隐藏入口');
@@ -504,7 +504,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
             assert.match(dialog.textContent, /最近三次更新/u);
-            assert.match(dialog.textContent, /v1.0.0/u);
+            assert.match(dialog.textContent, /v1.0.1/u);
         }
         const serviceEntry = miniDom.document.querySelector('[name="about-service-entry"]');
         assert.ok(serviceEntry, '连续五次更新日志后应显示专属服务入口');
@@ -1156,6 +1156,70 @@ test('forum top refresh replaces old posts and bottom loading appends posts only
         assert.equal(snapshot.posts.length, 16, '底部加载应保留八篇旧帖并追加八篇新帖');
         assert.equal(snapshot.posts.some((post) => post.title === '替换：替换新帖子'), true);
         assert.equal(snapshot.posts.some((post) => post.title === '追加：追加新帖子'), true);
+    } finally {
+        mounted.destroy();
+        globalThis.setTimeout = previousSetTimeout;
+        globalThis.clearTimeout = previousClearTimeout;
+    }
+});
+
+test('forum wheel can append when a one-post channel is too short to create a scroll range', async () => {
+    const previousSetTimeout = globalThis.setTimeout;
+    const previousClearTimeout = globalThis.clearTimeout;
+    const timers = [];
+    globalThis.setTimeout = (callback, delay) => {
+        const timer = { callback, delay, cleared: false };
+        timers.push(timer);
+        return timer;
+    };
+    globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
+    const profile = { nickname: '短列表作者', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INFJ', zodiac: '双鱼座', occupation: '编辑', interests: ['阅读'], presence: '在线', matchRate: null };
+    const appendedProfile = { ...profile, nickname: '追加作者' };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    await groupForumStore.addForumRefresh({ communityProfiles: [], update: { participants: [profile], posts: forumRefreshPosts('短列表作者') } });
+    const requests = [];
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-short-channel-append',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async generateForumHomeRefresh(request) {
+                requests.push(request);
+                return {
+                    ok: true, communityProfiles: [],
+                    update: { participants: [appendedProfile], posts: forumRefreshPosts('追加作者').map((post) => ({ ...post, title: `追加：${post.title}` })) },
+                };
+            },
+        }, settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('广场');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('data-forum-channel') === 'city_moments'));
+        assert.match(miniDom.document.body.textContent, /同城瞬间 · 1 条本地帖子/u);
+        const content = miniDom.document.querySelector('.yl-phone-content');
+        Object.defineProperties(content, {
+            clientHeight: { value: 500, configurable: true },
+            scrollHeight: { value: 260, configurable: true },
+            scrollTop: { value: 0, writable: true, configurable: true },
+        });
+        content.dispatchEvent(wheel(100));
+        content.dispatchEvent(wheel(100));
+        const release = timers.at(-1);
+        assert.equal(release.delay, 180);
+        release.callback();
+        await flushUi();
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0].refreshMode, 'append');
+        assert.equal((await groupForumStore.snapshot()).posts.length, 16);
+
+        const shortSurface = miniDom.document.querySelector('.yl-forum-home');
+        shortSurface.dispatchEvent(pointer('pointerdown', 100, 61));
+        shortSurface.dispatchEvent(pointer('pointermove', 0, 61));
+        shortSurface.dispatchEvent(pointer('pointerup', 0, 61));
+        await flushUi();
+        assert.equal(requests.length, 2);
+        assert.equal(requests[1].refreshMode, 'append', '短列表同时位于顶部和底部时，触摸上拉必须按移动方向选择追加');
     } finally {
         mounted.destroy();
         globalThis.setTimeout = previousSetTimeout;

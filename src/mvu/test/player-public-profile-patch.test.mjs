@@ -33,6 +33,16 @@ test('player public profile creates an exact MVU-only transition without state m
     assert.equal(result.value.at(-1).path, '/软件/功能开关/玩家已建档');
 });
 
+test('player public profile save remains a validated profile-only transition when an older chat lacks the optional profile gate', () => {
+    const current = state();
+    delete current[T.software][T.switches];
+    const result = buildPlayerPublicProfilePatch(current, { profile: profile() });
+    assert.equal(result.ok, true);
+    assert.equal(validateControlledPatchWhitelist(result.value).ok, true);
+    assert.equal(validateControlledPatchAgainstState(current, result.value).ok, true);
+    assert.equal(result.value.some((operation) => operation.path === '/软件/功能开关/玩家已建档'), false);
+    assert.ok(result.value.every((operation) => operation.path.startsWith('/玩家/公开资料/')));
+});
 test('profile validator rejects private keys, controls, oversized values, and unsafe tag lists', () => {
     assert.equal(normalizePlayerPublicProfile({ ...profile(), 隐藏资料: {} }), null);
     assert.equal(normalizePlayerPublicProfile(profile({ [F.bio]: 'x'.repeat(501) })), null);

@@ -21,7 +21,9 @@ const ERROR_PREFIX = 'private_chat_response_validation_failed:';
 const RELATIONSHIP_FIELDS = Object.freeze(['好感', '信任', '戒备', '面基意愿']);
 const BOND_ASSESSMENT_KINDS = Object.freeze({
     SFW: new Set(['none', 'friendly', 'romantic_flirt']),
-    NSFW: new Set(['none', 'romantic_desire', 'sexual_desire']),
+    // NSFW permits ordinary social replies too. SFW-only kinds remain harmless
+    // inputs here; relationship-progress keeps them from growing NSFW routes.
+    NSFW: new Set(['none', 'friendly', 'romantic_flirt', 'romantic_desire', 'sexual_desire']),
 });
 const USER_MESSAGES = Object.freeze({
     private_chat_response_required: '私聊回复必须是 JSON 对象。',

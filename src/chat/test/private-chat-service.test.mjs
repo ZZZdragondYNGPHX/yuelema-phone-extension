@@ -82,6 +82,60 @@ test('private chat context includes public + matched friends-only data, never hi
     assert.equal(built.context.recentMessages.length, 1);
 });
 
+test('private chat context carries all player public profile fields and normalizes missing values', () => {
+    const current = state();
+    current.玩家.公开资料 = {
+        昵称: '玩家', 城市: '上海', 距离范围: '15 公里内', 寻找意图: '认真交往', 简介: '喜欢逛展和散步。',
+        兴趣标签: ['摄影', '爵士'], 生活方式标签: ['早睡', '做饭'],
+        性格标签: ['温和', '好奇'], 沟通风格标签: ['慢热', '真诚'],
+    };
+    const complete = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好' });
+    assert.equal(complete.ok, true);
+    assert.deepEqual(complete.context.playerPublicProfile, {
+        昵称: '玩家', 年龄段: '', 性别: '', 性取向: '', 城市: '上海', 距离范围: '15 公里内', 寻找意图: '认真交往', 简介: '喜欢逛展和散步。',
+        兴趣标签: ['摄影', '爵士'], 生活方式标签: ['早睡', '做饭'], 性格标签: ['温和', '好奇'], 沟通风格标签: ['慢热', '真诚'],
+    });
+
+    const missingState = state();
+    missingState.玩家.公开资料 = { 昵称: '玩家' };
+    const missing = buildPrivateChatContext({ state: missingState, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好' });
+    assert.equal(missing.ok, true);
+    assert.deepEqual(missing.context.playerPublicProfile, {
+        昵称: '玩家', 年龄段: '', 性别: '', 性取向: '', 城市: '', 距离范围: '', 寻找意图: '', 简介: '',
+        兴趣标签: [], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
+    });
+});
+
+test('private chat transmits every player public-profile field and retains explicit omissions safely', () => {
+    const current = state();
+    Object.assign(current.玩家.公开资料, {
+        城市: '杭州', 距离范围: '15 km', 寻找意图: '先聊天再约会', 简介: '周末喜欢逛书店和骑行。',
+        兴趣标签: ['阅读', '骑行'], 生活方式标签: ['早睡'], 性格标签: ['慢热'], 沟通风格标签: ['喜欢长消息'],
+    });
+    const complete = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好' });
+    assert.equal(complete.ok, true);
+    assert.deepEqual(complete.context.playerPublicProfile, {
+        昵称: '玩家', 年龄段: '', 性别: '', 性取向: '', 城市: '杭州', 距离范围: '15 km',
+        寻找意图: '先聊天再约会', 简介: '周末喜欢逛书店和骑行。',
+        兴趣标签: ['阅读', '骑行'], 生活方式标签: ['早睡'], 性格标签: ['慢热'], 沟通风格标签: ['喜欢长消息'],
+    });
+
+    delete current.玩家.公开资料.城市;
+    current.玩家.公开资料.距离范围 = '   ';
+    delete current.玩家.公开资料.寻找意图;
+    current.玩家.公开资料.兴趣标签 = null;
+    delete current.玩家.公开资料.生活方式标签;
+    const omitted = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '继续聊' });
+    assert.equal(omitted.ok, true);
+    for (const field of ['城市', '距离范围', '寻找意图', '简介', '兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']) {
+        assert.equal(Object.hasOwn(omitted.context.playerPublicProfile, field), true);
+    }
+    assert.equal(omitted.context.playerPublicProfile.城市, '');
+    assert.equal(omitted.context.playerPublicProfile.距离范围, '');
+    assert.equal(omitted.context.playerPublicProfile.寻找意图, '');
+    assert.deepEqual(omitted.context.playerPublicProfile.兴趣标签, []);
+    assert.deepEqual(omitted.context.playerPublicProfile.生活方式标签, []);
+});
 test('private chat context sends full retained history when summaries are off, or records plus only pending messages when on', () => {
     const current = state();
     current.会话.chat_1.最近消息 = Array.from({ length: 30 }, (_, index) => ({
@@ -160,6 +214,8 @@ test('NSFW core contract permits consensual adult chat without treating explicit
     assert.match(request.messages[0].content, /不得仅因内容成人化降低好感或信任、提高戒备/u);
     assert.match(request.messages[0].content, /明确的拒绝或撤回同意、已知边界冲突、胁迫、非自愿、隐私侵犯/u);
     assert.match(request.messages[0].content, /同意或边界不清时应先用线上文字澄清/u);
+    assert.match(request.messages[0].content, /NSFW 允许 none\/friendly\/romantic_flirt\/romantic_desire\/sexual_desire/u);
+    assert.match(request.messages[0].content, /普通问候或日常友好交流应使用 none 或 friendly/u);
 });
 
 test('private chat summary uses its dedicated preset and returns only validated in-memory text and anchors', async () => {
