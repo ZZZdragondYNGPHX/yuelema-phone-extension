@@ -27,7 +27,7 @@ import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
 
-const UI_VERSION = '1.0.0';
+const UI_VERSION = '1.0.1';
 const UI_LAYOUT_STORAGE_KEY = 'yuelema.ui-layout/v1';
 const LAUNCHER_POSITION_STORAGE_KEY = 'yuelema.launcher-position/v1';
 const PHONE_PANEL_POSITION_STORAGE_KEY = 'yuelema.phone-panel-position/v1';
