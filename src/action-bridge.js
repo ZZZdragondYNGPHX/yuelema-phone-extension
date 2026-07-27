@@ -9,7 +9,7 @@ import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandida
 import { generateGroupChatReply, generateGroupChatUpdate as generateGroupChatUpdateService } from './groups/group-chat-service.js';
 import { generateForumExistingPostsUpdate as generateForumExistingPostsUpdateService, generateForumHomeRefresh as generateForumHomeRefreshService, generateForumPostConversationUpdate as generateForumPostConversationUpdateService, generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
 import { generateLocalConversationSummary as generateLocalConversationSummaryService } from './groups/local-conversation-summary-service.js';
-import { composeImagePrompt } from './images/image-directive.js';
+import { composeImagePrompt, ImageDirectiveError } from './images/image-directive.js';
 import { toPublicImageGenerationError } from './llm/image-generation-client.js';
 
 const PASSIVE_KINDS = new Set([
@@ -1022,6 +1022,7 @@ export function createActionBridge({
             });
             return result;
         };
+        let phase = 'request_received';
         emitConversationImageDiagnostic(diagnosticLogger, 'info', '对话生图请求接收', {
             requestId,
             kind: IMAGE_CONVERSATION_KINDS.has(kind) ? kind : undefined,
@@ -1036,7 +1037,9 @@ export function createActionBridge({
         if (pending.has(key)) return reject({ ok: false, status: 'rejected', code: 'ui_action_pending', message: '图片正在生成，请稍候。' }, 'pending_guard');
         pending.add(key);
         try {
+            phase = 'settings_read';
             const settings = settingsStore?.getImageGenerationSettings?.();
+            phase = 'settings_gate';
             if (!settings?.enabled) return reject({ ok: false, status: 'rejected', code: 'image_generation_disabled', message: '请先在设置中启用生图接口。' }, 'settings_gate');
             if (typeof imageGenerationClient?.generate !== 'function') return reject({ ok: false, status: 'rejected', code: 'image_generation_unavailable', message: '生图服务当前不可用。' }, 'client_gate');
 
@@ -1044,6 +1047,7 @@ export function createActionBridge({
             let outfitDna = '';
             const uid = typeof characterUid === 'string' ? characterUid : '';
             if (uid) {
+                phase = 'character_state_read';
                 const read = readLatestState({ mvu: resolveMvu(mvu) });
                 if (!read.ok) return reject(read, 'character_state_read');
                 const character = read.state?.角色池?.[uid];
@@ -1054,6 +1058,7 @@ export function createActionBridge({
                 outfitDna = typeof character.绘图?.outfit_dna === 'string' ? character.绘图.outfit_dna : '';
             }
 
+            phase = 'prompt_compose';
             const useComfyUiPrompts = settings.apiMode === 'comfyui';
             const prompt = composeImagePrompt({
                 positivePrefix: useComfyUiPrompts ? settings.comfyPositivePrefix : settings.positivePrefix,
@@ -1074,9 +1079,11 @@ export function createActionBridge({
                 hasCharacter: Boolean(uid),
                 elapsedMs: Date.now() - startedAt,
             });
+            phase = 'client_generation';
             const generated = await imageGenerationClient.generate({
                 settings, positivePrompt: prompt.positivePrompt, negativePrompt: prompt.negativePrompt, signal,
             });
+            phase = 'result_projection';
             emitConversationImageDiagnostic(diagnosticLogger, 'info', '对话生图完成', {
                 requestId,
                 provider: settings.apiMode,
@@ -1088,12 +1095,17 @@ export function createActionBridge({
                 image: Object.freeze({ src: generated.src, dataUrl: generated.kind === 'data_url' ? generated.src : '', mimeType: generated.mimeType ?? '', kind: generated.kind }),
             };
         } catch (error) {
-            const publicError = toPublicImageGenerationError(error);
+            const publicError = error instanceof ImageDirectiveError
+                ? { code: error.code, message: error.message, retryable: false, status: undefined }
+                : toPublicImageGenerationError(error);
             emitConversationImageDiagnostic(diagnosticLogger, 'error', '对话生图失败', {
                 requestId,
-                phase: 'client_generation',
+                phase,
                 code: publicError.code,
                 message: publicError.message,
+                errorType: error instanceof ImageDirectiveError
+                    ? 'ImageDirectiveError'
+                    : ['TypeError', 'ReferenceError', 'RangeError', 'SyntaxError', 'DOMException'].includes(error?.name) ? error.name : undefined,
                 status: publicError.status,
                 retryable: publicError.retryable,
                 elapsedMs: Date.now() - startedAt,

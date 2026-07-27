@@ -966,7 +966,7 @@ test('conversation image bridge uses ComfyUI-specific prompts without borrowing 
                     positivePrefix: 'nai prefix',
                     positiveSuffix: 'nai suffix',
                     negativePrompt: 'nai negative',
-                    comfyPositivePrefix: 'comfy prefix',
+                    comfyPositivePrefix: String.raw`comfy prefix, <lora:detailer\Loraeyes_V1:1>`,
                     comfyPositiveSuffix: 'comfy suffix',
                     comfyNegativePrompt: 'comfy negative',
                 };
@@ -986,9 +986,47 @@ test('conversation image bridge uses ComfyUI-specific prompts without borrowing 
         directive: { kind: 'scene_snapshot', scene: 'rainy city street' },
     });
     assert.equal(result.ok, true);
-    assert.equal(request.positivePrompt, 'comfy prefix, rainy city street, comfy suffix');
+    assert.equal(request.positivePrompt, String.raw`comfy prefix, <lora:detailer\Loraeyes_V1:1>, rainy city street, comfy suffix`);
     assert.equal(request.negativePrompt, 'comfy negative');
     assert.doesNotMatch(request.positivePrompt, /nai/u);
+});
+
+test('conversation image bridge projects prompt validation with its exact safe phase', async () => {
+    const diagnostics = [];
+    let imageCalls = 0;
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null },
+        mvu: createMvu({ initialState: state() }).mvu,
+        settingsStore: {
+            getImageGenerationSettings() {
+                return {
+                    enabled: true,
+                    apiMode: 'comfyui',
+                    comfyPositivePrefix: '<img src=x onerror=private-value>',
+                    comfyPositiveSuffix: '',
+                    comfyNegativePrompt: '',
+                };
+            },
+        },
+        imageGenerationClient: { async generate() { imageCalls += 1; } },
+        diagnosticLogger: {
+            info: (...args) => diagnostics.push(['info', ...args]),
+            error: (...args) => diagnostics.push(['error', ...args]),
+        },
+    });
+    const result = await bridge.generateConversationImage({
+        kind: 'forum',
+        conversationId: 'post_city',
+        messageId: 'message_city_2',
+        directive: { kind: 'scene_snapshot', scene: 'rainy city street' },
+    });
+    assert.equal(result.code, 'IMAGE_DIRECTIVE_TEXT_INVALID');
+    assert.match(result.message, /前置正面提示词/u);
+    assert.equal(imageCalls, 0);
+    const failure = diagnostics.find(([, label]) => label === '[约了吗][生图] 对话生图失败');
+    assert.equal(failure?.[2]?.phase, 'prompt_compose');
+    assert.equal(failure?.[2]?.errorType, 'ImageDirectiveError');
+    assert.doesNotMatch(JSON.stringify(diagnostics), /private-value|rainy city street|post_city|message_city_2/u);
 });
 
 test('conversation image bridge blocks disabled requests and never exposes unexpected client errors', async () => {
