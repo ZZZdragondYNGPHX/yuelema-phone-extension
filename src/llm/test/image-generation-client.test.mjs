@@ -160,10 +160,16 @@ test('credential diagnostics preserve the locked-key error when an external sign
     assert.equal(calls[0]?.[1]?.code, 'SESSION_KEY_LOCKED');
 });
 
-test('client accepts a direct image response and rejects unsafe non-loopback http', async () => {
+test('client accepts direct image responses from HTTPS and explicitly configured HTTP services', async () => {
     const client = createImageGenerationClient({ fetchImpl: async () => new Response(png, { status: 200, headers: { 'content-type': 'image/png' } }) });
     assert.equal((await client.generate({ settings, positivePrompt: 'scene', negativePrompt: '' })).mimeType, 'image/png');
-    await assert.rejects(() => client.generate({ settings: { ...settings, baseUrl: 'http://remote.example.test' }, positivePrompt: 'scene', negativePrompt: '' }));
+    const urls = [];
+    const httpClient = createImageGenerationClient({ fetchImpl: async (url) => {
+        urls.push(url);
+        return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } });
+    } });
+    await httpClient.generate({ settings: { ...settings, baseUrl: 'http://remote.example.test' }, positivePrompt: 'scene', negativePrompt: '' });
+    assert.deepEqual(urls, ['http://remote.example.test/v1/images/generations']);
     await assert.rejects(() => client.generate({ settings: { ...settings, baseUrl: 'https://img.example.test/?api_key=secret-key' }, positivePrompt: 'scene', negativePrompt: '' }));
 });
 

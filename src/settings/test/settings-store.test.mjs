@@ -506,8 +506,9 @@ test('生图设置严格隔离密钥并按对话类型保存自动生图开关',
     assert.doesNotMatch(store.exportJson(), /apiKey|authorization|bearer|secret-value/iu);
 
     assert.throws(() => store.setImageGenerationSettings({ ...base, apiKey: 'secret-value' }), errorCode('UNSAFE_INPUT'));
-    assert.throws(() => store.setImageGenerationSettings({ ...base, baseUrl: 'http://images.example.invalid' }), errorCode('INVALID_IMAGE_GENERATION'));
+    assert.doesNotThrow(() => store.setImageGenerationSettings({ ...base, baseUrl: 'http://images.example.invalid' }));
     assert.throws(() => store.setImageGenerationSettings({ ...base, baseUrl: 'https://images.example.invalid/?api_key=secret-value' }), errorCode('INVALID_IMAGE_GENERATION'));
+    assert.throws(() => store.setImageGenerationSettings({ ...base, baseUrl: 'ftp://images.example.invalid' }), errorCode('INVALID_IMAGE_GENERATION'));
     assert.throws(() => store.setImageGenerationSettings({ ...base, endpointPath: '/../private' }), errorCode('INVALID_IMAGE_GENERATION'));
     assert.throws(() => store.setImageGenerationSettings({ ...base, width: 255 }), errorCode('INVALID_SETTINGS'));
     assert.throws(() => store.setConversationImageGenerationSettings('private', 'bad/id', { autoGenerate: true }), errorCode('INVALID_IMAGE_GENERATION'));

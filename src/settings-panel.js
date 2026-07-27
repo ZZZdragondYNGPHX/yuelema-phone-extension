@@ -859,7 +859,11 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         keyProviderPanel.setAttribute('role', 'tabpanel');
         const keyProviderTitle = element('h3', { className: 'yl-image-provider-title' });
         const keyProviderDescription = element('p', { className: 'yl-phone-page-description' });
-        append(keyProviderPanel, [keyProviderTitle, keyProviderDescription]);
+        const insecureTransportWarning = element('p', {
+            className: 'yl-phone-page-description',
+            text: '兼容仅提供 HTTP 的生图服务；使用 HTTP 时，API Key、提示词与返回内容会以明文传输，请仅连接你信任的服务。',
+        });
+        append(keyProviderPanel, [keyProviderTitle, keyProviderDescription, insecureTransportWarning]);
         const keyFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
         append(keyFields, [
             field('生图密钥预设 ID', presetId), field('生图站点', baseUrl), field('生图接口路径', endpointPath),
@@ -906,10 +910,10 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         comfyProviderPanel.setAttribute('role', 'tabpanel');
         append(comfyProviderPanel, [
             element('h3', { className: 'yl-image-provider-title', text: 'ComfyUI 专属配置' }),
-            element('p', { className: 'yl-phone-page-description', text: '独立保存 ComfyUI 地址与引擎参数；不读取 NAI/OpenAI 的接口路径或 API Key。' }),
+            element('p', { className: 'yl-phone-page-description', text: '独立保存 ComfyUI 地址与引擎参数；不读取 NAI/OpenAI 的接口路径或 API Key。远程 HTTP 会明文传输提示词与图片。' }),
         ]);
         const comfyConnectionFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
-        comfyConnectionFields.appendChild(field('本地或 HTTPS ComfyUI 地址', comfyBaseUrl));
+        comfyConnectionFields.appendChild(field('ComfyUI 地址（支持 HTTP / HTTPS）', comfyBaseUrl));
         comfyProviderPanel.appendChild(comfyConnectionFields);
         const resourceStatus = element('p', { className: 'yl-image-generation-key-status', text: '连接后可从 /object_info 读取模型、采样器、调度器、VAE 与 CLIP。' });
         const replaceResourceOptions = (select, values, emptyLabel) => {

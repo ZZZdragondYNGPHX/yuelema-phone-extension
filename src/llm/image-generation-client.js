@@ -128,13 +128,11 @@ function cleanWorkflow(value) {
     }
     return text;
 }
-function isLoopback(hostname) { return ['localhost', '127.0.0.1', '::1'].includes(hostname); }
 function safeBaseUrl(value) {
     const text = cleanText(value, '生图接口地址', 2048).replace(/\/+$/u, '');
     let url;
     try { url = new URL(text); } catch { fail('INVALID_IMAGE_REQUEST', '生图接口地址无效。'); }
     if (url.username || url.password || url.search || url.hash || !['https:', 'http:'].includes(url.protocol)) fail('INVALID_IMAGE_REQUEST', '生图接口地址无效。');
-    if (url.protocol === 'http:' && !isLoopback(url.hostname)) fail('INVALID_IMAGE_REQUEST', '非本机生图接口必须使用 HTTPS。');
     return url.toString().replace(/\/$/u, '');
 }
 function safeEndpointPath(value) {

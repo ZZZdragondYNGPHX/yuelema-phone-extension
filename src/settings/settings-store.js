@@ -455,9 +455,8 @@ export function normalizeImageGenerationSettings(input) {
         const baseUrl = cleanImageText(raw, field, 512, { allowEmpty: false });
         let parsedUrl;
         try { parsedUrl = new URL(baseUrl); } catch { fail('INVALID_IMAGE_GENERATION', `${field}必须是有效 URL。`); }
-        const loopback = ['localhost', '127.0.0.1', '::1'].includes(parsedUrl.hostname);
-        if (!['https:', 'http:'].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash || (parsedUrl.protocol === 'http:' && !loopback)) {
-            fail('INVALID_IMAGE_GENERATION', `${field}必须使用 HTTPS；仅本机回环地址允许 HTTP。`);
+        if (!['https:', 'http:'].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
+            fail('INVALID_IMAGE_GENERATION', `${field}必须使用 HTTP 或 HTTPS，且不能包含凭据、查询参数或片段。`);
         }
         return parsedUrl.toString().replace(/\/$/, '');
     };
