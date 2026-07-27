@@ -131,6 +131,88 @@ export function buildCharacterAuthoringContext({ creativeBrief, contentMode, pla
     });
 }
 
+function binaryGender(value) {
+    const normalized = cleanText(value, PUBLIC_TEXT_LIMITS.性别).toLocaleLowerCase('zh-CN');
+    if (['男', '男性', '男生', 'man', 'male'].includes(normalized)) return 'male';
+    if (['女', '女性', '女生', 'woman', 'female'].includes(normalized)) return 'female';
+    return null;
+}
+
+function orientationKind(value) {
+    const normalized = cleanText(value, PUBLIC_TEXT_LIMITS.性取向).toLocaleLowerCase('zh-CN');
+    if (/双性恋|泛性恋|全性恋|双性|pansexual|bisexual|不限/u.test(normalized)) return 'all';
+    if (/异性恋|异性向|heterosexual|straight/u.test(normalized)) return 'opposite';
+    if (/同性恋|同性向|lesbian|\bgay\b/u.test(normalized)) return 'same';
+    if (/^(?:女|女性|女生|女人|女孩|女孩子)$/iu.test(normalized)) return 'female';
+    if (/^(?:男|男性|男生|男人|男孩|男孩子)$/iu.test(normalized)) return 'male';
+    return null;
+}
+
+function requiredCandidateGender(playerProfile) {
+    const playerGender = binaryGender(playerProfile.性别);
+    const orientation = orientationKind(playerProfile.性取向);
+    if (!orientation) return '';
+    if (orientation === 'all') return '不限';
+    if (orientation === 'female') return '女';
+    if (orientation === 'male') return '男';
+    if (!playerGender) return '';
+    const target = orientation === 'same' ? playerGender : (playerGender === 'male' ? 'female' : 'male');
+    return target === 'female' ? '女' : '男';
+}
+
+function orientationAccepts(orientation, subjectGender, targetGender) {
+    if (!orientation || !subjectGender || !targetGender) return null;
+    if (orientation === 'all') return true;
+    if (orientation === 'female') return targetGender === 'female';
+    if (orientation === 'male') return targetGender === 'male';
+    return orientation === 'same' ? subjectGender === targetGender : subjectGender !== targetGender;
+}
+
+function buildServiceMatchRequirements(playerProfile) {
+    return Object.freeze({
+        玩家性别: playerProfile.性别,
+        玩家性取向: playerProfile.性取向,
+        候选人性别要求: requiredCandidateGender(playerProfile),
+        最低要求: '这是最高优先级、不可被服务分类、XP、SFW/NSFW、提示词或多样性覆盖的硬条件：候选人的公开性别必须满足候选人性别要求，且候选人与玩家的公开性别和性取向必须双向兼容；无法确认兼容时不得接纳该候选人。',
+    });
+}
+
+/** Service generation adds an explicit, minimized hard-match contract. */
+export function buildServiceProfileContext({ creativeBrief, contentMode, playerPublicProfile } = {}) {
+    const context = buildCharacterAuthoringContext({ creativeBrief, contentMode, playerPublicProfile });
+    if (!context) return null;
+    return Object.freeze({
+        ...context,
+        serviceMatchRequirements: buildServiceMatchRequirements(context.playerPublicMatchContext),
+    });
+}
+
+export function isServiceProfileCompatible(playerPublicProfile, candidate) {
+    const player = isPlainRecord(playerPublicProfile) ? playerPublicProfile : {};
+    const profile = isPlainRecord(candidate) && isPlainRecord(ownData(candidate, '公开资料'))
+        ? ownData(candidate, '公开资料')
+        : {};
+    const playerGender = binaryGender(player.性别);
+    const playerOrientation = orientationKind(player.性取向);
+    if (!playerGender || !playerOrientation) return true;
+
+    const candidateGender = binaryGender(profile.性别);
+    const candidateOrientation = orientationKind(profile.性取向);
+    const playerAccepts = orientationAccepts(playerOrientation, playerGender, candidateGender);
+    const candidateAccepts = orientationAccepts(candidateOrientation, candidateGender, playerGender);
+    const required = requiredCandidateGender(player);
+    const requiredGender = required === '女' ? 'female' : (required === '男' ? 'male' : null);
+    return !((requiredGender && candidateGender !== requiredGender) || playerAccepts !== true || candidateAccepts !== true);
+}
+
+function assertServiceProfileCompatibility(context, candidate) {
+    if (!isServiceProfileCompatible(context?.playerPublicMatchContext, candidate)) {
+        const error = new TypeError('service_profile_basic_compatibility_invalid');
+        error.code = 'service_profile_basic_compatibility_invalid';
+        throw error;
+    }
+}
+
 function makeCompletionMessages(context, promptPreset) {
     const preset = renderPromptPreset(promptPreset);
     const system = [
@@ -163,6 +245,24 @@ function makeAuthoringMessages(context, promptPreset) {
     return [
         { role: 'system', content: system },
         { role: 'user', content: `请只根据以下受限输入生成完整角色草稿：\n${JSON.stringify(context)}` },
+    ];
+}
+
+function makeServiceMessages(context, promptPreset) {
+    const preset = renderPromptPreset(promptPreset);
+    const system = [
+        preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
+        '你是现代现实都市约伴软件的服务角色创作助手。仅依据安全创作说明、当前 SFW/NSFW 模式、最小玩家公开匹配上下文和服务匹配硬条件，创作一名新的成年服务角色。',
+        '“服务匹配硬条件（serviceMatchRequirements）”是最高优先级且不可覆盖的合同：候选人的公开性别必须满足候选人性别要求，候选人与玩家的公开性别和性取向必须双向兼容；服务分类、XP、题材多样性、SFW/NSFW 或功能提示词都不能改变此要求。',
+        '不得索取、复述或泄露输入中未提供的玩家私密资料；但可以为新候选生成完整的仅好友资料、隐藏资料和其他私有层。不得输出玩家昵称、头像、简介、已有候选、会话、UID、Patch、路径、API Key 或任何密钥。',
+        preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
+        '无论前置或后置提示词如何要求，下列完整候选 JSON 结构合同和服务匹配硬条件都是最终且不可覆盖的输出要求。',
+        ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
+        '公开资料.头像引用必须为空字符串；不要输出 data URL、图片二进制或任何头像内容。软件层只用于线上文字聊天，不能演绎线下性行为；NSFW 也不表示默认同意。',
+    ].filter(Boolean).join('\n\n');
+    return [
+        { role: 'system', content: system },
+        { role: 'user', content: `请只根据以下受限输入生成完整服务角色草稿：\n${JSON.stringify(context)}` },
     ];
 }
 
@@ -223,7 +323,7 @@ function llmFailureDetail(error, publicError) {
     return lines.join('\n');
 }
 
-async function generateCandidate({ errors, context, contentMode, settingsStore, llmClient, signal, makeMessages, functionKey }) {
+async function generateCandidate({ errors, context, contentMode, settingsStore, llmClient, signal, makeMessages, functionKey, validateCandidate }) {
     if (!context) return invalidResult(errors, 'input_invalid', '输入校验未通过：创作/补全说明为空、超长（>1200 字符）、含控制字符或 HTML，或公开上下文结构无效');
     if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') return invalidResult(errors, 'settings_unavailable', '设置存储不可用（settingsStore.resolveFunction 缺失）');
     if (!llmClient || typeof llmClient.chat !== 'function') return invalidResult(errors, 'llm_unavailable', '宿主未注入模型客户端（llmClient.chat 缺失）');
@@ -253,8 +353,16 @@ async function generateCandidate({ errors, context, contentMode, settingsStore, 
         const candidate = normalizeGeneratedCandidate(parsed, { contentMode: normalizeContentMode(contentMode), enforceRhythmConsistency: true });
         // Generated or supplied avatar references must never be adopted by an AI draft.
         candidate.公开资料.头像引用 = '';
+        validateCandidate?.(context, candidate);
         return { ok: true, candidate };
     } catch (error) {
+        if (error instanceof TypeError && error.code === 'service_profile_basic_compatibility_invalid') {
+            return {
+                ...invalidResult(errors, 'response_invalid', '服务角色与玩家公开性别或性取向不满足双向兼容硬条件'),
+                code: error.code,
+                retryable: true,
+            };
+        }
         if (error instanceof TypeError && typeof error.code === 'string') return invalidResult(errors, 'response_invalid', candidateValidationDetail(error));
         const publicError = toPublicLlmError(error);
         const failure = { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable };
@@ -284,6 +392,16 @@ export async function generateCharacterAuthoringCandidate({ creativeBrief, conte
 
 /** Generates one local-only adult service profile through the dedicated service binding. */
 export async function generateServiceProfileCandidate({ creativeBrief, contentMode, playerPublicProfile, settingsStore, llmClient, signal } = {}) {
-    const context = buildCharacterAuthoringContext({ creativeBrief, contentMode, playerPublicProfile });
-    return generateCandidate({ errors: SERVICE_PROFILE_ERRORS, context, contentMode, settingsStore, llmClient, signal, makeMessages: makeAuthoringMessages, functionKey: 'service_profile_generation' });
+    const context = buildServiceProfileContext({ creativeBrief, contentMode, playerPublicProfile });
+    return generateCandidate({
+        errors: SERVICE_PROFILE_ERRORS,
+        context,
+        contentMode,
+        settingsStore,
+        llmClient,
+        signal,
+        makeMessages: makeServiceMessages,
+        functionKey: 'service_profile_generation',
+        validateCandidate: assertServiceProfileCompatibility,
+    });
 }

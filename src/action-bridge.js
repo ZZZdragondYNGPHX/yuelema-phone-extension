@@ -5,7 +5,7 @@ import { generatePrivateChatReply, generatePrivateChatSummary } from './chat/pri
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
 import { generateCandidateMatchDraft as generateCandidateMatchDraftService, generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
 import { materializeCandidateMatchDraft } from './recommendation/match-candidate-materializer.js';
-import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate, generateServiceProfileCandidate } from './characters/character-authoring-service.js';
+import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate, generateServiceProfileCandidate, isServiceProfileCompatible } from './characters/character-authoring-service.js';
 import { generateGroupChatReply, generateGroupChatUpdate as generateGroupChatUpdateService } from './groups/group-chat-service.js';
 import { generateForumExistingPostsUpdate as generateForumExistingPostsUpdateService, generateForumHomeRefresh as generateForumHomeRefreshService, generateForumPostConversationUpdate as generateForumPostConversationUpdateService, generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
 import { generateLocalConversationSummary as generateLocalConversationSummaryService } from './groups/local-conversation-summary-service.js';
@@ -833,6 +833,15 @@ export function createActionBridge({
             if (!read.ok) return read;
             if (expectedContentMode && read.state?.软件?.内容模式 !== expectedContentMode) {
                 return { ok: false, status: 'rejected', code: 'service_order_mode_changed' };
+            }
+            const requestedCandidates = Array.isArray(candidates) && candidates.length ? candidates : [candidate];
+            if (requestedCandidates.some((item) => !isServiceProfileCompatible(read.state?.玩家?.公开资料, item))) {
+                return {
+                    ok: false,
+                    status: 'rejected',
+                    code: 'service_order_basic_compatibility_invalid',
+                    message: '所选服务角色与当前公开性别或性取向不兼容，请重新生成。',
+                };
             }
             const built = buildServiceOrderHandoffPatch(read.state, { candidate, candidates, categoryId });
             if (!built.ok) return rejectedFromBuild(built);
