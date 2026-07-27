@@ -19,6 +19,7 @@ test('prompt composition preserves the required order and separate negative prom
     });
     assert.equal(result.positivePrompt, 'best quality, black hair; blue eyes, white shirt, cafe window, candid smile, soft lighting');
     assert.equal(result.negativePrompt, 'low quality');
+    assert.throws(() => composeImagePrompt({ positivePrefix: 'best quality\nmasterpiece', directive: { kind: 'selfie', scene: 'portrait' } }));
     assert.match(formatImageDirective(result.directive), /"scene"/u);
 });
 

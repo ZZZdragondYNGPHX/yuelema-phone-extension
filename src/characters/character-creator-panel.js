@@ -93,7 +93,7 @@ function publicProfileFromForm(form) {
 }
 function avatarFromForm(form, localAvatar) {
     return readNamed(form, 'avatar-kind') === 'embedded' && localAvatar
-        ? localAvatar
+        ? { kind: 'embedded', dataUrl: localAvatar.dataUrl }
         : { kind: 'placeholder' };
 }
 
@@ -706,11 +706,11 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
                     onFeedback('角色未登记：MVU 当前不可写入或资料未通过最终校验。');
                     return;
                 }
-                settleActivity('succeed', activityHandle, '角色已登记到当前聊天。');
+                settleActivity('succeed', activityHandle, '角色已登记，将在关键词相近时于首页刷新或匹配中出现。');
                 if (saveLocal.checked && characterLibrary) {
                     try { characterLibrary.importTemplate(template); renderLibrary(); } catch (error) { reportLibraryFailure('登记后保存本地模板', error); onFeedback(`角色已登记，但本地保存失败：${safeLibraryMessage(error)}`); onRegistered?.(); return; }
                 }
-                onFeedback('角色已通过成年人校验并登记到当前聊天。');
+                onFeedback('角色已登记；当正权重关键词相近且匹配条件通过时，可在首页刷新或匹配中遇见。');
                 onRegistered?.();
             }).catch((error) => {
                 submit.disabled = false;

@@ -5,9 +5,11 @@ const MAX_IMAGE_BYTES = 24 * 1024 * 1024;
 const MAX_JSON_RESPONSE_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1_048_576;
 const MAX_COMFY_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_COMFY_OBJECT_INFO_BYTES = 32 * 1024 * 1024;
+const MAX_HTTP_ERROR_DIAGNOSTIC_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
 const UNSAFE_WORKFLOW_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+const SAFE_PROVIDER_ERROR_FIELDS = Object.freeze(['input', 'model', 'action', 'parameters', 'v4_prompt', 'v4_negative_prompt', 'negative_prompt', 'width', 'height', 'scale', 'cfg_rescale', 'steps', 'sampler', 'noise_schedule', 'seed']);
 let imageRequestSequence = 0;
 
 export class YueLeMaImageGenerationError extends Error {
@@ -40,6 +42,70 @@ function imageErrorDetails(error) {
     }
     return { code: 'IMAGE_UNKNOWN_ERROR', retryable: false, status: undefined };
 }
+function safeErrorType(error) { return ['TypeError', 'ReferenceError', 'RangeError', 'SyntaxError', 'DOMException'].includes(error?.name) ? error.name : undefined; }
+function providerErrorCategory(status, message = '') {
+    const text = String(message).toLowerCase();
+    if (/anlas|balance|credit|quota|subscription|payment/u.test(text) || status === 402) return 'subscription_or_quota';
+    if (/api.?key|access.?token|auth|unauthor/u.test(text) || status === 401) return 'authentication';
+    if (/rate.?limit|too many requests/u.test(text) || status === 429) return 'rate_limit';
+    if (/model/u.test(text)) return 'model_validation';
+    if (status === 400 || /valid|parameter|prompt|sampler|schedule|width|height|steps|seed|cfg/u.test(text)) return 'request_validation';
+    if (status >= 500) return 'provider_unavailable';
+    return 'http_error';
+}
+function redactProviderBodyExcerpt(value, sensitiveValues = []) {
+    let text = String(value ?? '');
+    const secrets = sensitiveValues.map((item) => String(item ?? '').trim()).filter(Boolean);
+    const fragments = secrets
+        .flatMap((item) => [item, ...item.split(/[,|\r\n]+/u).map((part) => part.trim())])
+        .filter((item) => item.length >= 8)
+        .flatMap((item) => [item, JSON.stringify(item)])
+        .sort((left, right) => right.length - left.length);
+    for (const fragment of new Set(fragments)) text = text.split(fragment).join('[REDACTED]');
+    for (const secret of secrets.filter((item) => item.length < 8)) {
+        text = text.split(JSON.stringify(secret)).join('"[REDACTED]"');
+        const escaped = secret.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+        text = text.replace(new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'giu'), '[REDACTED]');
+    }
+    return text
+        .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/giu, 'Bearer [REDACTED]')
+        .replace(/("(?:api[_-]?key|authorization|access[_-]?token|token|key)"\s*:\s*")[^"]+(")/giu, '$1[REDACTED]$2')
+        .replace(/[A-Za-z0-9+/]{80,}={0,2}/gu, '[REDACTED_LONG_DATA]')
+        .replace(/[\u0000-\u001f\u007f]+/gu, ' ')
+        .trim()
+        .slice(0, 1200);
+}
+async function safeHttpErrorDiagnostic(response, sensitiveValues = []) {
+    const status = Number.isInteger(response?.status) ? response.status : undefined;
+    const fallback = { providerCategory: providerErrorCategory(status), bodyInspection: 'unavailable' };
+    try {
+        const copy = typeof response?.clone === 'function' ? response.clone() : response;
+        const bytes = await readResponseBytes(copy, MAX_HTTP_ERROR_DIAGNOSTIC_BYTES);
+        const text = new TextDecoder().decode(bytes);
+        const providerBodyExcerpt = redactProviderBodyExcerpt(text, sensitiveValues) || undefined;
+        let payload;
+        try { payload = JSON.parse(text); } catch {
+            return { ...fallback, bodyInspection: 'non_json', bodyBytes: bytes.length, providerBodyExcerpt };
+        }
+        const record = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+        const message = [record.message, record.detail, record.title, typeof record.error === 'string' ? record.error : ''].find((value) => typeof value === 'string') ?? '';
+        const code = typeof record.code === 'string' && /^[A-Za-z0-9_.:/-]{1,120}$/u.test(record.code) ? record.code : undefined;
+        const validationFields = SAFE_PROVIDER_ERROR_FIELDS.filter((field) => message.toLowerCase().includes(field.toLowerCase()));
+        return {
+            providerCategory: providerErrorCategory(status, message),
+            bodyInspection: 'structured_json',
+            bodyBytes: bytes.length,
+            responseSchemaFields: ['statusCode', 'message', 'detail', 'title', 'error', 'errors', 'code', 'type'].filter((field) => Object.hasOwn(record, field)),
+            providerStatusCode: Number.isInteger(record.statusCode) ? record.statusCode : undefined,
+            providerErrorCode: code,
+            providerMessageChars: message.length || undefined,
+            providerValidationFields: validationFields.length ? validationFields : undefined,
+            providerErrorCount: Array.isArray(record.errors) ? record.errors.length : undefined,
+            providerBodyExcerpt,
+        };
+    } catch (error) { return { ...fallback, bodyInspection: error instanceof YueLeMaImageGenerationError ? 'too_large_or_invalid' : 'read_failed' }; }
+}
+function isNovelAIV4Model(model) { return /^nai-diffusion-4(?:-|$)/iu.test(String(model ?? '').trim()); }
 function cleanText(value, field, maxLength, { allowEmpty = false } = {}) {
     if (typeof value !== 'string') fail('INVALID_IMAGE_REQUEST', `${field}必须是文本。`);
     const text = value.trim();
@@ -62,13 +128,11 @@ function cleanWorkflow(value) {
     }
     return text;
 }
-function isLoopback(hostname) { return ['localhost', '127.0.0.1', '::1'].includes(hostname); }
 function safeBaseUrl(value) {
     const text = cleanText(value, '生图接口地址', 2048).replace(/\/+$/u, '');
     let url;
     try { url = new URL(text); } catch { fail('INVALID_IMAGE_REQUEST', '生图接口地址无效。'); }
     if (url.username || url.password || url.search || url.hash || !['https:', 'http:'].includes(url.protocol)) fail('INVALID_IMAGE_REQUEST', '生图接口地址无效。');
-    if (url.protocol === 'http:' && !isLoopback(url.hostname)) fail('INVALID_IMAGE_REQUEST', '非本机生图接口必须使用 HTTPS。');
     return url.toString().replace(/\/$/u, '');
 }
 function safeEndpointPath(value) {
@@ -148,15 +212,53 @@ async function readResponseBytes(response, maximum, tooLarge = {}) {
 }
 function readU16(bytes, offset) { return bytes[offset] | (bytes[offset + 1] << 8); }
 function readU32(bytes, offset) { return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0; }
+function findCentralZipImage(bytes) {
+    const decoder = new TextDecoder();
+    const minimum = Math.max(0, bytes.length - 65_557);
+    let eocd = -1;
+    for (let offset = bytes.length - 22; offset >= minimum; offset -= 1) {
+        if (readU32(bytes, offset) === 0x06054b50) { eocd = offset; break; }
+    }
+    if (eocd < 0) return null;
+    const entries = readU16(bytes, eocd + 10);
+    const directorySize = readU32(bytes, eocd + 12);
+    let offset = readU32(bytes, eocd + 16);
+    if (entries === 0xffff || directorySize === 0xffffffff || offset + directorySize > eocd) return null;
+    let best = null;
+    for (let index = 0; index < entries; index += 1) {
+        if (offset + 46 > bytes.length || readU32(bytes, offset) !== 0x02014b50) return null;
+        const flags = readU16(bytes, offset + 8);
+        const method = readU16(bytes, offset + 10);
+        const compressedSize = readU32(bytes, offset + 20);
+        const uncompressedSize = readU32(bytes, offset + 24);
+        const filenameLength = readU16(bytes, offset + 28);
+        const extraLength = readU16(bytes, offset + 30);
+        const commentLength = readU16(bytes, offset + 32);
+        const localOffset = readU32(bytes, offset + 42);
+        const next = offset + 46 + filenameLength + extraLength + commentLength;
+        if (next > bytes.length) return null;
+        const filename = decoder.decode(bytes.slice(offset + 46, offset + 46 + filenameLength));
+        if ((flags & 1) === 0 && /\.(?:png|jpe?g|webp)$/iu.test(filename)
+            && [0, 8].includes(method) && compressedSize > 0
+            && compressedSize <= MAX_IMAGE_BYTES && uncompressedSize <= MAX_IMAGE_BYTES
+            && localOffset + 30 <= bytes.length && readU32(bytes, localOffset) === 0x04034b50) {
+            const start = localOffset + 30 + readU16(bytes, localOffset + 26) + readU16(bytes, localOffset + 28);
+            if (start + compressedSize <= bytes.length && (!best || uncompressedSize > best.uncompressedSize)) {
+                best = { method, compressedSize, uncompressedSize, start };
+            }
+        }
+        offset = next;
+    }
+    return best;
+}
 async function extractFirstZipImage(bytes) {
     if (bytes.length < 30 || readU32(bytes, 0) !== 0x04034b50) return null;
+    const central = findCentralZipImage(bytes);
     const flags = readU16(bytes, 6);
-    const method = readU16(bytes, 8);
-    const compressedSize = readU32(bytes, 18);
-    const filenameLength = readU16(bytes, 26);
-    const extraLength = readU16(bytes, 28);
-    if ((flags & 0x08) !== 0 || compressedSize < 1 || compressedSize > MAX_IMAGE_BYTES) return null;
-    const start = 30 + filenameLength + extraLength;
+    const method = central?.method ?? readU16(bytes, 8);
+    const compressedSize = central?.compressedSize ?? readU32(bytes, 18);
+    const start = central?.start ?? 30 + readU16(bytes, 26) + readU16(bytes, 28);
+    if ((!central && (flags & 0x08) !== 0) || compressedSize < 1 || compressedSize > MAX_IMAGE_BYTES) return null;
     const end = start + compressedSize;
     if (end > bytes.length) return null;
     const payload = bytes.slice(start, end);
@@ -170,16 +272,33 @@ async function extractFirstZipImage(bytes) {
 }
 function buildBody(settings, positivePrompt, negativePrompt) {
     if (settings.apiMode === 'novelai') {
+        const parameters = {
+            width: settings.width, height: settings.height, scale: settings.guidance,
+            cfg_rescale: settings.guidanceRescale, steps: settings.steps, sampler: settings.sampler,
+            noise_schedule: settings.noiseSchedule, seed: settings.seed, negative_prompt: negativePrompt,
+            qualityToggle: settings.qualityToggle, sm: settings.variety, sm_dyn: settings.variety,
+            n_samples: 1, ucPreset: 0,
+        };
+        if (isNovelAIV4Model(settings.model)) {
+            Object.assign(parameters, {
+                params_version: 3, prefer_brownian: true, dynamic_thresholding: false,
+                controlnet_strength: 1, legacy: false, add_original_image: false,
+                legacy_v3_extend: false, deliberate_euler_ancestral_bug: false,
+                v4_prompt: {
+                    caption: { base_caption: positivePrompt, char_captions: [] },
+                    use_coords: false, use_order: true, legacy_uc: false,
+                },
+                v4_negative_prompt: {
+                    caption: { base_caption: negativePrompt, char_captions: [] },
+                    use_coords: false, use_order: true, legacy_uc: false,
+                },
+            });
+        }
         return {
             input: positivePrompt,
             model: settings.model,
             action: 'generate',
-            parameters: {
-                width: settings.width, height: settings.height, scale: settings.guidance,
-                cfg_rescale: settings.guidanceRescale, steps: settings.steps, sampler: settings.sampler,
-                noise_schedule: settings.noiseSchedule, seed: settings.seed, negative_prompt: negativePrompt,
-                qualityToggle: settings.qualityToggle, sm: settings.variety, sm_dyn: settings.variety, n_samples: 1,
-            },
+            parameters,
         };
     }
     return {
@@ -227,7 +346,7 @@ function normalizeRequest(input) {
 async function parseResponse(response) {
     const contentType = String(response.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase();
     if (SAFE_IMAGE_MIME.has(contentType)) return imageResultFromBytes(await readResponseBytes(response, MAX_IMAGE_BYTES));
-    if (contentType === 'application/zip' || contentType === 'application/x-zip-compressed' || contentType === 'application/octet-stream') {
+    if (contentType === 'application/zip' || contentType === 'application/x-zip-compressed' || contentType === 'application/octet-stream' || contentType === 'binary/octet-stream') {
         const bytes = await readResponseBytes(response, MAX_IMAGE_BYTES);
         const direct = detectMime(bytes) ? imageResultFromBytes(bytes) : await extractFirstZipImage(bytes);
         if (direct) return direct;
@@ -544,12 +663,31 @@ export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null
                 }
                 let response;
                 phase = 'network_request';
+                const requestBody = buildBody(request.settings, request.positivePrompt, request.negativePrompt);
+                const serializedBody = JSON.stringify(requestBody);
+                emitImageDiagnostic(diagnosticLogger, 'info', '请求体准备完成', {
+                    requestId,
+                    provider: request.settings.apiMode,
+                    requestBytes: new TextEncoder().encode(serializedBody).length,
+                    positivePromptChars: request.positivePrompt.length,
+                    negativePromptChars: request.negativePrompt.length,
+                    requestFields: Object.keys(requestBody),
+                    parameterFields: request.settings.apiMode === 'novelai' ? Object.keys(requestBody.parameters) : undefined,
+                });
                 try {
                     response = await fetchImpl(request.settings.baseUrl + request.settings.endpointPath, {
                         method: 'POST', headers: { Accept: 'application/json, image/png, image/jpeg, image/webp, application/zip', 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-                        body: JSON.stringify(buildBody(request.settings, request.positivePrompt, request.negativePrompt)), signal: controller.signal,
+                        body: serializedBody, signal: controller.signal,
                     });
                 } catch (error) {
+                    emitImageDiagnostic(diagnosticLogger, 'error', '传输失败', {
+                        requestId,
+                        provider: request.settings.apiMode,
+                        errorType: safeErrorType(error),
+                        aborted: controller.signal.aborted,
+                        abortSource: controller.signal.aborted ? (request.signal?.aborted ? 'external' : 'timeout') : undefined,
+                        elapsedMs: Date.now() - startedAt,
+                    });
                     if (controller.signal.aborted) fail('IMAGE_REQUEST_ABORTED', request.signal?.aborted ? '生图请求已取消。' : '生图请求超时，请稍后重试。', { retryable: true });
                     fail('IMAGE_NETWORK_ERROR', '无法连接生图服务，请检查 URL、网络或跨域配置。', { retryable: true });
                 }
@@ -563,7 +701,16 @@ export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null
                     contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined,
                     elapsedMs: Date.now() - startedAt,
                 });
-                if (!response?.ok) fail('IMAGE_HTTP_ERROR', '生图服务拒绝了本次请求，请检查接口设置或稍后重试。', { retryable: response?.status >= 500, status: Number.isInteger(response?.status) ? response.status : undefined });
+                if (!response?.ok) {
+                    emitImageDiagnostic(diagnosticLogger, 'error', '错误响应摘要', {
+                        requestId,
+                        provider: request.settings.apiMode,
+                        status: Number.isInteger(response?.status) ? response.status : undefined,
+                        ...await safeHttpErrorDiagnostic(response, [key, request.positivePrompt, request.negativePrompt]),
+                        elapsedMs: Date.now() - startedAt,
+                    });
+                    fail('IMAGE_HTTP_ERROR', '生图服务拒绝了本次请求，请检查接口设置或稍后重试。', { retryable: response?.status >= 500, status: Number.isInteger(response?.status) ? response.status : undefined });
+                }
                 phase = 'response_parse';
                 const generated = await parseResponse(response);
                 emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', {

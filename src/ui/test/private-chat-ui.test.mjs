@@ -148,6 +148,45 @@ test('private chat uses a distinct mobile conversation surface and only calls th
     }
 });
 
+test('private chat keeps the reading anchor and follows the bottom across pending and completed replies', async () => {
+    const response = deferred();
+    const result = readResult();
+    let pending = false;
+    const bridge = {
+        emit() {},
+        isPending(kind, sessionUid) { return kind === 'private_chat' && sessionUid === 'chat_lin' && pending; },
+        runPrivateChat() {
+            pending = true;
+            return response.promise.then(() => {
+                pending = false;
+                result.state.会话.chat_lin.最近消息.push({ 消息UID: 'm3', 发送者: '角色', 内容: '新的回复。', 时间: '20:33' });
+                return { ok: true };
+            });
+        },
+    };
+    const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-private-chat-scroll', actionBridge: bridge, settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelector('.yl-message-session'));
+        const content = miniDom.document.querySelector('.yl-phone-content');
+        Object.defineProperties(content, {
+            clientHeight: { value: 200, configurable: true },
+            scrollHeight: { configurable: true, get: () => miniDom.document.querySelectorAll('.yl-bubble').length * 300 },
+            scrollTop: { value: 400, writable: true, configurable: true },
+        });
+        const originalReplaceChildren = content.replaceChildren.bind(content);
+        content.replaceChildren = (...nodes) => { content.scrollTop = 0; return originalReplaceChildren(...nodes); };
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
+        input.value = '继续聊。'; input.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息'));
+        assert.equal(content.scrollTop, 400, '等待回复时仍应停留在原底部，而不是跳回开头');
+        response.resolve();
+        await flushUi();
+        assert.equal(content.scrollTop, 700, '新回复完成后，原本位于底部的用户应跟随到新底部');
+    } finally { mounted.destroy(); }
+});
+
 test('chat summary settings disable their two subpages until enabled, then render a per-character summary archive', () => {
     const result = readResult();
     result.state.会话.chat_lin.对话层数 = 4;

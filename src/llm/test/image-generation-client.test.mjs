@@ -7,6 +7,31 @@ const png = Uint8Array.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0]);
 const settings = { apiMode: 'openai_compatible', presetId: 'image_generation_default', baseUrl: 'https://img.example.test', endpointPath: '/v1/images/generations', model: 'model', sampler: 'euler', noiseSchedule: 'native', width: 512, height: 512, steps: 20, seed: 0, guidance: 7, guidanceRescale: 0, qualityToggle: true, variety: false };
 
 function storage() { const m = new Map(); return { getItem:k=>m.get(k)??null, setItem:(k,v)=>m.set(k,String(v)), removeItem:k=>m.delete(k) }; }
+function zipWithDataDescriptor(filename, payload) {
+    const name = Buffer.from(filename);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(0x08, 6);
+    local.writeUInt16LE(name.length, 26);
+    const descriptor = Buffer.alloc(16);
+    descriptor.writeUInt32LE(0x08074b50, 0);
+    descriptor.writeUInt32LE(payload.length, 8);
+    descriptor.writeUInt32LE(payload.length, 12);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(0x08, 8);
+    central.writeUInt32LE(payload.length, 20);
+    central.writeUInt32LE(payload.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    const directoryOffset = local.length + name.length + payload.length + descriptor.length;
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0);
+    eocd.writeUInt16LE(1, 8);
+    eocd.writeUInt16LE(1, 10);
+    eocd.writeUInt32LE(central.length + name.length, 12);
+    eocd.writeUInt32LE(directoryOffset, 16);
+    return Buffer.concat([local, name, payload, descriptor, central, name, eocd]);
+}
 
 test.beforeEach(() => { configurePersistentKeyStorage(storage()); unlockSessionKey('image_generation_default', 'secret-key'); });
 test.afterEach(() => resetPersistentKeyStorage());
@@ -18,6 +43,55 @@ test('client sends injected request and accepts JSON base64 image', async () => 
     assert.equal(request.url, 'https://img.example.test/v1/images/generations');
     assert.match(request.init.headers.Authorization, /^Bearer /u);
     assert.match(result.src, /^data:image\/png;base64,/u);
+});
+
+test('client rejects multiline prompts before starting image transport', async () => {
+    let calls = 0;
+    const client = createImageGenerationClient({ fetchImpl: async () => { calls += 1; throw new Error('must not run'); } });
+    await assert.rejects(
+        () => client.generate({ settings, positivePrompt: 'best quality\nmasterpiece', negativePrompt: 'bad' }),
+        (error) => error?.code === 'INVALID_IMAGE_REQUEST',
+    );
+    assert.equal(calls, 0);
+});
+
+test('client extracts a NovelAI ZIP whose local entry sizes are supplied by a data descriptor', async () => {
+    const archive = zipWithDataDescriptor('image_0.png', Buffer.from(png));
+    const client = createImageGenerationClient({
+        fetchImpl: async () => new Response(archive, { status: 200, headers: { 'content-type': 'binary/octet-stream' } }),
+    });
+    const result = await client.generate({ settings, positivePrompt: 'scene', negativePrompt: '' });
+    assert.equal(result.mimeType, 'image/png');
+    assert.match(result.src, /^data:image\/png;base64,/u);
+});
+
+test('NovelAI V4 models receive the V4 caption contract while V3 keeps the legacy shape', async () => {
+    const bodies = [];
+    const client = createImageGenerationClient({
+        fetchImpl: async (_url, init) => {
+            bodies.push(JSON.parse(init.body));
+            return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } });
+        },
+    });
+    const naiSettings = {
+        ...settings,
+        apiMode: 'novelai',
+        endpointPath: '/ai/generate-image',
+        model: 'nai-diffusion-4-5-full',
+        sampler: 'k_euler',
+        noiseSchedule: 'native',
+    };
+    await client.generate({ settings: naiSettings, positivePrompt: 'adult portrait', negativePrompt: 'lowres' });
+    await client.generate({ settings: { ...naiSettings, model: 'nai-diffusion-3' }, positivePrompt: 'adult portrait', negativePrompt: 'lowres' });
+
+    assert.equal(bodies[0].parameters.params_version, 3);
+    assert.equal(bodies[0].parameters.v4_prompt.caption.base_caption, 'adult portrait');
+    assert.deepEqual(bodies[0].parameters.v4_prompt.caption.char_captions, []);
+    assert.equal(bodies[0].parameters.v4_negative_prompt.caption.base_caption, 'lowres');
+    assert.equal(bodies[0].parameters.v4_prompt.use_order, true);
+    assert.equal(bodies[0].parameters.legacy, false);
+    assert.equal(bodies[1].parameters.v4_prompt, undefined);
+    assert.equal(bodies[1].parameters.params_version, undefined);
 });
 
 test('client emits safe stage diagnostics without logging credentials or prompts', async () => {
@@ -38,45 +112,82 @@ test('client emits safe stage diagnostics without logging credentials or prompts
 
     assert.deepEqual(calls.map(([level, label]) => [level, label]), [
         ['info', '[约了吗][生图] 请求开始'],
+        ['info', '[约了吗][生图] 请求体准备完成'],
         ['info', '[约了吗][生图] 收到响应'],
         ['info', '[约了吗][生图] 请求完成'],
     ]);
     const serialized = JSON.stringify(calls);
     assert.doesNotMatch(serialized, /secret-image-key-never-log|private prompt never log|private negative never log/u);
     assert.match(serialized, /"provider":"openai_compatible"/u);
+    assert.match(serialized, /"positivePromptChars":24/u);
     assert.match(serialized, /"status":200/u);
     assert.match(serialized, /"mimeType":"image\/png"/u);
 });
 
-test('client logs safe HTTP failure code, phase, and status without response bodies', async () => {
+test('client logs a bounded redacted provider error excerpt without leaking credentials or prompts', async () => {
     unlockSessionKey('img-log-failure', 'another-secret-key');
     const calls = [];
     const client = createImageGenerationClient({
         diagnosticLogger: { info: (...args) => calls.push(['info', ...args]), error: (...args) => calls.push(['error', ...args]) },
-        fetchImpl: async () => new Response('upstream-private-error-body', {
-            status: 401,
+        fetchImpl: async () => new Response(JSON.stringify({
+            statusCode: 400,
+            message: 'parameters.v4_prompt is required; another private prompt',
+            authorization: 'Bearer another-secret-key',
+            echoedNegative: 'bad',
+            developerHint: 'send params_version=3 with v4_prompt',
+        }), {
+            status: 400,
             headers: { 'content-type': 'application/json' },
         }),
     });
 
     await assert.rejects(
-        () => client.generate({ settings: { ...settings, presetId: 'img-log-failure' }, positivePrompt: 'another private prompt', negativePrompt: '' }),
-        (error) => error.code === 'IMAGE_HTTP_ERROR' && error.status === 401,
+        () => client.generate({ settings: { ...settings, apiMode: 'novelai', presetId: 'img-log-failure' }, positivePrompt: 'another private prompt', negativePrompt: 'bad' }),
+        (error) => error.code === 'IMAGE_HTTP_ERROR' && error.status === 400,
     );
 
+    const summary = calls.find(([, label]) => label === '[约了吗][生图] 错误响应摘要');
+    const requestShape = calls.find(([, label]) => label === '[约了吗][生图] 请求体准备完成');
+    assert.equal(requestShape?.[2]?.provider, 'novelai');
+    assert.ok(requestShape?.[2]?.parameterFields.includes('negative_prompt'));
+    assert.equal(summary?.[2]?.providerCategory, 'request_validation');
+    assert.equal(summary?.[2]?.bodyInspection, 'structured_json');
+    assert.equal(summary?.[2]?.providerStatusCode, 400);
+    assert.equal(summary?.[2]?.providerMessageChars, 56);
+    assert.deepEqual(summary?.[2]?.responseSchemaFields, ['statusCode', 'message']);
+    assert.deepEqual(summary?.[2]?.providerValidationFields, ['parameters', 'v4_prompt']);
+    assert.match(summary?.[2]?.providerBodyExcerpt, /params_version=3 with v4_prompt/u);
+    assert.match(summary?.[2]?.providerBodyExcerpt, /\[REDACTED\]/u);
     const failure = calls.find(([, label]) => label === '[约了吗][生图] 请求失败');
     assert.deepEqual(failure?.[2], {
         requestId: failure?.[2]?.requestId,
-        provider: 'openai_compatible',
+        provider: 'novelai',
         phase: 'http_response',
         code: 'IMAGE_HTTP_ERROR',
         message: '生图服务拒绝了本次请求，请检查接口设置或稍后重试。',
         retryable: false,
-        status: 401,
+        status: 400,
         elapsedMs: failure?.[2]?.elapsedMs,
     });
     const serialized = JSON.stringify(calls);
-    assert.doesNotMatch(serialized, /another-secret-key|another private prompt|upstream-private-error-body/u);
+    assert.doesNotMatch(serialized, /another-secret-key|another private prompt/u);
+    assert.doesNotMatch(serialized, /"bad"/u);
+});
+
+test('client logs safe browser transport failure type without the exception message', async () => {
+    const calls = [];
+    const client = createImageGenerationClient({
+        diagnosticLogger: { info: (...args) => calls.push(['info', ...args]), error: (...args) => calls.push(['error', ...args]) },
+        fetchImpl: async () => { throw new TypeError('CORS detail with secret-image-key-never-log'); },
+    });
+    await assert.rejects(
+        () => client.generate({ settings, positivePrompt: 'private prompt never log', negativePrompt: '' }),
+        (error) => error?.code === 'IMAGE_NETWORK_ERROR',
+    );
+    const transport = calls.find(([, label]) => label === '[约了吗][生图] 传输失败');
+    assert.equal(transport?.[2]?.errorType, 'TypeError');
+    assert.equal(transport?.[2]?.aborted, false);
+    assert.doesNotMatch(JSON.stringify(calls), /CORS detail|secret-image-key|private prompt never log/u);
 });
 
 test('credential diagnostics preserve the locked-key error when an external signal exists', async () => {
@@ -94,10 +205,16 @@ test('credential diagnostics preserve the locked-key error when an external sign
     assert.equal(calls[0]?.[1]?.code, 'SESSION_KEY_LOCKED');
 });
 
-test('client accepts a direct image response and rejects unsafe non-loopback http', async () => {
+test('client accepts direct image responses from HTTPS and explicitly configured HTTP services', async () => {
     const client = createImageGenerationClient({ fetchImpl: async () => new Response(png, { status: 200, headers: { 'content-type': 'image/png' } }) });
     assert.equal((await client.generate({ settings, positivePrompt: 'scene', negativePrompt: '' })).mimeType, 'image/png');
-    await assert.rejects(() => client.generate({ settings: { ...settings, baseUrl: 'http://remote.example.test' }, positivePrompt: 'scene', negativePrompt: '' }));
+    const urls = [];
+    const httpClient = createImageGenerationClient({ fetchImpl: async (url) => {
+        urls.push(url);
+        return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } });
+    } });
+    await httpClient.generate({ settings: { ...settings, baseUrl: 'http://remote.example.test' }, positivePrompt: 'scene', negativePrompt: '' });
+    assert.deepEqual(urls, ['http://remote.example.test/v1/images/generations']);
     await assert.rejects(() => client.generate({ settings: { ...settings, baseUrl: 'https://img.example.test/?api_key=secret-key' }, positivePrompt: 'scene', negativePrompt: '' }));
 });
 

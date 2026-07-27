@@ -482,6 +482,17 @@ test('生图设置严格隔离密钥并按对话类型保存自动生图开关',
     assert.equal(initial.schemaVersion, 17);
     assert.equal(initial.imageGeneration.enabled, false);
     assert.equal(initial.imageGeneration.apiMode, 'novelai');
+    assert.equal(initial.imageGeneration.baseUrl, 'https://image.novelai.net');
+    assert.equal(initial.imageGeneration.endpointPath, '/ai/generate-image');
+    assert.equal(initial.imageGeneration.model, 'nai-diffusion-4-5-full');
+    assert.equal(initial.imageGeneration.sampler, 'k_euler');
+    assert.equal(initial.imageGeneration.noiseSchedule, 'native');
+    assert.equal(initial.imageGeneration.guidance, 7);
+    assert.equal(initial.imageGeneration.guidanceRescale, 0);
+    assert.equal(initial.imageGeneration.width, 1024);
+    assert.equal(initial.imageGeneration.height, 1024);
+    assert.equal(initial.imageGeneration.steps, 28);
+    assert.equal(initial.imageGeneration.variety, false);
     assert.equal(initial.imageGeneration.comfyWorkflow, '');
     assert.deepEqual(initial.imageGeneration.conversationSettings, { private: {}, group: {}, forum: {} });
 
@@ -506,10 +517,12 @@ test('生图设置严格隔离密钥并按对话类型保存自动生图开关',
     assert.doesNotMatch(store.exportJson(), /apiKey|authorization|bearer|secret-value/iu);
 
     assert.throws(() => store.setImageGenerationSettings({ ...base, apiKey: 'secret-value' }), errorCode('UNSAFE_INPUT'));
-    assert.throws(() => store.setImageGenerationSettings({ ...base, baseUrl: 'http://images.example.invalid' }), errorCode('INVALID_IMAGE_GENERATION'));
+    assert.doesNotThrow(() => store.setImageGenerationSettings({ ...base, baseUrl: 'http://images.example.invalid' }));
     assert.throws(() => store.setImageGenerationSettings({ ...base, baseUrl: 'https://images.example.invalid/?api_key=secret-value' }), errorCode('INVALID_IMAGE_GENERATION'));
+    assert.throws(() => store.setImageGenerationSettings({ ...base, baseUrl: 'ftp://images.example.invalid' }), errorCode('INVALID_IMAGE_GENERATION'));
     assert.throws(() => store.setImageGenerationSettings({ ...base, endpointPath: '/../private' }), errorCode('INVALID_IMAGE_GENERATION'));
     assert.throws(() => store.setImageGenerationSettings({ ...base, width: 255 }), errorCode('INVALID_SETTINGS'));
+    assert.throws(() => store.setImageGenerationSettings({ ...base, positivePrefix: 'masterpiece\nhigh detail' }), errorCode('INVALID_IMAGE_GENERATION'));
     assert.throws(() => store.setConversationImageGenerationSettings('private', 'bad/id', { autoGenerate: true }), errorCode('INVALID_IMAGE_GENERATION'));
 
     assert.doesNotThrow(() => store.setImageGenerationSettings({ ...base, baseUrl: 'http://127.0.0.1:7860' }));

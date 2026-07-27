@@ -27,11 +27,14 @@ import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
 
-const UI_VERSION = '1.0.4';
+const UI_VERSION = '1.0.5';
 const UI_LAYOUT_STORAGE_KEY = 'yuelema.ui-layout/v1';
 const LAUNCHER_POSITION_STORAGE_KEY = 'yuelema.launcher-position/v1';
 const PHONE_PANEL_POSITION_STORAGE_KEY = 'yuelema.phone-panel-position/v1';
+const PHONE_PANEL_SIZE_STORAGE_KEY = 'yuelema.phone-panel-size/v1';
 const PANEL_DRAG_THRESHOLD = 8;
+const PANEL_RESIZE_HOLD_MS = 500;
+const PANEL_RESIZE_MOVE_TOLERANCE = 8;
 const LAUNCHER_TOOLS_HOLD_MS = 10_000;
 const LAUNCHER_TOOLS_MOVE_TOLERANCE = 8;
 const LAUNCHER_DIAGNOSTIC_LIMIT = 40;
@@ -121,6 +124,33 @@ function persistPhonePanelPosition(storage, position) {
         return true;
     } catch { return false; }
 }
+function readPhonePanelSizes(storage) {
+    try {
+        const raw = storage?.getItem(PHONE_PANEL_SIZE_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+        const result = {};
+        for (const mode of ['phone', 'desktop']) {
+            const value = parsed[mode];
+            if (value && isFiniteCoordinate(value.width) && isFiniteCoordinate(value.height)
+                && Number(value.width) > 0 && Number(value.height) > 0) {
+                result[mode] = { width: Number(value.width), height: Number(value.height) };
+            }
+        }
+        return result;
+    } catch { return {}; }
+}
+function persistPhonePanelSize(storage, mode, size) {
+    try {
+        if (!storage || !['phone', 'desktop'].includes(mode) || !size
+            || !isFiniteCoordinate(size.width) || !isFiniteCoordinate(size.height)
+            || Number(size.width) <= 0 || Number(size.height) <= 0) return false;
+        const sizes = readPhonePanelSizes(storage);
+        sizes[mode] = { width: Math.round(Number(size.width)), height: Math.round(Number(size.height)) };
+        storage.setItem(PHONE_PANEL_SIZE_STORAGE_KEY, JSON.stringify(sizes));
+        return true;
+    } catch { return false; }
+}
 function clearStoredLayoutPosition(storage, key) {
     try {
         if (!storage) return false;
@@ -155,6 +185,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let refreshing = false;
     let extensionUpdatePending = false;
     let activeMessageSessionUid = '';
+    let renderedPrivateChatSessionUid = '';
     let messageSearchQuery = '';
     let chatMoreMenuSessionUid = '';
     let chatConfirmationSessionUid = '';
@@ -362,7 +393,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (item.id === 'profile') nav.appendChild(serviceNavButton);
         nav.appendChild(createPrimaryNavButton(item));
     }
-    append(panel, [header, content, nav, uiLayoutStatus]);
+    const resizeHandle = element('button', {
+        className: 'yl-phone-resize-handle',
+        type: 'button',
+        ariaLabel: '调整小手机窗口大小；鼠标拖动，触屏长按后拖动',
+    });
+    resizeHandle.setAttribute('title', '拖动调整窗口大小');
+    append(panel, [header, content, nav, resizeHandle, uiLayoutStatus]);
 
     const operationDialog = element('section', { className: 'yl-phone-placeholder yl-operation-dialog', hidden: true });
     operationDialog.setAttribute('role', 'dialog');
@@ -635,6 +672,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     });
     if (!launcherDrag.restore(readLauncherPosition(layoutStorage))) ensureLauncherWithinViewport();
     let panelDrag = null;
+    let panelResize = null;
     function viewportSize() {
         const view = documentRef.defaultView;
         return {
@@ -721,6 +759,62 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             top: Math.max(minTop, Math.min(top, Math.max(minTop, viewport.top + viewport.height - height))),
         };
     }
+    function defaultPanelSize(mode = uiLayoutMode) {
+        const viewport = phoneVisualViewport();
+        return mode === 'desktop'
+            ? {
+                width: Math.max(1, Math.min(1080, viewport.width - 48)),
+                height: Math.max(1, Math.min(760, viewport.height - 40)),
+            }
+            : {
+                width: Math.max(1, Math.min(392, viewport.width - 32)),
+                height: Math.max(1, Math.min(700, viewport.height - 112)),
+            };
+    }
+    function clampPanelSize(width, height, mode = uiLayoutMode) {
+        const viewport = phoneVisualViewport();
+        const minimum = defaultPanelSize(mode);
+        return {
+            width: Math.min(viewport.width, Math.max(Math.min(minimum.width, viewport.width), Number(width) || minimum.width)),
+            height: Math.min(viewport.height, Math.max(Math.min(minimum.height, viewport.height), Number(height) || minimum.height)),
+        };
+    }
+    function clearPanelCustomSize() {
+        if (!panel.style?.removeProperty) return;
+        for (const property of ['width', 'height', 'min-width', 'min-height', 'max-width', 'max-height']) {
+            panel.style.removeProperty(property);
+        }
+        panel.classList.toggle('is-resized', false);
+        panel.classList.toggle('is-viewport-fill', false);
+    }
+    function setPanelSize(width, height) {
+        if (!panel.style?.setProperty) return;
+        const size = clampPanelSize(width, height);
+        panel.style.setProperty('width', Math.round(size.width) + 'px');
+        panel.style.setProperty('height', Math.round(size.height) + 'px');
+        panel.style.setProperty('min-width', '0');
+        panel.style.setProperty('min-height', '0');
+        panel.style.setProperty('max-width', 'none');
+        panel.style.setProperty('max-height', 'none');
+        panel.classList.toggle('is-resized', true);
+        const viewport = phoneVisualViewport();
+        panel.classList.toggle('is-viewport-fill', size.width >= viewport.width && size.height >= viewport.height);
+    }
+    function applyStoredPanelSize() {
+        const saved = readPhonePanelSizes(layoutStorage)[uiLayoutMode];
+        if (!saved) {
+            clearPanelCustomSize();
+            return false;
+        }
+        setPanelSize(saved.width, saved.height);
+        return true;
+    }
+    function clampCustomPanelSize() {
+        if (!panel.classList.contains('is-resized')) return;
+        const rect = panel.getBoundingClientRect?.();
+        const size = clampPanelSize(Number(rect?.width), Number(rect?.height));
+        setPanelSize(size.width, size.height);
+    }
     /** 面板在当前可视视口内的居中坐标（视口比面板小则贴视口原点，保证头部可见）。 */
     function centeredPanelPosition(width, height) {
         const viewport = phoneVisualViewport();
@@ -793,6 +887,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         uiLayoutMode = next;
         root.dataset.uiLayout = next;
         panel.dataset.uiLayout = next;
+        applyStoredPanelSize();
         if (next === 'phone') {
             clearPanelCustomPosition();
             syncPhonePanelViewport();
@@ -994,8 +1089,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         cancelLauncherToolsHold();
         clearStoredLayoutPosition(layoutStorage, LAUNCHER_POSITION_STORAGE_KEY);
         clearStoredLayoutPosition(layoutStorage, PHONE_PANEL_POSITION_STORAGE_KEY);
+        clearStoredLayoutPosition(layoutStorage, PHONE_PANEL_SIZE_STORAGE_KEY);
         launcherDrag.reset();
         clearPanelCustomPosition();
+        clearPanelCustomSize();
         if (open && uiLayoutMode === 'phone') {
             syncPhonePanelViewport();
             applyPhonePanelPlacement();
@@ -1071,6 +1168,99 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const rect = panel.getBoundingClientRect?.();
             persistPhonePanelPosition(layoutStorage, { left: Number(rect?.left) || 0, top: Number(rect?.top) || 0 });
         }
+    }
+    function cancelPanelResizeHold() {
+        if (panelResize?.timer !== null && panelResize?.timer !== undefined) globalThis.clearTimeout?.(panelResize.timer);
+        if (panelResize && !panelResize.engaged) panelResize = null;
+    }
+    function engagePanelResize(state) {
+        if (panelResize !== state || isDestroyed) return;
+        state.timer = null;
+        state.engaged = true;
+        panel.classList.toggle('is-resizing', true);
+        try { resizeHandle.setPointerCapture?.(state.pointerId); } catch { /* optional capture */ }
+    }
+    function beginPanelResize(event) {
+        if (!open || panelDrag || panelResize || event?.isPrimary === false
+            || (event?.pointerType === 'mouse' && Number(event.button) !== 0)) return;
+        const rect = panel.getBoundingClientRect?.();
+        if (!rect || !Number.isFinite(Number(rect.width)) || !Number.isFinite(Number(rect.height))) return;
+        const state = {
+            pointerId: event?.pointerId,
+            pointerType: event?.pointerType ?? 'mouse',
+            startX: Number(event?.clientX) || 0,
+            startY: Number(event?.clientY) || 0,
+            left: Number(rect.left) || 0,
+            top: Number(rect.top) || 0,
+            width: Number(rect.width),
+            height: Number(rect.height),
+            timer: null,
+            engaged: false,
+        };
+        panelResize = state;
+        if (state.pointerType === 'mouse') engagePanelResize(state);
+        else state.timer = globalThis.setTimeout?.(() => engagePanelResize(state), PANEL_RESIZE_HOLD_MS) ?? null;
+        event?.preventDefault?.();
+    }
+    function movePanelResize(event) {
+        if (!panelResize || (panelResize.pointerId !== undefined && event?.pointerId !== undefined
+            && event.pointerId !== panelResize.pointerId)) return;
+        const deltaX = (Number(event?.clientX) || 0) - panelResize.startX;
+        const deltaY = (Number(event?.clientY) || 0) - panelResize.startY;
+        if (!panelResize.engaged) {
+            if (Math.hypot(deltaX, deltaY) >= PANEL_RESIZE_MOVE_TOLERANCE) cancelPanelResizeHold();
+            return;
+        }
+        const viewport = phoneVisualViewport();
+        const desired = clampPanelSize(panelResize.width + deltaX, panelResize.height + deltaY);
+        const nextLeft = desired.width >= viewport.width
+            ? viewport.left
+            : Math.min(panelResize.left, viewport.left + viewport.width - desired.width);
+        const nextTop = desired.height >= viewport.height
+            ? viewport.top
+            : Math.min(panelResize.top, viewport.top + viewport.height - desired.height);
+        setPanelSize(desired.width, desired.height);
+        writePanelViewportPosition(Math.max(viewport.left, nextLeft), Math.max(viewport.top, nextTop));
+        event?.preventDefault?.();
+    }
+    function endPanelResize(event, { cancelled = false } = {}) {
+        if (!panelResize || (panelResize.pointerId !== undefined && event?.pointerId !== undefined
+            && event.pointerId !== panelResize.pointerId)) return;
+        const completed = panelResize;
+        if (completed.timer !== null && completed.timer !== undefined) globalThis.clearTimeout?.(completed.timer);
+        try { resizeHandle.releasePointerCapture?.(completed.pointerId); } catch { /* optional capture */ }
+        panelResize = null;
+        panel.classList.toggle('is-resizing', false);
+        if (!cancelled && completed.engaged) {
+            const rect = panel.getBoundingClientRect?.();
+            persistPhonePanelSize(layoutStorage, uiLayoutMode, {
+                width: Number(rect?.width) || completed.width,
+                height: Number(rect?.height) || completed.height,
+            });
+            if (uiLayoutMode === 'phone') {
+                persistPhonePanelPosition(layoutStorage, {
+                    left: Number(rect?.left) || 0,
+                    top: Number(rect?.top) || 0,
+                });
+            }
+        }
+    }
+    function resizePanelByKeyboard(event) {
+        if (!open || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event?.key)) return;
+        const rect = panel.getBoundingClientRect?.();
+        const step = event.shiftKey ? 48 : 16;
+        const width = Number(rect?.width) || defaultPanelSize().width;
+        const height = Number(rect?.height) || defaultPanelSize().height;
+        const nextWidth = width + (event.key === 'ArrowRight' ? step : event.key === 'ArrowLeft' ? -step : 0);
+        const nextHeight = height + (event.key === 'ArrowDown' ? step : event.key === 'ArrowUp' ? -step : 0);
+        setPanelSize(nextWidth, nextHeight);
+        clampCustomPanelPosition();
+        const nextRect = panel.getBoundingClientRect?.();
+        persistPhonePanelSize(layoutStorage, uiLayoutMode, {
+            width: Number(nextRect?.width) || nextWidth,
+            height: Number(nextRect?.height) || nextHeight,
+        });
+        event.preventDefault?.();
     }
     function touchByIdentifier(list, identifier) {
         if (!list || typeof list.length !== 'number') return null;
@@ -1197,6 +1387,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         recordLauncherDiagnostic('open_state_applied', launcherGeometry());
         if (open) {
             syncPhonePanelViewport();
+            applyStoredPanelSize();
             applyPhonePanelPlacement();
             ensureLauncherWithinViewport();
             refreshState();
@@ -1870,6 +2061,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return section;
     }
     function renderPage() {
+        const privateChatScroll = activePage === 'private_chat'
+            && renderedPrivateChatSessionUid === activeMessageSessionUid
+            && content.querySelector?.('.yl-private-chat-screen')
+            ? {
+                top: Math.max(0, Number(content.scrollTop) || 0),
+                followBottom: (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0) - (Number(content.scrollTop) || 0) <= 24,
+            }
+            : null;
         recordLauncherDiagnostic('render_started', {
             page: activePage,
             viewStatus: currentView?.status ?? 'unknown',
@@ -1918,6 +2117,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'settings_privacy') page.appendChild(ctx.buildPrivacySettings());
         else if (activePage === 'candidate_detail') page.appendChild(ctx.buildCandidateDetail());
         content.appendChild(page);
+        renderedPrivateChatSessionUid = activePage === 'private_chat' ? activeMessageSessionUid : '';
+        if (privateChatScroll) {
+            const bottom = Math.max(0, (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0));
+            content.scrollTop = privateChatScroll.followBottom ? bottom : Math.min(privateChatScroll.top, bottom);
+        }
         for (const [id, button] of navButtons) {
             const selected = id === primaryPage(activePage);
             button.classList.toggle('is-active', selected);
@@ -2173,6 +2377,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         copyDiagnosticDetail(launcherDiagnosticReport());
     }, abortController.signal);
     listen(closeButton, closeButton, "click", () => setOpen(false), abortController.signal);
+    listen(resizeHandle, resizeHandle, 'pointerdown', beginPanelResize, abortController.signal);
+    listen(resizeHandle, resizeHandle, 'keydown', resizePanelByKeyboard, abortController.signal);
     listen(header, header, 'pointerdown', beginHeaderPanelDrag, abortController.signal);
     listen(nav, nav, 'pointerdown', (event) => beginPhoneNavHold(event, 'pointer'), abortController.signal);
     listen(nav, nav, 'pointermove', (event) => movePhoneNavHold(event, 'pointer'), abortController.signal);
@@ -2189,6 +2395,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(root, documentRef, 'pointermove', movePanelDrag, abortController.signal);
     listen(root, documentRef, 'pointerup', endPanelDrag, abortController.signal);
     listen(root, documentRef, 'pointercancel', endPanelDrag, abortController.signal);
+    listen(root, documentRef, 'pointermove', movePanelResize, abortController.signal);
+    listen(root, documentRef, 'pointerup', (event) => endPanelResize(event), abortController.signal);
+    listen(root, documentRef, 'pointercancel', (event) => endPanelResize(event, { cancelled: true }), abortController.signal);
     listen(root, documentRef, 'touchmove', movePhonePanelTouch, abortController.signal);
     listen(root, documentRef, 'touchend', (event) => endPhoneNavTouch(event, false), abortController.signal);
     listen(root, documentRef, 'touchcancel', (event) => endPhoneNavTouch(event, true), abortController.signal);
@@ -2200,6 +2409,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(root, documentRef, 'touchcancel', () => cancelLauncherToolsHold('touch'), abortController.signal);
     const windowRef = documentRef.defaultView;
     const handleViewportChange = () => {
+        clampCustomPanelSize();
         if (uiLayoutMode === 'phone') {
             syncPhonePanelViewport();
             // 打开状态下视口变化（旋转/地址栏伸缩/软键盘）时把面板拉回可视范围；
