@@ -3779,9 +3779,7 @@
 }
 .yl-comfyui-provider-panel > .yl-settings-button { width: 100%; }
 .yl-image-generation-fields { align-items: start; }
-.yl-image-generation-fields .yl-settings-field:has([name="image-generation-positive-prefix"]),
-.yl-image-generation-fields .yl-settings-field:has([name="image-generation-positive-suffix"]),
-.yl-image-generation-fields .yl-settings-field:has([name="image-generation-negative-prompt"]) { grid-column: 1 / -1; }
+.yl-image-generation-fields .yl-settings-field:has(textarea) { grid-column: 1 / -1; }
 .yl-image-generation-key-status {
     padding: var(--yl-space-2) var(--yl-space-3);
     border: 1px solid color-mix(in srgb, var(--yl-accent-2) 30%, transparent);

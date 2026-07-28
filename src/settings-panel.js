@@ -832,15 +832,15 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
                 ariaLabel: `${provider.label} 专属配置`,
             });
             button.setAttribute('role', 'tab');
-            button.setAttribute('aria-controls', provider.id === 'comfyui' ? 'yl-comfyui-provider-panel' : 'yl-key-provider-panel');
+            button.setAttribute('aria-controls', `yl-${provider.id.replace('_compatible', '')}-provider-panel`);
             providerButtons.set(provider.id, button);
             providerTabs.appendChild(button);
         }
         section.appendChild(providerTabs);
 
         const presetId = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-preset-id', value: image.presetId, maxLength: 96, ariaLabel: '生图密钥预设 ID' });
-        const apiKey = element('input', { className: 'yl-settings-control', type: 'password', name: 'image-generation-api-key', autocomplete: 'off', maxLength: 4096, placeholder: '输入后仅保存到当前浏览器', ariaLabel: '生图 API Key' });
-        const keyStatus = element('p', { className: 'yl-image-generation-key-status' });
+        const naiApiKey = element('input', { className: 'yl-settings-control', type: 'password', name: 'image-generation-nai-api-key', autocomplete: 'off', maxLength: 4096, placeholder: '输入后仅保存到当前浏览器', ariaLabel: 'NAI API Key' });
+        const naiKeyStatus = element('p', { className: 'yl-image-generation-key-status' });
         const baseUrl = element('input', { className: 'yl-settings-control', type: 'url', name: 'image-generation-base-url', value: image.baseUrl, maxLength: 512, ariaLabel: '生图站点' });
         const endpointPath = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-endpoint-path', value: image.endpointPath, maxLength: 256, ariaLabel: '生图接口路径' });
         const model = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-model', value: image.model, maxLength: 160, ariaLabel: '生图模型' });
@@ -864,40 +864,99 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         const openaiBaseUrl = element('input', { className: 'yl-settings-control', type: 'url', name: 'image-generation-openai-base-url', value: image.openaiBaseUrl, maxLength: 512, ariaLabel: 'OpenAI 生图站点' });
         const openaiEndpointPath = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-openai-endpoint-path', value: image.openaiEndpointPath, maxLength: 256, ariaLabel: 'OpenAI 生图接口路径' });
         const openaiModel = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-openai-model', value: image.openaiModel, maxLength: 160, ariaLabel: 'OpenAI 生图模型' });
-
-        const keyProviderPanel = element('div', { className: 'yl-image-provider-panel', id: 'yl-key-provider-panel' });
-        keyProviderPanel.setAttribute('role', 'tabpanel');
-        const keyProviderTitle = element('h3', { className: 'yl-image-provider-title' });
-        const keyProviderDescription = element('p', { className: 'yl-phone-page-description' });
-        const insecureTransportWarning = element('p', {
+        const openaiWidth = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-openai-width', value: String(image.openaiWidth), min: 256, max: 2048, ariaLabel: 'OpenAI 图片宽度' });
+        const openaiHeight = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-openai-height', value: String(image.openaiHeight), min: 256, max: 2048, ariaLabel: 'OpenAI 图片高度' });
+        const openaiApiKey = element('input', { className: 'yl-settings-control', type: 'password', name: 'image-generation-openai-api-key', autocomplete: 'off', maxLength: 4096, placeholder: '输入后仅保存到当前浏览器', ariaLabel: 'OpenAI-compatible API Key' });
+        const openaiKeyStatus = element('p', { className: 'yl-image-generation-key-status' });
+        const insecureTransportWarning = () => element('p', {
             className: 'yl-phone-page-description',
             text: '兼容仅提供 HTTP 的生图服务；使用 HTTP 时，API Key、提示词与返回内容会以明文传输，请仅连接你信任的服务。',
         });
-        append(keyProviderPanel, [keyProviderTitle, keyProviderDescription, insecureTransportWarning]);
-        const keyFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
-        const naiPromptFields = [
-            field('NAI 前置正面提示词', positivePrefix), field('NAI 后置正面提示词', positiveSuffix), field('NAI 固定负面提示词', negativePrompt),
-        ];
-        const openaiPromptFields = [
-            field('OpenAI 前置正面提示词', openaiPositivePrefix), field('OpenAI 后置正面提示词', openaiPositiveSuffix), field('OpenAI 固定负面提示词', openaiNegativePrompt),
-        ];
-        const naiConnectionFields = [
+        const buildKeyControls = ({ providerLabel, presetInput, keyInput, keyStatus, saveName, deleteName }) => {
+            const refresh = () => {
+                const id = String(presetInput.value ?? '').trim();
+                try {
+                    keyStatus.textContent = hasSessionKey(id)
+                        ? `此 ${providerLabel} 预设已有可用 API Key（不会显示或导出）。`
+                        : `此 ${providerLabel} 预设尚未解锁 API Key。`;
+                } catch {
+                    keyStatus.textContent = `请填写合法的 ${providerLabel} 密钥预设 ID 后再管理 API Key。`;
+                }
+            };
+            const actions = element('div', { className: 'yl-settings-actions yl-image-generation-key-actions' });
+            actions.appendChild(actionButton(`保存 ${providerLabel} API Key`, async () => {
+                try {
+                    const result = unlockSessionKey(presetInput.value, keyInput.value);
+                    keyInput.value = '';
+                    refresh();
+                    onFeedback(result.persisted ? `${providerLabel} API Key 已保存到当前浏览器。` : `浏览器缓存不可用；${providerLabel} API Key 仅在本次会话可用。`);
+                } catch (error) {
+                    keyInput.value = '';
+                    onFeedback(safeErrorMessage(error, `${providerLabel} API Key 未保存，请检查预设 ID 与 Key。`));
+                }
+            }, signal, { name: saveName }));
+            actions.appendChild(actionButton(`删除 ${providerLabel} API Key`, async () => {
+                try {
+                    const removed = deletePersistentKey(presetInput.value);
+                    keyInput.value = '';
+                    refresh();
+                    onFeedback(removed ? `已删除当前 ${providerLabel} 预设在此浏览器保存的 API Key。` : `当前 ${providerLabel} 预设没有可删除的浏览器缓存 API Key。`);
+                } catch (error) {
+                    onFeedback(safeErrorMessage(error, `${providerLabel} API Key 未删除。`));
+                }
+            }, signal, { secondary: true, danger: true, name: deleteName }));
+            listen(presetInput, presetInput, 'input', refresh, signal);
+            refresh();
+            return { actions };
+        };
+
+        const naiProviderPanel = element('div', { className: 'yl-image-provider-panel', id: 'yl-novelai-provider-panel' });
+        naiProviderPanel.setAttribute('role', 'tabpanel');
+        naiProviderPanel.setAttribute('aria-labelledby', 'yl-image-provider-tab-novelai');
+        append(naiProviderPanel, [
+            element('h3', { className: 'yl-image-provider-title', text: 'NAI 专属配置' }),
+            element('p', { className: 'yl-phone-page-description', text: '这里只配置 NovelAI 的连接、采样、尺寸、提示词与浏览器 Key。' }),
+            insecureTransportWarning(),
+        ]);
+        const naiFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
+        append(naiFields, [
             field('NAI 密钥预设 ID', presetId), field('NAI 生图站点', baseUrl), field('NAI 接口路径', endpointPath),
-            field('NAI 模型', model), field('NAI 采样器', sampler), field('NAI 噪点表', noiseSchedule),
-        ];
-        const openaiConnectionFields = [
-            field('OpenAI 密钥预设 ID', openaiPresetId), field('OpenAI 生图站点', openaiBaseUrl),
-            field('OpenAI 接口路径', openaiEndpointPath), field('OpenAI 模型', openaiModel),
-        ];
-        append(keyFields, [
-            ...naiConnectionFields, ...openaiConnectionFields, field('Guidance', guidance),
+            field('NAI 模型', model), field('NAI 采样器', sampler), field('NAI 噪点表', noiseSchedule), field('Guidance', guidance),
             field('Guidance Rescale', guidanceRescale), field('宽度', width), field('高度', height), field('步数', steps), field('种子（0 为随机）', seed),
             field('质量标签', switchShell(qualityToggle)), field('随机性', switchShell(variety)),
-            ...naiPromptFields, ...openaiPromptFields,
+            field('NAI 前置正面提示词', positivePrefix), field('NAI 后置正面提示词', positiveSuffix), field('NAI 固定负面提示词', negativePrompt),
         ]);
-        keyProviderPanel.appendChild(keyFields);
-        keyProviderPanel.appendChild(field('生图 API Key', apiKey));
-        keyProviderPanel.appendChild(keyStatus);
+        naiProviderPanel.appendChild(naiFields);
+        naiProviderPanel.appendChild(field('NAI API Key', naiApiKey));
+        naiProviderPanel.appendChild(naiKeyStatus);
+        naiProviderPanel.appendChild(buildKeyControls({
+            providerLabel: 'NAI', presetInput: presetId, keyInput: naiApiKey, keyStatus: naiKeyStatus,
+            saveName: 'image-generation-nai-key-save', deleteName: 'image-generation-nai-key-delete',
+        }).actions);
+
+        const openaiProviderPanel = element('div', { className: 'yl-image-provider-panel', id: 'yl-openai-provider-panel' });
+        openaiProviderPanel.setAttribute('role', 'tabpanel');
+        openaiProviderPanel.setAttribute('aria-labelledby', 'yl-image-provider-tab-openai_compatible');
+        append(openaiProviderPanel, [
+            element('h3', { className: 'yl-image-provider-title', text: 'OpenAI-compatible 专属配置' }),
+            element('p', { className: 'yl-phone-page-description', text: '这里只配置 OpenAI-compatible 的接口、模型、尺寸、提示词与浏览器 Key；不会读取 NAI 参数。' }),
+            insecureTransportWarning(),
+        ]);
+        const openaiFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
+        append(openaiFields, [
+            field('OpenAI 密钥预设 ID', openaiPresetId), field('OpenAI 生图站点', openaiBaseUrl),
+            field('OpenAI 接口路径', openaiEndpointPath), field('OpenAI 模型', openaiModel),
+            field('OpenAI 宽度', openaiWidth), field('OpenAI 高度', openaiHeight),
+            field('OpenAI 前置正面提示词', openaiPositivePrefix), field('OpenAI 后置正面提示词', openaiPositiveSuffix),
+            field('OpenAI 固定负面提示词', openaiNegativePrompt),
+        ]);
+        openaiProviderPanel.appendChild(openaiFields);
+        openaiProviderPanel.appendChild(field('OpenAI-compatible API Key', openaiApiKey));
+        openaiProviderPanel.appendChild(openaiKeyStatus);
+        openaiProviderPanel.appendChild(buildKeyControls({
+            providerLabel: 'OpenAI-compatible', presetInput: openaiPresetId, keyInput: openaiApiKey, keyStatus: openaiKeyStatus,
+            saveName: 'image-generation-openai-key-save', deleteName: 'image-generation-openai-key-delete',
+        }).actions);
 
         const comfyBaseUrl = element('input', { className: 'yl-settings-control', type: 'url', name: 'image-generation-comfy-base-url', value: image.comfyBaseUrl, maxLength: 512, ariaLabel: 'ComfyUI 地址' });
         const resourceSelect = (value, ariaLabel, name, emptyLabel) => selectWithOptions(
@@ -979,72 +1038,21 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             field('负面提示词', comfyNegativePrompt), field('工作流 JSON', comfyWorkflow),
         ]);
         comfyProviderPanel.appendChild(comfyFields);
-        section.appendChild(keyProviderPanel);
+        section.appendChild(naiProviderPanel);
+        section.appendChild(openaiProviderPanel);
         section.appendChild(comfyProviderPanel);
-
-        const keyActions = element('div', { className: 'yl-settings-actions yl-image-generation-key-actions' });
-        const refreshKeyStatus = () => {
-            const activePreset = apiMode.value === 'openai_compatible' ? openaiPresetId : presetId;
-            const id = String(activePreset.value ?? '').trim();
-            try {
-                keyStatus.textContent = hasSessionKey(id)
-                    ? '此预设已有可用 API Key（不会显示或导出）。'
-                    : '此预设尚未解锁 API Key。';
-            } catch {
-                keyStatus.textContent = '请填写合法的生图密钥预设 ID 后再管理 API Key。';
-            }
-        };
-        keyActions.appendChild(actionButton('保存 API Key', async () => {
-            try {
-                const activePreset = apiMode.value === 'openai_compatible' ? openaiPresetId : presetId;
-                const result = unlockSessionKey(activePreset.value, apiKey.value);
-                apiKey.value = '';
-                refreshKeyStatus();
-                onFeedback(result.persisted ? '生图 API Key 已保存到当前浏览器。' : '浏览器缓存不可用；生图 API Key 仅在本次会话可用。');
-            } catch (error) {
-                apiKey.value = '';
-                onFeedback(safeErrorMessage(error, '生图 API Key 未保存，请检查预设 ID 与 Key。'));
-            }
-        }, signal, { name: 'image-generation-key-save' }));
-        keyActions.appendChild(actionButton('删除已保存 API Key', async () => {
-            try {
-                const activePreset = apiMode.value === 'openai_compatible' ? openaiPresetId : presetId;
-                const removed = deletePersistentKey(activePreset.value);
-                apiKey.value = '';
-                refreshKeyStatus();
-                onFeedback(removed ? '已删除当前生图预设在此浏览器保存的 API Key。' : '当前生图预设没有可删除的浏览器缓存 API Key。');
-            } catch (error) {
-                onFeedback(safeErrorMessage(error, '生图 API Key 未删除。'));
-            }
-        }, signal, { secondary: true, danger: true, name: 'image-generation-key-delete' }));
-        section.appendChild(keyActions);
-        refreshKeyStatus();
-        listen(presetId, presetId, 'input', refreshKeyStatus, signal);
-        listen(openaiPresetId, openaiPresetId, 'input', refreshKeyStatus, signal);
 
         const setProvider = (provider) => {
             apiMode.value = provider;
-            const comfy = provider === 'comfyui';
-            keyProviderPanel.hidden = comfy;
-            comfyProviderPanel.hidden = !comfy;
-            keyActions.hidden = comfy;
-            keyProviderTitle.textContent = provider === 'novelai' ? 'NAI 专属配置' : 'OpenAI-compatible 专属配置';
-            keyProviderDescription.textContent = provider === 'novelai'
-                ? '仅显示 NovelAI 的连接、采样、尺寸、提示词与浏览器 Key 配置。'
-                : '仅显示 OpenAI-compatible 的接口、模型、尺寸、提示词与浏览器 Key 配置。';
-            for (const promptField of naiPromptFields) promptField.hidden = provider !== 'novelai';
-            for (const promptField of openaiPromptFields) promptField.hidden = provider !== 'openai_compatible';
-            for (const connectionField of naiConnectionFields) connectionField.hidden = provider !== 'novelai';
-            for (const connectionField of openaiConnectionFields) connectionField.hidden = provider !== 'openai_compatible';
-            keyProviderPanel.setAttribute('aria-labelledby', `yl-image-provider-tab-${provider}`);
-            comfyProviderPanel.setAttribute('aria-labelledby', 'yl-image-provider-tab-comfyui');
+            naiProviderPanel.hidden = provider !== 'novelai';
+            openaiProviderPanel.hidden = provider !== 'openai_compatible';
+            comfyProviderPanel.hidden = provider !== 'comfyui';
             for (const [id, button] of providerButtons) {
                 const active = id === provider;
                 button.setAttribute('aria-selected', String(active));
                 button.setAttribute('tabindex', active ? '0' : '-1');
                 button.className = `yl-image-provider-tab${active ? ' is-active' : ''}`;
             }
-            refreshKeyStatus();
         };
         for (const [provider, button] of providerButtons) {
             listen(button, button, 'click', () => setProvider(provider), signal);
@@ -1074,6 +1082,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             openaiPositivePrefix: openaiPositivePrefix.value, openaiPositiveSuffix: openaiPositiveSuffix.value, openaiNegativePrompt: openaiNegativePrompt.value,
             openaiPresetId: openaiPresetId.value, openaiBaseUrl: openaiBaseUrl.value,
             openaiEndpointPath: openaiEndpointPath.value, openaiModel: openaiModel.value,
+            openaiWidth: numberValue(openaiWidth, image.openaiWidth), openaiHeight: numberValue(openaiHeight, image.openaiHeight),
             comfyBaseUrl: comfyBaseUrl.value, comfyModel: comfyModel.value, comfySampler: comfySampler.value, comfyScheduler: comfyScheduler.value,
             comfyVae: comfyVae.value, comfyClip: comfyClip.value,
             comfyGuidance: numberValue(comfyGuidance, image.comfyGuidance),

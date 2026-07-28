@@ -82,7 +82,7 @@ test('GPT image requests omit legacy response_format and use the OpenAI-specific
     assert.deepEqual(Object.keys(request.body), ['model', 'prompt', 'size', 'n']);
 });
 
-test('GPT image requests map arbitrary NovelAI dimensions to a supported orientation size', async () => {
+test('GPT image requests use independent OpenAI dimensions and map them to a supported orientation size', async () => {
     unlockSessionKey('openai-image-profile', 'openai-image-secret');
     let body;
     const client = createImageGenerationClient({
@@ -100,8 +100,10 @@ test('GPT image requests map arbitrary NovelAI dimensions to a supported orienta
             openaiBaseUrl: 'https://api.openai.example',
             openaiEndpointPath: '/v1/images/generations',
             openaiModel: 'gpt-image-1',
-            width: 832,
-            height: 1216,
+            width: 1216,
+            height: 832,
+            openaiWidth: 832,
+            openaiHeight: 1216,
         },
         positivePrompt: 'A quiet garden',
         negativePrompt: '',

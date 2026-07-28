@@ -8,7 +8,7 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 18;
+export const SETTINGS_SCHEMA_VERSION = 19;
 // v12 rewrote the stock built-in prompt preset copy (阶段 55 内容尺度调整)，
 // v13 enriched the NSFW stock copy with concrete erotic-writing guidance,
 // v14 renamed the「语音匹配」stock presets to「描述匹配」(display name and
@@ -21,7 +21,8 @@ export const SETTINGS_SCHEMA_VERSION = 18;
 // receive the gender/orientation hard contract. User-created preset IDs and
 // deleted stock presets remain untouched.
 // v18 separates OpenAI-compatible fixed prompts from NovelAI tag prompts.
-const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14, 15, 16, 17]);
+// v19 separates OpenAI-compatible dimensions from NovelAI dimensions.
+const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14, 15, 16, 17, 18]);
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -392,6 +393,8 @@ export function defaultImageGenerationSettings() {
         openaiBaseUrl: 'https://api.openai.com',
         openaiEndpointPath: '/v1/images/generations',
         openaiModel: 'gpt-image-1',
+        openaiWidth: 1024,
+        openaiHeight: 1024,
         comfyBaseUrl: 'http://127.0.0.1:8188',
         comfyModel: '',
         comfySampler: 'euler',
@@ -516,6 +519,8 @@ export function normalizeImageGenerationSettings(input) {
             return path;
         })(),
         openaiModel: cleanImageText(value.openaiModel, 'OpenAI 生图模型', 160, { allowEmpty: false }),
+        openaiWidth: cleanInteger(value.openaiWidth, 'OpenAI 图片宽度', 256, 2048),
+        openaiHeight: cleanInteger(value.openaiHeight, 'OpenAI 图片高度', 256, 2048),
         comfyBaseUrl,
         comfyModel: cleanImageText(value.comfyModel, 'ComfyUI 模型', 160),
         comfySampler: cleanImageText(value.comfySampler, 'ComfyUI 采样器', 80, { allowEmpty: false }),
@@ -629,19 +634,23 @@ export function normalizeSettingsDocument(input) {
     if (isUpgradeableLegacySchema && isPlainObject(imageGenerationInput)) {
         imageGenerationInput = {
             ...imageGenerationInput,
-            openaiPositivePrefix: imageGenerationInput.positivePrefix ?? '',
-            openaiPositiveSuffix: imageGenerationInput.positiveSuffix ?? '',
-            openaiNegativePrompt: imageGenerationInput.negativePrompt ?? '',
-            openaiPresetId: 'image_generation_openai',
-            openaiBaseUrl: imageGenerationInput.apiMode === 'openai_compatible'
-                ? imageGenerationInput.baseUrl ?? 'https://api.openai.com'
-                : 'https://api.openai.com',
-            openaiEndpointPath: imageGenerationInput.apiMode === 'openai_compatible'
-                ? imageGenerationInput.endpointPath ?? '/v1/images/generations'
-                : '/v1/images/generations',
-            openaiModel: imageGenerationInput.apiMode === 'openai_compatible'
-                ? imageGenerationInput.model ?? 'gpt-image-1'
-                : 'gpt-image-1',
+            ...(candidate.schemaVersion <= 17 ? {
+                openaiPositivePrefix: imageGenerationInput.positivePrefix ?? '',
+                openaiPositiveSuffix: imageGenerationInput.positiveSuffix ?? '',
+                openaiNegativePrompt: imageGenerationInput.negativePrompt ?? '',
+                openaiPresetId: 'image_generation_openai',
+                openaiBaseUrl: imageGenerationInput.apiMode === 'openai_compatible'
+                    ? imageGenerationInput.baseUrl ?? 'https://api.openai.com'
+                    : 'https://api.openai.com',
+                openaiEndpointPath: imageGenerationInput.apiMode === 'openai_compatible'
+                    ? imageGenerationInput.endpointPath ?? '/v1/images/generations'
+                    : '/v1/images/generations',
+                openaiModel: imageGenerationInput.apiMode === 'openai_compatible'
+                    ? imageGenerationInput.model ?? 'gpt-image-1'
+                    : 'gpt-image-1',
+            } : {}),
+            openaiWidth: imageGenerationInput.width ?? 1024,
+            openaiHeight: imageGenerationInput.height ?? 1024,
         };
     }
     const imageGeneration = normalizeImageGenerationSettings(imageGenerationInput);
@@ -742,9 +751,10 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         } catch {
             fail('INVALID_IMPORT_JSON', '设置 JSON 无法解析。');
         }
-        // Persist only a normalized current v18 document; an upgradeable
-        // v11–v17 document is migrated inside normalize: v11–v14 refresh all
-        // stock prompt copy, while v15–v16 refresh only the service presets.
+        // Persist only a normalized current v19 document; an upgradeable
+        // v11–v18 document is migrated inside normalize: v11–v14 refresh all
+        // stock prompt copy, v15–v16 refresh only the service presets, and v18
+        // receives independent OpenAI dimensions without changing its other values.
         return persist(parsed);
     }
 

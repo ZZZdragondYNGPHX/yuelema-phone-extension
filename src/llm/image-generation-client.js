@@ -360,8 +360,12 @@ function normalizeRequest(input) {
                 : apiMode === 'openai_compatible' ? (settings.openaiModel ?? settings.model) : settings.model, '生图模型', 160, { allowEmpty: comfy }),
             sampler: cleanText(comfy ? (settings.comfySampler ?? settings.sampler) : settings.sampler, '采样器', 80),
             noiseSchedule: cleanText(comfy ? (settings.comfyScheduler ?? settings.noiseSchedule) : settings.noiseSchedule, '噪点表', 80),
-            width: cleanInteger(comfy ? (settings.comfyWidth ?? settings.width) : settings.width, '宽度', 64, 4096),
-            height: cleanInteger(comfy ? (settings.comfyHeight ?? settings.height) : settings.height, '高度', 64, 4096),
+            width: cleanInteger(comfy
+                ? (settings.comfyWidth ?? settings.width)
+                : apiMode === 'openai_compatible' ? (settings.openaiWidth ?? settings.width) : settings.width, '宽度', 64, 4096),
+            height: cleanInteger(comfy
+                ? (settings.comfyHeight ?? settings.height)
+                : apiMode === 'openai_compatible' ? (settings.openaiHeight ?? settings.height) : settings.height, '高度', 64, 4096),
             steps: cleanInteger(comfy ? (settings.comfySteps ?? settings.steps) : settings.steps, '步数', 1, 100),
             seed: cleanInteger(comfy ? (settings.comfySeed ?? settings.seed) : settings.seed, '种子', 0, 0xffffffff),
             guidance: cleanNumber(comfy ? (settings.comfyGuidance ?? settings.guidance) : settings.guidance, 'Prompt Guidance', 0, 30),
