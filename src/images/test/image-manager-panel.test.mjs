@@ -36,7 +36,7 @@ async function flushUi(rounds = 4) {
 async function buildHarness({
     seed = [], imageLibrary, compressImageFile, onChange, onFeedback, onConfigure,
     onConfigureGeneration, dialogController, downloadImagePack, generateImage,
-    initialImageProvider,
+    initialImageProvider, importRemoteImageFile,
 } = {}) {
     const store = imageLibrary ?? createStore();
     for (const input of seed) await store.add(input);
@@ -51,6 +51,7 @@ async function buildHarness({
         onConfigure,
         onConfigureGeneration,
         dialogController,
+        importRemoteImageFile,
         downloadImagePack,
         generateImage,
         initialImageProvider,
@@ -79,6 +80,7 @@ test('图片管理的生图按钮打开独立界面，选择接口并生成后�
         buttonByText(harness.element, '生图').dispatchEvent(new Event('click', { cancelable: true }));
         const workbench = harness.element.querySelector('.yl-image-generation-workbench');
         assert.equal(workbench.hidden, false);
+        assert.equal(harness.element.classList.contains('is-generation-view'), true, '生图态应切换为独占网格');
         assert.equal(harness.element.querySelector('.yl-image-manager-side').hidden, true);
         assert.equal(harness.element.querySelector('.yl-image-manager-grid').hidden, true);
         assert.equal(harness.element.querySelector('[name="image-library-generation-provider"]').value, 'openai_compatible');
@@ -104,6 +106,7 @@ test('图片管理的生图按钮打开独立界面，选择接口并生成后�
         assert.deepEqual(records[0].keywordWeights, []);
         assert.equal(harness.changes.at(-1).type, 'generate');
         assert.equal(workbench.hidden, true, '保存成功后应返回图片库');
+        assert.equal(harness.element.classList.contains('is-generation-view'), false);
         assert.equal(harness.element.querySelector('.yl-image-manager-grid').hidden, false);
         assert.ok(harness.feedback.includes('图片已生成、压缩并保存到图片库。'));
     } finally {
@@ -731,68 +734,55 @@ test('本地预览加载失败时显示失败状态', async () => {
     }
 });
 
-test('未注入链接导入能力时不渲染链接入口，也不复活 image-url 表单', async () => {
+test('未注入链接导入能力时不渲染按钮，链接输入保持隐藏', async () => {
     const harness = await buildHarness();
-    assert.equal(harness.element.querySelector('[name="image-import-url"]'), null, '无能力时不得留下死链接输入框');
+    assert.equal(harness.element.querySelector('.yl-image-remote-import-backdrop').hidden, true, '链接下载输入框不得显示在主面板');
     assert.equal(harness.element.querySelector('[name="image-url"]'), null, '旧 image-url 表单不得复活');
     const remoteButton = harness.element.querySelectorAll('button').find((button) => button.textContent === '下载并保存到图片库');
-    assert.equal(remoteButton, undefined, '无能力时不得留下死导入按钮');
+    assert.equal(remoteButton, undefined, '不得留下无来源的下载按钮');
+    assert.ok(harness.element.querySelector('[name="image-file"]'));
+    assert.ok(harness.element.querySelector('[name="image-pack-file"]'));
 });
 
-test('链接导入成功：一次下载经压缩链保存为 embedded 记录，URL 不落库不回显', async () => {
+test('链接下载按钮打开独立弹窗，取消不保存，确认后压缩入库', async () => {
     const importedUrls = [];
-    const store = createStore();
-    const feedback = [];
-    const api = createImageManagerPanel({
-        documentRef: miniDom.document,
-        imageLibrary: store,
+    const harness = await buildHarness({
+        importRemoteImageFile: async (url) => {
+            importedUrls.push(url);
+            return { size: 128, type: 'image/png' };
+        },
         compressImageFile: async () => WEBP_DATA_URL,
-        onChange() {},
-        onFeedback: (message) => feedback.push(message),
-        importRemoteImageFile: async (url) => { importedUrls.push(url); return { size: 128, type: 'image/png' }; },
     });
-    await flushUi();
-    const harness = { store, feedback, ...api };
-    const urlInput = harness.element.querySelector('[name="image-import-url"]');
-    assert.ok(urlInput, '注入能力后应有链接输入框');
-    urlInput.value = '  https://example.com/photo.png  ';
-    buttonByText(harness.element, '下载并保存到图片库').dispatchEvent(new Event('click'));
-    await flushUi();
-    assert.deepEqual(importedUrls, ['https://example.com/photo.png'], '应以去空格后的链接调用注入导入器且只调一次');
-    const records = await harness.store.list();
-    assert.equal(records.length, 1, '成功导入应新增一条记录');
-    assert.equal(records[0].source.kind, 'embedded', '记录必须是 embedded 来源');
-    assert.equal(records[0].source.dataUrl, WEBP_DATA_URL, '记录必须是压缩链输出的 data URL');
-    assert.equal(JSON.stringify(records).includes('example.com'), false, 'URL 不得落入图片库记录');
-    assert.equal(urlInput.value, '', '成功后应清空链接输入');
-    assert.ok(harness.feedback.some((message) => message.includes('链接本身不会被保存')), '反馈必须申明链接不持久化');
-    assert.equal(harness.element.textContent.includes('example.com'), false, '面板可见文本不得回显链接');
-});
+    try {
+        const button = buttonByText(harness.element, '下载并保存到图片库');
+        const backdrop = harness.element.querySelector('.yl-image-remote-import-backdrop');
+        const input = harness.element.querySelector('[name="image-import-url"]');
+        assert.equal(backdrop.hidden, true, '主面板不应常驻显示链接输入框');
 
-test('链接导入失败：不新增记录并显示安全投影文案', async () => {
-    const store = createStore();
-    const feedback = [];
-    const failure = new Error('REMOTE_FETCH_FAILED');
-    failure.code = 'REMOTE_FETCH_FAILED';
-    const api = createImageManagerPanel({
-        documentRef: miniDom.document,
-        imageLibrary: store,
-        compressImageFile: async () => WEBP_DATA_URL,
-        onChange() {},
-        onFeedback: (message) => feedback.push(message),
-        importRemoteImageFile: async () => { throw failure; },
-    });
-    await flushUi();
-    const urlInput = api.element.querySelector('[name="image-import-url"]');
-    const importButton = buttonByText(api.element, '下载并保存到图片库');
-    importButton.dispatchEvent(new Event('click'));
-    assert.equal(api.element.querySelector('.yl-image-manager-status').textContent, '请先粘贴要导入的图片链接。', '空链接应先提示');
-    urlInput.value = 'https://example.com/broken.png';
-    importButton.dispatchEvent(new Event('click'));
-    await flushUi();
-    assert.equal((await store.list()).length, 0, '失败不得新增记录');
-    assert.equal(api.element.querySelector('.yl-image-manager-status').textContent, '链接图片未保存。');
-    assert.ok(feedback.includes('图片链接下载失败；请确认链接可公开访问后重试。'), '应输出安全投影文案');
-    assert.equal(feedback.some((message) => message.includes('example.com')), false, '失败反馈不得回显链接');
-    assert.equal(importButton.disabled, false, '失败后导入按钮应恢复可用');
+        button.dispatchEvent(new Event('click'));
+        assert.equal(backdrop.hidden, false);
+        assert.equal(miniDom.document.activeElement, input);
+        assert.ok(buttonByText(backdrop, '确定'));
+        assert.ok(buttonByText(backdrop, '取消'));
+
+        input.value = 'https://example.com/cancelled.png';
+        buttonByText(backdrop, '取消').dispatchEvent(new Event('click'));
+        assert.equal(backdrop.hidden, true);
+        assert.equal((await harness.store.list()).length, 0);
+        assert.deepEqual(importedUrls, []);
+
+        button.dispatchEvent(new Event('click'));
+        input.value = '  https://example.com/photo.png  ';
+        buttonByText(backdrop, '确定').dispatchEvent(new Event('click'));
+        await flushUi();
+        assert.deepEqual(importedUrls, ['https://example.com/photo.png']);
+        assert.equal(backdrop.hidden, true);
+        const records = await harness.store.list();
+        assert.equal(records.length, 1);
+        assert.equal(records[0].source.kind, 'embedded');
+        assert.equal(records[0].source.dataUrl, WEBP_DATA_URL);
+        assert.equal(JSON.stringify(records).includes('example.com'), false, '链接本身不得落库');
+    } finally {
+        harness.dispose();
+    }
 });

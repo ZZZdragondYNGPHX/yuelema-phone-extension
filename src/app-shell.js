@@ -70,12 +70,12 @@ const LOCAL_PAGE_COPY = Object.freeze({
 function pageCopy(pageId) { return PAGE_COPY[pageId] ?? LOCAL_PAGE_COPY[pageId] ?? null; }
 const PRIMARY_PAGE_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'groups', group_chat_create: 'groups', group_chat_summary: 'groups', group_forum: 'groups', forum_post: 'groups', forum_post_summary: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_image_cache: 'profile', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_images_generate: 'profile', settings_image_generation: 'profile', settings_image_cache: 'profile', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home',
 });
 // E1 裁平（裁决 D7）：settings 目录页已删除，全部设置二级页与“关于软件”直接挂在「我的」下。
 const PAGE_PARENT_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'group_chat', group_chat_create: 'group_chat', group_chat_summary: 'group_chat_room', group_forum: 'groups', forum_post: 'group_forum', forum_post_summary: 'forum_post', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'profile', settings_image_generation: 'profile', settings_image_cache: 'settings_image_generation', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'profile', candidate_detail: 'home',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'profile', settings_images_generate: 'settings_images', settings_image_generation: 'profile', settings_image_cache: 'settings_image_generation', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'profile', candidate_detail: 'home',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
@@ -2319,7 +2319,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'favorites') page.appendChild(ctx.buildFavoritesPage());
         else if (activePage === 'about') page.appendChild(ctx.buildAboutSoftwarePage());
         else if (activePage === 'service_hub') page.appendChild(ctx.buildServiceHubPage());
-        else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images', 'settings_image_generation', 'settings_image_cache'].includes(activePage)) page.appendChild(buildSettingsDetail());
+        else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images', 'settings_images_generate', 'settings_image_generation', 'settings_image_cache'].includes(activePage)) page.appendChild(buildSettingsDetail());
         else if (activePage === 'settings_preferences') page.appendChild(ctx.buildPreferenceSettingsPage());
         else if (activePage === 'settings_console') page.appendChild(decorateOperationConsoleDetails(ctx.buildOperationConsole()));
         else if (activePage === 'settings_chat_summary') page.appendChild(ctx.buildChatSummarySettingsHome());
@@ -2483,7 +2483,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (activePage === 'settings_image_cache') {
             return buildConversationImageCachePage();
         }
-        if (activePage === 'settings_images') {
+        if (activePage === 'settings_images' || activePage === 'settings_images_generate') {
+            const generationOnly = activePage === 'settings_images_generate';
             const section = element('section', { className: 'yl-settings-detail yl-image-manager-page' });
             let initialImageProvider = 'novelai';
             try { initialImageProvider = settingsStore?.getImageGenerationSettings?.().apiMode ?? 'novelai'; } catch { /* normalized default */ }
@@ -2492,7 +2493,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 imageLibrary,
                 dialogController,
                 openDialog: openManagedDialog,
-                // 链接导入 = 一次性下载字节，随后仍走同一条本地压缩链；URL 不落库。
                 importRemoteImageFile: remoteImageImporter ? (url) => remoteImageImporter.importImageFile(url) : null,
                 compressImageFile: async (file) => (await compressLocalAvatar(file)).dataUrl,
                 downloadImagePack: downloadImagePackJson,
@@ -2501,7 +2501,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                     : null,
                 initialImageProvider,
                 onFeedback: (message) => setFeedback(message),
-                onChange: () => { clearMatchedImageState(); renderPage(); },
+                initialView: generationOnly ? 'generation' : 'library',
+                onOpenGeneration: generationOnly ? null : () => setActivePage('settings_images_generate'),
+                onCloseGeneration: generationOnly ? () => setActivePage('settings_images') : null,
+                onChange: () => {
+                    clearMatchedImageState();
+                    if (generationOnly) setActivePage('settings_images');
+                    else renderPage();
+                },
                 onConfigure: () => openFeatureBinding([{ key: 'image_match', title: '图片匹配' }], '图片匹配设置'),
                 onConfigureGeneration: () => setActivePage('settings_image_generation'),
             });

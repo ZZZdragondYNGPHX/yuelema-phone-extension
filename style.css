@@ -492,7 +492,7 @@
 .yl-settings-control,
 .yl-group-search-input, .yl-message-search-input, .yl-service-search-input, .yl-service-xp-search-input,
 .yl-character-field input, .yl-character-field textarea, .yl-character-field select, .yl-character-template-textarea,
-.yl-image-keyword-row input, .yl-image-remote-import input {
+.yl-image-keyword-row input {
     width: 100%;
     min-width: 0;
     min-height: var(--yl-icon-hit);
@@ -507,7 +507,7 @@
 .yl-settings-control:focus,
 .yl-group-search-input:focus, .yl-message-search-input:focus, .yl-service-search-input:focus, .yl-service-xp-search-input:focus,
 .yl-character-field input:focus, .yl-character-field textarea:focus, .yl-character-field select:focus, .yl-character-template-textarea:focus,
-.yl-image-keyword-row input:focus, .yl-image-remote-import input:focus {
+.yl-image-keyword-row input:focus {
     border-color: var(--yl-accent);
     box-shadow: var(--yl-focus-ring);
     outline: none;
@@ -4182,6 +4182,7 @@
 .yl-image-pack-transfer > * { min-width: 0; }
 .yl-image-pack-import-label { background: var(--yl-surface-2); }
 .yl-image-generation-workbench {
+    grid-area: generation;
     grid-column: 1 / -1;
     display: grid;
     gap: var(--yl-space-4);
@@ -4224,8 +4225,25 @@
 }
 .yl-image-generation-field textarea { resize: vertical; line-height: 1.55; }
 .yl-image-generation-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--yl-space-2); }
-.yl-image-remote-import { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--yl-space-2); align-items: center; }
 .yl-image-remote-import-hint { color: var(--yl-text-2); font-size: var(--yl-type-xs); line-height: 1.45; }
+.yl-image-remote-import-button { width: 100%; }
+.yl-image-remote-import-dialog input {
+    width: 100%;
+    min-width: 0;
+    min-height: var(--yl-icon-hit);
+    padding: 10px var(--yl-space-3);
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-ctrl);
+    color: var(--yl-text);
+    background: var(--yl-surface);
+    font-size: var(--yl-type-caption);
+}
+.yl-image-remote-import-dialog input:focus {
+    border-color: var(--yl-accent);
+    box-shadow: var(--yl-focus-ring);
+    outline: none;
+}
+.yl-image-remote-import-status { color: var(--yl-text-2); font-size: var(--yl-type-xs); line-height: 1.45; }
 /* 面板按钮已全部换 createButton（yl-btn 变体分级），此处不再自绘按钮基类 */
 .yl-image-card {
     position: relative;
@@ -4323,7 +4341,6 @@
 .yl-image-keyword-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--yl-space-2); }
 .yl-image-delete-button { margin-right: auto; }
 @media (max-width: 430px) {
-    .yl-image-remote-import { grid-template-columns: 1fr; }
     .yl-image-pack-transfer { grid-template-columns: 1fr; }
     .yl-image-generation-workbench-header { display: grid; }
     .yl-image-generation-actions > * { flex: 1 1 120px; }
@@ -4654,6 +4671,10 @@
         grid-template-areas: "side grid";
         column-gap: var(--yl-space-4);
         align-items: start;
+    }
+    .yl-phone-extension[data-ui-layout="desktop"] .yl-image-manager-page .yl-image-manager.is-generation-view {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "generation";
     }
     .yl-phone-extension[data-ui-layout="desktop"] .yl-image-manager-page .yl-image-manager-side {
         grid-area: side;

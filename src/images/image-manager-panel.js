@@ -120,14 +120,15 @@ export function createImageManagerPanel({
     onChange = noop,
     onConfigure = noop,
     onConfigureGeneration = noop,
+    onOpenGeneration = null,
+    onCloseGeneration = null,
     dialogController = null,
     openDialog = null,
-    // 一次性链接导入能力（url → Blob）。未注入时不渲染任何链接入口；
-    // 下载结果仍必须走注入压缩链变成 embedded data URL，URL 本身不落库。
     importRemoteImageFile = null,
     downloadImagePack = null,
     generateImage = null,
     initialImageProvider = 'novelai',
+    initialView = 'library',
 } = {}) {
     if (!documentRef || typeof documentRef.createElement !== 'function') {
         throw new TypeError('image_manager_document_invalid');
@@ -194,21 +195,12 @@ export function createImageManagerPanel({
         className: 'yl-image-remote-import-hint',
         text: '图包包含图片与每张图片的关键词权重；导入只合并，不覆盖现有图片。',
     }));
-
-    let remoteUrlInput = null;
-    let remoteImportButton = null;
-    if (typeof importRemoteImageFile === 'function') {
-        const remoteRow = createElement(documentRef, 'div', { className: 'yl-image-remote-import' });
-        remoteUrlInput = createElement(documentRef, 'input', { type: 'text', name: 'image-import-url' });
-        remoteUrlInput.setAttribute('inputmode', 'url');
-        remoteUrlInput.setAttribute('placeholder', 'https://…');
-        remoteUrlInput.setAttribute('aria-label', '要导入的图片链接');
-        remoteImportButton = createButton({ documentRef, variant: 'tonal', label: '下载并保存到图片库' });
+    const remoteImportButton = typeof importRemoteImageFile === 'function'
+        ? createButton({ documentRef, variant: 'tonal', label: '下载并保存到图片库' })
+        : null;
+    if (remoteImportButton) {
         remoteImportButton.classList.add('yl-image-remote-import-button');
-        remoteRow.appendChild(remoteUrlInput);
-        remoteRow.appendChild(remoteImportButton);
-        intake.appendChild(remoteRow);
-        intake.appendChild(createElement(documentRef, 'p', { className: 'yl-image-remote-import-hint', text: '仅在点击时下载一次并压缩保存；链接本身不会被保存。' }));
+        intake.appendChild(remoteImportButton);
     }
 
     const status = createElement(documentRef, 'p', { className: 'yl-image-manager-status', text: '正在读取图片库…' });
@@ -254,6 +246,34 @@ export function createImageManagerPanel({
     editor.appendChild(editorActions);
     editorBackdrop.appendChild(editor);
 
+    const remoteBackdrop = createElement(documentRef, 'div', { className: 'yl-image-keyword-backdrop yl-image-remote-import-backdrop', hidden: true });
+    const remoteDialog = createElement(documentRef, 'section', { className: 'yl-image-keyword-editor yl-image-remote-import-dialog', hidden: true });
+    remoteDialog.setAttribute('role', 'dialog');
+    remoteDialog.setAttribute('aria-modal', 'true');
+    remoteDialog.setAttribute('aria-label', '从图片链接下载');
+    const remoteHeader = createElement(documentRef, 'header', { className: 'yl-image-keyword-editor-heading' });
+    remoteHeader.appendChild(createElement(documentRef, 'h3', { text: '下载链接图片' }));
+    remoteHeader.appendChild(createElement(documentRef, 'p', { text: '图片会下载并压缩到本地图片库，链接本身不会保存。' }));
+    const remoteField = createElement(documentRef, 'label', { className: 'yl-image-generation-field' });
+    remoteField.appendChild(createElement(documentRef, 'span', { text: '图片链接' }));
+    const remoteUrlInput = createElement(documentRef, 'input', { type: 'text', name: 'image-import-url' });
+    remoteUrlInput.setAttribute('inputmode', 'url');
+    remoteUrlInput.setAttribute('placeholder', 'https://…');
+    remoteUrlInput.setAttribute('aria-label', '图片链接');
+    remoteField.appendChild(remoteUrlInput);
+    const remoteStatus = createElement(documentRef, 'p', { className: 'yl-image-remote-import-status', text: '请输入可公开访问的 HTTP 或 HTTPS 图片链接。' });
+    remoteStatus.setAttribute('aria-live', 'polite');
+    const remoteActions = createElement(documentRef, 'div', { className: 'yl-image-keyword-actions' });
+    const remoteCancelButton = createButton({ documentRef, variant: 'ghost', label: '取消' });
+    const remoteConfirmButton = createButton({ documentRef, variant: 'primary', label: '确定' });
+    remoteActions.appendChild(remoteCancelButton);
+    remoteActions.appendChild(remoteConfirmButton);
+    remoteDialog.appendChild(remoteHeader);
+    remoteDialog.appendChild(remoteField);
+    remoteDialog.appendChild(remoteStatus);
+    remoteDialog.appendChild(remoteActions);
+    remoteBackdrop.appendChild(remoteDialog);
+
     // 说明、导入与状态收进同一侧栏容器：phone 保持原纵向阅读顺序，
     // desktop 工作台由 CSS 将其整体作为左列卡片，避免三块内容视觉散落。
     const side = createElement(documentRef, 'div', { className: 'yl-image-manager-side' });
@@ -264,6 +284,7 @@ export function createImageManagerPanel({
     element.appendChild(grid);
     element.appendChild(contextMenu);
     element.appendChild(editorBackdrop);
+    element.appendChild(remoteBackdrop);
 
     const generationView = createElement(documentRef, 'section', { className: 'yl-image-generation-workbench', hidden: true });
     const generationHeader = createElement(documentRef, 'header', { className: 'yl-image-generation-workbench-header' });
@@ -351,6 +372,7 @@ export function createImageManagerPanel({
     function openGenerationView() {
         closeContextMenu();
         closeEditor();
+        element.classList.add('is-generation-view');
         side.hidden = true;
         grid.hidden = true;
         generationView.hidden = false;
@@ -365,6 +387,7 @@ export function createImageManagerPanel({
         generationAbortController = null;
         setGenerationBusy(false);
         generationView.hidden = true;
+        element.classList.remove('is-generation-view');
         side.hidden = false;
         grid.hidden = false;
         if (restoreFocus) generationEntryButton.focus?.();
@@ -528,6 +551,29 @@ export function createImageManagerPanel({
         editorPreview.replaceChildren();
     }
 
+    function closeRemoteImportDialog({ restoreFocus = true } = {}) {
+        if (dialogController && !remoteBackdrop.hidden) dialogController.close(remoteDialog, { restoreFocus });
+        remoteDialog.hidden = true;
+        remoteBackdrop.hidden = true;
+        remoteUrlInput.value = '';
+        remoteStatus.textContent = '请输入可公开访问的 HTTP 或 HTTPS 图片链接。';
+        remoteConfirmButton.disabled = false;
+        remoteCancelButton.disabled = false;
+    }
+
+    function openRemoteImportDialog() {
+        remoteDialog.hidden = false;
+        remoteBackdrop.hidden = false;
+        const dialogOptions = {
+            opener: remoteImportButton,
+            initialFocus: remoteUrlInput,
+            onRequestClose: () => closeRemoteImportDialog(),
+        };
+        if (typeof openDialog === 'function') openDialog(remoteDialog, dialogOptions);
+        else if (dialogController) dialogController.open(remoteDialog, dialogOptions);
+        else remoteUrlInput.focus?.();
+    }
+
     function handleEscape() {
         if (!generationView.hidden) {
             closeGenerationView();
@@ -542,10 +588,11 @@ export function createImageManagerPanel({
             closeContextMenu();
             return true;
         }
-        const wasOpen = !editorBackdrop.hidden || !contextMenu.hidden;
+        const wasOpen = !editorBackdrop.hidden || !remoteBackdrop.hidden || !contextMenu.hidden;
         if (!wasOpen) return false;
         clearLongPress();
         if (!editorBackdrop.hidden) closeEditor();
+        if (!remoteBackdrop.hidden) closeRemoteImportDialog();
         closeContextMenu();
         return true;
     }
@@ -676,31 +723,49 @@ export function createImageManagerPanel({
     });
 
     if (remoteImportButton) {
-        listen(remoteImportButton, 'click', () => {
-            const url = String(remoteUrlInput?.value ?? '').trim();
-            if (!url) { status.textContent = '请先粘贴要导入的图片链接。'; return; }
+        listen(remoteImportButton, 'click', openRemoteImportDialog);
+        listen(remoteCancelButton, 'click', () => closeRemoteImportDialog());
+        listen(remoteBackdrop, 'click', (event) => {
+            if (event.target === remoteBackdrop) closeRemoteImportDialog();
+        });
+        listen(remoteConfirmButton, 'click', () => {
+            const url = String(remoteUrlInput.value ?? '').trim();
+            if (!url) {
+                remoteStatus.textContent = '请填写图片链接。';
+                remoteUrlInput.focus?.();
+                return;
+            }
             void enqueueOperation(async () => {
-                setBusy(true, '正在下载并压缩链接图片…');
+                remoteConfirmButton.disabled = true;
+                remoteCancelButton.disabled = true;
+                remoteStatus.textContent = '正在下载并压缩图片…';
                 try {
                     if (typeof compressImageFile !== 'function') throw new TypeError('image_manager_compression_unavailable');
                     const remoteFile = await importRemoteImageFile(url);
                     const dataUrl = normalizeCompressedImage(await compressImageFile(remoteFile));
                     const added = await imageLibrary.add({ source: { kind: 'embedded', dataUrl }, keywordWeights: [] });
-                    remoteUrlInput.value = '';
+                    closeRemoteImportDialog({ restoreFocus: false });
                     await completeMutation('add', added, '链接图片已压缩并保存到图片库；链接本身不会被保存。');
                 } catch (error) {
-                    // 失败提示只用安全投影文案，不回显链接或宿主异常原文。
-                    status.textContent = '链接图片未保存。';
-                    report(projectRemoteImportError(error)?.message ?? feedbackMessage(error));
+                    remoteStatus.textContent = projectRemoteImportError(error)?.message ?? feedbackMessage(error);
                 } finally {
-                    if (!disposed) setBusy(false);
+                    if (!disposed) {
+                        remoteConfirmButton.disabled = false;
+                        remoteCancelButton.disabled = false;
+                    }
                 }
             });
         });
     }
 
-    listen(generationEntryButton, 'click', openGenerationView);
-    listen(generationBackButton, 'click', () => closeGenerationView());
+    listen(generationEntryButton, 'click', () => {
+        if (typeof onOpenGeneration === 'function') safeCallback(onOpenGeneration);
+        else openGenerationView();
+    });
+    listen(generationBackButton, 'click', () => {
+        if (typeof onCloseGeneration === 'function') safeCallback(onCloseGeneration);
+        else closeGenerationView();
+    });
     listen(generationSettingsButton, 'click', () => safeCallback(onConfigureGeneration));
     listen(generationCancelButton, 'click', () => {
         generationEpoch += 1;
@@ -828,6 +893,11 @@ export function createImageManagerPanel({
         });
     }
 
+    if (initialView === 'generation') {
+        generationBackButton.hidden = typeof onCloseGeneration === 'function';
+        openGenerationView();
+    }
+
     void reload().catch((error) => {
         if (disposed) return;
         records = [];
@@ -858,6 +928,7 @@ export function createImageManagerPanel({
             clearSuppressedClick();
             // 面板销毁时若编辑器仍在控制器栈内，先出栈（不回焦，宿主即将拆除 DOM），避免栈悬挂。
             if (dialogController && !editorBackdrop.hidden) dialogController.close(editor, { restoreFocus: false });
+            if (dialogController && !remoteBackdrop.hidden) dialogController.close(remoteDialog, { restoreFocus: false });
             controller.abort();
             element.remove();
         },
