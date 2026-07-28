@@ -4137,6 +4137,7 @@
 }
 /* ---- pages:images 图片素材 ---- */
 .yl-image-manager { display: grid; gap: var(--yl-space-4); }
+.yl-image-manager [hidden] { display: none !important; }
 .yl-image-manager-side { display: grid; gap: var(--yl-space-4); align-content: start; }
 .yl-image-manager-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: var(--yl-space-3); }
 /* 初次读取骨架：整行跨列，占位块按素材瓦片网格排布 */
@@ -4152,7 +4153,7 @@
 .yl-image-manager-heading { display: grid; gap: 6px; }
 .yl-image-manager-titlebar { display: flex; align-items: center; justify-content: space-between; gap: var(--yl-space-2); }
 .yl-image-manager-title-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--yl-space-2); }
-.yl-image-manager-title { font-size: var(--yl-type-title); font-weight: 750; }
+.yl-image-manager-title { font-size: var(--yl-type-title); font-weight: 750; white-space: nowrap; }
 .yl-image-manager-configure { flex: 0 0 auto; }
 .yl-image-manager-description, .yl-image-manager-status { color: var(--yl-text-2); font-size: var(--yl-type-caption); line-height: 1.5; }
 .yl-image-manager-intake {
@@ -4667,7 +4668,7 @@
         align-content: start;
     }
     .yl-phone-extension[data-ui-layout="desktop"] .yl-image-manager-page .yl-image-manager {
-        grid-template-columns: minmax(232px, .58fr) minmax(0, 1.42fr);
+        grid-template-columns: minmax(248px, .62fr) minmax(0, 1.38fr);
         grid-template-areas: "side grid";
         column-gap: var(--yl-space-4);
         align-items: start;
