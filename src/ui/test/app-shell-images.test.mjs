@@ -70,8 +70,24 @@ test('设置页提供图片管理入口并挂载浏览器本地图片面板', as
         assert.ok(miniDom.document.querySelector('.yl-image-manager'));
         assert.ok(miniDom.document.querySelector('[name="image-file"]'));
         assert.equal(miniDom.document.querySelector('[name="image-url"]'), null, '图片管理不得保留远程 URL 输入');
+        assert.equal(miniDom.document.querySelector('.yl-image-remote-import-backdrop')?.hidden, true, '图片链接输入只允许出现在隐藏弹窗');
+        assert.equal(miniDom.document.querySelectorAll('button').some((node) => node.textContent === '下载并保存到图片库'), false);
         assert.match(miniDom.document.body.textContent, /图片库还是空的/u);
         assert.ok(miniDom.document.querySelector('.yl-page-back'));
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '生图'));
+        await flushUi();
+        assert.equal(miniDom.document.querySelector('.yl-page-heading')?.querySelector('h1')?.textContent, '生成图片', '应进入独立生图子路由');
+        const generationPanel = miniDom.document.querySelector('.yl-image-manager');
+        assert.equal(generationPanel.classList.contains('is-generation-view'), true);
+        assert.equal(generationPanel.querySelector('.yl-image-manager-side').hidden, true, '子路由不得显示图片库侧栏');
+        assert.equal(generationPanel.querySelector('.yl-image-manager-grid').hidden, true, '子路由不得显示图片网格');
+        assert.equal(generationPanel.querySelector('.yl-image-generation-workbench').hidden, false);
+
+        click(miniDom.document.querySelector('.yl-page-back'));
+        await flushUi();
+        assert.equal(miniDom.document.querySelector('.yl-page-heading')?.querySelector('h1')?.textContent, '图片管理');
+        assert.equal(miniDom.document.querySelector('.yl-image-manager-side').hidden, false, '返回后恢复图片库');
     } finally {
         mounted.destroy();
     }

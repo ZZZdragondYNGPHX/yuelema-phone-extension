@@ -352,6 +352,8 @@ test('双门禁之外不得残留裸 desktop 多栏几何', () => {
 
 test('素材网格自适应与图片死规则不回流', () => {
     assert.match(stylesheet, /\.yl-image-manager-grid\s*\{[^}]*repeat\(auto-fill,\s*minmax\(148px,\s*1fr\)\)/u, '素材网格必须使用自适应列宽');
+    assert.match(stylesheet, /\.yl-image-manager\s+\[hidden\]\s*\{[^}]*display\s*:\s*none\s*!important/u, '图片管理必须让 hidden 胜过组件 display，避免生图子页残留图片库');
+    assert.match(stylesheet, /\.yl-image-manager\.is-generation-view\s*\{[^}]*grid-template-areas\s*:\s*"generation"/u, '生图态必须使用单一 generation 网格区');
     assert.doesNotMatch(stylesheet, /\.yl-image-manager-url-group|\.yl-image-manager-toolbar|\.yl-image-manager-weight-row/u, '阶段 66 前的图片死规则不得回流');
 });
 

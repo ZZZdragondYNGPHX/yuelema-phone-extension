@@ -33,6 +33,7 @@ export const PAGE_COPY = Object.freeze({
     settings_personalization: { title: '个性化内容推荐管理' },
     settings_personalization_preference: { title: '个性化内容偏好' },
     settings_images: { title: '图片管理' },
+    settings_images_generate: { title: '生成图片' },
     settings_preferences: { title: '偏好' },
     settings_console: { title: '控制台' },
     settings_chat_summary: { title: '对话总结' },

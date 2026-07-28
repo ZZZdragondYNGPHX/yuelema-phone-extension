@@ -25,6 +25,7 @@ const BOND_ASSESSMENT_KINDS = Object.freeze({
     // inputs here; relationship-progress keeps them from growing NSFW routes.
     NSFW: new Set(['none', 'friendly', 'romantic_flirt', 'romantic_desire', 'sexual_desire']),
 });
+const BOND_DIRECTIONS = new Set(['increase', 'decrease', 'none']);
 const USER_MESSAGES = Object.freeze({
     private_chat_response_required: '私聊回复必须是 JSON 对象。',
     private_chat_response_unsafe_prototype: '私聊回复包含不安全的数据结构。',
@@ -192,9 +193,12 @@ function normalizeRelationship(value) {
 
 function normalizeBondAssessment(value, contentMode) {
     try {
-        assertExactRecord(value, ['kind', 'intensity']);
+        assertExactRecord(value, ['kind', 'intensity'], ['direction']);
         const kind = ownEnumerableData(value, 'kind');
         const intensity = ownEnumerableData(value, 'intensity');
+        const direction = Object.hasOwn(value, 'direction')
+            ? ownEnumerableData(value, 'direction')
+            : (kind === 'none' ? 'none' : 'increase');
         const mode = contentMode === 'NSFW' ? 'NSFW' : 'SFW';
         if (typeof kind !== 'string' || !BOND_ASSESSMENT_KINDS[mode].has(kind)) {
             fail('private_chat_response_relationship_invalid', {
@@ -206,7 +210,15 @@ function normalizeBondAssessment(value, contentMode) {
         if (!Number.isInteger(intensity) || intensity < 0 || intensity > 3 || (kind === 'none' && intensity !== 0) || (kind !== 'none' && intensity === 0)) {
             fail('private_chat_response_relationship_invalid', { field: 'bondAssessment.intensity', expected: '0..3 整数且与 kind 匹配（none 必须为 0，其余为 1-3）' });
         }
-        return { kind, intensity };
+        if (typeof direction !== 'string' || !BOND_DIRECTIONS.has(direction)
+            || (kind === 'none' && direction !== 'none')
+            || (kind !== 'none' && direction === 'none')) {
+            fail('private_chat_response_relationship_invalid', {
+                field: 'bondAssessment.direction',
+                expected: 'none 必须使用 none；其余分类使用 increase 或 decrease',
+            });
+        }
+        return { kind, intensity, direction };
     } catch (error) {
         if (isCodecError(error) && ['private_chat_response_unknown_field', 'private_chat_response_dangerous_key', 'private_chat_response_sensitive_key', 'private_chat_response_accessor_or_hidden_field', 'private_chat_response_unsafe_prototype'].includes(error.code)) throw error;
         fail('private_chat_response_relationship_invalid', (isCodecError(error) && error.diagnostic) || { field: 'bondAssessment' });
@@ -227,7 +239,7 @@ export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
             relationship: normalizeRelationship(ownEnumerableData(raw, 'relationship')),
             bondAssessment: Object.hasOwn(raw, 'bondAssessment')
                 ? normalizeBondAssessment(ownEnumerableData(raw, 'bondAssessment'), contentMode)
-                : { kind: 'none', intensity: 0 }
+                : { kind: 'none', intensity: 0, direction: 'none' }
         };
         if (Object.hasOwn(raw, 'imageDirectives')) normalized.imageDirectives = normalizeImageDirectives(ownEnumerableData(raw, 'imageDirectives'), replies.length);
         if (Object.hasOwn(raw, 'sessionSummary')) {

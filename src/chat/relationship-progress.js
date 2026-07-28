@@ -4,9 +4,10 @@ export const MEETUP_ROUTE_THRESHOLD = 60;
 
 const MODE_KINDS = Object.freeze({
     SFW: Object.freeze(['none', 'friendly', 'romantic_flirt']),
-    NSFW: Object.freeze(['none', 'romantic_desire', 'sexual_desire']),
+    NSFW: Object.freeze(['none', 'friendly', 'romantic_flirt', 'romantic_desire', 'sexual_desire']),
 });
-const BASE_GROWTH = Object.freeze([0, 2, 4, 6]);
+const BASE_GROWTH = Object.freeze([0, 2, 4, 5]);
+const BASE_DECLINE = Object.freeze([0, 3, 6, 10]);
 const ROUTES = Object.freeze([
     Object.freeze({ route: '友情', field: '友情值' }),
     Object.freeze({ route: '恋爱', field: '心动值' }),
@@ -32,30 +33,42 @@ export function calculateBondGrowth(currentValue, intensity) {
     return Math.min(100 - current, Math.max(1, Math.ceil(raw * (100 - current) / 100)));
 }
 
+export function calculateBondDecline(currentValue, intensity) {
+    const current = integerScore(currentValue);
+    if (!Number.isInteger(intensity) || intensity < 0 || intensity > 3 || intensity === 0 || current <= 0) return 0;
+    return -Math.min(current, BASE_DECLINE[intensity]);
+}
+
 /**
  * Converts a model's mode-scoped semantic assessment into at most one locally
- * controlled bond increment. The model never selects paths or numeric deltas.
+ * controlled bond change. The model never selects paths or numeric deltas.
  */
 export function projectBondProgress({ contentMode, relationship, assessment, replied = true } = {}) {
     const mode = normalizeContentMode(contentMode);
     const current = relationship && typeof relationship === 'object' ? relationship : {};
     const kind = assessment?.kind;
     const intensity = assessment?.intensity;
+    const direction = assessment?.direction ?? (kind === 'none' ? 'none' : 'increase');
     if (!replied || !MODE_KINDS[mode].includes(kind) || !Number.isInteger(intensity) || intensity < 0 || intensity > 3) {
-        return Object.freeze({ field: '', delta: 0, nextValue: 0, kind: 'none' });
+        return Object.freeze({ field: '', delta: 0, nextValue: 0, kind: 'none', direction: 'none' });
     }
     let field = '';
-    if (mode === 'SFW') {
+    if (mode === 'SFW' || direction === 'decrease') {
         if (kind === 'friendly') field = '友情值';
         if (kind === 'romantic_flirt') field = integerScore(current.友情值) >= FRIENDSHIP_HEART_UNLOCK ? '心动值' : '友情值';
-    } else {
+    }
+    if (mode === 'NSFW') {
         if (kind === 'romantic_desire') field = '心动值';
         if (kind === 'sexual_desire') field = '欲望值';
     }
-    if (!field || kind === 'none') return Object.freeze({ field: '', delta: 0, nextValue: 0, kind });
+    if (!field || kind === 'none' || !['increase', 'decrease'].includes(direction)) {
+        return Object.freeze({ field: '', delta: 0, nextValue: 0, kind, direction });
+    }
     const currentValue = integerScore(current[field]);
-    const delta = calculateBondGrowth(currentValue, intensity);
-    return Object.freeze({ field: delta ? field : '', delta, nextValue: currentValue + delta, kind });
+    const delta = direction === 'decrease'
+        ? calculateBondDecline(currentValue, intensity)
+        : calculateBondGrowth(currentValue, intensity);
+    return Object.freeze({ field: delta ? field : '', delta, nextValue: currentValue + delta, kind, direction });
 }
 
 /** Returns a DOM-safe derived meetup gate without exposing scores or thresholds. */

@@ -888,7 +888,7 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
         assessment: normalizedResponse.bondAssessment,
         replied: rhythm.outcome === 'replied',
     });
-    if (bondProgress.delta > 0 && BOND_VALUE_FIELDS.includes(bondProgress.field)) {
+    if (bondProgress.delta !== 0 && BOND_VALUE_FIELDS.includes(bondProgress.field)) {
         operations.push({
             op: Object.hasOwn(relationship, bondProgress.field) ? 'replace' : 'add',
             path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', bondProgress.field]),
@@ -1934,10 +1934,12 @@ export function validateControlledPatchAgainstState(state, patch) {
             }
             if (validResponse) {
                 const mode = currentContentMode(state);
-                const assessments = [{ kind: 'none', intensity: 0 }];
+                const assessments = [{ kind: 'none', intensity: 0, direction: 'none' }];
                 for (const kind of allowedAssessmentKinds(mode)) {
                     if (kind === 'none') continue;
-                    for (let intensity = 1; intensity <= 3; intensity += 1) assessments.push({ kind, intensity });
+                    for (const direction of ['increase', 'decrease']) {
+                        for (let intensity = 1; intensity <= 3; intensity += 1) assessments.push({ kind, intensity, direction });
+                    }
                 }
                 for (const bondAssessment of assessments) {
                     const expected = buildPrivateChatPatch(state, {

@@ -1138,6 +1138,76 @@ test('conversation image bridge routes OpenAI-compatible prompts without borrowi
     assert.doesNotMatch(request.positivePrompt, /nai|comfy/iu);
 });
 
+test('image-library generation uses the user-selected provider, fixed prompt order, and never reads or writes MVU', async () => {
+    const { mvu, calls } = createMvu({ initialState: state() });
+    let request;
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null },
+        mvu,
+        settingsStore: {
+            getImageGenerationSettings() {
+                return {
+                    enabled: true,
+                    apiMode: 'novelai',
+                    positivePrefix: 'nai prefix',
+                    positiveSuffix: 'nai suffix',
+                    negativePrompt: 'nai negative',
+                    openaiPositivePrefix: 'openai prefix',
+                    openaiPositiveSuffix: 'openai suffix',
+                    openaiNegativePrompt: 'openai negative',
+                    comfyPositivePrefix: 'comfy prefix',
+                    comfyPositiveSuffix: 'comfy suffix',
+                    comfyNegativePrompt: 'comfy negative',
+                };
+            },
+        },
+        imageGenerationClient: {
+            async generate(input) {
+                request = input;
+                return { kind: 'data_url', mimeType: 'image/webp', src: 'data:image/webp;base64,UklGRggAAABXRUJQAAAAAA==' };
+            },
+        },
+    });
+
+    const result = await bridge.generateLibraryImage({
+        provider: 'openai_compatible',
+        prompt: 'rainy city street at dusk',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.image.dataUrl, 'data:image/webp;base64,UklGRggAAABXRUJQAAAAAA==');
+    assert.equal(request.settings.apiMode, 'openai_compatible');
+    assert.equal(request.positivePrompt, 'openai prefix, all depicted people are adults age 18 or older, rainy city street at dusk, openai suffix');
+    assert.equal(request.negativePrompt, 'openai negative');
+    assert.equal(request.settings.positivePrefix, 'nai prefix', '请求级接口选择不得改写保存设置');
+    assert.deepEqual(calls, [], '图片库生图不得读取或写入 MVU');
+});
+
+test('image-library generation rejects disabled settings, invalid providers, and unsafe prompt text before the client', async () => {
+    let enabled = false;
+    let imageCalls = 0;
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null },
+        settingsStore: {
+            getImageGenerationSettings() {
+                return { enabled, apiMode: 'novelai', positivePrefix: '', positiveSuffix: '', negativePrompt: '' };
+            },
+        },
+        imageGenerationClient: { async generate() { imageCalls += 1; } },
+    });
+
+    const invalidProvider = await bridge.generateLibraryImage({ provider: 'unknown', prompt: 'city' });
+    assert.equal(invalidProvider.code, 'image_provider_invalid');
+    const disabled = await bridge.generateLibraryImage({ provider: 'novelai', prompt: 'city' });
+    assert.equal(disabled.code, 'image_generation_disabled');
+
+    enabled = true;
+    const unsafe = await bridge.generateLibraryImage({ provider: 'novelai', prompt: 'line one\nline two' });
+    assert.equal(unsafe.ok, false);
+    assert.equal(unsafe.code, 'IMAGE_DIRECTIVE_TEXT_INVALID');
+    assert.equal(imageCalls, 0);
+});
+
 test('conversation image bridge projects prompt validation with its exact safe phase', async () => {
     const diagnostics = [];
     let imageCalls = 0;

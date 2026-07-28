@@ -13,6 +13,8 @@ import {
 } from '../image-library-store.js';
 
 const PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo=';
+const JPEG_DATA_URL = 'data:image/jpeg;base64,/9j/';
+const WEBP_DATA_URL = 'data:image/webp;base64,UklGRggAAABXRUJQAAAAAA==';
 const FIXED_TIME = '2026-07-20T12:00:00.000Z';
 
 function storeWithMemory() {
@@ -200,6 +202,64 @@ test('exports and imports a complete document while invalid imports roll back at
     }), 'DUPLICATE_KEYWORD');
     assert.deepEqual(await store.snapshot(), before);
     assert.equal((await storage.getItem(IMAGE_LIBRARY_STORAGE_KEY)).includes('image_existing'), true);
+});
+
+test('merge import preserves existing records, skips identical bytes, and renames conflicting ids', async () => {
+    const store = storeWithMemory();
+    await store.add({
+        id: 'shared_id',
+        source: { kind: 'embedded', dataUrl: PNG_DATA_URL },
+        keywordWeights: [{ keyword: '现有', weight: 5 }],
+    });
+    const result = await store.importMerge({
+        schema: IMAGE_LIBRARY_SCHEMA_ID,
+        schemaVersion: IMAGE_LIBRARY_SCHEMA_VERSION,
+        images: [{
+            id: 'same_bytes',
+            source: { kind: 'embedded', dataUrl: PNG_DATA_URL },
+            keywordWeights: [{ keyword: '不会覆盖', weight: -5 }],
+            createdAt: FIXED_TIME,
+            updatedAt: FIXED_TIME,
+        }, {
+            id: 'shared_id',
+            source: { kind: 'embedded', dataUrl: JPEG_DATA_URL },
+            keywordWeights: [{ keyword: '导入', weight: 3 }],
+            createdAt: FIXED_TIME,
+            updatedAt: FIXED_TIME,
+        }, {
+            id: 'fresh_image',
+            source: { kind: 'embedded', dataUrl: WEBP_DATA_URL },
+            keywordWeights: [{ keyword: '夜景', weight: 2 }],
+            createdAt: FIXED_TIME,
+            updatedAt: FIXED_TIME,
+        }],
+    });
+
+    assert.equal(result.addedCount, 2);
+    assert.equal(result.skippedCount, 1);
+    assert.equal(result.renamedCount, 1);
+    assert.deepEqual((await store.list()).map((record) => record.id), ['shared_id', 'shared_id_2', 'fresh_image']);
+    assert.deepEqual((await store.get('shared_id')).keywordWeights, [{ keyword: '现有', weight: 5 }]);
+    assert.deepEqual((await store.get('shared_id_2')).keywordWeights, [{ keyword: '导入', weight: 3 }]);
+});
+
+test('invalid merge import leaves the complete existing library unchanged', async () => {
+    const store = storeWithMemory();
+    await store.add({ id: 'keep_me', source: { kind: 'embedded', dataUrl: PNG_DATA_URL } });
+    const before = await store.snapshot();
+
+    await expectCode(store.importMerge({
+        schema: IMAGE_LIBRARY_SCHEMA_ID,
+        schemaVersion: IMAGE_LIBRARY_SCHEMA_VERSION,
+        images: [{
+            id: 'bad_image',
+            source: { kind: 'embedded', dataUrl: JPEG_DATA_URL },
+            keywordWeights: [{ keyword: '越界', weight: 6 }],
+            createdAt: FIXED_TIME,
+            updatedAt: FIXED_TIME,
+        }],
+    }), 'INVALID_KEYWORD_WEIGHTS');
+    assert.deepEqual(await store.snapshot(), before);
 });
 
 

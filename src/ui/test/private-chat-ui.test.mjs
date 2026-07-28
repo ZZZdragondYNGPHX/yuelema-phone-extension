@@ -176,26 +176,37 @@ test('private chat keeps the reading anchor and follows the bottom across pendin
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
         click(miniDom.document.querySelector('.yl-message-session'));
         const content = miniDom.document.querySelector('.yl-phone-content');
-        Object.defineProperties(content, {
-            clientHeight: { value: 200, configurable: true },
-            scrollHeight: { configurable: true, get: () => miniDom.document.querySelectorAll('.yl-bubble').length * 300 },
-            scrollTop: { value: 400, writable: true, configurable: true },
-        });
-        const originalReplaceChildren = content.replaceChildren.bind(content);
-        content.replaceChildren = (...nodes) => { content.scrollTop = 0; return originalReplaceChildren(...nodes); };
+        const installTranscriptMeasurements = (scrollTop = 0) => {
+            const transcript = miniDom.document.querySelector('.yl-chat-transcript');
+            Object.defineProperties(transcript, {
+                clientHeight: { value: 200, configurable: true },
+                scrollHeight: { configurable: true, get: () => miniDom.document.querySelectorAll('.yl-bubble').length * 300 },
+                scrollTop: { value: scrollTop, writable: true, configurable: true },
+            });
+            return transcript;
+        };
+        let transcript = installTranscriptMeasurements(400);
+        const originalAppendChild = content.appendChild.bind(content);
+        content.appendChild = (node) => {
+            const resultNode = originalAppendChild(node);
+            installTranscriptMeasurements(0);
+            return resultNode;
+        };
         const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
         input.value = '继续聊。'; input.dispatchEvent(new Event('input'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息'));
-        assert.equal(content.scrollTop, 400, '等待回复时仍应停留在原底部，而不是跳回开头');
-        content.scrollTop = 0;
+        transcript = miniDom.document.querySelector('.yl-chat-transcript');
+        assert.equal(transcript.scrollTop, 400, '等待回复时真正滚动的消息时间线仍应停留在原底部');
+        transcript.scrollTop = 0;
         flushFrames();
-        assert.equal(content.scrollTop, 400, '真实浏览器布局帧晚到时仍应复核并恢复原底部');
+        assert.equal(transcript.scrollTop, 400, '真实浏览器布局帧晚到时仍应复核内层时间线并恢复原底部');
         response.resolve();
         await flushUi();
-        assert.equal(content.scrollTop, 700, '新回复完成后，原本位于底部的用户应跟随到新底部');
-        content.scrollTop = 0;
+        transcript = miniDom.document.querySelector('.yl-chat-transcript');
+        assert.equal(transcript.scrollTop, 700, '新回复完成后，原本位于底部的用户应跟随内层时间线到新底部');
+        transcript.scrollTop = 0;
         flushFrames();
-        assert.equal(content.scrollTop, 700, 'AI 回复布局完成后不得再次回到顶部');
+        assert.equal(transcript.scrollTop, 700, 'AI 回复布局完成后内层时间线不得再次回到顶部');
     } finally {
         mounted.destroy();
         if (originalRequestAnimationFrame === undefined) delete globalThis.requestAnimationFrame;

@@ -34,6 +34,29 @@ test('normal private chat appends each validated reply as its own bubble', () =>
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
 });
 
+test('private chat can lower one bond route by at most ten through the controlled patch', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 30, 心动值: 40, 欲望值: 80,
+        },
+    });
+    current.软件.内容模式 = 'NSFW';
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1',
+        npcUid: 'npc_one',
+        playerMessage: '这句话越过了已经确认的边界',
+        response: {
+            ...response(),
+            bondAssessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
+        },
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path === '/角色池/npc_one/与玩家关系/欲望值' && operation.value === 70), true);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
 test('bounded transcript only trims an already summarized prefix and never drops pending layers', () => {
     const current = state();
     current.会话.chat_1.最近消息 = Array.from({ length: 240 }, (_, index) => ({
