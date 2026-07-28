@@ -22,7 +22,7 @@ function state() {
     return {
         角色池: { npc_1: character('林澈'), npc_2: character('周遥'), npc_3: character('未成年人错误样例', { adult: false }) },
         推荐: { 临时候选池: { npc_candidate: character('候选秘密角色') } },
-        会话: { chat_1: { 长期摘要: 'session-secret-must-not-leak' } },
+        会话: { chat_1: { 总结: { 记录: [{ 内容: 'session-secret-must-not-leak' }] } } },
         群组: { group_1: {
             主题: '周末城市散步', 描述: '只聊公开兴趣并发现同城人物。',
             成员UID: ['npc_1', 'npc_2', 'npc_1', 'npc_missing'], 可发现角色UID: ['npc_2', 'npc_3', 'npc_candidate'],

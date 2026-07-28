@@ -114,6 +114,8 @@ const CHAT_SESSION_UID_PATTERN = /^chat_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const NPC_UID_PATTERN = /^npc_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]/u;
 const HTML_PATTERN = /<\s*\/?\s*[a-z][^>]*>/iu;
+const MAX_STORY_MEMORY_LENGTH = 1_600;
+const MAX_OTHER_STORY_MEMORIES = 24;
 
 function ownRecord(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -156,6 +158,29 @@ function projectFriendProfile(profile) {
     });
 }
 
+function projectStoryMemoryContext(state, currentNpcUid) {
+    const roles = ownRecord(state.角色池) ? state.角色池 : {};
+    const memories = ownRecord(state.正文记忆) ? state.正文记忆 : {};
+    const others = [];
+    for (const [uid, role] of Object.entries(roles)) {
+        if (uid === currentNpcUid || !NPC_UID_PATTERN.test(uid) || !ownRecord(role) || role.成人验证 !== true) continue;
+        const hidden = ownRecord(role.隐藏资料) ? role.隐藏资料 : null;
+        if (!Number.isInteger(hidden?.实际年龄) || hidden.实际年龄 < 18) continue;
+        const memory = cleanText(memories[uid], MAX_STORY_MEMORY_LENGTH);
+        if (!memory) continue;
+        others.push(Object.freeze({
+            objectLabel: `其他对象${others.length + 1}`,
+            nickname: cleanText(role.公开资料?.昵称, 80) || '未命名对象',
+            memory,
+        }));
+        if (others.length >= MAX_OTHER_STORY_MEMORIES) break;
+    }
+    return Object.freeze({
+        currentObjectMemory: cleanText(memories[currentNpcUid], MAX_STORY_MEMORY_LENGTH),
+        otherObjectMemories: Object.freeze(others),
+    });
+}
+
 function adultMatchedSession(state, sessionUid, npcUid) {
     if (!ownRecord(state) || typeof sessionUid !== 'string' || !CHAT_SESSION_UID_PATTERN.test(sessionUid)
         || typeof npcUid !== 'string' || !NPC_UID_PATTERN.test(npcUid)) {
@@ -166,6 +191,10 @@ function adultMatchedSession(state, sessionUid, npcUid) {
     const session = sessions?.[sessionUid];
     const npc = roles?.[npcUid];
     if (!ownRecord(session) || !ownRecord(npc) || session.对象UID !== npcUid) return { ok: false, code: 'private_chat_session_not_found' };
+    const storyMemories = ownRecord(state.正文记忆) ? state.正文记忆 : null;
+    if (!storyMemories || !Object.hasOwn(storyMemories, npcUid) || typeof storyMemories[npcUid] !== 'string') {
+        return { ok: false, code: 'private_chat_story_memory_schema_outdated' };
+    }
     const hidden = ownRecord(npc.隐藏资料) ? npc.隐藏资料 : null;
     const relationship = ownRecord(npc.与玩家关系) ? npc.与玩家关系 : null;
     if (npc.成人验证 !== true || !Number.isInteger(hidden?.实际年龄) || hidden.实际年龄 < 18) return { ok: false, code: 'private_chat_adult_verification_failed' };
@@ -215,6 +244,7 @@ export function buildPrivateChatContext({ state, sessionUid, npcUid, playerMessa
             心动值: Number.isInteger(relationship.心动值) ? relationship.心动值 : 0,
             欲望值: Number.isInteger(relationship.欲望值) ? relationship.欲望值 : 0,
         }),
+        storyMemory: projectStoryMemoryContext(state, npcUid),
         playerMessage: message,
     };
     const context = summaryEnabled
@@ -247,6 +277,7 @@ function makeMessages(context, promptPreset) {
         'replies 必须是 1-6 条自然、简短、可分别显示为聊天气泡的字符串；每条内部禁止换行，全部消息用单个空格连接后的总长度不得超过 600 字。优先拆成符合真实即时聊天节奏的多条短消息。',
         '把角色当成有自己生活的真人来回：TA 有正在忙的事、今天的心情、想到一半突然换的话题；可以主动分享此刻的小事（刚点的外卖、窗外的雨、循环的歌），也可以用公开资料里的兴趣自然抛出新话题引子（周末计划、最近看的剧、想去的店），而不是永远被动应答；语气、口头禅和标点习惯要贴合其性格标签与沟通风格标签。',
         'playerPublicProfile 会提供玩家已公开的城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签和沟通风格标签。字段为空字符串或空数组时，表示玩家未提供该项：不得猜测、补全或编造；仅在与本轮聊天自然相关时使用非空公开资料。',
+        'storyMemory.currentObjectMemory 是当前角色与玩家在线下正文中的亲历记忆；storyMemory.otherObjectMemories 是玩家与其他对象发生之事的第三人称分区，每项 objectLabel 与 nickname 只用于防止对象混淆。可以据此知道玩家和别人发生过什么，但绝不能声称当前角色当时在场、把其他对象的台词/同意/拒绝/身体经历当成自己的共同回忆，或混淆对象身份。空记忆表示尚无已确认的正文经历，不得补写。',
         '仅当本次内容确实值得以照片分享，且角色性格有分享欲、当前关系与边界允许时，才输出对应 replyIndex 的 imageDirectives。私照必须更严格判断亲密度、信任与自愿边界；不得机械地为每轮或每条回复生图。不需要时省略该字段。scene 只能是描述画面的英文标签，不得包含角色 UID、URL、JSONPatch、完整正负提示词、core_dna、outfit_dna 或凭据。',
         'relationship 仅用于既有互动节奏建议。bondAssessment 必须同时判断玩家本轮消息与角色实际回复：SFW 只允许 none/friendly/romantic_flirt；NSFW 允许 none/friendly/romantic_flirt/romantic_desire/sexual_desire，其中普通问候或日常友好交流应使用 none 或 friendly，只有实际出现浪漫或性欲望时才使用对应 desire 分类。none 必须使用 intensity=0、direction=none；其余分类使用 intensity=1-3，并仅在互动确实促进对应关系时使用 increase、确实伤害对应关系时使用 decrease。普通分歧、没有升温或话题平淡使用 none，不得机械扣分。模型不得给友情值、心动值、欲望值的绝对值或增量，也不得给 UID、状态、阈值、Patch、JSON Pointer 或写入路径。',
         '玩家与角色的公开资料就是本轮唯一已知档案：城市、距离范围、寻找意图、简介及四类标签均可作为自然聊天线索。空字符串或空标签数组只表示该项尚未提供；不得臆测、补全或假称这些缺失资料。',

@@ -27,7 +27,7 @@ import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
 
-const UI_VERSION = '1.0.7';
+const UI_VERSION = '1.0.8';
 
 function downloadImagePackJson(json) {
     if (typeof json !== 'string' || typeof globalThis.Blob !== 'function'

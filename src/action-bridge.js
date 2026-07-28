@@ -1,5 +1,5 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch } from './mvu/controlled-patch.js';
+import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply, generatePrivateChatSummary } from './chat/private-chat-service.js';
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
@@ -317,8 +317,16 @@ export function createActionBridge({
         pending.add(key);
         try {
             const currentMvu = resolveMvu(mvu);
-            const firstRead = readLatestState({ mvu: currentMvu });
+            let firstRead = readLatestState({ mvu: currentMvu });
             if (!firstRead.ok) return firstRead;
+            const backfill = buildStoryMemoryBackfillPatch(firstRead.state);
+            if (!backfill.ok) return rejectedFromBuild(backfill);
+            if (backfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: backfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                firstRead = readLatestState({ mvu: currentMvu });
+                if (!firstRead.ok) return firstRead;
+            }
             const generated = await generatePrivateChatReply({
                 state: firstRead.state, sessionUid, npcUid, playerMessage, settingsStore, llmClient, signal,
             });

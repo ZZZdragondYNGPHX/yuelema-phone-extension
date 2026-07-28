@@ -23,13 +23,24 @@ function state() {
                 偏好与边界: '角色内部字段不得发送', 拒绝阈值: 20, 已读不回阈值: 55, 取消匹配阈值: 80, 拉黑阈值: 90,
                 与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 30, 信任: 40, 戒备: 20, 面基意愿: 10 },
             },
+            npc_other: {
+                成人验证: true,
+                公开资料: { 昵称: '周遥', 简介: '喜欢看展。' },
+                仅好友资料: { 关系状态: '单身', 边界与偏好: '尊重彼此节奏。' },
+                隐藏资料: { 实际年龄: 30, 私人备注: '不得发送的另一条备注' },
+                与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 65, 好感: 20, 信任: 20, 戒备: 10, 面基意愿: 10 },
+            },
+        },
+        正文记忆: {
+            npc_adult: '玩家与小满在线下见过一次，一起喝了咖啡。',
+            npc_other: '玩家与周遥一起看过展览，分别时约定分享书单。',
         },
         推荐: { 当前队列: [], 临时候选池: {}, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
         会话: {
             chat_1: {
                 对象UID: 'npc_adult', 状态: '已匹配',
                 最近消息: [{ 消息UID: 'old', 发送者: '角色', 内容: '嗨', 时间: '', 层数: 1 }],
-                长期摘要: '', 对话层数: 1,
+                对话层数: 1,
                 总结: { 已总结消息UID: '', 总结序号: 0, 记录: [], 状态: '空闲', 失败原因: '', 目标总结UID: '', 尝试次数: 0 },
                 已确认边界: '', 已确认承诺: '',
             },
@@ -42,7 +53,6 @@ function response() {
     return {
         replies: ['晚上好。', '先聊聊彼此的周末？'],
         relationship: { 好感: 2, 信任: 1, 戒备: -2, 面基意愿: 0 },
-        sessionSummary: '双方从周末安排开始轻松聊天。',
     };
 }
 
@@ -80,6 +90,20 @@ test('private chat context includes public + matched friends-only data, never hi
     assert.match(serialized, /开放关系/);
     assert.doesNotMatch(serialized, /绝不泄露|不得发送|角色内部字段|实际年龄|私人备注/);
     assert.equal(built.context.recentMessages.length, 1);
+    assert.equal(built.context.storyMemory.currentObjectMemory, '玩家与小满在线下见过一次，一起喝了咖啡。');
+    assert.deepEqual(built.context.storyMemory.otherObjectMemories, [{
+        objectLabel: '其他对象1',
+        nickname: '周遥',
+        memory: '玩家与周遥一起看过展览，分别时约定分享书单。',
+    }]);
+    assert.doesNotMatch(JSON.stringify(built.context.storyMemory), /npc_adult|npc_other/u);
+});
+
+test('private chat rejects a role without its dedicated story-memory slot', () => {
+    const current = state();
+    delete current.正文记忆.npc_adult;
+    const built = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '晚上好' });
+    assert.deepEqual(built, { ok: false, code: 'private_chat_story_memory_schema_outdated' });
 });
 
 test('private chat context carries all player public profile fields and normalizes missing values', () => {

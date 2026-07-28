@@ -38,14 +38,14 @@ function messageSearchReadResult() {
                         { 消息UID: 'message_lin_1', 发送者: '角色', 内容: '周末去看独立电影吗？', 时间: '20:30' },
                         { 消息UID: 'message_lin_2', 发送者: '玩家', 内容: '我想把那间新开的书店分享给你。', 时间: '20:32' },
                     ],
-                    长期摘要: 'summary-must-not-render',
+                    总结: { 记录: [{ 内容: 'summary-must-not-render' }] },
                 },
                 chat_su: {
                     对象UID: 'npc_su', 状态: '已匹配',
                     最近消息: [
                         { 消息UID: 'message_su_1', 发送者: '角色', 内容: '下班后一起沿江散步吧。', 时间: '21:00' },
                     ],
-                    长期摘要: 'another-summary-must-not-render',
+                    总结: { 记录: [{ 内容: 'another-summary-must-not-render' }] },
                 },
             },
         },

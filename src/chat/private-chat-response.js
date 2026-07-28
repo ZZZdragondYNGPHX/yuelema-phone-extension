@@ -10,7 +10,6 @@ import { normalizeImageDirective } from '../images/image-directive.js';
 export const MAX_PRIVATE_CHAT_REPLY_COUNT = 6;
 export const MAX_PRIVATE_CHAT_REPLY_LENGTH = 600;
 export const MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH = 600;
-export const MAX_PRIVATE_CHAT_SESSION_SUMMARY_LENGTH = 500;
 
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SENSITIVE_KEY_PATTERN = /(?:api[\s_-]*key|authorization|token|secret|password|credential|private[\s_-]*key|密钥|令牌|密码|授权|凭据)/iu;
@@ -231,7 +230,7 @@ function normalizeBondAssessment(value, contentMode) {
  */
 export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
     try {
-        assertExactRecord(raw, ['replies', 'relationship'], ['sessionSummary', 'bondAssessment', 'imageDirectives']);
+        assertExactRecord(raw, ['replies', 'relationship'], ['bondAssessment', 'imageDirectives']);
         const replies = normalizeReplies(ownEnumerableData(raw, 'replies'));
 
         const normalized = {
@@ -242,14 +241,6 @@ export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
                 : { kind: 'none', intensity: 0, direction: 'none' }
         };
         if (Object.hasOwn(raw, 'imageDirectives')) normalized.imageDirectives = normalizeImageDirectives(ownEnumerableData(raw, 'imageDirectives'), replies.length);
-        if (Object.hasOwn(raw, 'sessionSummary')) {
-            normalized.sessionSummary = normalizeShortText(
-                ownEnumerableData(raw, 'sessionSummary'),
-                MAX_PRIVATE_CHAT_SESSION_SUMMARY_LENGTH,
-                'private_chat_response_reply_invalid',
-                'sessionSummary',
-            );
-        }
         return normalized;
     } catch (error) {
         if (isCodecError(error)) throw error;

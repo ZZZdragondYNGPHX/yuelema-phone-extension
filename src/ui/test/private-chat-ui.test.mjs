@@ -45,7 +45,7 @@ function readResult() {
                         { 消息UID: 'm1', 发送者: '角色', 内容: '晚上好，今天过得怎么样？', 时间: '20:30' },
                         { 消息UID: 'm2', 发送者: '玩家', 内容: '刚看完一部电影，想和你分享。', 时间: '20:32' },
                     ],
-                    长期摘要: 'session-summary-must-not-render',
+                    总结: { 记录: [{ 内容: 'session-summary-must-not-render' }] },
                 },
             },
         },

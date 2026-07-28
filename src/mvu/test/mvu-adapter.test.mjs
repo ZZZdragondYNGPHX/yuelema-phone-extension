@@ -9,6 +9,7 @@ import {
     buildControlledPatch,
     buildRecommendationInitialCandidatePatch,
     buildServiceOrderHandoffPatch,
+    buildStoryMemoryBackfillPatch,
     buildUpdateVariable,
     validateControlledPatchAgainstState,
     validateControlledPatchWhitelist,
@@ -36,6 +37,7 @@ function stateFixture() {
         系统: { UID计数器: { 角色: 1, 会话: 0, 面基: 0 } },
         玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
         角色池: {},
+        正文记忆: {},
         会话: {},
         推荐: {
             当前队列: ['npc_alpha'],
@@ -82,6 +84,7 @@ test('favorite promotes a trusted candidate by move without serializing its hidd
     assert.equal(result.ok, true);
     assert.deepEqual(result.value, [
         { op: 'move', from: '/推荐/临时候选池/npc_alpha', path: '/角色池/npc_alpha' },
+        { op: 'add', path: '/正文记忆/npc_alpha', value: '' },
         { op: 'add', path: '/推荐/收藏角色UID/-', value: 'npc_alpha' },
         { op: 'remove', path: '/推荐/当前队列/0' },
     ]);
@@ -89,6 +92,26 @@ test('favorite promotes a trusted candidate by move without serializing its hidd
     assert.equal(wrapped.ok, true);
     assert.match(wrapped.value, /^<UpdateVariable><JSONPatch>\[/);
     assert.doesNotMatch(wrapped.value, /不得进入 UI/);
+});
+
+test('story-memory backfill creates every missing role slot and removes only orphan slots', () => {
+    const current = stateFixture();
+    current.角色池.npc_alpha = npc();
+    current.角色池.npc_beta = npc();
+    current.正文记忆 = { npc_beta: '保留已有的独立经历。', npc_orphan: '孤立旧记录' };
+    const built = buildStoryMemoryBackfillPatch(current);
+    assert.deepEqual(built, { ok: true, value: [
+        { op: 'add', path: '/正文记忆/npc_alpha', value: '' },
+        { op: 'remove', path: '/正文记忆/npc_orphan' },
+    ] });
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+    const forged = structuredClone(built.value);
+    forged[0].value = '伪造经历';
+    assert.equal(validateControlledPatchAgainstState(current, forged).ok, false);
+    assert.equal(buildStoryMemoryBackfillPatch({
+        ...current,
+        正文记忆: { npc_alpha: 42, npc_beta: '' },
+    }).code, 'story_memory_backfill_value_invalid');
 });
 
 test('like only records homepage feedback and never creates a role or matched session', () => {
@@ -169,7 +192,7 @@ test('state consistency rejects stale/forged list writes before parsing', () => 
 
 test('state validator accepts only exact generated UI transitions', () => {
     const original = buildControlledPatch(stateFixture(), { kind: 'favorite', npcUid: 'npc_alpha' }).value;
-    const reordered = [original[1], original[0], original[2]];
+    const reordered = [original[1], original[0], ...original.slice(2)];
     const result = validateControlledPatchAgainstState(stateFixture(), reordered);
     assert.equal(result.ok, false);
     assert.equal(result.code, 'patch_not_exact_ui_transition');
@@ -383,8 +406,9 @@ test('service-order handoff persists when the schema supplies its empty legal co
         parseMessage: async (_raw, data) => {
             calls.push('parse');
             const next = structuredClone(data);
-            const [role, order, roleCounter, orderCounter] = built.value.patch;
+            const [role, memory, order, roleCounter, orderCounter] = built.value.patch;
             next.stat_data.角色池.npc_service_2 = role.value;
+            next.stat_data.正文记忆.npc_service_2 = memory.value;
             next.stat_data.服务订单.service_1 = { ...order.value, 合法结束条件: { 已满足: false, 摘要: '', 记录时间: '' } };
             next.stat_data.系统.UID计数器.角色 = roleCounter.value;
             next.stat_data.系统.UID计数器.服务订单 = orderCounter.value;
@@ -421,8 +445,9 @@ test('service-order schema omissions report the precise safe postcondition diagn
         parseMessage: async (_raw, data) => {
             calls.push('parse');
             const next = structuredClone(data);
-            const [role, order, roleCounter, orderCounter] = built.value.patch;
+            const [role, memory, order, roleCounter, orderCounter] = built.value.patch;
             next.stat_data.角色池.npc_service_2 = role.value;
+            next.stat_data.正文记忆.npc_service_2 = memory.value;
             const { 合法结束条件: _omitted, ...legacyOrder } = order.value;
             next.stat_data.服务订单.service_1 = legacyOrder;
             next.stat_data.系统.UID计数器.角色 = roleCounter.value;
@@ -442,14 +467,14 @@ test('service-order schema omissions report the precise safe postcondition diagn
     assert.equal(result.ok, false);
     assert.equal(result.code, 'mvu_parse_postcondition_failed');
     assert.deepEqual(result.detail, {
-        operationIndex: 1, operation: 'add', path: '/服务订单/service_1/合法结束条件',
+        operationIndex: 2, operation: 'add', path: '/服务订单/service_1/合法结束条件',
         kind: 'missing_key', expectedType: 'object', actualType: 'missing',
     });
     assert.deepEqual(diagnosticCalls, [[
         '[约了吗][MVU 受控写入被拒绝]',
         {
             code: 'mvu_parse_postcondition_failed', phase: 'provider_postcondition',
-            reason: 'MVU provider 返回结果缺少 Patch 预期字段', operationIndex: 1, operation: 'add',
+            reason: 'MVU provider 返回结果缺少 Patch 预期字段', operationIndex: 2, operation: 'add',
             path: '/服务订单/service_1/合法结束条件', kind: 'missing_key', expectedType: 'object', actualType: 'missing',
         },
     ]]);
@@ -584,7 +609,7 @@ test('applyControlledPatch rejects a provider that drops a remove operation', as
     oldData.stat_data.角色池.npc_alpha = npc({ status: '已匹配' });
     oldData.stat_data.推荐.临时候选池 = {};
     oldData.stat_data.会话.chat_1 = {
-        对象UID: 'npc_alpha', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '',
+        对象UID: 'npc_alpha', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '',
     };
     const patch = buildClearPrivateChatPatch(oldData.stat_data, { sessionUid: 'chat_1' }).value;
     const mvu = {
