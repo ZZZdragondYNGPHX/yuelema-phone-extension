@@ -115,7 +115,6 @@ const NPC_UID_PATTERN = /^npc_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]/u;
 const HTML_PATTERN = /<\s*\/?\s*[a-z][^>]*>/iu;
 const MAX_STORY_MEMORY_LENGTH = 1_600;
-const MAX_OTHER_STORY_MEMORIES = 24;
 
 function ownRecord(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -173,7 +172,6 @@ function projectStoryMemoryContext(state, currentNpcUid) {
             nickname: cleanText(role.公开资料?.昵称, 80) || '未命名对象',
             memory,
         }));
-        if (others.length >= MAX_OTHER_STORY_MEMORIES) break;
     }
     return Object.freeze({
         currentObjectMemory: cleanText(memories[currentNpcUid], MAX_STORY_MEMORY_LENGTH),
