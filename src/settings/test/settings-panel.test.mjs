@@ -111,8 +111,9 @@ test('连接预设自动生成 ID、按名称选择载入，界面不要求手�
     assert.equal(saved.length, 1);
     assert.match(saved[0].id, /^conn_/u);
     assert.equal(saved[0].name, '快速模型');
-    assert.equal(saved[0].transportMode, 'stream');
-    assert.equal(saved[0].maxTokens, 2048);
+    assert.equal(saved[0].transportMode, 'json');
+    assert.equal(saved[0].temperature, 1);
+    assert.equal(saved[0].maxTokens, 10000);
     assert.equal(store.exportJson().includes('API Key'), false);
 
     const loaded = buildHarness(store).panel;
@@ -124,7 +125,7 @@ test('连接预设自动生成 ID、按名称选择载入，界面不要求手�
     assert.equal(byAria(loaded, '连接预设名称').value, '快速模型');
     assert.equal(byAria(loaded, 'API URL').value, 'https://api.example/v1');
     assert.equal(byAria(loaded, '模型名称').value, 'gpt-fast');
-    assert.equal(byAria(loaded, '传输模式').value, 'stream');
+    assert.equal(byAria(loaded, '传输模式').value, 'json');
 });
 
 test('填写 API Key 后保存连接预设会保存到独立浏览器缓存，但不会写入设置导出', async () => {
@@ -178,7 +179,7 @@ test('Model 为空时也能解锁并从 /models 拉取模型列表', async () =>
     await click(byName(panel, 'connection-fetch-models'));
     assert.ok(receivedPreset);
     assert.equal(receivedPreset.model, '');
-    assert.equal(receivedPreset.transportMode, 'stream');
+    assert.equal(receivedPreset.transportMode, 'json');
     const choices = byAria(panel, '已拉取模型');
     assert.equal(choices.hidden, false);
     assert.equal(choices.querySelectorAll('option').length, 3);

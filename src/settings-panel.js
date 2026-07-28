@@ -9,7 +9,12 @@ import {
     isPersistentKeyStorageAvailable,
     unlockSessionKey,
 } from './llm/session-key-store.js';
-import { toPublicLlmError } from './llm/openai-compatible-client.js';
+import {
+    DEFAULT_CONNECTION_MAX_TOKENS,
+    DEFAULT_CONNECTION_TEMPERATURE,
+    DEFAULT_CONNECTION_TRANSPORT_MODE,
+    toPublicLlmError,
+} from './llm/openai-compatible-client.js';
 import { toPublicImageGenerationError } from './llm/image-generation-client.js';
 
 const FUNCTION_LABELS = Object.freeze({
@@ -35,7 +40,6 @@ const IMAGE_PROMPT_BUNDLE_VERSION = 1;
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
 const MAX_PROMPT_ENTRIES_PER_PRESET = 48;
 const MAX_PROMPT_BUNDLE_BYTES = 512 * 1024;
-const DEFAULT_CONNECTION_MAX_TOKENS = 2_048;
 const PERSONALIZATION_NOTICE = Object.freeze([
     '个性化推荐仅使用当前设备保存的关键词权重调整推荐，不会写入 MVU、聊天或角色资料。',
     '可长按推荐选择「不感兴趣」，或在本页关闭个性化推荐。',
@@ -358,9 +362,9 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             { label: '普通响应（JSON）', value: 'json' },
             { label: '流式传输（SSE）', value: 'stream' },
             { label: '假流式显示（完整返回后渐显）', value: 'pseudo_stream' },
-        ], 'stream', '传输模式', 'connection-transport-mode');
-        transportMode.value = 'stream';
-        const temperature = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-temperature', value: '0.7', min: 0, max: 2, ariaLabel: '温度' });
+        ], DEFAULT_CONNECTION_TRANSPORT_MODE, '传输模式', 'connection-transport-mode');
+        transportMode.value = DEFAULT_CONNECTION_TRANSPORT_MODE;
+        const temperature = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-temperature', value: String(DEFAULT_CONNECTION_TEMPERATURE), min: 0, max: 2, ariaLabel: '温度' });
         const maxTokens = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-max-tokens', value: String(DEFAULT_CONNECTION_MAX_TOKENS), min: 1, max: 16384, ariaLabel: '最大 Token' });
         const timeoutMs = element('input', { className: 'yl-settings-control', type: 'number', name: 'connection-timeout', value: '60000', min: 1000, max: 120000, ariaLabel: '超时毫秒' });
         const apiKey = element('input', { className: 'yl-settings-control', type: 'password', name: 'connection-api-key', placeholder: '保存到当前浏览器缓存', autocomplete: 'off', maxLength: 2048, ariaLabel: 'API Key，保存到此浏览器' });
@@ -389,8 +393,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             name.value = '';
             url.value = '';
             model.value = '';
-            transportMode.value = 'stream';
-            temperature.value = '0.7';
+            transportMode.value = DEFAULT_CONNECTION_TRANSPORT_MODE;
+            temperature.value = String(DEFAULT_CONNECTION_TEMPERATURE);
             maxTokens.value = String(DEFAULT_CONNECTION_MAX_TOKENS);
             timeoutMs.value = '60000';
             apiKey.value = '';
@@ -443,7 +447,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         const formPreset = () => ({
             id: activeId ?? draftId, name: name.value, url: url.value, model: model.value,
             transportMode: transportMode.value,
-            temperature: numberValue(temperature, 0.7), maxTokens: numberValue(maxTokens, DEFAULT_CONNECTION_MAX_TOKENS), timeoutMs: numberValue(timeoutMs, 60_000),
+            temperature: numberValue(temperature, DEFAULT_CONNECTION_TEMPERATURE), maxTokens: numberValue(maxTokens, DEFAULT_CONNECTION_MAX_TOKENS), timeoutMs: numberValue(timeoutMs, 60_000),
         });
         const controls = element('div', { className: 'yl-settings-actions' });
         controls.appendChild(actionButton('新建连接预设', async () => {

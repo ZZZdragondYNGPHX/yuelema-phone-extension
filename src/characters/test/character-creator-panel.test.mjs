@@ -148,7 +148,7 @@ test('头像来源只提供占位与本地压缩两种入口，不再存在 URL 
     assert.deepEqual(kinds, ['placeholder', 'embedded'], '头像来源只允许 placeholder 与 embedded');
 });
 
-test('AI 补全成功只载入草稿：头像重置为占位且不会登记或写 MVU', async () => {
+test('AI 补全成功只增量填空和补标签：已有资料与头像保留且不会登记或写 MVU', async () => {
     const { panel, feedback, writes, completionRequests } = createHarness();
     fillExistingDraft(panel);
 
@@ -166,9 +166,16 @@ test('AI 补全成功只载入草稿：头像重置为占位且不会登记或�
         'hidden-note-must-not-leak', 'private-boundary-must-not-leak', 'data:image',
     ]) assert.equal(serializedRequest.includes(forbidden), false, `补全请求不得包含：${forbidden}`);
 
-    assert.equal(control(panel, 'public-昵称').value, 'AI 草稿角色');
-    assert.equal(control(panel, 'avatar-kind').value, 'placeholder');
-    assert.equal(feedback.at(-1), 'AI 补全草稿已载入编辑器；请检查私有层、边界和阈值后再登记。');
+    assert.equal(control(panel, 'public-昵称').value, '原始公开昵称');
+    assert.equal(control(panel, 'public-城市').value, '北京');
+    assert.equal(control(panel, 'tag-兴趣标签').value, '原始兴趣, 咖啡, 电影');
+    assert.equal(control(panel, 'tag-生活方式标签').value, '夜猫子');
+    assert.equal(control(panel, 'friend-关系状态').value, 'friend-secret-must-not-leak');
+    assert.equal(control(panel, 'hidden-age').value, '30');
+    assert.equal(control(panel, 'hidden-note').value, 'hidden-note-must-not-leak');
+    assert.equal(control(panel, 'boundary').value, 'private-boundary-must-not-leak');
+    assert.equal(control(panel, 'avatar-kind').value, 'embedded');
+    assert.equal(feedback.at(-1), 'AI 已增量补全草稿；原有内容与头像已保留，请检查后再登记。');
     assertNoWrite(writes);
 });
 

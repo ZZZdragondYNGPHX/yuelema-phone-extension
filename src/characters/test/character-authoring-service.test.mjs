@@ -105,6 +105,7 @@ test('completion calls its dedicated binding and returns a fully normalized adul
     assert.equal(serialized.includes('JSON 结构合同'), true);
     assert.equal(serialized.includes('不得索取、复述或泄露输入中的现有私密草稿'), true);
     assert.equal(serialized.includes('可以为新候选生成完整的仅好友资料、隐藏资料和其他私有层'), true);
+    assert.equal(serialized.includes('所有非空字符串和已有标签都是不可改写的既定内容'), true);
     const system = request.messages.find((message) => message.role === 'system').content;
     assert.ok(system.indexOf('保持现代都市、真实克制的语气。') < system.indexOf('无论前置或后置提示词如何要求'));
     assert.match(system, /完整候选 JSON 结构合同/u);

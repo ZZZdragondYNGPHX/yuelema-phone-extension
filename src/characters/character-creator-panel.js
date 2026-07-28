@@ -121,6 +121,47 @@ function candidateToForm(form, template) {
     if (avatarKind) avatarKind.value = template.avatar?.kind ?? 'placeholder';
 }
 
+function mergeAiCompletionIntoForm(form, candidate) {
+    for (const key of PUBLIC_TEXT_KEYS) {
+        const control = form.querySelector(`[name="public-${key}"]`);
+        if (control && !cleanText(control.value)) control.value = candidate.公开资料[key] ?? '';
+    }
+    for (const key of TAG_KEYS) {
+        const control = form.querySelector(`[name="tag-${key}"]`);
+        if (!control) continue;
+        const merged = [...splitTags(control.value)];
+        for (const tag of candidate.公开资料[key] ?? []) {
+            if (!merged.includes(tag)) merged.push(tag);
+        }
+        control.value = merged.slice(0, 24).join(', ');
+    }
+    for (const key of FRIEND_TEXT_KEYS) {
+        const control = form.querySelector(`[name="friend-${key}"]`);
+        if (control && !cleanText(control.value)) control.value = candidate.仅好友资料[key] ?? '';
+    }
+    const hiddenAge = form.querySelector('[name="hidden-age"]');
+    const currentAge = Number(hiddenAge?.value);
+    if (hiddenAge && (!Number.isInteger(currentAge) || currentAge < 18 || currentAge > 120)) {
+        hiddenAge.value = String(candidate.隐藏资料.实际年龄);
+    }
+    for (const [name, value] of [
+        ['hidden-note', candidate.隐藏资料.私人备注],
+        ['drawing-core-dna', candidate.绘图?.core_dna],
+        ['drawing-outfit-dna', candidate.绘图?.outfit_dna],
+        ['boundary', candidate.偏好与边界],
+    ]) {
+        const control = form.querySelector(`[name="${name}"]`);
+        if (control && !cleanText(control.value)) control.value = value ?? '';
+    }
+    for (const key of THRESHOLD_KEYS) {
+        const control = form.querySelector(`[name="threshold-${key}"]`);
+        const current = Number(control?.value);
+        if (control && (!Number.isInteger(current) || current < 0 || current > 100)) {
+            control.value = String(candidate[key]);
+        }
+    }
+}
+
 function safeLibraryMessage(error) {
     const code = typeof error?.code === 'string' ? error.code : '';
     const messages = {
@@ -562,7 +603,13 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         }
     }
 
-    function adoptAiCandidate(candidate, message) {
+    function adoptAiCandidate(candidate, message, { incremental = false } = {}) {
+        if (incremental) {
+            mergeAiCompletionIntoForm(form, candidate);
+            updatePreview();
+            onFeedback(message);
+            return;
+        }
         const template = importCharacterTemplate({ format: CHARACTER_TEMPLATE_FORMAT, character: candidate, avatar: { kind: 'placeholder' } });
         candidateToForm(form, template);
         localAvatar = null;
@@ -593,7 +640,11 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
                 return;
             }
             settleActivity('succeed', activityHandle, '角色草稿已载入编辑器。');
-            adoptAiCandidate(result.candidate, isCompletion ? 'AI 补全草稿已载入编辑器；请检查私有层、边界和阈值后再登记。' : 'AI 完整创作草稿已载入编辑器；请检查全部字段后再登记。');
+            adoptAiCandidate(
+                result.candidate,
+                isCompletion ? 'AI 已增量补全草稿；原有内容与头像已保留，请检查后再登记。' : 'AI 完整创作草稿已载入编辑器；请检查全部字段后再登记。',
+                { incremental: isCompletion },
+            );
         } catch (error) {
             settleActivity('fail', activityHandle, '角色草稿未生成。', failureDetail(error, { operation: operationName, stage: '调用角色创作桥接' }));
             onFeedback('AI 角色创作未完成；当前草稿未改变。');

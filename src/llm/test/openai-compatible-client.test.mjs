@@ -81,6 +81,12 @@ assert.deepEqual(preset, {
     temperature: 0.6, maxTokens: 256, timeoutMs: 100, transportMode: 'json',
 });
 assert.equal(Object.isFrozen(preset), true);
+assert.deepEqual(createConnectionPreset({
+    id: 'defaults', name: '默认参数', url: 'https://api.example.invalid/v1', model: 'default-model',
+}), {
+    id: 'defaults', name: '默认参数', url: 'https://api.example.invalid/v1', model: 'default-model',
+    temperature: 1, maxTokens: 10_000, timeoutMs: 30_000, transportMode: 'json',
+});
 assert.equal(normalizeApiUrl('http://localhost:8000/v1'), 'http://localhost:8000/v1');
 assert.throws(() => normalizeApiUrl('http://example.com/v1'), (error) => error.code === 'INVALID_URL');
 assert.throws(() => createConnectionPreset({ ...preset, apiKey: 'not-saved' }), (error) => error.code === 'PRESET_SECRET_FORBIDDEN');

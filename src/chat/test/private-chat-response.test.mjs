@@ -30,7 +30,7 @@ test('accepts replies and returns an independent canonical clone', () => {
     assert.deepEqual(normalized, {
         replies: ['今晚方便聊聊吗？', '我刚好有空。'],
         relationship: raw.relationship,
-        bondAssessment: { kind: 'none', intensity: 0 },
+        bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
         sessionSummary: raw.sessionSummary,
     });
     assert.notStrictEqual(normalized, raw);
@@ -48,7 +48,7 @@ test('accepts replies and returns an independent canonical clone', () => {
 test('accepts only the assessment categories allowed by the current content mode', () => {
     assert.deepEqual(
         normalizePrivateChatResponse(response({ bondAssessment: { kind: 'romantic_flirt', intensity: 2 } }), { contentMode: 'SFW' }).bondAssessment,
-        { kind: 'romantic_flirt', intensity: 2 },
+        { kind: 'romantic_flirt', intensity: 2, direction: 'increase' },
     );
     expectCode(
         () => normalizePrivateChatResponse(response({ bondAssessment: { kind: 'sexual_desire', intensity: 2 } }), { contentMode: 'SFW' }),
@@ -56,15 +56,23 @@ test('accepts only the assessment categories allowed by the current content mode
     );
     assert.deepEqual(
         normalizePrivateChatResponse(response({ bondAssessment: { kind: 'sexual_desire', intensity: 3 } }), { contentMode: 'NSFW' }).bondAssessment,
-        { kind: 'sexual_desire', intensity: 3 },
+        { kind: 'sexual_desire', intensity: 3, direction: 'increase' },
     );
     assert.deepEqual(
         normalizePrivateChatResponse(response({ bondAssessment: { kind: 'friendly', intensity: 1 } }), { contentMode: 'NSFW' }).bondAssessment,
-        { kind: 'friendly', intensity: 1 },
+        { kind: 'friendly', intensity: 1, direction: 'increase' },
     );
     assert.deepEqual(
         normalizePrivateChatResponse(response({ bondAssessment: { kind: 'romantic_flirt', intensity: 2 } }), { contentMode: 'NSFW' }).bondAssessment,
-        { kind: 'romantic_flirt', intensity: 2 },
+        { kind: 'romantic_flirt', intensity: 2, direction: 'increase' },
+    );
+    assert.deepEqual(
+        normalizePrivateChatResponse(response({ bondAssessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' } }), { contentMode: 'NSFW' }).bondAssessment,
+        { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
+    );
+    expectCode(
+        () => normalizePrivateChatResponse(response({ bondAssessment: { kind: 'none', intensity: 0, direction: 'decrease' } }), { contentMode: 'SFW' }),
+        'private_chat_response_relationship_invalid',
     );
 });
 

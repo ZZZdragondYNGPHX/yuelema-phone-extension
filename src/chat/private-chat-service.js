@@ -243,12 +243,12 @@ function makeMessages(context, promptPreset) {
         context.contentMode === 'NSFW'
             ? '当前为 NSFW：允许明确成年角色在自愿、边界清楚的前提下直白调情、讨论欲望并进行露骨线上文爱；这仍不能伪造成现实线下身体行为已经发生，也不能替代面基和现实行动的明确同意。已匹配和成人验证不是无限授权，但当玩家的成人话题尊重已知边界，或先明确征询并获得持续同意时，直白或露骨本身不是冒犯：应自然继续线上成人聊天，不得仅因内容成人化降低好感或信任、提高戒备，或推动已读不回/拉黑。只有明确的拒绝或撤回同意、已知边界冲突、胁迫、非自愿、隐私侵犯等具体安全问题才能给出负向关系变化；同意或边界不清时应先用线上文字澄清，关系变化保持为零。'
             : '当前为 SFW：本模式保持日常社交尺度，以自然亲近、甜蜜调情的线上聊天为主。',
-        '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"bondAssessment":{"kind":"模式允许的分类","intensity":0..3整数},"imageDirectives":[{"replyIndex":0,"directive":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。imageDirectives 可省略。',
+        '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"bondAssessment":{"kind":"模式允许的分类","intensity":0..3整数,"direction":"none|increase|decrease"},"imageDirectives":[{"replyIndex":0,"directive":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。imageDirectives 可省略。',
         'replies 必须是 1-6 条自然、简短、可分别显示为聊天气泡的字符串；每条内部禁止换行，全部消息用单个空格连接后的总长度不得超过 600 字。优先拆成符合真实即时聊天节奏的多条短消息。',
         '把角色当成有自己生活的真人来回：TA 有正在忙的事、今天的心情、想到一半突然换的话题；可以主动分享此刻的小事（刚点的外卖、窗外的雨、循环的歌），也可以用公开资料里的兴趣自然抛出新话题引子（周末计划、最近看的剧、想去的店），而不是永远被动应答；语气、口头禅和标点习惯要贴合其性格标签与沟通风格标签。',
         'playerPublicProfile 会提供玩家已公开的城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签和沟通风格标签。字段为空字符串或空数组时，表示玩家未提供该项：不得猜测、补全或编造；仅在与本轮聊天自然相关时使用非空公开资料。',
         '仅当本次内容确实值得以照片分享，且角色性格有分享欲、当前关系与边界允许时，才输出对应 replyIndex 的 imageDirectives。私照必须更严格判断亲密度、信任与自愿边界；不得机械地为每轮或每条回复生图。不需要时省略该字段。scene 只能是描述画面的英文标签，不得包含角色 UID、URL、JSONPatch、完整正负提示词、core_dna、outfit_dna 或凭据。',
-        'relationship 仅用于既有互动节奏建议。bondAssessment 必须同时判断玩家本轮消息与角色实际回复：SFW 只允许 none/friendly/romantic_flirt；NSFW 允许 none/friendly/romantic_flirt/romantic_desire/sexual_desire，其中普通问候或日常友好交流应使用 none 或 friendly，只有实际出现浪漫或性欲望时才使用对应 desire 分类。none 的 intensity 必须为 0，其余为 1-3。模型不得给友情值、心动值、欲望值的绝对值或增量，也不得给 UID、状态、阈值、Patch、JSON Pointer 或写入路径。',
+        'relationship 仅用于既有互动节奏建议。bondAssessment 必须同时判断玩家本轮消息与角色实际回复：SFW 只允许 none/friendly/romantic_flirt；NSFW 允许 none/friendly/romantic_flirt/romantic_desire/sexual_desire，其中普通问候或日常友好交流应使用 none 或 friendly，只有实际出现浪漫或性欲望时才使用对应 desire 分类。none 必须使用 intensity=0、direction=none；其余分类使用 intensity=1-3，并仅在互动确实促进对应关系时使用 increase、确实伤害对应关系时使用 decrease。普通分歧、没有升温或话题平淡使用 none，不得机械扣分。模型不得给友情值、心动值、欲望值的绝对值或增量，也不得给 UID、状态、阈值、Patch、JSON Pointer 或写入路径。',
         '玩家与角色的公开资料就是本轮唯一已知档案：城市、距离范围、寻找意图、简介及四类标签均可作为自然聊天线索。空字符串或空标签数组只表示该项尚未提供；不得臆测、补全或假称这些缺失资料。',
         '不得输出、猜测或泄露任何隐藏资料；不要声称已发生线下见面或性行为。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',

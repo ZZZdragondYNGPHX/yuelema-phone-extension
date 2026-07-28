@@ -9,6 +9,9 @@ const DEFAULT_PSEUDO_STREAM_CHUNK_SIZE = 24;
 const MAX_PSEUDO_STREAM_CHUNK_SIZE = 256;
 export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 export const TRANSPORT_MODES = Object.freeze(['json', 'stream', 'pseudo_stream']);
+export const DEFAULT_CONNECTION_TEMPERATURE = 1;
+export const DEFAULT_CONNECTION_MAX_TOKENS = 10_000;
+export const DEFAULT_CONNECTION_TRANSPORT_MODE = 'json';
 const TRANSPORT_MODE_SET = new Set(TRANSPORT_MODES);
 
 /**
@@ -114,7 +117,7 @@ function cleanNumber(value, label, min, max, fallback) {
 }
 
 function normalizeTransportMode(value) {
-    const mode = value ?? 'json';
+    const mode = value ?? DEFAULT_CONNECTION_TRANSPORT_MODE;
     if (typeof mode !== 'string' || !TRANSPORT_MODE_SET.has(mode)) {
         fail('INVALID_PRESET', 'transportMode 仅允许 json、stream 或 pseudo_stream。');
     }
@@ -181,8 +184,8 @@ function normalizeConnectionInput(input, { allowEmptyModel }) {
         name: cleanText(input.name, '预设名称', 1, 80),
         url: normalizeApiUrl(rawUrl),
         model,
-        temperature: cleanNumber(input.temperature, 'temperature', 0, 2, 0.8),
-        maxTokens: cleanNumber(input.maxTokens, 'maxTokens', 1, 16_384, 512),
+        temperature: cleanNumber(input.temperature, 'temperature', 0, 2, DEFAULT_CONNECTION_TEMPERATURE),
+        maxTokens: cleanNumber(input.maxTokens, 'maxTokens', 1, 16_384, DEFAULT_CONNECTION_MAX_TOKENS),
         timeoutMs: cleanNumber(input.timeoutMs, 'timeoutMs', 10, MAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
         transportMode: normalizeTransportMode(input.transportMode),
     });
