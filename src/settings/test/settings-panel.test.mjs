@@ -553,8 +553,10 @@ test('preference 子视图只查看并保存当前 contentMode 的独立关键�
 test('生图设置只保存非机密配置，API Key 清空后留在独立浏览器缓存', async () => {
     const keyStorage = createMemoryStorage();
     configurePersistentKeyStorage(keyStorage);
-    const { panel, store, feedback } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { view: 'image_generation' });
+    const { panel, store, feedback, navigations } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { view: 'image_generation' });
     assert.match(panel.textContent, /前置 → core_dna → outfit_dna → AI 场景 → 后置/u);
+    await click(button(panel, '查看图片缓存'));
+    assert.deepEqual(navigations, ['settings_image_cache']);
 
     byAria(panel, '启用生图接口').checked = true;
     byName(panel, 'image-generation-preset-id').value = 'image_preset';

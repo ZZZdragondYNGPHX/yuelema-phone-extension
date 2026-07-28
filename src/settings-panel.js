@@ -805,6 +805,9 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
                 text: '生图只读取非机密配置与独立浏览器 Key；API Key 不会写入设置、MVU、提示词或导出文件。',
             }),
         ]);
+        section.appendChild(actionButton('查看图片缓存', async () => {
+            onNavigate?.('settings_image_cache');
+        }, signal, { secondary: true, name: 'image-generation-cache-open' }));
 
         const enabled = element('input', { className: 'yl-settings-checkbox', type: 'checkbox', checked: image.enabled, name: 'image-generation-enabled', ariaLabel: '启用生图接口' });
         section.appendChild(field('启用生图接口', switchShell(enabled)));

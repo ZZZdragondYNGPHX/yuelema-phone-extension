@@ -316,7 +316,7 @@ const imageDirective = await readFile(resolve(root, 'src/images/image-directive.
 const imageGenerationClient = await readFile(resolve(root, 'src/llm/image-generation-client.js'), 'utf8');
 const drawingDnaRules = await readFile(resolve(root, 'src/recommendation/drawing-dna-rules.js'), 'utf8');
 if (!index.includes('createImageGenerationClient') || !actionBridge.includes('generateConversationImage')) fail('缺少生图客户端注入或对话生图桥接');
-if (!appShell.includes("'settings_image_generation'") || !appShell.includes('buildConversationImageControls') || !appShell.includes('buildImageDirectiveCard') || !appShell.includes('generateConversationImage')) fail('缺少生图设置路由、会话开关或结构化指令 UI 接线');
+if (!appShell.includes("'settings_image_generation'") || !appShell.includes("'settings_image_cache'") || !appShell.includes('buildConversationImageControls') || !appShell.includes('buildImageDirectiveCard') || !appShell.includes('buildConversationImageCachePage') || !appShell.includes('openImageOriginalDialog') || !appShell.includes('generateConversationImage')) fail('缺少生图设置 / 缓存路由、会话开关、结构化指令或原图 UI 接线');
 if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 18') || !settingsStore.includes('openaiBaseUrl') || !settingsStore.includes('comfyBaseUrl') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema、OpenAI/ComfyUI 专属配置或逐会话自动生图隔离');
 if (!settingsPanel.includes('buildImageGenerationSection') || !settingsPanel.includes('positivePrefix') || !settingsPanel.includes('negativePrompt')) fail('缺少生图固定正负提示词设置界面');
 if (!imageDirective.includes('composeImagePrompt') || !imageDirective.includes('coreDna') || !imageDirective.includes('outfitDna')) fail('缺少固定顺序的绘图 DNA 提示词组合器');

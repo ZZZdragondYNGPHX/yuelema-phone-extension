@@ -43,18 +43,19 @@ const LAUNCHER_VIEWPORT_GAP = 12;
 const PHONE_NAV_DRAG_HOLD_MS = 360;
 const LOCAL_PAGE_COPY = Object.freeze({
     settings_image_generation: Object.freeze({ title: '生图设置' }),
+    settings_image_cache: Object.freeze({ title: '图片缓存' }),
     about: Object.freeze({ title: '关于软件' }),
     service_hub: Object.freeze({ title: '专属服务' }),
 });
 function pageCopy(pageId) { return PAGE_COPY[pageId] ?? LOCAL_PAGE_COPY[pageId] ?? null; }
 const PRIMARY_PAGE_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'groups', group_chat_create: 'groups', group_chat_summary: 'groups', group_forum: 'groups', forum_post: 'groups', forum_post_summary: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_image_cache: 'profile', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home',
 });
 // E1 裁平（裁决 D7）：settings 目录页已删除，全部设置二级页与“关于软件”直接挂在「我的」下。
 const PAGE_PARENT_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'group_chat', group_chat_create: 'group_chat', group_chat_summary: 'group_chat_room', group_forum: 'groups', forum_post: 'group_forum', forum_post_summary: 'forum_post', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'profile', settings_image_generation: 'profile', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'profile', candidate_detail: 'home',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'profile', settings_image_generation: 'profile', settings_image_cache: 'settings_image_generation', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'profile', candidate_detail: 'home',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
@@ -497,8 +498,48 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     imageDirectiveDialogText.readOnly = true;
     append(imageDirectiveDialog, [imageDirectiveTitlebar, element('p', { className: 'yl-settings-summary', text: '这里只展示 AI 本次返回的场景结构，不包含角色绘图 DNA、固定提示词或 API Key。' }), imageDirectiveDialogText]);
 
-    append(root, [launcher, launcherTools, panel, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog, forumSettingsDialog, imageDirectiveDialog]);
+    const imageActionDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-image-action-dialog', hidden: true });
+    imageActionDialog.setAttribute('role', 'dialog');
+    imageActionDialog.setAttribute('aria-modal', 'false');
+    imageActionDialog.setAttribute('aria-label', '图片操作');
+    const imageActionTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const imageActionClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭图片操作' }));
+    append(imageActionTitlebar, [element('h2', { text: '图片操作' }), imageActionClose]);
+    const imageActionButtons = element('div', { className: 'yl-settings-actions yl-image-action-buttons' });
+    const imageActionDirective = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '查看本次结构化语句', ariaLabel: '查看本次结构化语句' });
+    const imageActionOriginal = element('button', { className: 'yl-settings-button', type: 'button', text: '查看原图', ariaLabel: '查看原图' });
+    append(imageActionButtons, [imageActionDirective, imageActionOriginal]);
+    append(imageActionDialog, [imageActionTitlebar, element('p', { className: 'yl-settings-summary', text: '小图用于聊天浏览；原图会按实际像素展示，可在窗口内滚动查看。' }), imageActionButtons]);
 
+    const imageOriginalDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-image-original-dialog', hidden: true });
+    imageOriginalDialog.setAttribute('role', 'dialog');
+    imageOriginalDialog.setAttribute('aria-modal', 'true');
+    imageOriginalDialog.setAttribute('aria-label', '查看生成原图');
+    const imageOriginalTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const imageOriginalClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭原图' }));
+    append(imageOriginalTitlebar, [element('h2', { text: '生成原图' }), imageOriginalClose]);
+    const imageOriginalViewport = element('div', { className: 'yl-image-original-viewport' });
+    const imageOriginal = element('img', { className: 'yl-image-original', alt: 'AI 生成图片原图', referrerPolicy: 'no-referrer' });
+    imageOriginalViewport.appendChild(imageOriginal);
+    append(imageOriginalDialog, [imageOriginalTitlebar, imageOriginalViewport]);
+
+    const imageCacheDeleteDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-image-cache-delete-dialog', hidden: true });
+    imageCacheDeleteDialog.setAttribute('role', 'alertdialog');
+    imageCacheDeleteDialog.setAttribute('aria-modal', 'true');
+    imageCacheDeleteDialog.setAttribute('aria-label', '确认删除缓存图片');
+    const imageCacheDeleteTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const imageCacheDeleteClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '取消删除缓存图片' }));
+    append(imageCacheDeleteTitlebar, [element('h2', { text: '删除缓存图片？' }), imageCacheDeleteClose]);
+    const imageCacheDeleteActions = element('div', { className: 'yl-settings-actions' });
+    const imageCacheDeleteCancel = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '取消', ariaLabel: '取消删除图片' });
+    const imageCacheDeleteConfirm = element('button', { className: 'yl-settings-button yl-button-danger', type: 'button', text: '确认删除', ariaLabel: '确认删除图片' });
+    append(imageCacheDeleteActions, [imageCacheDeleteCancel, imageCacheDeleteConfirm]);
+    append(imageCacheDeleteDialog, [imageCacheDeleteTitlebar, element('p', { className: 'yl-settings-summary', text: '删除后，本浏览器将不再保留这张生成图片及其缓存结构化语句。' }), imageCacheDeleteActions]);
+
+    append(root, [launcher, launcherTools, panel, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog, forumSettingsDialog, imageDirectiveDialog, imageActionDialog, imageOriginalDialog, imageCacheDeleteDialog]);
+
+    let imageActionState = null;
+    let imageCacheDeleteRecord = null;
     function formatDirectiveForDisplay(directive) {
         try { return formatImageDirective(directive); }
         catch { return ''; }
@@ -507,9 +548,40 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         closeManagedDialog(imageDirectiveDialog);
         imageDirectiveDialogText.value = '';
     }
-    function openImageDirectiveDialog(directive) {
+    function openImageDirectiveDialog(directive, opener = null) {
         imageDirectiveDialogText.value = formatDirectiveForDisplay(directive) || '结构化语句当前不可用。';
-        openManagedDialog(imageDirectiveDialog, { onRequestClose: closeImageDirectiveDialog });
+        openManagedDialog(imageDirectiveDialog, { opener, onRequestClose: closeImageDirectiveDialog });
+    }
+    function closeImageActionDialog() {
+        closeManagedDialog(imageActionDialog);
+        imageActionState = null;
+    }
+    function closeImageOriginalDialog() {
+        closeManagedDialog(imageOriginalDialog);
+        imageOriginal.setAttribute('src', '');
+    }
+    function openImageOriginalDialog(imageSource, opener = null) {
+        const source = safeConversationImageSource(imageSource);
+        if (!source) {
+            setFeedback('原图当前不可用。');
+            return;
+        }
+        imageOriginal.setAttribute('src', source);
+        openManagedDialog(imageOriginalDialog, { opener, onRequestClose: closeImageOriginalDialog });
+    }
+    function openImageActionDialog({ imageSource, directive, opener = null }) {
+        const source = safeConversationImageSource(imageSource);
+        if (!source || !formatDirectiveForDisplay(directive)) return;
+        imageActionState = { imageSource: source, directive, opener };
+        openManagedDialog(imageActionDialog, { opener, onRequestClose: closeImageActionDialog });
+    }
+    function closeImageCacheDeleteDialog() {
+        closeManagedDialog(imageCacheDeleteDialog);
+        imageCacheDeleteRecord = null;
+    }
+    function openImageCacheDeleteDialog(record, opener = null) {
+        imageCacheDeleteRecord = record;
+        openManagedDialog(imageCacheDeleteDialog, { opener, onRequestClose: closeImageCacheDeleteDialog });
     }
     function clearImageDirectiveLongPressTimers() {
         for (const timer of imageDirectiveLongPressTimers) clearTimeout(timer);
@@ -563,7 +635,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         append(controls, [settingsButton, toggleLabel]);
         return controls;
     }
-    function attachImageDirectiveLongPress(image, directive) {
+    function attachImageDirectiveLongPress(image, directive, imageSource) {
         let timer = null;
         const cancel = () => {
             if (timer === null) return;
@@ -576,7 +648,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             timer = setTimeout(() => {
                 imageDirectiveLongPressTimers.delete(timer);
                 timer = null;
-                openImageDirectiveDialog(directive);
+                openImageActionDialog({ imageSource, directive, opener: image });
             }, 560);
             imageDirectiveLongPressTimers.add(timer);
         };
@@ -587,7 +659,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         listen(image, image, 'touchstart', start, abortController.signal);
         listen(image, image, 'touchend', cancel, abortController.signal);
         listen(image, image, 'touchcancel', cancel, abortController.signal);
-        listen(image, image, 'contextmenu', (event) => { event.preventDefault?.(); cancel(); openImageDirectiveDialog(directive); }, abortController.signal);
+        listen(image, image, 'contextmenu', (event) => {
+            event.preventDefault?.();
+            cancel();
+            openImageActionDialog({ imageSource, directive, opener: image });
+        }, abortController.signal);
     }
     function localProfileCharacterUid(profile) {
         const nickname = String(profile?.nickname ?? profile?.昵称 ?? '').trim();
@@ -670,15 +746,100 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         card.appendChild(headerRow);
         if (state?.status === 'ready') {
             const image = element('img', { className: 'yl-image-directive-image', src: state.imageSource, alt: 'AI 根据本次结构生成的图片', loading: 'lazy', referrerPolicy: 'no-referrer' });
-            attachImageDirectiveLongPress(image, directive);
+            attachImageDirectiveLongPress(image, directive, state.imageSource);
             preview.appendChild(image);
-            preview.appendChild(element('p', { className: 'yl-image-directive-hint', text: '长按图片可查看本次结构化语句。' }));
+            preview.appendChild(element('p', { className: 'yl-image-directive-hint', text: '右键或长按图片可查看结构化语句与原图。' }));
         } else {
             if (state?.message) preview.appendChild(element('p', { className: 'yl-image-directive-status', text: state.message }));
             preview.appendChild(element('p', { className: 'yl-image-directive-structure', text: formatted }));
         }
         card.appendChild(preview);
         return card;
+    }
+    function conversationKindLabel(kind) {
+        return ({ private: '私聊', group: '群聊', forum: '论坛' })[kind] || '对话';
+    }
+    function cacheTimeLabel(value) {
+        const timestamp = Date.parse(String(value ?? ''));
+        if (!Number.isFinite(timestamp)) return '时间未知';
+        try {
+            return new Intl.DateTimeFormat('zh-CN', {
+                month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+            }).format(new Date(timestamp));
+        } catch {
+            return '时间未知';
+        }
+    }
+    async function deleteConversationImageRecord(record) {
+        if (!record || typeof conversationImageStore?.remove !== 'function') return;
+        imageCacheDeleteConfirm.disabled = true;
+        try {
+            const removed = await conversationImageStore.remove(record.kind, record.conversationId, record.messageId);
+            if (!removed) {
+                setFeedback('这张缓存图片已经不存在。');
+            } else {
+                conversationImageStates.delete(imageDirectiveStateKey(record.kind, record.conversationId, record.messageId));
+                if (record.kind === 'private') privateImageDirectives.delete(`${record.conversationId}:${record.messageId}`);
+                setFeedback('缓存图片及其结构化语句已删除。');
+            }
+            closeImageCacheDeleteDialog();
+            renderPage();
+        } catch {
+            setFeedback('缓存图片删除失败，请稍后重试。');
+        } finally {
+            imageCacheDeleteConfirm.disabled = false;
+        }
+    }
+    function buildConversationImageCachePage() {
+        const section = element('section', { className: 'yl-settings-section yl-conversation-image-cache' });
+        append(section, [
+            element('p', {
+                className: 'yl-phone-page-description',
+                text: '这里只展示当前浏览器保存的私聊、群聊与论坛生图。删除会同时移除该图片及缓存的结构化语句，不影响 MVU 或角色卡。',
+            }),
+        ]);
+        const records = [...(conversationImageStore?.list?.() ?? [])]
+            .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+        section.appendChild(element('p', {
+            className: 'yl-image-cache-count',
+            text: records.length ? `已保存 ${records.length} / 48 张` : '尚未保存任何生成图片。',
+        }));
+        if (!records.length) {
+            section.appendChild(createEmptyState({
+                documentRef,
+                variant: 'search',
+                title: '图片缓存为空',
+                hint: '在私聊、群聊或论坛中完成一次生图后，可在这里回顾原图。',
+            }));
+            return section;
+        }
+        const grid = element('div', { className: 'yl-image-cache-grid' });
+        for (const record of records) {
+            const card = element('article', { className: 'yl-image-cache-card' });
+            const image = element('img', {
+                className: 'yl-image-cache-thumbnail',
+                src: record.imageSource,
+                alt: `${conversationKindLabel(record.kind)}生成图片缩略图`,
+                loading: 'lazy',
+                referrerPolicy: 'no-referrer',
+            });
+            const meta = element('div', { className: 'yl-image-cache-meta' });
+            meta.appendChild(element('strong', { text: `${conversationKindLabel(record.kind)} · ${imageDirectiveKindLabel(record.directive.kind)}` }));
+            meta.appendChild(element('span', { text: cacheTimeLabel(record.updatedAt) }));
+            const actions = element('div', { className: 'yl-settings-actions yl-image-cache-actions' });
+            const original = element('button', { className: 'yl-settings-button', type: 'button', text: '查看原图', ariaLabel: '查看缓存原图' });
+            const structure = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '结构化语句', ariaLabel: '查看缓存结构化语句' });
+            const remove = element('button', { className: 'yl-settings-button yl-button-danger', type: 'button', text: '删除', ariaLabel: '删除缓存图片' });
+            listen(image, image, 'click', () => openImageOriginalDialog(record.imageSource, image), abortController.signal);
+            listen(original, original, 'click', () => openImageOriginalDialog(record.imageSource, original), abortController.signal);
+            listen(structure, structure, 'click', () => openImageDirectiveDialog(record.directive, structure), abortController.signal);
+            listen(remove, remove, 'click', () => openImageCacheDeleteDialog(record, remove), abortController.signal);
+            append(actions, [original, structure, remove]);
+            append(card, [image, meta, actions]);
+            grid.appendChild(card);
+        }
+        section.appendChild(grid);
+        return section;
     }
     documentRef.body.appendChild(root);
 
@@ -2132,7 +2293,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'favorites') page.appendChild(ctx.buildFavoritesPage());
         else if (activePage === 'about') page.appendChild(ctx.buildAboutSoftwarePage());
         else if (activePage === 'service_hub') page.appendChild(ctx.buildServiceHubPage());
-        else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images', 'settings_image_generation'].includes(activePage)) page.appendChild(buildSettingsDetail());
+        else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images', 'settings_image_generation', 'settings_image_cache'].includes(activePage)) page.appendChild(buildSettingsDetail());
         else if (activePage === 'settings_preferences') page.appendChild(ctx.buildPreferenceSettingsPage());
         else if (activePage === 'settings_console') page.appendChild(decorateOperationConsoleDetails(ctx.buildOperationConsole()));
         else if (activePage === 'settings_chat_summary') page.appendChild(ctx.buildChatSummarySettingsHome());
@@ -2234,6 +2395,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         renderPage();
     }
                     function buildSettingsDetail() {
+        if (activePage === 'settings_image_cache') {
+            return buildConversationImageCachePage();
+        }
         if (activePage === 'settings_images') {
             const section = element('section', { className: 'yl-settings-detail yl-image-manager-page' });
             imageManagerPanel = createImageManagerPanel({
@@ -2464,6 +2628,26 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(groupAutoClose, groupAutoClose, 'click', ctx.closeGroupAutoDialog, abortController.signal);
     listen(forumSettingsClose, forumSettingsClose, 'click', ctx.closeForumSettingsDialog, abortController.signal);
     listen(imageDirectiveClose, imageDirectiveClose, 'click', closeImageDirectiveDialog, abortController.signal);
+    listen(imageActionClose, imageActionClose, 'click', closeImageActionDialog, abortController.signal);
+    listen(imageActionDirective, imageActionDirective, 'click', () => {
+        const state = imageActionState;
+        if (!state) return;
+        closeImageActionDialog();
+        openImageDirectiveDialog(state.directive, state.opener);
+    }, abortController.signal);
+    listen(imageActionOriginal, imageActionOriginal, 'click', () => {
+        const state = imageActionState;
+        if (!state) return;
+        closeImageActionDialog();
+        openImageOriginalDialog(state.imageSource, state.opener);
+    }, abortController.signal);
+    listen(imageOriginalClose, imageOriginalClose, 'click', closeImageOriginalDialog, abortController.signal);
+    listen(imageCacheDeleteClose, imageCacheDeleteClose, 'click', closeImageCacheDeleteDialog, abortController.signal);
+    listen(imageCacheDeleteCancel, imageCacheDeleteCancel, 'click', closeImageCacheDeleteDialog, abortController.signal);
+    listen(imageCacheDeleteConfirm, imageCacheDeleteConfirm, 'click', () => {
+        const record = imageCacheDeleteRecord;
+        if (record) void deleteConversationImageRecord(record);
+    }, abortController.signal);
     listen(avatarFileButton, avatarFileButton, 'click', () => { avatarFileInput.click?.(); }, abortController.signal);
     listen(avatarFileInput, avatarFileInput, 'change', () => { void saveLocalAvatarFile(avatarFileInput.files?.[0]); }, abortController.signal);
     listen(avatarRemoveButton, avatarRemoveButton, 'click', removePlayerAvatar, abortController.signal);

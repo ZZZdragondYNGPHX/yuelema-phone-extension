@@ -145,10 +145,21 @@ test('private chat image directives use the bridge, keep regenerate available, a
         assert.ok(byAria(miniDom.document, '重新生成图片'), '成功后仍须保留重新生成按钮');
         const menuEvent = rightClick(generated);
         assert.equal(menuEvent.defaultPrevented, true);
+        const actionDialog = miniDom.document.querySelector('.yl-image-action-dialog');
+        assert.equal(actionDialog.hidden, false);
+        assert.ok(byAria(actionDialog, '查看本次结构化语句'));
+        assert.ok(byAria(actionDialog, '查看原图'));
+        click(byAria(actionDialog, '查看本次结构化语句'));
         const directiveDialog = miniDom.document.querySelector('.yl-image-directive-dialog');
         assert.equal(directiveDialog.hidden, false);
         assert.match(byAria(directiveDialog, '当前图片结构化语句').value, /rainy Shanghai street/u);
         click(byAria(miniDom.document, '关闭生图结构化语句'));
+        rightClick(generated);
+        click(byAria(miniDom.document.querySelector('.yl-image-action-dialog'), '查看原图'));
+        const originalDialog = miniDom.document.querySelector('.yl-image-original-dialog');
+        assert.equal(originalDialog.hidden, false);
+        assert.equal(originalDialog.querySelector('.yl-image-original').getAttribute('src'), generated.getAttribute('src'));
+        click(byAria(originalDialog, '关闭原图'));
         click(byAria(miniDom.document, '重新生成图片'));
         await flushUi();
         assert.match(miniDom.document.body.textContent, /Save \(API Format\)/u, '手动生图失败弹窗应显示客户端提供的安全具体原因');
@@ -210,8 +221,29 @@ test('private chat restores persisted generated image and directive after a new 
         assert.ok(image, '新挂载实例应直接显示持久化图片');
         assert.equal(image.getAttribute('src'), 'data:image/png;base64,iVBORw0KGgo=');
         rightClick(image);
+        click(byAria(miniDom.document.querySelector('.yl-image-action-dialog'), '查看本次结构化语句'));
         assert.match(byAria(miniDom.document, '当前图片结构化语句').value, /rainy Shanghai street/u);
+        click(byAria(miniDom.document, '关闭生图结构化语句'));
         assert.equal(generationCalls, 0, '恢复已有图片不得再次请求接口');
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.dataset.page === 'settings_image_generation'));
+        click(byAria(miniDom.document, '查看图片缓存'));
+        assert.match(miniDom.document.body.textContent, /已保存 1 \/ 48 张/u);
+        const cacheCard = miniDom.document.querySelector('.yl-image-cache-card');
+        assert.ok(cacheCard);
+        assert.equal(cacheCard.textContent.includes('m_image_manual'), false, '缓存 UI 不得显示内部消息 UID');
+        click(byAria(cacheCard, '查看缓存原图'));
+        assert.equal(miniDom.document.querySelector('.yl-image-original-dialog').hidden, false);
+        click(byAria(miniDom.document, '关闭原图'));
+        click(byAria(cacheCard, '删除缓存图片'));
+        assert.equal(miniDom.document.querySelector('.yl-image-cache-delete-dialog').hidden, false);
+        click(byAria(miniDom.document, '确认删除图片'));
+        await flushUi();
+        assert.equal(conversationImageStore.peek('private', 'chat_drawing', 'm_image_manual'), null);
+        assert.match(miniDom.document.body.textContent, /图片缓存为空/u);
+        click(byAria(miniDom.document, '返回'));
+        assert.match(miniDom.document.body.textContent, /生图设置/u, '缓存子窗口返回时应回到生图设置');
     } finally {
         mounted.destroy();
     }

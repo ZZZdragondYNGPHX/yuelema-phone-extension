@@ -212,5 +212,22 @@ export function createConversationImageStore({ storage = createMemoryConversatio
         return result;
     }
 
-    return Object.freeze({ ready, peek, list, put, removeConversation });
+    async function remove(kind, conversationId, messageId) {
+        const result = writeTail.then(async () => {
+            await ready();
+            const key = recordKey(kind, conversationId, messageId);
+            const records = document.records.filter((record) => recordKey(record.kind, record.conversationId, record.messageId) !== key);
+            if (records.length === document.records.length) return false;
+            const next = normalizeDocument({ schema: SCHEMA, schemaVersion: VERSION, records });
+            const serialized = serialize(next);
+            try { await storage.setItem(storageKey, serialized); }
+            catch { fail('CONVERSATION_IMAGE_WRITE_FAILED', '对话图片删除失败。'); }
+            document = next;
+            return true;
+        });
+        writeTail = result.then(() => undefined, () => undefined);
+        return result;
+    }
+
+    return Object.freeze({ ready, peek, list, put, remove, removeConversation });
 }

@@ -45,6 +45,21 @@ test('删除会话只清理该界面的对应生图记录', async () => {
     assert.ok(store.peek('group', 'chat_1', 'message_3'));
 });
 
+test('图片缓存可以按界面、会话与消息精确删除单张图片', async () => {
+    const store = createConversationImageStore({ storage: createMemoryConversationImageStorage() });
+    await store.ready();
+    for (const item of [
+        { kind: 'private', conversationId: 'chat_1', messageId: 'message_1' },
+        { kind: 'private', conversationId: 'chat_1', messageId: 'message_2' },
+    ]) {
+        await store.put({ ...item, directive, imageSource: PNG_DATA_URL });
+    }
+    assert.equal(await store.remove('private', 'chat_1', 'message_1'), true);
+    assert.equal(await store.remove('private', 'chat_1', 'message_1'), false);
+    assert.equal(store.peek('private', 'chat_1', 'message_1'), null);
+    assert.ok(store.peek('private', 'chat_1', 'message_2'));
+});
+
 test('对话生图存储拒绝远程 URL、伪造图片和额外敏感字段', async () => {
     const storage = createMemoryConversationImageStorage();
     const store = createConversationImageStore({ storage });
