@@ -45,7 +45,7 @@ function readResult() {
                         { 消息UID: 'm1', 发送者: '角色', 内容: '晚上好，今天过得怎么样？', 时间: '20:30' },
                         { 消息UID: 'm2', 发送者: '玩家', 内容: '刚看完一部电影，想和你分享。', 时间: '20:32' },
                     ],
-                    长期摘要: 'session-summary-must-not-render',
+                    总结: { 记录: [{ 内容: 'session-summary-must-not-render' }] },
                 },
             },
         },
@@ -186,6 +186,7 @@ test('private chat keeps the reading anchor and follows the bottom across pendin
             return transcript;
         };
         let transcript = installTranscriptMeasurements(400);
+        flushFrames();
         const originalAppendChild = content.appendChild.bind(content);
         content.appendChild = (node) => {
             const resultNode = originalAppendChild(node);
@@ -194,12 +195,13 @@ test('private chat keeps the reading anchor and follows the bottom across pendin
         };
         const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
         input.value = '继续聊。'; input.dispatchEvent(new Event('input'));
+        transcript.scrollTop = 0;
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息'));
         transcript = miniDom.document.querySelector('.yl-chat-transcript');
-        assert.equal(transcript.scrollTop, 400, '等待回复时真正滚动的消息时间线仍应停留在原底部');
+        assert.equal(transcript.scrollTop, 400, '用户发送时即使旧容器已错误回顶，也必须明确跟随到消息末尾');
         transcript.scrollTop = 0;
         flushFrames();
-        assert.equal(transcript.scrollTop, 400, '真实浏览器布局帧晚到时仍应复核内层时间线并恢复原底部');
+        assert.equal(transcript.scrollTop, 400, '用户发送后的布局帧晚到时仍应强制内层时间线回到底部');
         response.resolve();
         await flushUi();
         transcript = miniDom.document.querySelector('.yl-chat-transcript');
@@ -207,6 +209,12 @@ test('private chat keeps the reading anchor and follows the bottom across pendin
         transcript.scrollTop = 0;
         flushFrames();
         assert.equal(transcript.scrollTop, 700, 'AI 回复布局完成后内层时间线不得再次回到顶部');
+        transcript.scrollTop = 0;
+        click(miniDom.document.querySelector('.yl-chat-jump-latest'));
+        assert.equal(transcript.scrollTop, 700, '手动“跳到最新”应作为自动滚动失手时的一键兜底');
+        transcript.scrollTop = 0;
+        flushFrames();
+        assert.equal(transcript.scrollTop, 700, '手动跳转也必须抵抗真实浏览器迟到的布局帧');
     } finally {
         mounted.destroy();
         if (originalRequestAnimationFrame === undefined) delete globalThis.requestAnimationFrame;

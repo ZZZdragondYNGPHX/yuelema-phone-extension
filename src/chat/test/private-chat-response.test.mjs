@@ -5,7 +5,6 @@ import {
     MAX_PRIVATE_CHAT_REPLY_COUNT,
     MAX_PRIVATE_CHAT_REPLY_LENGTH,
     MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH,
-    MAX_PRIVATE_CHAT_SESSION_SUMMARY_LENGTH,
     normalizePrivateChatResponse,
     projectPrivateChatResponseDiagnostic,
     projectPrivateChatResponseError,
@@ -25,13 +24,12 @@ function expectCode(callback, code) {
 }
 
 test('accepts replies and returns an independent canonical clone', () => {
-    const raw = response({ sessionSummary: '围绕周末咖啡面基进行了初步交流。' });
+    const raw = response();
     const normalized = normalizePrivateChatResponse(raw);
     assert.deepEqual(normalized, {
         replies: ['今晚方便聊聊吗？', '我刚好有空。'],
         relationship: raw.relationship,
         bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
-        sessionSummary: raw.sessionSummary,
     });
     assert.notStrictEqual(normalized, raw);
     assert.notStrictEqual(normalized.replies, raw.replies);
@@ -82,6 +80,7 @@ test('rejects strings, arrays, nulls, missing replies, legacy reply fields, and 
     expectCode(() => normalizePrivateChatResponse(null), 'private_chat_response_required');
     expectCode(() => normalizePrivateChatResponse({ relationship: {} }), 'private_chat_response_missing_field');
     expectCode(() => normalizePrivateChatResponse({ reply: '旧格式', relationship: {} }), 'private_chat_response_unknown_field');
+    expectCode(() => normalizePrivateChatResponse(response({ sessionSummary: '旧版平行摘要字段' })), 'private_chat_response_unknown_field');
     expectCode(() => normalizePrivateChatResponse(response({ extra: true })), 'private_chat_response_unknown_field');
 });
 
@@ -107,9 +106,7 @@ test('strictly validates each reply bubble, array shape, and aggregate length li
     expectCode(() => normalizePrivateChatResponse(response({ replies: exotic })), 'private_chat_response_unsafe_prototype');
 });
 
-test('strictly validates optional summary safety and fail-closes malformed relationship deltas to zero', () => {
-    expectCode(() => normalizePrivateChatResponse(response({ sessionSummary: '<script>private</script>' })), 'private_chat_response_reply_invalid');
-    expectCode(() => normalizePrivateChatResponse(response({ sessionSummary: 'x'.repeat(MAX_PRIVATE_CHAT_SESSION_SUMMARY_LENGTH + 1) })), 'private_chat_response_reply_invalid');
+test('fail-closes malformed relationship deltas to zero', () => {
     assert.deepEqual(
         normalizePrivateChatResponse(response({ relationship: { 好感: 2, 信任: '1', 戒备: 10.5 } })).relationship,
         { 好感: 2, 信任: 0, 戒备: 0, 面基意愿: 0 },

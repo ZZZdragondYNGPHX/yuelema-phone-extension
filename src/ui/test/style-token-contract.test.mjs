@@ -321,6 +321,7 @@ test('1080px 三列档：紧凑姓名会话列把剩余宽度优先交给私聊�
     assert.notEqual(wideIndex, -1, '缺少 1080px 三列门禁');
     const wide = balancedBlock(desktop, desktop.indexOf('{', wideIndex), '1080px 门禁');
     assert.match(wide.body, /\.yl-private-chat-workbench\s*\{[^}]*grid-template-columns\s*:\s*minmax\(136px,\s*148px\)\s+minmax\(0,\s*1fr\)\s+minmax\(204px,\s*216px\)/u, '私聊工作台应使用紧凑左右栏，并由中间私聊列吸收全部剩余宽度');
+    assert.match(stylesheet, /\.yl-chat-jump-latest\s*\{[\s\S]{0,700}?position\s*:\s*absolute[\s\S]{0,700}?min-height\s*:\s*44px/u, '私聊必须提供浮动“跳到最新”兜底入口');
     assert.match(wide.body, /\.yl-chat-session-rail[\s\S]{0,700}?overflow-y\s*:\s*auto/u, '会话列必须有独立滚动边界');
     assert.match(wide.body, /\.yl-chat-session-rail\s+\.yl-chat-session\s*\{[^}]*min-height\s*:\s*56px[^}]*padding\s*:\s*var\(--yl-space-2\)/u, '紧凑会话行仍需保留舒适点击高度');
     assert.match(wide.body, /\.yl-chat-session-rail\s+:is\([\s\S]{0,260}?\.yl-session-preview,[\s\S]{0,260}?\.yl-session-meta,[\s\S]{0,260}?\.yl-session-pin,[\s\S]{0,260}?\.yl-session-status[\s\S]{0,120}?display\s*:\s*none/u, '最左会话列只应显示头像和姓名');

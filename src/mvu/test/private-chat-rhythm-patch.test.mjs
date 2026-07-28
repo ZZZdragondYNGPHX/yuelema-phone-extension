@@ -15,14 +15,15 @@ function state({ readThreshold = 55, blockThreshold = 90, relationship } = {}) {
                 与玩家关系: relationship ?? { 状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70, 好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0 },
             },
         },
-        会话: { chat_1: { 对象UID: 'npc_one', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' } },
+        正文记忆: { npc_one: '' },
+        会话: { chat_1: { 对象UID: 'npc_one', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } },
         推荐: { 当前队列: [], 临时候选池: {}, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
         面基记录: {},
     };
 }
 
 function response(relationship = { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 }) {
-    return { replies: ['第一条。', '第二条。'], relationship, sessionSummary: '不应在节奏抑制时写入。' };
+    return { replies: ['第一条。', '第二条。'], relationship };
 }
 
 test('normal private chat appends each validated reply as its own bubble', () => {
@@ -112,7 +113,7 @@ test('read-without-reply stores the player message and a fixed system notice onl
     assert.equal(messages[1].value.内容, '对方已读，但暂时没有回复。');
     assert.deepEqual(messages.map((operation) => operation.value.层数), [13, 13], '系统送达提示属于记录，但不应额外计入玩家/角色对话层数');
     assert.equal(built.value.at(-1).value, 13);
-    assert.equal(built.value.some((operation) => operation.path === '/会话/chat_1/长期摘要'), false);
+    assert.equal(built.value.some((operation) => operation.path.startsWith('/正文记忆/')), false);
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
 });
 
@@ -190,6 +191,7 @@ test('deleteCharacter removes the complete character record and every controlled
     const otherRole = structuredClone(current.角色池.npc_one);
     otherRole.公开资料.昵称 = '其他角色';
     current.角色池.npc_other = otherRole;
+    current.正文记忆.npc_other = '其他对象自己的经历';
     current.推荐 = {
         当前队列: ['npc_one', 'npc_other'],
         临时候选池: { npc_one: structuredClone(current.角色池.npc_one), npc_other: structuredClone(otherRole) },
@@ -198,8 +200,8 @@ test('deleteCharacter removes the complete character record and every controlled
         不喜欢角色UID: ['npc_other', 'npc_one'],
         拉黑角色UID: ['npc_one', 'npc_other'],
     };
-    current.会话.chat_2 = { 对象UID: 'npc_one', 状态: '已取消', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
-    current.会话.chat_other = { 对象UID: 'npc_other', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
+    current.会话.chat_2 = { 对象UID: 'npc_one', 状态: '已取消', 最近消息: [], 已确认边界: '', 已确认承诺: '' };
+    current.会话.chat_other = { 对象UID: 'npc_other', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' };
     current.面基记录 = {
         meetup_1: { 对象UID: 'npc_one', 状态: '已结束' },
         meetup_other: { 对象UID: 'npc_other', 状态: '已结束' },
@@ -223,6 +225,7 @@ test('deleteCharacter removes the complete character record and every controlled
         { op: 'replace', path: '/群组/group_city/成员UID', value: ['npc_other'] },
         { op: 'replace', path: '/群组/group_city/可发现角色UID', value: [] },
         { op: 'remove', path: '/推荐/临时候选池/npc_one' },
+        { op: 'remove', path: '/正文记忆/npc_one' },
         { op: 'remove', path: '/角色池/npc_one' },
     ]);
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
@@ -248,7 +251,7 @@ test('deleteCharacter remains atomic when a role has more than forty references'
     current.群组 = {};
     for (let index = 2; index <= 45; index += 1) {
         current.会话['chat_' + index] = {
-            对象UID: 'npc_one', 状态: '已取消', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '',
+            对象UID: 'npc_one', 状态: '已取消', 最近消息: [], 已确认边界: '', 已确认承诺: '',
         };
     }
     const built = buildDeleteCharacterPatch(current, { npcUid: 'npc_one' });

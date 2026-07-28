@@ -36,7 +36,7 @@ function readResult() {
                 chat_group: {
                     对象UID: 'npc_group', 状态: '已匹配',
                     最近消息: [{ 消息UID: 'm_1', 发送者: '角色', 内容: 'session-secret-must-not-render', 时间: '' }],
-                    长期摘要: 'session-summary-must-not-render',
+                    总结: { 记录: [{ 内容: 'session-summary-must-not-render' }] },
                 },
             },
             群组: {
@@ -486,7 +486,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             click(version());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /当前版本：1.0.7/u);
+            assert.match(dialog.textContent, /当前版本：1.0.8/u);
         }
         const modeEntry = miniDom.document.querySelector('[name="about-content-mode-entry"]');
         assert.ok(modeEntry, '连续五次版本信息后应显示内容模式隐藏入口');
@@ -504,7 +504,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
             assert.match(dialog.textContent, /最近三次更新/u);
-            assert.match(dialog.textContent, /v1.0.7/u);
+            assert.match(dialog.textContent, /v1.0.8/u);
         }
         const serviceEntry = miniDom.document.querySelector('[name="about-service-entry"]');
         assert.ok(serviceEntry, '连续五次更新日志后应显示专属服务入口');

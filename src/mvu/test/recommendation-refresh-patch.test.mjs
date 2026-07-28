@@ -15,7 +15,7 @@ function candidate() {
 
 function state() {
     return {
-        系统: { UID计数器: { 角色: 12 } }, 软件: { 内容模式: 'SFW', 关于软件点击数: 0 }, 角色池: {},
+        系统: { UID计数器: { 角色: 12 } }, 软件: { 内容模式: 'SFW', 关于软件点击数: 0 }, 角色池: {}, 正文记忆: {},
         推荐: { 当前队列: ['npc_old'], 临时候选池: { npc_old: { 成人验证: true, 公开资料: {}, 仅好友资料: {}, 隐藏资料: { 实际年龄: 30, 私人备注: '旧秘密' }, 与玩家关系: { 状态: '陌生' } } }, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
     };
 }
@@ -96,6 +96,7 @@ test('an existing custom candidate can be shown by refresh or promoted by a succ
     assert.equal(matched.ok, true);
     assert.deepEqual(matched.value.map((operation) => [operation.op, operation.path]), [
         ['move', '/角色池/npc_custom_13'],
+        ['add', '/正文记忆/npc_custom_13'],
         ['replace', '/角色池/npc_custom_13/与玩家关系/NPC专属匹配度'],
         ['replace', '/角色池/npc_custom_13/与玩家关系/状态'],
         ['add', '/会话/chat_5'],

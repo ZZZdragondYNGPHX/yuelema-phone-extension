@@ -453,6 +453,26 @@ export function createChatPage(ctx) {
         closeGroup();
         return timeline;
     }
+    function buildMessageTimelineShell(session, timeline) {
+        const shell = element('div', { className: 'yl-chat-transcript-shell' });
+        const jump = element('button', {
+            className: 'yl-chat-jump-latest',
+            type: 'button',
+            text: '跳到最新',
+            ariaLabel: `跳到与${ctx.chatNickname(session)}聊天的最新消息`,
+        });
+        jump.appendChild(createUiIcon(ctx.documentRef, 'chevron_down', { className: 'yl-chat-jump-latest-icon', size: 17 }));
+        listen(jump, jump, 'click', () => {
+            const scrollToLatest = () => {
+                timeline.scrollTop = Math.max(0, (Number(timeline.scrollHeight) || 0) - (Number(timeline.clientHeight) || 0));
+            };
+            scrollToLatest();
+            const requestFrame = globalThis.requestAnimationFrame;
+            if (typeof requestFrame === 'function') requestFrame(() => requestFrame(scrollToLatest));
+        }, ctx.abortController.signal);
+        append(shell, [timeline, jump]);
+        return shell;
+    }
     /** 等待反馈（§7.2.10）：对方头像 + 三点打字气泡，替代文字“正在生成回复”。 */
     function buildTypingIndicator(session) {
         const replying = element('div', { className: 'yl-chat-replying' });
@@ -665,7 +685,7 @@ export function createChatPage(ctx) {
         ctx.messageReadStore?.markRead?.(session.sessionUid, session.messages.length);
         const pending = Boolean(ctx.actionBridge.isPending?.('private_chat', session.sessionUid));
         if (pending) transcript.appendChild(buildTypingIndicator(session));
-        panel.appendChild(transcript);
+        panel.appendChild(buildMessageTimelineShell(session, transcript));
         if (!session.canSend) {
             // §7.2.11 只读态：禁用输入条 + 状态说明 pill。
             panel.appendChild(buildSystemPill(session.status === '已拉黑' ? '对方已将你拉黑，无法继续发送消息。' : '该会话当前为只读状态。'));
@@ -819,6 +839,9 @@ export function createChatPage(ctx) {
             && ctx.activeMessageSessionUid === session.sessionUid
             && ctx.privateChatRequestGeneration === requestGeneration;
         const activityHandle = ctx.operationActivity.start('私聊回复', '正在生成私聊回复……');
+        // 发送与回复完成都是明确的“跟随最新消息”意图，不依赖旧容器恰好在
+        // 布局采样时仍报告接近底部；真实 WebView 即使先塌缩到 0 也会被拉回末尾。
+        ctx.requestPrivateChatScrollToBottom?.(session.sessionUid);
         let bridgeError = null;
         let request;
         try { request = ctx.actionBridge.runPrivateChat({ sessionUid: session.sessionUid, npcUid: session.npcUid, playerMessage }); }
@@ -853,6 +876,7 @@ export function createChatPage(ctx) {
             const message = result?.message || describeActionFailure(result);
             ctx.setFeedback(message || '私聊回复未生成，请稍后重试。');
         }
+        if (result?.ok) ctx.requestPrivateChatScrollToBottom?.(session.sessionUid);
         ctx.refreshState();
         if (result?.ok && result.summaryCheckRequested) {
             void runChatSummaryForSession(session, { automatic: true });

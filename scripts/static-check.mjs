@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.0.7') fail('manifest.version 必须与扩展版本 1.0.7 统一');
+if (manifest.version !== '1.0.8') fail('manifest.version 必须与扩展版本 1.0.8 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -121,7 +121,7 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.0.7'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.7 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.0.8'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.8 统一（必须位于壳层 app-shell.js）');
 if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
     || !appShellCore.includes("'placement_reset'")
     || !appShellCore.includes("'mvu_read_complete'")
@@ -264,6 +264,11 @@ for (const [name, serviceMarker] of [
 console.log('✓ 阶段 51 逐群预设、论坛双绑定、顶部替换/底部追加刷新、LLM 安全边界和只读桥接');
 const privateChatResponse = await readFile(resolve(root, 'src/chat/private-chat-response.js'), 'utf8');
 const privateChatService = await readFile(resolve(root, 'src/chat/private-chat-service.js'), 'utf8');
+if (!controlledPatch.includes('buildStoryMemoryBackfillPatch') || !controlledPatch.includes("encodeJsonPointer(['正文记忆', npcUid])")
+    || !privateChatService.includes('currentObjectMemory') || !privateChatService.includes('otherObjectMemories')
+    || !actionBridge.includes('buildStoryMemoryBackfillPatch')) fail('缺少按对象隔离的正文记忆、旧状态补齐或私聊分区接线');
+if (privateChatResponse.includes('sessionSummary') || uiModel.includes('长期摘要')) fail('废弃的平行长期摘要仍残留在运行时合同');
+console.log('✓ 正文记忆按对象隔离、旧状态受控补齐，当前/其他对象上下文分区且无旧平行摘要');
 const conversationSummary = await readFile(resolve(root, 'src/chat/conversation-summary.js'), 'utf8');
 const interactionRhythm = await readFile(resolve(root, 'src/chat/interaction-rhythm.js'), 'utf8');
 const relationshipProgress = await readFile(resolve(root, 'src/chat/relationship-progress.js'), 'utf8');

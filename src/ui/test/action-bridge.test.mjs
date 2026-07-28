@@ -18,6 +18,7 @@ function state() {
         软件: { 内容模式: 'SFW', 关于软件点击数: 0 },
         玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
         角色池: {},
+        正文记忆: {},
         推荐: {
             当前队列: ['npc_ava'],
             临时候选池: {
@@ -351,7 +352,8 @@ test('private chat runs model validation before one official MVU write transacti
             与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0 },
         },
     };
-    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' } };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } };
+    initialState.正文记忆.npc_ava = '玩家与艾娃此前在线下见过一次。';
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -384,7 +386,8 @@ test('private chat returns read_without_reply after the local rhythm builder sup
             与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 5, 信任: 5, 戒备: 40, 面基意愿: 0 },
         },
     };
-    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
+    initialState.正文记忆.npc_ava = '';
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -414,7 +417,8 @@ test('private chat returns blocked only after the controlled patch atomically bl
         },
     };
     // 拉黑只在开局宽限层数之外仍持续恶化/不改善时触发。
-    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
+    initialState.正文记忆.npc_ava = '';
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -443,7 +447,7 @@ test('clearPrivateChat reads fresh state, uses the dedicated builder, and commit
             与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0 },
         },
     };
-    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' } };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } };
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -467,6 +471,7 @@ test('deleteCharacter reads fresh state and atomically removes every character r
         npc_ava: adultCandidate(),
         npc_other: { ...adultCandidate(), 公开资料: { ...adultCandidate().公开资料, 昵称: '其他角色' } },
     };
+    initialState.正文记忆 = { npc_ava: '玩家与艾娃的经历。', npc_other: '玩家与其他角色的经历。' };
     initialState.推荐 = {
         当前队列: ['npc_ava', 'npc_other'],
         临时候选池: { npc_ava: adultCandidate() },
@@ -474,8 +479,8 @@ test('deleteCharacter reads fresh state and atomically removes every character r
         不喜欢角色UID: [], 拉黑角色UID: ['npc_other', 'npc_ava'],
     };
     initialState.会话 = {
-        chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' },
-        chat_other: { 对象UID: 'npc_other', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' },
+        chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' },
+        chat_other: { 对象UID: 'npc_other', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' },
     };
     initialState.面基记录 = {
         meetup_1: { 对象UID: 'npc_ava', 状态: '待发送' },

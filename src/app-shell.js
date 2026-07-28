@@ -27,7 +27,7 @@ import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
 
-const UI_VERSION = '1.0.7';
+const UI_VERSION = '1.0.8';
 
 function downloadImagePackJson(json) {
     if (typeof json !== 'string' || typeof globalThis.Blob !== 'function'
@@ -208,6 +208,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let activeMessageSessionUid = '';
     let renderedPrivateChatSessionUid = '';
     let privateChatScrollRestoreGeneration = 0;
+    let privateChatForceBottomSessionUid = '';
     let messageSearchQuery = '';
     let chatMoreMenuSessionUid = '';
     let chatConfirmationSessionUid = '';
@@ -2270,6 +2271,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }
     function renderPage() {
         const previousTranscript = content.querySelector?.('.yl-chat-transcript');
+        const forcePrivateChatBottom = activePage === 'private_chat'
+            && privateChatForceBottomSessionUid === activeMessageSessionUid;
         const privateChatScroll = activePage === 'private_chat'
             && renderedPrivateChatSessionUid === activeMessageSessionUid
             && content.querySelector?.('.yl-private-chat-screen')
@@ -2330,17 +2333,20 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'candidate_detail') page.appendChild(ctx.buildCandidateDetail());
         content.appendChild(page);
         renderedPrivateChatSessionUid = activePage === 'private_chat' ? activeMessageSessionUid : '';
-        if (privateChatScroll) {
+        if (forcePrivateChatBottom) privateChatForceBottomSessionUid = '';
+        if (privateChatScroll || forcePrivateChatBottom) {
             const restoreGeneration = ++privateChatScrollRestoreGeneration;
             const restore = () => {
                 if (isDestroyed || restoreGeneration !== privateChatScrollRestoreGeneration
                     || activePage !== 'private_chat' || activeMessageSessionUid !== renderedPrivateChatSessionUid) return;
                 const outerBottom = Math.max(0, (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0));
-                content.scrollTop = Math.min(privateChatScroll.outerTop, outerBottom);
+                content.scrollTop = forcePrivateChatBottom
+                    ? outerBottom
+                    : Math.min(privateChatScroll.outerTop, outerBottom);
                 const transcript = content.querySelector?.('.yl-chat-transcript');
                 if (!transcript) return;
                 const transcriptBottom = Math.max(0, (Number(transcript.scrollHeight) || 0) - (Number(transcript.clientHeight) || 0));
-                transcript.scrollTop = privateChatScroll.transcriptFollowBottom
+                transcript.scrollTop = forcePrivateChatBottom || privateChatScroll.transcriptFollowBottom
                     ? transcriptBottom
                     : Math.min(privateChatScroll.transcriptTop, transcriptBottom);
             };
@@ -2633,7 +2639,12 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         groupAutoContent, groupAutoDialog, groupAutoTitle, groupForumStore, groupMemberPickerContent, groupMemberPickerDialog, groupMessageDrafts, imageAssetFailures,
         conversationImageStore, characterAvatarStore,
         imageAssetsReady, imageMatchPending, imageProfileKey, localProfileCharacterUid, matchedImageFor, meetupDrafts, nav, openAvatarDialog,
-        openFeatureBinding, openMark, operationActivity, playerAvatarStore, privateImageDirectives, refreshState, renderPage, retryCandidateImage,
+        openFeatureBinding, openMark, operationActivity, playerAvatarStore, privateImageDirectives,
+        requestPrivateChatScrollToBottom(sessionUid) {
+            if (typeof sessionUid !== 'string' || !sessionUid) return;
+            privateChatForceBottomSessionUid = sessionUid;
+        },
+        refreshState, renderPage, retryCandidateImage,
         root, selectedServiceProfileIds, serviceBoundaryDrafts, serviceGenerationBatches, serviceLocalProfiles, serviceNavButton, serviceOrderHistoryStore, setActivePage,
         setFeedback, setUiLayoutMode, settingsStore, showAiLoading, showAiResult, showRomanceLoading, showRomanceResult, toggleContentModeFromSlider,
     });

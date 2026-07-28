@@ -13,9 +13,9 @@ import { createEmptyState } from '../ui/empty-state.js';
 import { SERVICE_UNLOCK_STORAGE_KEY } from './shared.js';
 
 const RECENT_RELEASE_NOTES = Object.freeze([
+    'v1.0.8：正文经历按对象独立回流私聊；当前对象与其他对象记忆分区防串台；清除旧长期摘要平行字段。',
     'v1.0.7：图片管理新增醒目的生图入口与直接入库；三种生图接口各自管理提示词预设；修复私聊发送/回复回顶，并减少 AI 角色姓名集中于单一姓氏。',
     'v1.0.6：会话生图可在刷新后恢复并集中回顾、删除；角色头像可在公开资料页本地更换并随首页、匹配恢复；私聊回复不再因延迟布局回到顶部。',
-    'v1.0.5：窗口右下角可自由拉伸至整个可视界面，归位同步复原尺寸；自建角色按正关键词权重在首页刷新或匹配中遇见。',
 ]);
 
 export function createProfilePage(ctx) {

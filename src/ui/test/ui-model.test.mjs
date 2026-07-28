@@ -82,7 +82,7 @@ test('private chat view exposes only public profile and session-visible transcri
         state: {
             软件: { 内容模式: 'SFW' }, 推荐: { 当前队列: [], 临时候选池: {} },
             角色池: { npc_a: { 成人验证: true, 公开资料: { 昵称: '公开名' }, 仅好友资料: { 关系状态: '隐藏' }, 隐藏资料: { 实际年龄: 29, 私人备注: '秘密' } } },
-            会话: { chat_a: { 对象UID: 'npc_a', 状态: '已匹配', 最近消息: [{ 消息UID: 'm1', 发送者: '角色', 内容: '你好', 时间: '' }], 长期摘要: '公开会话摘要' } },
+            会话: { chat_a: { 对象UID: 'npc_a', 状态: '已匹配', 最近消息: [{ 消息UID: 'm1', 发送者: '角色', 内容: '你好', 时间: '' }], 总结: { 记录: [{ 内容: '公开会话摘要' }] } } },
         },
     };
     const view = createPhoneView(read);

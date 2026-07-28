@@ -338,7 +338,7 @@ test('match tools create a fresh mutual match and message session without using 
             matched.与玩家关系.状态 = '已匹配';
             matched.隐藏资料 = { 实际年龄: 28, 私人备注: 'never render' };
             readResult.state.角色池.npc_match_2 = matched;
-            readResult.state.会话.chat_2 = { 对象UID: 'npc_match_2', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
+            readResult.state.会话.chat_2 = { 对象UID: 'npc_match_2', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' };
             return { ok: true, matchOutcome: 'accepted', npcUid: 'npc_match_2', sessionUid: 'chat_2', explanation: '公开缘分说明', matchScore: 91 };
         },
     };
@@ -1331,7 +1331,7 @@ test('accepted favourite invitation leaves favourites and opens the newly establ
                 calls.push([kind, npcUid]);
                 readResult.state.推荐.收藏角色UID = [];
                 readResult.state.角色池.npc_1.与玩家关系.状态 = '已匹配';
-                readResult.state.会话.chat_1 = { 对象UID: 'npc_1', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
+                readResult.state.会话.chat_1 = { 对象UID: 'npc_1', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' };
                 return { ok: true, sessionUid: 'chat_1', invitationOutcome: 'accepted' };
             },
         },
@@ -1844,7 +1844,7 @@ test('P2-B: romance animation is four-state SVG twin hearts with no glyph fallba
             const matched = adultCharacter('频率对象');
             matched.与玩家关系.状态 = '已匹配';
             readResult.state.角色池.npc_match_9 = matched;
-            readResult.state.会话.chat_9 = { 对象UID: 'npc_match_9', 状态: '已匹配', 最近消息: [], 长期摘要: '', 已确认边界: '', 已确认承诺: '' };
+            readResult.state.会话.chat_9 = { 对象UID: 'npc_match_9', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' };
             return queue.shift();
         },
     };
@@ -2086,7 +2086,7 @@ test('extension update failure surfaces HTTP status and host text in the dialog 
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'loading');
         assert.match(dialog.textContent, /正在检查扩展更新/u);
-        assert.match(dialog.textContent, /当前版本 v1\.0\.7/u, 'loading 弹窗应展示当前版本');
+        assert.match(dialog.textContent, /当前版本 v1\.0\.8/u, 'loading 弹窗应展示当前版本');
 
         gate.reject(new HostExtensionUpdateError('request_failed_http', {
             status: 500,
@@ -2146,7 +2146,7 @@ test('extension update success states show the current version and non-git insta
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'success');
         assert.match(dialog.textContent, /当前已是最新版本/u);
-        assert.match(dialog.textContent, /v1\.0\.7 已是最新版本/u, '最新结果应展示当前版本号');
+        assert.match(dialog.textContent, /v1\.0\.8 已是最新版本/u, '最新结果应展示当前版本号');
 
         result = Promise.resolve({ outcome: 'updated' });
         click(updateEntry());
