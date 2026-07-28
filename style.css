@@ -4168,6 +4168,9 @@
     cursor: pointer;
 }
 .yl-image-manager-file-label input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
+.yl-image-pack-transfer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--yl-space-2); }
+.yl-image-pack-transfer > * { min-width: 0; }
+.yl-image-pack-import-label { background: var(--yl-surface-2); }
 .yl-image-remote-import { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--yl-space-2); align-items: center; }
 .yl-image-remote-import-hint { color: var(--yl-text-2); font-size: var(--yl-type-xs); line-height: 1.45; }
 /* 面板按钮已全部换 createButton（yl-btn 变体分级），此处不再自绘按钮基类 */
@@ -4268,6 +4271,7 @@
 .yl-image-delete-button { margin-right: auto; }
 @media (max-width: 430px) {
     .yl-image-remote-import { grid-template-columns: 1fr; }
+    .yl-image-pack-transfer { grid-template-columns: 1fr; }
     .yl-image-card-preview { min-height: 180px; }
     .yl-image-keyword-row { grid-template-columns: minmax(0, 1fr) 62px auto; }
     .yl-image-keyword-actions > * { flex: 1 1 90px; }

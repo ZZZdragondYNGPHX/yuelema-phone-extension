@@ -13,9 +13,9 @@ import { createEmptyState } from '../ui/empty-state.js';
 import { SERVICE_UNLOCK_STORAGE_KEY } from './shared.js';
 
 const RECENT_RELEASE_NOTES = Object.freeze([
+    'v1.0.7：图片管理支持导出完整图包，并安全合并导入图片及每张图片的关键词权重；不会覆盖现有图片。',
     'v1.0.6：会话生图可在刷新后恢复并集中回顾、删除；角色头像可在公开资料页本地更换并随首页、匹配恢复；私聊回复不再因延迟布局回到顶部。',
     'v1.0.5：窗口右下角可自由拉伸至整个可视界面，归位同步复原尺寸；自建角色按正关键词权重在首页刷新或匹配中遇见。',
-    'v1.0.4：角色模板字段名兼容末尾半角冒号与全角冒号，并补充可公开查阅的精确格式说明；安全与成年人校验保持不变。',
 ]);
 
 export function createProfilePage(ctx) {

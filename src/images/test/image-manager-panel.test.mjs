@@ -33,7 +33,7 @@ async function flushUi(rounds = 4) {
     }
 }
 
-async function buildHarness({ seed = [], imageLibrary, compressImageFile, onChange, onFeedback, onConfigure, dialogController } = {}) {
+async function buildHarness({ seed = [], imageLibrary, compressImageFile, onChange, onFeedback, onConfigure, dialogController, downloadImagePack } = {}) {
     const store = imageLibrary ?? createStore();
     for (const input of seed) await store.add(input);
     const changes = [];
@@ -46,10 +46,69 @@ async function buildHarness({ seed = [], imageLibrary, compressImageFile, onChan
         onFeedback: onFeedback ?? ((message) => feedback.push(message)),
         onConfigure,
         dialogController,
+        downloadImagePack,
     });
     await flushUi();
     return { store, changes, feedback, ...api };
 }
+
+test('导出完整图包包含图片与关键词权重，并交给显式下载能力', async () => {
+    const downloads = [];
+    const harness = await buildHarness({
+        seed: [seedRecord('pack_portrait', [{ keyword: '温柔', weight: 4 }])],
+        downloadImagePack: async (json) => downloads.push(json),
+    });
+    try {
+        buttonByText(harness.element, '导出完整图包').dispatchEvent(new Event('click', { cancelable: true }));
+        await flushUi(6);
+
+        assert.equal(downloads.length, 1);
+        const exported = JSON.parse(downloads[0]);
+        assert.equal(exported.schema, 'yuelema.image-library');
+        assert.equal(exported.images[0].source.dataUrl, WEBP_DATA_URL);
+        assert.deepEqual(exported.images[0].keywordWeights, [{ keyword: '温柔', weight: 4 }]);
+        assert.equal(harness.element.querySelector('.yl-image-manager-status').textContent, '已导出 1 张图片及其关键词权重。');
+    } finally {
+        harness.dispose();
+    }
+});
+
+test('图包文件只做合并导入，重复图片跳过且现有关键词不被覆盖', async () => {
+    const harness = await buildHarness({
+        seed: [seedRecord('existing', [{ keyword: '现有', weight: 5 }])],
+    });
+    try {
+        const exported = await harness.store.export();
+        const input = harness.element.querySelector('[name="image-pack-file"]');
+        input.files = [{ type: 'application/json', name: 'pack.json', text: async () => exported }];
+        input.dispatchEvent(new Event('change'));
+        await flushUi(8);
+
+        assert.equal((await harness.store.list()).length, 1);
+        assert.deepEqual((await harness.store.get('existing')).keywordWeights, [{ keyword: '现有', weight: 5 }]);
+        assert.match(harness.element.querySelector('.yl-image-manager-status').textContent, /已导入 0 张，跳过 1 张重复图片/u);
+        assert.equal(harness.changes.at(-1).type, 'import');
+        assert.ok(harness.feedback.includes('图包已安全合并；现有图片未被覆盖。'));
+    } finally {
+        harness.dispose();
+    }
+});
+
+test('非法图包不会改变现有图片库', async () => {
+    const harness = await buildHarness({ seed: [seedRecord('existing')] });
+    try {
+        const input = harness.element.querySelector('[name="image-pack-file"]');
+        input.files = [{ type: 'application/json', name: 'broken.json', text: async () => '{bad json' }];
+        input.dispatchEvent(new Event('change'));
+        await flushUi(6);
+
+        assert.deepEqual((await harness.store.list()).map((record) => record.id), ['existing']);
+        assert.equal(harness.element.querySelector('.yl-image-manager-status').textContent, '图包未导入，现有图片保持不变。');
+        assert.ok(harness.feedback.includes('图片库 JSON 无法解析。'));
+    } finally {
+        harness.dispose();
+    }
+});
 
 function keyEvent(key) {
     const event = new Event('keydown', { cancelable: true });

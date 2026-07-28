@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.0.6') fail('manifest.version 必须与扩展版本 1.0.6 统一');
+if (manifest.version !== '1.0.7') fail('manifest.version 必须与扩展版本 1.0.7 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -121,7 +121,7 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.0.6'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.6 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.0.7'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.7 统一（必须位于壳层 app-shell.js）');
 if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
     || !appShellCore.includes("'placement_reset'")
     || !appShellCore.includes("'mvu_read_complete'")
@@ -205,6 +205,14 @@ if (!actionBridge.includes('generateCharacterCompletionDraft') || !actionBridge.
 if (!appShell.includes('createLauncherDragController') || !appShell.includes('launcherDrag.dispose')) fail('缺少小手机悬浮入口拖动控制器接线');
 if (!characterCreator.includes('只保存当前草稿到本地模板库') || !characterCreator.includes('导入单个模板到本地库') || !characterCreator.includes('合并导入整个模板库') || !characterCreator.includes('导出整个库')) fail('缺少创建角色界面的模板库生成、存储、导入导出 UI 接线');
 console.log('✓ 角色模板、本地头像、AI 补全/完整创作草稿、模板库与受控登记接线');
+
+const imagePackStoreSource = await readFile(resolve(root, 'src/images/image-library-store.js'), 'utf8');
+const imagePackPanelSource = await readFile(resolve(root, 'src/images/image-manager-panel.js'), 'utf8');
+if (!imagePackStoreSource.includes('mergeImportLibrary') || !imagePackStoreSource.includes('importMerge')
+    || !imagePackPanelSource.includes('导出完整图包') || !imagePackPanelSource.includes('合并导入图包')) {
+    fail('缺少图片库完整图包导出或安全合并导入接线');
+}
+console.log('✓ 图片库完整图包导出、安全合并导入与逐图关键词权重');
 
 const groupDiscoveryService = await readFile(resolve(root, 'src/groups/group-discovery-service.js'), 'utf8');
 if (!groupDiscoveryService.includes('buildGroupBrowseModel') || !groupDiscoveryService.includes('projectPublicGroupCharacter')) fail('缺少群组公开浏览或人物投影服务');

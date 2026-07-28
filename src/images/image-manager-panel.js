@@ -1,4 +1,9 @@
-import { normalizeEmbeddedImageDataUrl, projectImageLibraryError } from './image-library-store.js';
+import {
+    ImageLibraryError,
+    MAX_IMAGE_LIBRARY_SERIALIZED_BYTES,
+    normalizeEmbeddedImageDataUrl,
+    projectImageLibraryError,
+} from './image-library-store.js';
 import { projectRemoteImportError } from './remote-image-import.js';
 import { createButton } from '../ui/button.js';
 import { createEmptyState } from '../ui/empty-state.js';
@@ -95,6 +100,7 @@ export function createImageManagerPanel({
     // 一次性链接导入能力（url → Blob）。未注入时不渲染任何链接入口；
     // 下载结果仍必须走注入压缩链变成 embedded data URL，URL 本身不落库。
     importRemoteImageFile = null,
+    downloadImagePack = null,
 } = {}) {
     if (!documentRef || typeof documentRef.createElement !== 'function') {
         throw new TypeError('image_manager_document_invalid');
@@ -137,6 +143,22 @@ export function createImageManagerPanel({
     fileLabel.appendChild(fileInput);
 
     intake.appendChild(fileLabel);
+
+    const packTransfer = createElement(documentRef, 'div', { className: 'yl-image-pack-transfer' });
+    const packImportLabel = createElement(documentRef, 'label', { className: 'yl-image-manager-file-label yl-image-pack-import-label' });
+    packImportLabel.appendChild(createElement(documentRef, 'span', { text: '合并导入图包' }));
+    const packInput = createElement(documentRef, 'input', { type: 'file', name: 'image-pack-file' });
+    packInput.setAttribute('accept', 'application/json,.json');
+    packImportLabel.appendChild(packInput);
+    const packExportButton = createButton({ documentRef, variant: 'tonal', label: '导出完整图包' });
+    packExportButton.classList.add('yl-image-pack-export');
+    packTransfer.appendChild(packImportLabel);
+    packTransfer.appendChild(packExportButton);
+    intake.appendChild(packTransfer);
+    intake.appendChild(createElement(documentRef, 'p', {
+        className: 'yl-image-remote-import-hint',
+        text: '图包包含图片与每张图片的关键词权重；导入只合并，不覆盖现有图片。',
+    }));
 
     let remoteUrlInput = null;
     let remoteImportButton = null;
@@ -223,6 +245,8 @@ export function createImageManagerPanel({
 
     function setBusy(isBusy, message = '') {
         fileInput.disabled = isBusy;
+        packInput.disabled = isBusy;
+        packExportButton.disabled = isBusy;
         saveButton.disabled = isBusy;
         deleteButton.disabled = isBusy;
         if (remoteImportButton) remoteImportButton.disabled = isBusy;
@@ -474,6 +498,62 @@ export function createImageManagerPanel({
         });
     });
 
+    listen(packExportButton, 'click', () => {
+        void enqueueOperation(async () => {
+            setBusy(true, '正在生成完整图包…');
+            try {
+                if (typeof imageLibrary.export !== 'function') throw new TypeError('image_manager_pack_transfer_unavailable');
+                const json = await imageLibrary.export();
+                if (typeof downloadImagePack !== 'function') throw new TypeError('image_manager_download_unavailable');
+                await downloadImagePack(json);
+                status.textContent = `已导出 ${records.length} 张图片及其关键词权重。`;
+                report('完整图包已导出。');
+            } catch (error) {
+                status.textContent = '图包未导出。';
+                report(error?.message === 'image_manager_download_unavailable'
+                    ? '当前浏览器不支持图包下载。'
+                    : error?.message === 'image_manager_pack_transfer_unavailable'
+                        ? '当前图片库不支持图包导出。'
+                    : feedbackMessage(error));
+            } finally {
+                if (!disposed) setBusy(false);
+            }
+        });
+    });
+
+    listen(packInput, 'change', () => {
+        const file = packInput.files?.[0];
+        if (!file) return;
+        void enqueueOperation(async () => {
+            setBusy(true, '正在校验并合并图包…');
+            try {
+                if (typeof file.text !== 'function') throw new TypeError('image_manager_pack_read_failed');
+                if (typeof imageLibrary.importMerge !== 'function') throw new TypeError('image_manager_pack_transfer_unavailable');
+                if (Number.isFinite(file.size) && file.size > MAX_IMAGE_LIBRARY_SERIALIZED_BYTES) {
+                    throw new ImageLibraryError('LIBRARY_TOO_LARGE');
+                }
+                const json = await file.text();
+                const result = await imageLibrary.importMerge(json);
+                packInput.value = '';
+                await reload();
+                if (disposed) return;
+                const renamed = result.renamedCount > 0 ? `，${result.renamedCount} 张因 ID 重复已自动改名` : '';
+                status.textContent = `已导入 ${result.addedCount} 张，跳过 ${result.skippedCount} 张重复图片${renamed}。`;
+                report('图包已安全合并；现有图片未被覆盖。');
+                notify('import', null);
+            } catch (error) {
+                status.textContent = '图包未导入，现有图片保持不变。';
+                report(error?.message === 'image_manager_pack_read_failed'
+                    ? '无法读取所选图包文件。'
+                    : error?.message === 'image_manager_pack_transfer_unavailable'
+                        ? '当前图片库不支持图包导入。'
+                    : feedbackMessage(error));
+            } finally {
+                if (!disposed) setBusy(false);
+            }
+        });
+    });
+
     if (remoteImportButton) {
         listen(remoteImportButton, 'click', () => {
             const url = String(remoteUrlInput?.value ?? '').trim();
@@ -594,8 +674,4 @@ export function createImageManagerPanel({
         },
     });
 }
-
-
-
-
 

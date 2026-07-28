@@ -360,6 +360,19 @@ function parseImportInput(input) {
     return parseDocumentInput(input);
 }
 
+function uniqueImportedId(preferredId, usedIds) {
+    if (!usedIds.has(preferredId)) return preferredId;
+    let suffix = 2;
+    while (suffix < 100_000) {
+        const suffixText = `_${suffix}`;
+        const base = preferredId.slice(0, 96 - suffixText.length);
+        const candidate = `${base}${suffixText}`;
+        if (!usedIds.has(candidate)) return candidate;
+        suffix += 1;
+    }
+    fail('DUPLICATE_IMAGE_ID');
+}
+
 function parseStoredInput(input) {
     return parseDocumentInput(input, { discardLegacyRemote: true });
 }
@@ -555,6 +568,45 @@ export function createImageLibraryStore(options) {
         });
     }
 
+    async function mergeImportLibrary(input) {
+        return enqueueWrite(async () => {
+            await ensureLoaded();
+            // Validate the complete pack before calculating a merge. Identical image
+            // bytes are skipped so importing the same pack twice is idempotent.
+            const incoming = parseImportInput(input);
+            const usedIds = new Set(document.images.map((record) => record.id));
+            const knownSources = new Set(document.images.map((record) => record.source.dataUrl));
+            const additions = [];
+            let skippedCount = 0;
+            let renamedCount = 0;
+
+            for (const record of incoming.images) {
+                if (knownSources.has(record.source.dataUrl)) {
+                    skippedCount += 1;
+                    continue;
+                }
+                const id = uniqueImportedId(record.id, usedIds);
+                if (id !== record.id) renamedCount += 1;
+                usedIds.add(id);
+                knownSources.add(record.source.dataUrl);
+                additions.push({ ...record, id });
+            }
+            if (document.images.length + additions.length > MAX_IMAGE_LIBRARY_IMAGES) {
+                fail('LIBRARY_LIMIT_REACHED');
+            }
+
+            const next = normalizeDocument({ ...document, images: [...document.images, ...additions] });
+            serializeDocument(next);
+            await commit(next);
+            return project({
+                images: next.images,
+                addedCount: additions.length,
+                skippedCount,
+                renamedCount,
+            });
+        });
+    }
+
     return Object.freeze({
         snapshot,
         list,
@@ -564,6 +616,7 @@ export function createImageLibraryStore(options) {
         remove,
         export: exportLibrary,
         import: importLibrary,
+        importMerge: mergeImportLibrary,
     });
 }
 

@@ -27,7 +27,27 @@ import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
 
-const UI_VERSION = '1.0.6';
+const UI_VERSION = '1.0.7';
+
+function downloadImagePackJson(json) {
+    if (typeof json !== 'string' || typeof globalThis.Blob !== 'function'
+        || typeof globalThis.URL?.createObjectURL !== 'function'
+        || typeof globalThis.URL?.revokeObjectURL !== 'function') {
+        throw new TypeError('image_manager_download_unavailable');
+    }
+    const anchor = document.createElement('a');
+    const objectUrl = globalThis.URL.createObjectURL(new globalThis.Blob([json], { type: 'application/json;charset=utf-8' }));
+    try {
+        anchor.setAttribute('href', objectUrl);
+        anchor.setAttribute('download', `约了吗图片图包_v${UI_VERSION}.json`);
+        anchor.hidden = true;
+        document.body.appendChild(anchor);
+        anchor.dispatchEvent(new MouseEvent('click', { bubbles: false, cancelable: true }));
+    } finally {
+        anchor.remove();
+        globalThis.URL.revokeObjectURL(objectUrl);
+    }
+}
 const UI_LAYOUT_STORAGE_KEY = 'yuelema.ui-layout/v1';
 const LAUNCHER_POSITION_STORAGE_KEY = 'yuelema.launcher-position/v1';
 const PHONE_PANEL_POSITION_STORAGE_KEY = 'yuelema.phone-panel-position/v1';
@@ -2463,6 +2483,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 // 链接导入 = 一次性下载字节，随后仍走同一条本地压缩链；URL 不落库。
                 importRemoteImageFile: remoteImageImporter ? (url) => remoteImageImporter.importImageFile(url) : null,
                 compressImageFile: async (file) => (await compressLocalAvatar(file)).dataUrl,
+                downloadImagePack: downloadImagePackJson,
                 onFeedback: (message) => setFeedback(message),
                 onChange: () => { clearMatchedImageState(); renderPage(); },
                 onConfigure: () => openFeatureBinding([{ key: 'image_match', title: '图片匹配' }], '图片匹配设置'),
