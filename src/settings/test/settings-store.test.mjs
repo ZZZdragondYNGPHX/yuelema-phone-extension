@@ -52,7 +52,7 @@ test('默认内存存储与预设 CRUD、默认策略、功能回退', () => {
     const store = createSettingsStore({ storage });
     const initial = store.load();
     assert.equal(initial.schema, 'yuelema.settings');
-    assert.equal(initial.schemaVersion, 17);
+    assert.equal(initial.schemaVersion, 19);
     assert.deepEqual(initial.personalization, { enabled: true, keywordWeightsByMode: { SFW: [], NSFW: [] } });
     assert.equal(initial.connectionPresets.length, 0);
     assert.equal(initial.promptPresets.length, 22);
@@ -167,7 +167,7 @@ test('连接预设传输模式可持久化并严格校验', () => {
     );
 });
 
-test('旧 settings schema v1-v10 统一拒绝且不覆盖当前 v17 设置', () => {
+test('旧 settings schema v1-v10 统一拒绝且不覆盖当前 v19 设置', () => {
     const store = createSettingsStore({ storage: createMemoryStorage() });
     const current = store.load();
     const before = store.exportJson();
@@ -180,7 +180,7 @@ test('旧 settings schema v1-v10 统一拒绝且不覆盖当前 v17 设置', () 
     }
 });
 
-test('v11-v14 设置在加载与导入时迁移到 v17：内置提示词刷新为新文案，自定义预设保留', () => {
+test('v11-v14 设置在加载与导入时迁移到 v19：内置提示词刷新为新文案，自定义预设保留', () => {
     for (const legacyVersion of [11, 12, 13, 14]) {
         const seedStore = createSettingsStore({ storage: createMemoryStorage() });
         seedStore.load();
@@ -196,17 +196,17 @@ test('v11-v14 设置在加载与导入时迁移到 v17：内置提示词刷新�
 
         const seeded = createMemoryStorage({ [SETTINGS_STORAGE_KEY]: JSON.stringify(legacy) });
         const migrated = createSettingsStore({ storage: seeded }).load();
-        assert.equal(migrated.schemaVersion, 17);
+        assert.equal(migrated.schemaVersion, 19);
         assert.match(migrated.promptPresets.find((preset) => preset.id === 'builtin_private_chat_nsfw').content, /露骨文爱/u);
         assert.match(migrated.promptPresets.find((preset) => preset.id === 'builtin_private_chat_nsfw').content, /欲擒故纵/u, '迁移后应带上 v13 情色写作指导');
         assert.match(migrated.promptPresets.find((preset) => preset.id === 'builtin_recommendation_sfw').content, /本模式保持日常社交尺度/u);
         assert.equal(migrated.promptPresets.some((preset) => preset.content === staleContent), false);
         assert.equal(migrated.promptPresets.find((preset) => preset.id === 'custom_keep').content, '提示词-custom_keep');
-        assert.equal(JSON.parse(seeded.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 17, '迁移结果必须落盘为 v17');
+        assert.equal(JSON.parse(seeded.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 19, '迁移结果必须落盘为 v19');
 
         const imported = createSettingsStore({ storage: createMemoryStorage() });
         const result = imported.importJson(JSON.stringify(legacy));
-        assert.equal(result.schemaVersion, 17);
+        assert.equal(result.schemaVersion, 19);
         assert.match(result.promptPresets.find((preset) => preset.id === 'builtin_private_chat_nsfw').content, /露骨文爱/u);
         assert.match(result.promptPresets.find((preset) => preset.id === 'builtin_private_chat_nsfw').content, /欲擒故纵/u);
         assert.equal(result.promptPresets.find((preset) => preset.id === 'custom_keep').content, '提示词-custom_keep');
@@ -236,7 +236,7 @@ test('v13→v14 迁移把「语音匹配」内置预设改名为「描述匹配�
 
     const seeded = createMemoryStorage({ [SETTINGS_STORAGE_KEY]: JSON.stringify(legacy) });
     const migrated = createSettingsStore({ storage: seeded }).load();
-    assert.equal(migrated.schemaVersion, 17);
+    assert.equal(migrated.schemaVersion, 19);
     const sfw = migrated.promptPresets.find((preset) => preset.id === 'builtin_voice_match_sfw');
     const nsfw = migrated.promptPresets.find((preset) => preset.id === 'builtin_voice_match_nsfw');
     assert.equal(sfw.name, '内置·描述匹配·SFW', '迁移后 SFW 内置预设显示名应改为描述匹配');
@@ -277,7 +277,7 @@ test('v14→当前版本迁移刷新全部 SFW 内置文案：NSFW 内置与用�
 
     const seeded = createMemoryStorage({ [SETTINGS_STORAGE_KEY]: JSON.stringify(legacy) });
     const migrated = createSettingsStore({ storage: seeded }).load();
-    assert.equal(migrated.schemaVersion, 17);
+    assert.equal(migrated.schemaVersion, 19);
     assert.equal(migrated.promptPresets.some((preset) => preset.content === staleSfw), false, '全部 SFW 内置文案都应刷新为 v15 新文案');
     assert.match(migrated.promptPresets.find((preset) => preset.id === 'builtin_private_chat_sfw').content, /只要尊重已知边界，就不是冒犯/u, '私聊 SFW 应带上友好直白宽容条款');
     assert.match(migrated.promptPresets.find((preset) => preset.id === 'builtin_recommendation_sfw').content, /基础匹配硬条件/u, '推荐 SFW 应带上性别硬条件提醒');
@@ -288,10 +288,10 @@ test('v14→当前版本迁移刷新全部 SFW 内置文案：NSFW 内置与用�
     assert.equal(migrated.promptPresets.some((preset) => preset.id === 'builtin_image_match_sfw'), false, '用户删除的内置预设不得复活');
     assert.equal(migrated.functionModeBindings.image_match.SFW.promptPresetId, null, '删除内置后的空绑定不得被迁移改写');
     assert.equal(migrated.functionModeBindings.chat.SFW.promptPresetId, 'builtin_private_chat_sfw', '既有绑定 ID 迁移后保持原样');
-    assert.equal(JSON.parse(seeded.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 17, '迁移结果必须落盘为 v17');
+    assert.equal(JSON.parse(seeded.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 19, '迁移结果必须落盘为 v19');
 });
 
-test('v15→v17 迁移补入独立 ComfyUI 配置、刷新服务内置提示词且不改写自定义提示词', () => {
+test('v15→v19 迁移补入独立 ComfyUI 配置、刷新服务内置提示词且不改写自定义提示词', () => {
     const seedStore = createSettingsStore({ storage: createMemoryStorage() });
     seedStore.load();
     seedStore.addPromptPreset(prompt('custom_v15_keep', '自定义 v15 预设', 'SFW'));
@@ -307,7 +307,7 @@ test('v15→v17 迁移补入独立 ComfyUI 配置、刷新服务内置提示词�
     const migrated = createSettingsStore({
         storage: createMemoryStorage({ [SETTINGS_STORAGE_KEY]: JSON.stringify(legacy) }),
     }).load();
-    assert.equal(migrated.schemaVersion, 17);
+    assert.equal(migrated.schemaVersion, 19);
     assert.equal(migrated.imageGeneration.baseUrl, 'https://images.example.invalid');
     assert.equal(migrated.imageGeneration.model, 'nai-model-kept');
     assert.equal(migrated.imageGeneration.comfyBaseUrl, 'http://127.0.0.1:8188');
@@ -317,7 +317,7 @@ test('v15→v17 迁移补入独立 ComfyUI 配置、刷新服务内置提示词�
     assert.equal(migrated.promptPresets.find((preset) => preset.id === 'custom_v15_keep').content, '提示词-custom_v15_keep');
 });
 
-test('v16→v17 只刷新仍存在的服务内置提示词，不复活删除项或改写自定义预设', () => {
+test('v16→v19 只刷新仍存在的服务内置提示词，不复活删除项或改写自定义预设', () => {
     const seedStore = createSettingsStore({ storage: createMemoryStorage() });
     seedStore.load();
     seedStore.addPromptPreset(prompt('custom_v16_keep', '自定义 v16 预设', 'SFW'));
@@ -328,11 +328,56 @@ test('v16→v17 只刷新仍存在的服务内置提示词，不复活删除项�
 
     const seeded = createMemoryStorage({ [SETTINGS_STORAGE_KEY]: JSON.stringify(legacy) });
     const migrated = createSettingsStore({ storage: seeded }).load();
-    assert.equal(migrated.schemaVersion, 17);
+    assert.equal(migrated.schemaVersion, 19);
     assert.match(migrated.promptPresets.find((preset) => preset.id === 'builtin_service_profile_sfw').content, /最高优先级硬条件/u);
     assert.equal(migrated.promptPresets.some((preset) => preset.id === 'builtin_service_profile_nsfw'), false);
     assert.equal(migrated.promptPresets.find((preset) => preset.id === 'custom_v16_keep').content, '提示词-custom_v16_keep');
-    assert.equal(JSON.parse(seeded.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 17);
+    assert.equal(JSON.parse(seeded.getItem(SETTINGS_STORAGE_KEY)).schemaVersion, 19);
+});
+
+test('v17→v19 复制既有通用提示词到 OpenAI 专属预设并保留 NAI 值', () => {
+    const seedStore = createSettingsStore({ storage: createMemoryStorage() });
+    const legacy = seedStore.load();
+    legacy.schemaVersion = 17;
+    legacy.imageGeneration.positivePrefix = 'legacy positive';
+    legacy.imageGeneration.positiveSuffix = 'legacy suffix';
+    legacy.imageGeneration.negativePrompt = 'legacy negative';
+    delete legacy.imageGeneration.openaiPositivePrefix;
+    delete legacy.imageGeneration.openaiPositiveSuffix;
+    delete legacy.imageGeneration.openaiNegativePrompt;
+    const migrated = createSettingsStore({
+        storage: createMemoryStorage({ [SETTINGS_STORAGE_KEY]: JSON.stringify(legacy) }),
+    }).load();
+    assert.equal(migrated.schemaVersion, 19);
+    assert.equal(migrated.imageGeneration.positivePrefix, 'legacy positive');
+    assert.equal(migrated.imageGeneration.openaiPositivePrefix, 'legacy positive');
+    assert.equal(migrated.imageGeneration.openaiPositiveSuffix, 'legacy suffix');
+    assert.equal(migrated.imageGeneration.openaiNegativePrompt, 'legacy negative');
+    assert.equal(migrated.imageGeneration.openaiPresetId, 'image_generation_openai');
+    assert.equal(migrated.imageGeneration.openaiBaseUrl, 'https://api.openai.com');
+    assert.equal(migrated.imageGeneration.openaiModel, 'gpt-image-1');
+});
+
+test('v18→v19 保留 OpenAI 专属配置并从旧共用尺寸初始化独立尺寸', () => {
+    const seedStore = createSettingsStore({ storage: createMemoryStorage() });
+    const legacy = seedStore.load();
+    legacy.schemaVersion = 18;
+    legacy.imageGeneration.width = 832;
+    legacy.imageGeneration.height = 1216;
+    legacy.imageGeneration.openaiBaseUrl = 'https://openai-v18.example.invalid';
+    legacy.imageGeneration.openaiModel = 'gpt-image-v18';
+    legacy.imageGeneration.openaiPositivePrefix = 'keep openai prefix';
+    delete legacy.imageGeneration.openaiWidth;
+    delete legacy.imageGeneration.openaiHeight;
+    const migrated = createSettingsStore({
+        storage: createMemoryStorage({ [SETTINGS_STORAGE_KEY]: JSON.stringify(legacy) }),
+    }).load();
+    assert.equal(migrated.schemaVersion, 19);
+    assert.equal(migrated.imageGeneration.openaiBaseUrl, 'https://openai-v18.example.invalid');
+    assert.equal(migrated.imageGeneration.openaiModel, 'gpt-image-v18');
+    assert.equal(migrated.imageGeneration.openaiPositivePrefix, 'keep openai prefix');
+    assert.equal(migrated.imageGeneration.openaiWidth, 832);
+    assert.equal(migrated.imageGeneration.openaiHeight, 1216);
 });
 
 test('个性化关键词权重按 SFW/NSFW 独立持久化、收录和增量更新', () => {
@@ -479,7 +524,7 @@ test('browser-local group and forum binding overlays resolve without changing ex
 test('生图设置严格隔离密钥并按对话类型保存自动生图开关', () => {
     const store = createSettingsStore({ storage: createMemoryStorage() });
     const initial = store.load();
-    assert.equal(initial.schemaVersion, 17);
+    assert.equal(initial.schemaVersion, 19);
     assert.equal(initial.imageGeneration.enabled, false);
     assert.equal(initial.imageGeneration.apiMode, 'novelai');
     assert.equal(initial.imageGeneration.baseUrl, 'https://image.novelai.net');
@@ -493,6 +538,13 @@ test('生图设置严格隔离密钥并按对话类型保存自动生图开关',
     assert.equal(initial.imageGeneration.height, 1024);
     assert.equal(initial.imageGeneration.steps, 28);
     assert.equal(initial.imageGeneration.variety, false);
+    assert.equal(initial.imageGeneration.openaiPositivePrefix, '');
+    assert.equal(initial.imageGeneration.openaiPresetId, 'image_generation_openai');
+    assert.equal(initial.imageGeneration.openaiBaseUrl, 'https://api.openai.com');
+    assert.equal(initial.imageGeneration.openaiEndpointPath, '/v1/images/generations');
+    assert.equal(initial.imageGeneration.openaiModel, 'gpt-image-1');
+    assert.equal(initial.imageGeneration.openaiWidth, 1024);
+    assert.equal(initial.imageGeneration.openaiHeight, 1024);
     assert.equal(initial.imageGeneration.comfyWorkflow, '');
     assert.deepEqual(initial.imageGeneration.conversationSettings, { private: {}, group: {}, forum: {} });
 

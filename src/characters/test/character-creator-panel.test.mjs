@@ -116,6 +116,31 @@ test('AI 补全和完整创作各有独立的预设选项入口', () => {
         { key: 'character_full_authoring', title: 'AI 完整创作' },
     ]);
 });
+
+test('successful registration hands the allocated uid and embedded avatar to browser-local persistence', async () => {
+    const registered = [];
+    const template = {
+        format: 'yuelema.character/v1',
+        character: { ...adultCandidate(), 公开资料: { ...adultCandidate().公开资料, 头像引用: '本地头像' } },
+        avatar: { kind: 'embedded', dataUrl: 'data:image/png;base64,iVBORw0KGgo=' },
+    };
+    const panel = buildCharacterCreatorPanel({
+        documentRef: miniDom.document,
+        actionBridge: { async registerCharacter() { return { ok: true, npcUid: 'npc_custom_13' }; } },
+        characterLibrary: { list: () => [], importTemplate() {} },
+        signal: new AbortController().signal,
+        onFeedback() {},
+        onRegistered: async (value) => { registered.push(value); },
+    });
+    control(panel, 'character-template-json').value = JSON.stringify(template);
+    buttonByText(panel, '校验并载入到编辑器').dispatchEvent(new Event('click'));
+    panel.querySelector('form').dispatchEvent(new Event('submit', { cancelable: true }));
+    await flushUi();
+    assert.deepEqual(registered, [{
+        npcUid: 'npc_custom_13',
+        avatar: { kind: 'embedded', dataUrl: 'data:image/png;base64,iVBORw0KGgo=' },
+    }]);
+});
 test('头像来源只提供占位与本地压缩两种入口，不再存在 URL 头像表单', () => {
     const { panel } = createHarness();
     assert.equal(panel.querySelector('[name="avatar-url"]'), null, 'URL 头像输入框已按新合同移除');

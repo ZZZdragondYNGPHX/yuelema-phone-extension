@@ -149,6 +149,12 @@ test('private chat uses a distinct mobile conversation surface and only calls th
 });
 
 test('private chat keeps the reading anchor and follows the bottom across pending and completed replies', async () => {
+    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    const frameCallbacks = [];
+    globalThis.requestAnimationFrame = (callback) => { frameCallbacks.push(callback); return frameCallbacks.length; };
+    const flushFrames = () => {
+        while (frameCallbacks.length) frameCallbacks.shift()();
+    };
     const response = deferred();
     const result = readResult();
     let pending = false;
@@ -181,10 +187,20 @@ test('private chat keeps the reading anchor and follows the bottom across pendin
         input.value = '继续聊。'; input.dispatchEvent(new Event('input'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息'));
         assert.equal(content.scrollTop, 400, '等待回复时仍应停留在原底部，而不是跳回开头');
+        content.scrollTop = 0;
+        flushFrames();
+        assert.equal(content.scrollTop, 400, '真实浏览器布局帧晚到时仍应复核并恢复原底部');
         response.resolve();
         await flushUi();
         assert.equal(content.scrollTop, 700, '新回复完成后，原本位于底部的用户应跟随到新底部');
-    } finally { mounted.destroy(); }
+        content.scrollTop = 0;
+        flushFrames();
+        assert.equal(content.scrollTop, 700, 'AI 回复布局完成后不得再次回到顶部');
+    } finally {
+        mounted.destroy();
+        if (originalRequestAnimationFrame === undefined) delete globalThis.requestAnimationFrame;
+        else globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    }
 });
 
 test('chat summary settings disable their two subpages until enabled, then render a per-character summary archive', () => {

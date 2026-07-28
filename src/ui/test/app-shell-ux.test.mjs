@@ -515,6 +515,41 @@ test('my-page avatar is browser-local, while the public-profile editor no longer
     }
 });
 
+test('character public profile avatar opens the shared local menu and uses the uid-scoped saved avatar', async () => {
+    const png = 'data:image/png;base64,iVBORw0KGgo=';
+    const removed = [];
+    const characterAvatarStore = {
+        snapshot(uid) { return uid === 'npc_1' && !removed.includes(uid) ? { kind: 'embedded', dataUrl: png } : { kind: 'placeholder' }; },
+        async setAvatar() {},
+        async removeAvatar(uid) { removed.push(uid); },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-character-avatar-menu',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null, characterAvatarStore, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        const cardAvatar = miniDom.document.querySelectorAll('.yl-candidate-avatar')
+            .find((node) => node.getAttribute('aria-label') === '查看公开候选人的公开资料');
+        assert.ok(cardAvatar);
+        assert.equal(cardAvatar.querySelector('img')?.getAttribute('src'), png, '首页应优先显示按角色 UID 保存的本地头像');
+        click(cardAvatar);
+        const detailAvatar = miniDom.document.querySelector('.yl-public-profile')?.querySelector('.yl-candidate-avatar');
+        assert.equal(detailAvatar.getAttribute('aria-label'), '更换公开候选人的头像');
+        click(detailAvatar);
+        const menu = miniDom.document.querySelector('.yl-avatar-modal');
+        assert.equal(menu.hidden, false);
+        assert.match(menu.textContent, /更换公开候选人的头像|从本地导入图片|移除头像/u);
+        click(buttonByText('移除头像'));
+        await flushUi();
+        assert.deepEqual(removed, ['npc_1']);
+        assert.equal(miniDom.document.querySelector('.yl-public-profile')?.querySelector('.yl-candidate-avatar')?.querySelector('img'), null);
+    } finally {
+        mounted.destroy();
+    }
+});
+
 test('operation dialogs always close and dismissed AI generations never reopen or leak errors', async () => {
     /* P2-B 后匹配流程改为页面内光环/结果卡，不再走操作弹窗；
        弹窗机制回归改用仍走 romance 弹窗的收藏主动私聊流程作为载体。 */
@@ -2051,7 +2086,7 @@ test('extension update failure surfaces HTTP status and host text in the dialog 
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'loading');
         assert.match(dialog.textContent, /正在检查扩展更新/u);
-        assert.match(dialog.textContent, /当前版本 v1\.0\.5/u, 'loading 弹窗应展示当前版本');
+        assert.match(dialog.textContent, /当前版本 v1\.0\.6/u, 'loading 弹窗应展示当前版本');
 
         gate.reject(new HostExtensionUpdateError('request_failed_http', {
             status: 500,
@@ -2111,7 +2146,7 @@ test('extension update success states show the current version and non-git insta
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'success');
         assert.match(dialog.textContent, /当前已是最新版本/u);
-        assert.match(dialog.textContent, /v1\.0\.5 已是最新版本/u, '最新结果应展示当前版本号');
+        assert.match(dialog.textContent, /v1\.0\.6 已是最新版本/u, '最新结果应展示当前版本号');
 
         result = Promise.resolve({ outcome: 'updated' });
         click(updateEntry());

@@ -27,7 +27,7 @@ import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
 
-const UI_VERSION = '1.0.5';
+const UI_VERSION = '1.0.6';
 const UI_LAYOUT_STORAGE_KEY = 'yuelema.ui-layout/v1';
 const LAUNCHER_POSITION_STORAGE_KEY = 'yuelema.launcher-position/v1';
 const PHONE_PANEL_POSITION_STORAGE_KEY = 'yuelema.phone-panel-position/v1';
@@ -43,18 +43,19 @@ const LAUNCHER_VIEWPORT_GAP = 12;
 const PHONE_NAV_DRAG_HOLD_MS = 360;
 const LOCAL_PAGE_COPY = Object.freeze({
     settings_image_generation: Object.freeze({ title: '生图设置' }),
+    settings_image_cache: Object.freeze({ title: '图片缓存' }),
     about: Object.freeze({ title: '关于软件' }),
     service_hub: Object.freeze({ title: '专属服务' }),
 });
 function pageCopy(pageId) { return PAGE_COPY[pageId] ?? LOCAL_PAGE_COPY[pageId] ?? null; }
 const PRIMARY_PAGE_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'groups', group_chat_create: 'groups', group_chat_summary: 'groups', group_forum: 'groups', forum_post: 'groups', forum_post_summary: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_image_generation: 'profile', settings_image_cache: 'profile', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home',
 });
 // E1 裁平（裁决 D7）：settings 目录页已删除，全部设置二级页与“关于软件”直接挂在「我的」下。
 const PAGE_PARENT_FOR = Object.freeze({
     group_chat: 'groups', group_chat_room: 'group_chat', group_chat_create: 'group_chat', group_chat_summary: 'group_chat_room', group_forum: 'groups', forum_post: 'group_forum', forum_post_summary: 'forum_post', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
-    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'profile', settings_image_generation: 'profile', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'profile', candidate_detail: 'home',
+    settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'profile', settings_image_generation: 'profile', settings_image_cache: 'settings_image_generation', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'profile', candidate_detail: 'home',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
     home: Object.freeze([{ key: 'recommendation_refresh', title: '首页推荐刷新' }]),
@@ -161,7 +162,7 @@ function clearStoredLayoutPosition(storage, key) {
 }
 
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
-export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, imageLibrary = null, imageMatchCoordinator = null, imageGenerationClient = null, remoteImageImporter = null, extensionUpdater = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
+export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, characterAvatarStore = null, imageLibrary = null, conversationImageStore = null, imageMatchCoordinator = null, imageGenerationClient = null, remoteImageImporter = null, extensionUpdater = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
     const abortController = new AbortController();
     // 弹窗焦点统一由控制器管理：打开聚焦、Tab 焦点环、Escape 关栈顶、关闭礼貌回 opener。
     const dialogController = createDialogController({ documentRef });
@@ -186,6 +187,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let extensionUpdatePending = false;
     let activeMessageSessionUid = '';
     let renderedPrivateChatSessionUid = '';
+    let privateChatScrollRestoreGeneration = 0;
     let messageSearchQuery = '';
     let chatMoreMenuSessionUid = '';
     let chatConfirmationSessionUid = '';
@@ -272,16 +274,23 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let summaryToastTimer = null;
     let featureBindingDialogState = null;
     let avatarUploadPending = false;
+    let avatarDialogTarget = Object.freeze({ kind: 'player', uid: '', nickname: '' });
     let imageManagerPanel = null;
     const matchedImageByProfile = new Map();
     const imageMatchPending = new Map();
-    // Image presentation state stays in this mounted UI only. It never enters MVU,
-    // prompts, storage, diagnostics, or image-library records.
+    // Transient loading/failure presentation stays in this mounted UI. Successful
+    // conversation images and their narrow scene directives may be restored from
+    // the dedicated browser-local store; they never enter MVU or the image library.
     const imageMatchFailures = new Set();
     const imageAssetFailures = new Set();
     const imageAssetsReady = new Set();
     const privateImageDirectives = new Map();
     const conversationImageStates = new Map();
+    for (const record of conversationImageStore?.list?.() ?? []) {
+        const key = imageDirectiveStateKey(record.kind, record.conversationId, record.messageId);
+        conversationImageStates.set(key, { status: 'ready', directive: record.directive, imageSource: record.imageSource, message: '' });
+        if (record.kind === 'private') privateImageDirectives.set(`${record.conversationId}:${record.messageId}`, record.directive);
+    }
     const imageDirectiveLongPressTimers = new Set();
     const operationActivity = createOperationActivity();
     let unsubscribeOperationActivity = null;
@@ -491,8 +500,48 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     imageDirectiveDialogText.readOnly = true;
     append(imageDirectiveDialog, [imageDirectiveTitlebar, element('p', { className: 'yl-settings-summary', text: '这里只展示 AI 本次返回的场景结构，不包含角色绘图 DNA、固定提示词或 API Key。' }), imageDirectiveDialogText]);
 
-    append(root, [launcher, launcherTools, panel, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog, forumSettingsDialog, imageDirectiveDialog]);
+    const imageActionDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-image-action-dialog', hidden: true });
+    imageActionDialog.setAttribute('role', 'dialog');
+    imageActionDialog.setAttribute('aria-modal', 'false');
+    imageActionDialog.setAttribute('aria-label', '图片操作');
+    const imageActionTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const imageActionClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭图片操作' }));
+    append(imageActionTitlebar, [element('h2', { text: '图片操作' }), imageActionClose]);
+    const imageActionButtons = element('div', { className: 'yl-settings-actions yl-image-action-buttons' });
+    const imageActionDirective = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '查看本次结构化语句', ariaLabel: '查看本次结构化语句' });
+    const imageActionOriginal = element('button', { className: 'yl-settings-button', type: 'button', text: '查看原图', ariaLabel: '查看原图' });
+    append(imageActionButtons, [imageActionDirective, imageActionOriginal]);
+    append(imageActionDialog, [imageActionTitlebar, element('p', { className: 'yl-settings-summary', text: '小图用于聊天浏览；原图会按实际像素展示，可在窗口内滚动查看。' }), imageActionButtons]);
 
+    const imageOriginalDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-image-original-dialog', hidden: true });
+    imageOriginalDialog.setAttribute('role', 'dialog');
+    imageOriginalDialog.setAttribute('aria-modal', 'true');
+    imageOriginalDialog.setAttribute('aria-label', '查看生成原图');
+    const imageOriginalTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const imageOriginalClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '关闭原图' }));
+    append(imageOriginalTitlebar, [element('h2', { text: '生成原图' }), imageOriginalClose]);
+    const imageOriginalViewport = element('div', { className: 'yl-image-original-viewport' });
+    const imageOriginal = element('img', { className: 'yl-image-original', alt: 'AI 生成图片原图', referrerPolicy: 'no-referrer' });
+    imageOriginalViewport.appendChild(imageOriginal);
+    append(imageOriginalDialog, [imageOriginalTitlebar, imageOriginalViewport]);
+
+    const imageCacheDeleteDialog = element('section', { className: 'yl-settings-section yl-settings-modal yl-image-cache-delete-dialog', hidden: true });
+    imageCacheDeleteDialog.setAttribute('role', 'alertdialog');
+    imageCacheDeleteDialog.setAttribute('aria-modal', 'true');
+    imageCacheDeleteDialog.setAttribute('aria-label', '确认删除缓存图片');
+    const imageCacheDeleteTitlebar = element('div', { className: 'yl-dialog-titlebar' });
+    const imageCacheDeleteClose = applyCloseIcon(element('button', { className: 'yl-dialog-close', type: 'button', ariaLabel: '取消删除缓存图片' }));
+    append(imageCacheDeleteTitlebar, [element('h2', { text: '删除缓存图片？' }), imageCacheDeleteClose]);
+    const imageCacheDeleteActions = element('div', { className: 'yl-settings-actions' });
+    const imageCacheDeleteCancel = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '取消', ariaLabel: '取消删除图片' });
+    const imageCacheDeleteConfirm = element('button', { className: 'yl-settings-button yl-button-danger', type: 'button', text: '确认删除', ariaLabel: '确认删除图片' });
+    append(imageCacheDeleteActions, [imageCacheDeleteCancel, imageCacheDeleteConfirm]);
+    append(imageCacheDeleteDialog, [imageCacheDeleteTitlebar, element('p', { className: 'yl-settings-summary', text: '删除后，本浏览器将不再保留这张生成图片及其缓存结构化语句。' }), imageCacheDeleteActions]);
+
+    append(root, [launcher, launcherTools, panel, operationDialog, bindingDialog, avatarDialog, groupMemberPickerDialog, groupAutoDialog, forumSettingsDialog, imageDirectiveDialog, imageActionDialog, imageOriginalDialog, imageCacheDeleteDialog]);
+
+    let imageActionState = null;
+    let imageCacheDeleteRecord = null;
     function formatDirectiveForDisplay(directive) {
         try { return formatImageDirective(directive); }
         catch { return ''; }
@@ -501,9 +550,40 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         closeManagedDialog(imageDirectiveDialog);
         imageDirectiveDialogText.value = '';
     }
-    function openImageDirectiveDialog(directive) {
+    function openImageDirectiveDialog(directive, opener = null) {
         imageDirectiveDialogText.value = formatDirectiveForDisplay(directive) || '结构化语句当前不可用。';
-        openManagedDialog(imageDirectiveDialog, { onRequestClose: closeImageDirectiveDialog });
+        openManagedDialog(imageDirectiveDialog, { opener, onRequestClose: closeImageDirectiveDialog });
+    }
+    function closeImageActionDialog() {
+        closeManagedDialog(imageActionDialog);
+        imageActionState = null;
+    }
+    function closeImageOriginalDialog() {
+        closeManagedDialog(imageOriginalDialog);
+        imageOriginal.setAttribute('src', '');
+    }
+    function openImageOriginalDialog(imageSource, opener = null) {
+        const source = safeConversationImageSource(imageSource);
+        if (!source) {
+            setFeedback('原图当前不可用。');
+            return;
+        }
+        imageOriginal.setAttribute('src', source);
+        openManagedDialog(imageOriginalDialog, { opener, onRequestClose: closeImageOriginalDialog });
+    }
+    function openImageActionDialog({ imageSource, directive, opener = null }) {
+        const source = safeConversationImageSource(imageSource);
+        if (!source || !formatDirectiveForDisplay(directive)) return;
+        imageActionState = { imageSource: source, directive, opener };
+        openManagedDialog(imageActionDialog, { opener, onRequestClose: closeImageActionDialog });
+    }
+    function closeImageCacheDeleteDialog() {
+        closeManagedDialog(imageCacheDeleteDialog);
+        imageCacheDeleteRecord = null;
+    }
+    function openImageCacheDeleteDialog(record, opener = null) {
+        imageCacheDeleteRecord = record;
+        openManagedDialog(imageCacheDeleteDialog, { opener, onRequestClose: closeImageCacheDeleteDialog });
     }
     function clearImageDirectiveLongPressTimers() {
         for (const timer of imageDirectiveLongPressTimers) clearTimeout(timer);
@@ -557,7 +637,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         append(controls, [settingsButton, toggleLabel]);
         return controls;
     }
-    function attachImageDirectiveLongPress(image, directive) {
+    function attachImageDirectiveLongPress(image, directive, imageSource) {
         let timer = null;
         const cancel = () => {
             if (timer === null) return;
@@ -570,7 +650,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             timer = setTimeout(() => {
                 imageDirectiveLongPressTimers.delete(timer);
                 timer = null;
-                openImageDirectiveDialog(directive);
+                openImageActionDialog({ imageSource, directive, opener: image });
             }, 560);
             imageDirectiveLongPressTimers.add(timer);
         };
@@ -581,7 +661,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         listen(image, image, 'touchstart', start, abortController.signal);
         listen(image, image, 'touchend', cancel, abortController.signal);
         listen(image, image, 'touchcancel', cancel, abortController.signal);
-        listen(image, image, 'contextmenu', (event) => { event.preventDefault?.(); cancel(); openImageDirectiveDialog(directive); }, abortController.signal);
+        listen(image, image, 'contextmenu', (event) => {
+            event.preventDefault?.();
+            cancel();
+            openImageActionDialog({ imageSource, directive, opener: image });
+        }, abortController.signal);
     }
     function localProfileCharacterUid(profile) {
         const nickname = String(profile?.nickname ?? profile?.昵称 ?? '').trim();
@@ -611,7 +695,19 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (isDestroyed) return;
         const source = safeConversationImageSource(result?.image?.src ?? result?.image?.dataUrl ?? result?.dataUrl);
         if (result?.ok && source) {
+            let persisted = true;
+            if (typeof conversationImageStore?.put === 'function') {
+                try {
+                    await conversationImageStore.put({ kind, conversationId, messageId, directive, imageSource: source });
+                } catch {
+                    persisted = false;
+                }
+            } else {
+                persisted = false;
+            }
             conversationImageStates.set(key, { status: 'ready', directive, imageSource: source, message: '' });
+            if (kind === 'private') privateImageDirectives.set(`${conversationId}:${messageId}`, directive);
+            if (!persisted) setFeedback('图片已生成，但本地持久化失败，本次仅临时显示。');
         } else {
             const message = publicImageFailureMessage(result);
             conversationImageStates.set(key, { status: 'failed', directive, message });
@@ -624,6 +720,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!formatted || !messageId || !conversationId) return null;
         const key = imageDirectiveStateKey(kind, conversationId, messageId);
         let state = conversationImageStates.get(key) ?? null;
+        if (!state) {
+            const stored = conversationImageStore?.peek?.(kind, conversationId, messageId);
+            if (stored) {
+                state = { status: 'ready', directive: stored.directive, imageSource: stored.imageSource, message: '' };
+                conversationImageStates.set(key, state);
+            }
+        }
         if (!state && imageGenerationEnabled() && conversationImageSettings(kind, conversationId).autoGenerate) {
             state = { status: 'queued', directive, message: '已识别生图结构，等待自动生成…' };
             conversationImageStates.set(key, state);
@@ -645,15 +748,100 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         card.appendChild(headerRow);
         if (state?.status === 'ready') {
             const image = element('img', { className: 'yl-image-directive-image', src: state.imageSource, alt: 'AI 根据本次结构生成的图片', loading: 'lazy', referrerPolicy: 'no-referrer' });
-            attachImageDirectiveLongPress(image, directive);
+            attachImageDirectiveLongPress(image, directive, state.imageSource);
             preview.appendChild(image);
-            preview.appendChild(element('p', { className: 'yl-image-directive-hint', text: '长按图片可查看本次结构化语句。' }));
+            preview.appendChild(element('p', { className: 'yl-image-directive-hint', text: '右键或长按图片可查看结构化语句与原图。' }));
         } else {
             if (state?.message) preview.appendChild(element('p', { className: 'yl-image-directive-status', text: state.message }));
             preview.appendChild(element('p', { className: 'yl-image-directive-structure', text: formatted }));
         }
         card.appendChild(preview);
         return card;
+    }
+    function conversationKindLabel(kind) {
+        return ({ private: '私聊', group: '群聊', forum: '论坛' })[kind] || '对话';
+    }
+    function cacheTimeLabel(value) {
+        const timestamp = Date.parse(String(value ?? ''));
+        if (!Number.isFinite(timestamp)) return '时间未知';
+        try {
+            return new Intl.DateTimeFormat('zh-CN', {
+                month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+            }).format(new Date(timestamp));
+        } catch {
+            return '时间未知';
+        }
+    }
+    async function deleteConversationImageRecord(record) {
+        if (!record || typeof conversationImageStore?.remove !== 'function') return;
+        imageCacheDeleteConfirm.disabled = true;
+        try {
+            const removed = await conversationImageStore.remove(record.kind, record.conversationId, record.messageId);
+            if (!removed) {
+                setFeedback('这张缓存图片已经不存在。');
+            } else {
+                conversationImageStates.delete(imageDirectiveStateKey(record.kind, record.conversationId, record.messageId));
+                if (record.kind === 'private') privateImageDirectives.delete(`${record.conversationId}:${record.messageId}`);
+                setFeedback('缓存图片及其结构化语句已删除。');
+            }
+            closeImageCacheDeleteDialog();
+            renderPage();
+        } catch {
+            setFeedback('缓存图片删除失败，请稍后重试。');
+        } finally {
+            imageCacheDeleteConfirm.disabled = false;
+        }
+    }
+    function buildConversationImageCachePage() {
+        const section = element('section', { className: 'yl-settings-section yl-conversation-image-cache' });
+        append(section, [
+            element('p', {
+                className: 'yl-phone-page-description',
+                text: '这里只展示当前浏览器保存的私聊、群聊与论坛生图。删除会同时移除该图片及缓存的结构化语句，不影响 MVU 或角色卡。',
+            }),
+        ]);
+        const records = [...(conversationImageStore?.list?.() ?? [])]
+            .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+        section.appendChild(element('p', {
+            className: 'yl-image-cache-count',
+            text: records.length ? `已保存 ${records.length} / 48 张` : '尚未保存任何生成图片。',
+        }));
+        if (!records.length) {
+            section.appendChild(createEmptyState({
+                documentRef,
+                variant: 'search',
+                title: '图片缓存为空',
+                hint: '在私聊、群聊或论坛中完成一次生图后，可在这里回顾原图。',
+            }));
+            return section;
+        }
+        const grid = element('div', { className: 'yl-image-cache-grid' });
+        for (const record of records) {
+            const card = element('article', { className: 'yl-image-cache-card' });
+            const image = element('img', {
+                className: 'yl-image-cache-thumbnail',
+                src: record.imageSource,
+                alt: `${conversationKindLabel(record.kind)}生成图片缩略图`,
+                loading: 'lazy',
+                referrerPolicy: 'no-referrer',
+            });
+            const meta = element('div', { className: 'yl-image-cache-meta' });
+            meta.appendChild(element('strong', { text: `${conversationKindLabel(record.kind)} · ${imageDirectiveKindLabel(record.directive.kind)}` }));
+            meta.appendChild(element('span', { text: cacheTimeLabel(record.updatedAt) }));
+            const actions = element('div', { className: 'yl-settings-actions yl-image-cache-actions' });
+            const original = element('button', { className: 'yl-settings-button', type: 'button', text: '查看原图', ariaLabel: '查看缓存原图' });
+            const structure = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '结构化语句', ariaLabel: '查看缓存结构化语句' });
+            const remove = element('button', { className: 'yl-settings-button yl-button-danger', type: 'button', text: '删除', ariaLabel: '删除缓存图片' });
+            listen(image, image, 'click', () => openImageOriginalDialog(record.imageSource, image), abortController.signal);
+            listen(original, original, 'click', () => openImageOriginalDialog(record.imageSource, original), abortController.signal);
+            listen(structure, structure, 'click', () => openImageDirectiveDialog(record.directive, structure), abortController.signal);
+            listen(remove, remove, 'click', () => openImageCacheDeleteDialog(record, remove), abortController.signal);
+            append(actions, [original, structure, remove]);
+            append(card, [image, meta, actions]);
+            grid.appendChild(card);
+        }
+        section.appendChild(grid);
+        return section;
     }
     documentRef.body.appendChild(root);
 
@@ -2107,7 +2295,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         else if (activePage === 'favorites') page.appendChild(ctx.buildFavoritesPage());
         else if (activePage === 'about') page.appendChild(ctx.buildAboutSoftwarePage());
         else if (activePage === 'service_hub') page.appendChild(ctx.buildServiceHubPage());
-        else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images', 'settings_image_generation'].includes(activePage)) page.appendChild(buildSettingsDetail());
+        else if (['settings_connections', 'settings_prompts', 'settings_personalization', 'settings_personalization_preference', 'settings_images', 'settings_image_generation', 'settings_image_cache'].includes(activePage)) page.appendChild(buildSettingsDetail());
         else if (activePage === 'settings_preferences') page.appendChild(ctx.buildPreferenceSettingsPage());
         else if (activePage === 'settings_console') page.appendChild(decorateOperationConsoleDetails(ctx.buildOperationConsole()));
         else if (activePage === 'settings_chat_summary') page.appendChild(ctx.buildChatSummarySettingsHome());
@@ -2119,8 +2307,20 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         content.appendChild(page);
         renderedPrivateChatSessionUid = activePage === 'private_chat' ? activeMessageSessionUid : '';
         if (privateChatScroll) {
-            const bottom = Math.max(0, (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0));
-            content.scrollTop = privateChatScroll.followBottom ? bottom : Math.min(privateChatScroll.top, bottom);
+            const restoreGeneration = ++privateChatScrollRestoreGeneration;
+            const restore = () => {
+                if (isDestroyed || restoreGeneration !== privateChatScrollRestoreGeneration
+                    || activePage !== 'private_chat' || activeMessageSessionUid !== renderedPrivateChatSessionUid) return;
+                const bottom = Math.max(0, (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0));
+                content.scrollTop = privateChatScroll.followBottom ? bottom : Math.min(privateChatScroll.top, bottom);
+            };
+            restore();
+            const requestFrame = globalThis.requestAnimationFrame;
+            if (typeof requestFrame === 'function') {
+                requestFrame(() => requestFrame(restore));
+            }
+        } else {
+            privateChatScrollRestoreGeneration += 1;
         }
         for (const [id, button] of navButtons) {
             const selected = id === primaryPage(activePage);
@@ -2157,7 +2357,16 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             operationActivity,
             onFeedback: createOperationFeedbackHandler({ ai: true, logActivity: false }),
             onConfigureFeature: (feature) => openFeatureBinding([feature], feature.title + '设置'),
-            onRegistered: () => { refreshState(); setActivePage('profile'); },
+            onRegistered: async ({ npcUid = '', avatar = null } = {}) => {
+                let avatarSaveFailed = false;
+                if (avatar?.kind === 'embedded' && npcUid && typeof characterAvatarStore?.setAvatar === 'function') {
+                    try { await characterAvatarStore.setAvatar(npcUid, avatar); }
+                    catch { avatarSaveFailed = true; }
+                }
+                refreshState();
+                setActivePage('profile');
+                if (avatarSaveFailed) setFeedback('角色已登记，但头像未能保存到当前浏览器。');
+            },
             // 链接导入 = 一次性下载字节 → 既有本地压缩/签名链 → embedded data URL；URL 本身不保存。
             importAvatarFromUrl: remoteImageImporter
                 ? async (url) => compressLocalAvatar(await remoteImageImporter.importImageFile(url))
@@ -2176,39 +2385,74 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         closeManagedDialog(avatarDialog);
         try { avatarFileInput.value = ''; } catch { /* file inputs may be immutable in host DOMs */ }
     }
-    function openAvatarDialog() {
-        if (!playerAvatarStore || typeof playerAvatarStore.snapshot !== 'function') {
+    function openAvatarDialog(target = null) {
+        const requested = target?.kind === 'character' && typeof target.uid === 'string'
+            ? Object.freeze({ kind: 'character', uid: target.uid, nickname: String(target.nickname ?? '').trim() })
+            : Object.freeze({ kind: 'player', uid: '', nickname: '' });
+        const store = requested.kind === 'character' ? characterAvatarStore : playerAvatarStore;
+        if (!store || typeof store.snapshot !== 'function') {
             setFeedback('本地头像存储尚未就绪。');
             return;
         }
+        avatarDialogTarget = requested;
+        const subject = requested.kind === 'character' ? (requested.nickname || '该角色') : '';
+        avatarDialogTitle.textContent = subject ? `更换${subject}的头像` : '更换头像';
+        avatarDialog.setAttribute('aria-label', subject ? `更换${subject}的头像` : '更换个人头像');
+        avatarDialogSummary.textContent = requested.kind === 'character'
+            ? '该角色头像仅保存到当前浏览器，不会写入公开资料、MVU、提示词或模板导出。'
+            : '头像仅保存到当前浏览器，不会写入公开资料、MVU 或提示词。';
         openManagedDialog(avatarDialog, { onRequestClose: closeAvatarDialog });
     }
     async function saveLocalAvatarFile(file) {
-        if (!file || avatarUploadPending || !playerAvatarStore || typeof playerAvatarStore.setAvatar !== 'function') return;
+        const target = avatarDialogTarget;
+        const store = target.kind === 'character' ? characterAvatarStore : playerAvatarStore;
+        if (!file || avatarUploadPending || !store || typeof store.setAvatar !== 'function') return;
         avatarUploadPending = true;
         avatarFileButton.disabled = true;
+        avatarRemoveButton.disabled = true;
         try {
             const compressed = await compressLocalAvatar(file);
-            playerAvatarStore.setAvatar({ kind: 'embedded', dataUrl: compressed.dataUrl });
+            if (target.kind === 'character') await store.setAvatar(target.uid, { kind: 'embedded', dataUrl: compressed.dataUrl });
+            else await store.setAvatar({ kind: 'embedded', dataUrl: compressed.dataUrl });
             closeAvatarDialog();
             setFeedback('本地头像已保存到当前浏览器。');
             renderPage();
         } catch (error) {
-            setFeedback(projectAvatarError(error).message);
+            setFeedback(typeof error?.code === 'string' && error.code.startsWith('CHARACTER_AVATAR_')
+                ? '角色头像未能保存到当前浏览器。'
+                : projectAvatarError(error).message);
         } finally {
             avatarUploadPending = false;
             avatarFileButton.disabled = false;
+            avatarRemoveButton.disabled = false;
             avatarFileInput.value = '';
         }
     }
-    function removePlayerAvatar() {
-        if (!playerAvatarStore || typeof playerAvatarStore.removeAvatar !== 'function') return;
-        try { playerAvatarStore.removeAvatar(); } catch { /* menu remains usable even if storage clearing fails */ }
-        closeAvatarDialog();
-        setFeedback('本地头像已移除。');
-        renderPage();
+    async function removeAvatar() {
+        const target = avatarDialogTarget;
+        const store = target.kind === 'character' ? characterAvatarStore : playerAvatarStore;
+        if (!store || typeof store.removeAvatar !== 'function' || avatarUploadPending) return;
+        avatarUploadPending = true;
+        avatarFileButton.disabled = true;
+        avatarRemoveButton.disabled = true;
+        try {
+            if (target.kind === 'character') await store.removeAvatar(target.uid);
+            else await store.removeAvatar();
+            closeAvatarDialog();
+            setFeedback('本地头像已移除。');
+            renderPage();
+        } catch {
+            setFeedback('本地头像移除失败，请稍后重试。');
+        } finally {
+            avatarUploadPending = false;
+            avatarFileButton.disabled = false;
+            avatarRemoveButton.disabled = false;
+        }
     }
                     function buildSettingsDetail() {
+        if (activePage === 'settings_image_cache') {
+            return buildConversationImageCachePage();
+        }
         if (activePage === 'settings_images') {
             const section = element('section', { className: 'yl-settings-detail yl-image-manager-page' });
             imageManagerPanel = createImageManagerPanel({
@@ -2342,6 +2586,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         buildImageDirectiveCard, canAppendServiceExperienceDraft, candidateImageState, characterLibrary, chatDrafts, clearMatchedImageState, closeManagedDialog, content,
         dialogController, disableServiceHub, openManagedDialog, documentRef, formatDirectiveForDisplay, forumCommentDrafts, forumSettingsContent, forumSettingsDialog, forumSettingsTitle,
         groupAutoContent, groupAutoDialog, groupAutoTitle, groupForumStore, groupMemberPickerContent, groupMemberPickerDialog, groupMessageDrafts, imageAssetFailures,
+        conversationImageStore, characterAvatarStore,
         imageAssetsReady, imageMatchPending, imageProfileKey, localProfileCharacterUid, matchedImageFor, meetupDrafts, nav, openAvatarDialog,
         openFeatureBinding, openMark, operationActivity, playerAvatarStore, privateImageDirectives, refreshState, renderPage, retryCandidateImage,
         root, selectedServiceProfileIds, serviceBoundaryDrafts, serviceGenerationBatches, serviceLocalProfiles, serviceNavButton, serviceOrderHistoryStore, setActivePage,
@@ -2438,9 +2683,29 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     listen(groupAutoClose, groupAutoClose, 'click', ctx.closeGroupAutoDialog, abortController.signal);
     listen(forumSettingsClose, forumSettingsClose, 'click', ctx.closeForumSettingsDialog, abortController.signal);
     listen(imageDirectiveClose, imageDirectiveClose, 'click', closeImageDirectiveDialog, abortController.signal);
+    listen(imageActionClose, imageActionClose, 'click', closeImageActionDialog, abortController.signal);
+    listen(imageActionDirective, imageActionDirective, 'click', () => {
+        const state = imageActionState;
+        if (!state) return;
+        closeImageActionDialog();
+        openImageDirectiveDialog(state.directive, state.opener);
+    }, abortController.signal);
+    listen(imageActionOriginal, imageActionOriginal, 'click', () => {
+        const state = imageActionState;
+        if (!state) return;
+        closeImageActionDialog();
+        openImageOriginalDialog(state.imageSource, state.opener);
+    }, abortController.signal);
+    listen(imageOriginalClose, imageOriginalClose, 'click', closeImageOriginalDialog, abortController.signal);
+    listen(imageCacheDeleteClose, imageCacheDeleteClose, 'click', closeImageCacheDeleteDialog, abortController.signal);
+    listen(imageCacheDeleteCancel, imageCacheDeleteCancel, 'click', closeImageCacheDeleteDialog, abortController.signal);
+    listen(imageCacheDeleteConfirm, imageCacheDeleteConfirm, 'click', () => {
+        const record = imageCacheDeleteRecord;
+        if (record) void deleteConversationImageRecord(record);
+    }, abortController.signal);
     listen(avatarFileButton, avatarFileButton, 'click', () => { avatarFileInput.click?.(); }, abortController.signal);
     listen(avatarFileInput, avatarFileInput, 'change', () => { void saveLocalAvatarFile(avatarFileInput.files?.[0]); }, abortController.signal);
-    listen(avatarRemoveButton, avatarRemoveButton, 'click', removePlayerAvatar, abortController.signal);
+    listen(avatarRemoveButton, avatarRemoveButton, 'click', () => { void removeAvatar(); }, abortController.signal);
     listen(root, documentRef, "click", (event) => {
         if (!launcherTools.hidden && !nodeIsWithin(event.target, launcherTools) && !nodeIsWithin(event.target, launcher)) closeLauncherTools();
         if (chatMoreMenuSessionUid && !event.target?.closest?.('.yl-private-chat-actions')) ctx.closeChatMoreMenu();

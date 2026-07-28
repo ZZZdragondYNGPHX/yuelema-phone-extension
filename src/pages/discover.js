@@ -226,7 +226,17 @@ export function createDiscoverPage(ctx) {
         ].find((entry) => entry?.uid === ctx.selectedCandidateUid) ?? ctx.currentView.candidate;
         if (!candidate) return element('div', { className: 'yl-phone-placeholder', text: '该公开资料已不在当前可见列表。' });
         const section = element('section', { className: 'yl-public-profile' });
-        section.appendChild(ctx.candidateAvatar(candidate, { imageEnabled: true }));
+        const avatar = ctx.candidateAvatar(candidate, { imageEnabled: true, interactive: false });
+        avatar.classList.add('is-avatar-editable');
+        avatar.setAttribute('role', 'button');
+        avatar.setAttribute('tabindex', '0');
+        avatar.setAttribute('aria-label', `更换${candidate.昵称 || '该角色'}的头像`);
+        const openAvatarEditor = () => ctx.openAvatarDialog({ kind: 'character', uid: candidate.uid, nickname: candidate.昵称 });
+        listen(avatar, avatar, 'click', openAvatarEditor, ctx.abortController.signal);
+        listen(avatar, avatar, 'keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault?.(); openAvatarEditor(); }
+        }, ctx.abortController.signal);
+        section.appendChild(avatar);
         section.appendChild(element('h2', { text: candidate.昵称 || '未命名对象' }));
         for (const [label, value] of [['年龄段', candidate.年龄段], ['性别', candidate.性别], ['性取向', candidate.性取向], ['城市', candidate.城市], ['距离范围', candidate.距离范围], ['寻找意图', candidate.寻找意图], ['简介', candidate.简介]]) if (value) section.appendChild(element('p', { className: 'yl-phone-page-description', text: `${label}：${value}` }));
         const tags = ctx.displayTags(candidate);

@@ -1286,6 +1286,8 @@
     box-shadow: var(--yl-shadow-1);
 }
 .yl-public-profile .yl-candidate-avatar { width: 72px; height: 72px; font-size: 1.4rem; }
+.yl-public-profile .yl-candidate-avatar.is-avatar-editable { cursor: pointer; }
+.yl-public-profile .yl-candidate-avatar.is-avatar-editable:focus-visible { outline: 2px solid var(--yl-accent); outline-offset: 3px; box-shadow: var(--yl-focus-ring); }
 .yl-public-profile h2 { font-size: var(--yl-type-title); font-weight: 800; }
 /* 发现工作台（媒体区 + 档案区；phone 纵向堆叠）
    §5-2 溢出硬伤修复：媒体区 clamp 收敛 + 档案区可内滚 + 操作行 sticky 卡底；
@@ -2489,6 +2491,38 @@
 .yl-image-directive-hint { color: var(--yl-text-2); font-size: var(--yl-type-xs); line-height: 1.4; }
 .yl-image-directive-dialog { z-index: 10100; width: min(360px, calc(100vw - 32px)); max-height: min(520px, calc(100dvh - 32px)); }
 .yl-image-directive-dialog-text { min-height: 160px; resize: vertical; font-family: var(--yl-font-data); font-size: var(--yl-type-xs); line-height: 1.52; }
+.yl-image-action-dialog, .yl-image-cache-delete-dialog {
+    z-index: 10110;
+    width: min(360px, calc(100vw - 32px));
+}
+.yl-image-action-buttons { grid-template-columns: minmax(0, 1fr); }
+.yl-image-action-buttons .yl-settings-button { min-height: var(--yl-icon-hit); }
+.yl-image-original-dialog {
+    z-index: 10120;
+    width: min(960px, calc(100vw - 24px));
+    max-height: calc(100dvh - 24px);
+    padding: var(--yl-space-3);
+}
+.yl-image-original-viewport {
+    min-width: 0;
+    max-width: 100%;
+    max-height: calc(100dvh - 96px);
+    overflow: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-ctrl);
+    background: var(--yl-surface-3);
+}
+.yl-image-original {
+    display: block;
+    width: auto;
+    max-width: none;
+    height: auto;
+    min-width: min(100%, 320px);
+    margin: auto;
+    object-fit: contain;
+    touch-action: pan-x pan-y pinch-zoom;
+}
 @media (max-width: 430px) {
     .yl-conversation-image-controls { justify-content: flex-start; }
     .yl-conversation-image-settings-button { min-width: 64px; min-height: 40px; }
@@ -3745,9 +3779,7 @@
 }
 .yl-comfyui-provider-panel > .yl-settings-button { width: 100%; }
 .yl-image-generation-fields { align-items: start; }
-.yl-image-generation-fields .yl-settings-field:has([name="image-generation-positive-prefix"]),
-.yl-image-generation-fields .yl-settings-field:has([name="image-generation-positive-suffix"]),
-.yl-image-generation-fields .yl-settings-field:has([name="image-generation-negative-prompt"]) { grid-column: 1 / -1; }
+.yl-image-generation-fields .yl-settings-field:has(textarea) { grid-column: 1 / -1; }
 .yl-image-generation-key-status {
     padding: var(--yl-space-2) var(--yl-space-3);
     border: 1px solid color-mix(in srgb, var(--yl-accent-2) 30%, transparent);
@@ -3769,6 +3801,42 @@
     line-height: 1.55;
     overflow-wrap: anywhere;
 }
+.yl-conversation-image-cache { gap: var(--yl-space-3); }
+.yl-image-cache-count {
+    color: var(--yl-text-2);
+    font-size: var(--yl-type-caption);
+}
+.yl-image-cache-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+    gap: var(--yl-space-3);
+}
+.yl-image-cache-card {
+    display: grid;
+    min-width: 0;
+    gap: var(--yl-space-2);
+    padding: var(--yl-space-2);
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-card);
+    background: var(--yl-surface);
+}
+.yl-image-cache-thumbnail {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1;
+    border: 0;
+    border-radius: var(--yl-radius-ctrl);
+    background: var(--yl-surface-3);
+    object-fit: cover;
+    cursor: zoom-in;
+}
+.yl-image-cache-meta { display: grid; gap: 2px; min-width: 0; }
+.yl-image-cache-meta strong, .yl-image-cache-meta span { overflow-wrap: anywhere; }
+.yl-image-cache-meta strong { color: var(--yl-text); font-size: var(--yl-type-caption); }
+.yl-image-cache-meta span { color: var(--yl-text-2); font-size: var(--yl-type-xs); }
+.yl-image-cache-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.yl-image-cache-actions .yl-settings-button { min-width: 0; min-height: var(--yl-icon-hit); }
+.yl-image-cache-actions .yl-settings-button:last-child { grid-column: 1 / -1; }
 @media (max-width: 430px) {
     .yl-profile-hero { padding: var(--yl-space-4); }
     .yl-prompt-tree-root-heading { grid-template-columns: auto minmax(0, 1fr); }
@@ -3779,6 +3847,10 @@
     .yl-image-generation-fields { grid-template-columns: minmax(0, 1fr); }
     .yl-image-generation-fields .yl-settings-field { grid-column: 1 / -1; }
     .yl-image-generation-key-actions { grid-template-columns: minmax(0, 1fr); }
+    .yl-image-original-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+    .yl-image-cache-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .yl-image-cache-actions { grid-template-columns: minmax(0, 1fr); }
+    .yl-image-cache-actions .yl-settings-button:last-child { grid-column: auto; }
 }
 /* ---- pages:characters 角色创作 ---- */
 .yl-character-creator, .yl-character-editor { display: grid; gap: var(--yl-space-4); }

@@ -553,14 +553,16 @@ test('preference 子视图只查看并保存当前 contentMode 的独立关键�
 test('生图设置只保存非机密配置，API Key 清空后留在独立浏览器缓存', async () => {
     const keyStorage = createMemoryStorage();
     configurePersistentKeyStorage(keyStorage);
-    const { panel, store, feedback } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { view: 'image_generation' });
+    const { panel, store, feedback, navigations } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { view: 'image_generation' });
     assert.match(panel.textContent, /前置 → core_dna → outfit_dna → AI 场景 → 后置/u);
+    await click(button(panel, '查看图片缓存'));
+    assert.deepEqual(navigations, ['settings_image_cache']);
 
     byAria(panel, '启用生图接口').checked = true;
     byName(panel, 'image-generation-preset-id').value = 'image_preset';
-    byAria(panel, '生图 API Key').value = 'image-browser-cache-secret';
-    await click(button(panel, '保存 API Key'));
-    assert.equal(byAria(panel, '生图 API Key').value, '');
+    byAria(panel, 'NAI API Key').value = 'image-browser-cache-secret';
+    await click(button(panel, '保存 NAI API Key'));
+    assert.equal(byAria(panel, 'NAI API Key').value, '');
     assert.equal(requireSessionKey('image_preset'), 'image-browser-cache-secret');
 
     byAria(panel, '前置正面提示词').value = 'masterpiece';
@@ -577,10 +579,11 @@ test('生图设置只保存非机密配置，API Key 清空后留在独立浏览
     assert.equal(store.snapshot().imageGeneration.apiMode, 'comfyui');
     assert.match(store.snapshot().imageGeneration.comfyWorkflow, /SaveImage/u);
     assert.equal(store.exportJson().includes('image-browser-cache-secret'), false);
-    assert.ok(feedback.some((message) => message.includes('生图 API Key 已保存到当前浏览器')));
+    assert.ok(feedback.some((message) => message.includes('NAI API Key 已保存到当前浏览器')));
 });
 
-test('生图供应商按钮只显示对应专属面板并独立保存 ComfyUI 参数', async () => {
+test('生图供应商按钮显示三个独立面板并分别保存 NAI、OpenAI 与 ComfyUI 参数', async () => {
+    configurePersistentKeyStorage(createMemoryStorage());
     const imageGenerationClient = {
         async fetchComfyUIResources({ baseUrl }) {
             assert.equal(baseUrl, 'http://127.0.0.1:8188');
@@ -597,21 +600,42 @@ test('生图供应商按钮只显示对应专属面板并独立保存 ComfyUI �
         view: 'image_generation',
         imageGenerationClient,
     });
-    const keyPanel = panel.querySelectorAll('.yl-image-provider-panel').find((node) => node.getAttribute('id') === 'yl-key-provider-panel');
+    const naiPanel = panel.querySelectorAll('.yl-image-provider-panel').find((node) => node.getAttribute('id') === 'yl-novelai-provider-panel');
+    const openaiPanel = panel.querySelectorAll('.yl-image-provider-panel').find((node) => node.getAttribute('id') === 'yl-openai-provider-panel');
     const comfyPanel = panel.querySelectorAll('.yl-image-provider-panel').find((node) => node.getAttribute('id') === 'yl-comfyui-provider-panel');
     const naiTab = byName(panel, 'image-provider-novelai');
+    const openaiTab = byName(panel, 'image-provider-openai');
     const comfyTab = byName(panel, 'image-provider-comfyui');
     assert.equal(naiTab.getAttribute('aria-selected'), 'true');
-    assert.equal(keyPanel.hidden, false);
+    assert.equal(naiPanel.hidden, false);
+    assert.equal(openaiPanel.hidden, true);
     assert.equal(comfyPanel.hidden, true);
-    assert.match(keyPanel.textContent, /NAI 专属配置/u);
+    assert.match(naiPanel.textContent, /NAI 专属配置/u);
+    assert.equal(byAria(panel, 'NAI API Key').parentNode.parentNode, naiPanel);
+    assert.equal(byAria(panel, 'OpenAI-compatible API Key').parentNode.parentNode, openaiPanel);
+
+    await click(openaiTab);
+    assert.equal(openaiTab.getAttribute('aria-selected'), 'true');
+    assert.equal(naiPanel.hidden, true);
+    assert.equal(openaiPanel.hidden, false);
+    assert.match(openaiPanel.textContent, /OpenAI-compatible 专属配置/u);
+    byAria(panel, 'OpenAI 前置正面提示词').value = 'OpenAI natural language prefix';
+    byAria(panel, 'OpenAI 固定负面提示词').value = 'Avoid text.';
+    byAria(panel, 'OpenAI 生图站点').value = 'https://openai-images.example.invalid';
+    byAria(panel, 'OpenAI 生图模型').value = 'gpt-image-test';
+    byAria(panel, 'OpenAI 图片宽度').value = '1536';
+    byAria(panel, 'OpenAI 图片高度').value = '1024';
+    byAria(panel, 'OpenAI-compatible API Key').value = 'openai-only-secret';
+    await click(button(panel, '保存 OpenAI-compatible API Key'));
+    assert.equal(requireSessionKey('image_generation_openai'), 'openai-only-secret');
+    assert.throws(() => requireSessionKey('image_generation_default'));
 
     await click(comfyTab);
     assert.equal(comfyTab.getAttribute('aria-selected'), 'true');
-    assert.equal(keyPanel.hidden, true);
+    assert.equal(naiPanel.hidden, true);
+    assert.equal(openaiPanel.hidden, true);
     assert.equal(comfyPanel.hidden, false);
     assert.equal(byName(panel, 'image-generation-api-mode').value, 'comfyui');
-    assert.equal(byAria(panel, '生图 API Key').parentNode.parentNode.hidden, true, 'ComfyUI 不得显示 Key 专属面板');
 
     byAria(panel, 'ComfyUI 前置正面提示词').value = 'comfy prefix';
     byAria(panel, 'ComfyUI 固定负面提示词').value = 'comfy negative';
@@ -627,6 +651,14 @@ test('生图供应商按钮只显示对应专属面板并独立保存 ComfyUI �
     assert.equal(saved.comfyNegativePrompt, 'comfy negative');
     assert.equal(saved.baseUrl, 'https://image.novelai.net', 'NAI 连接必须保持独立');
     assert.equal(saved.positivePrefix, '', 'NAI 提示词必须保持独立');
+    assert.equal(saved.openaiPositivePrefix, 'OpenAI natural language prefix');
+    assert.equal(saved.openaiNegativePrompt, 'Avoid text.');
+    assert.equal(saved.openaiBaseUrl, 'https://openai-images.example.invalid');
+    assert.equal(saved.openaiModel, 'gpt-image-test');
+    assert.equal(saved.openaiWidth, 1536);
+    assert.equal(saved.openaiHeight, 1024);
+    assert.equal(saved.width, 1024, 'NAI 尺寸必须保持独立');
+    assert.equal(store.exportJson().includes('openai-only-secret'), false);
 
     const keyboard = keyEvent('ArrowLeft');
     comfyTab.dispatchEvent(keyboard);

@@ -49,10 +49,15 @@ export function createSharedHelpers(ctx) {
         const nickname = profile?.昵称 || '未命名对象';
         const matched = imageSource === null && imageEnabled ? ctx.matchedImageFor(profile) : null;
         const profileSource = imageSource === null ? safeAvatarImageSource(profile?.头像引用) : safeAvatarImageSource(imageSource);
+        let localCharacterSource = '';
+        if (imageSource === null && uid) {
+            try { localCharacterSource = safeAvatarImageSource(ctx.characterAvatarStore?.snapshot?.(uid)); }
+            catch { localCharacterSource = ''; }
+        }
         const avatar = createAvatarView({
             documentRef: ctx.documentRef,
             nickname,
-            imageSource: matched || profileSource,
+            imageSource: localCharacterSource || matched || profileSource,
             className,
             imageClassName: className + '-image',
             alt: nickname + '的头像',
@@ -60,7 +65,7 @@ export function createSharedHelpers(ctx) {
             onImageLoad,
             onImageFailure,
         });
-        if (imageSource === null && imageEnabled && !matched && !profileSource && ctx.imageMatchPending.has(ctx.imageProfileKey(profile))) {
+        if (imageSource === null && imageEnabled && !localCharacterSource && !matched && !profileSource && ctx.imageMatchPending.has(ctx.imageProfileKey(profile))) {
             avatar.dataset.imageStatus = 'loading';
         }
         if (!interactive || !uid) {

@@ -1065,7 +1065,10 @@ export function createActionBridge({
             if (!read.ok) return read;
             const built = buildCharacterRegistrationPatch(read.state, { candidate });
             if (!built.ok) return rejectedFromBuild(built);
-            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            const roleCounter = read.state?.系统?.UID计数器?.角色;
+            const npcUid = Number.isInteger(roleCounter) ? `npc_custom_${roleCounter + 1}` : '';
+            const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            return applied.ok && npcUid ? { ...applied, npcUid } : applied;
         } finally {
             pending.delete(key);
         }
@@ -1130,13 +1133,20 @@ export function createActionBridge({
 
             phase = 'prompt_compose';
             const useComfyUiPrompts = settings.apiMode === 'comfyui';
+            const useOpenAiPrompts = settings.apiMode === 'openai_compatible';
             const prompt = composeImagePrompt({
-                positivePrefix: useComfyUiPrompts ? settings.comfyPositivePrefix : settings.positivePrefix,
+                positivePrefix: useComfyUiPrompts
+                    ? settings.comfyPositivePrefix
+                    : useOpenAiPrompts ? settings.openaiPositivePrefix : settings.positivePrefix,
                 coreDna,
                 outfitDna,
                 directive,
-                positiveSuffix: useComfyUiPrompts ? settings.comfyPositiveSuffix : settings.positiveSuffix,
-                negativePrompt: useComfyUiPrompts ? settings.comfyNegativePrompt : settings.negativePrompt,
+                positiveSuffix: useComfyUiPrompts
+                    ? settings.comfyPositiveSuffix
+                    : useOpenAiPrompts ? settings.openaiPositiveSuffix : settings.positiveSuffix,
+                negativePrompt: useComfyUiPrompts
+                    ? settings.comfyNegativePrompt
+                    : useOpenAiPrompts ? settings.openaiNegativePrompt : settings.negativePrompt,
             });
             if (!uid && prompt.directive.kind !== 'scene_snapshot') {
                 return reject({ ok: false, status: 'rejected', code: 'image_character_required', message: '人物图片需要关联一位已确认的成年角色。' }, 'adult_character_gate');

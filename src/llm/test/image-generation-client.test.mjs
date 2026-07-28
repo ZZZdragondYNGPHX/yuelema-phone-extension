@@ -42,7 +42,73 @@ test('client sends injected request and accepts JSON base64 image', async () => 
     const result = await client.generate({ settings, positivePrompt: 'best quality', negativePrompt: 'bad' });
     assert.equal(request.url, 'https://img.example.test/v1/images/generations');
     assert.match(request.init.headers.Authorization, /^Bearer /u);
+    const body = JSON.parse(request.init.body);
+    assert.deepEqual(Object.keys(body), ['model', 'prompt', 'size', 'response_format', 'n']);
+    assert.equal(body.prompt, 'best quality. Avoid the following visual elements: bad.');
+    assert.equal(body.negative_prompt, undefined);
+    assert.equal(body.width, undefined);
+    assert.equal(body.steps, undefined);
     assert.match(result.src, /^data:image\/png;base64,/u);
+});
+
+test('GPT image requests omit legacy response_format and use the OpenAI-specific connection profile', async () => {
+    unlockSessionKey('openai-image-profile', 'openai-image-secret');
+    let request;
+    const client = createImageGenerationClient({
+        fetchImpl: async (url, init) => {
+            request = { url, body: JSON.parse(init.body) };
+            return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from(png).toString('base64') }] }), {
+                status: 200, headers: { 'content-type': 'application/json' },
+            });
+        },
+    });
+    await client.generate({
+        settings: {
+            ...settings,
+            baseUrl: 'https://nai.example.invalid',
+            endpointPath: '/nai',
+            model: 'nai-model',
+            openaiPresetId: 'openai-image-profile',
+            openaiBaseUrl: 'https://api.openai.example',
+            openaiEndpointPath: '/v1/images/generations',
+            openaiModel: 'gpt-image-1',
+        },
+        positivePrompt: 'A quiet garden',
+        negativePrompt: '',
+    });
+    assert.equal(request.url, 'https://api.openai.example/v1/images/generations');
+    assert.equal(request.body.model, 'gpt-image-1');
+    assert.equal(request.body.response_format, undefined);
+    assert.deepEqual(Object.keys(request.body), ['model', 'prompt', 'size', 'n']);
+});
+
+test('GPT image requests use independent OpenAI dimensions and map them to a supported orientation size', async () => {
+    unlockSessionKey('openai-image-profile', 'openai-image-secret');
+    let body;
+    const client = createImageGenerationClient({
+        fetchImpl: async (_url, init) => {
+            body = JSON.parse(init.body);
+            return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from(png).toString('base64') }] }), {
+                status: 200, headers: { 'content-type': 'application/json' },
+            });
+        },
+    });
+    await client.generate({
+        settings: {
+            ...settings,
+            openaiPresetId: 'openai-image-profile',
+            openaiBaseUrl: 'https://api.openai.example',
+            openaiEndpointPath: '/v1/images/generations',
+            openaiModel: 'gpt-image-1',
+            width: 1216,
+            height: 832,
+            openaiWidth: 832,
+            openaiHeight: 1216,
+        },
+        positivePrompt: 'A quiet garden',
+        negativePrompt: '',
+    });
+    assert.equal(body.size, '1024x1536');
 });
 
 test('client rejects multiline prompts before starting image transport', async () => {
@@ -137,7 +203,7 @@ test('client logs a bounded redacted provider error excerpt without leaking cred
             developerHint: 'send params_version=3 with v4_prompt',
         }), {
             status: 400,
-            headers: { 'content-type': 'application/json' },
+            headers: { 'content-type': 'application/json', 'x-request-id': 'nai-request-123', 'cf-ray': 'edge-trace-456', 'retry-after': '5' },
         }),
     });
 
@@ -147,9 +213,16 @@ test('client logs a bounded redacted provider error excerpt without leaking cred
     );
 
     const summary = calls.find(([, label]) => label === '[约了吗][生图] 错误响应摘要');
+    const contract = calls.find(([, label]) => label === '[约了吗][生图] NovelAI 请求合同');
+    const trace = calls.find(([, label]) => label === '[约了吗][生图] NovelAI 错误响应定位');
     const requestShape = calls.find(([, label]) => label === '[约了吗][生图] 请求体准备完成');
     assert.equal(requestShape?.[2]?.provider, 'novelai');
     assert.ok(requestShape?.[2]?.parameterFields.includes('negative_prompt'));
+    assert.equal(contract?.[2]?.modelFamily, 'legacy');
+    assert.equal(contract?.[2]?.sampler, 'euler');
+    assert.equal(trace?.[2]?.requestTraceId, 'nai-request-123');
+    assert.equal(trace?.[2]?.edgeTraceId, 'edge-trace-456');
+    assert.equal(trace?.[2]?.retryAfter, '5');
     assert.equal(summary?.[2]?.providerCategory, 'request_validation');
     assert.equal(summary?.[2]?.bodyInspection, 'structured_json');
     assert.equal(summary?.[2]?.providerStatusCode, 400);

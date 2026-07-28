@@ -43,6 +43,18 @@ function imageErrorDetails(error) {
     return { code: 'IMAGE_UNKNOWN_ERROR', retryable: false, status: undefined };
 }
 function safeErrorType(error) { return ['TypeError', 'ReferenceError', 'RangeError', 'SyntaxError', 'DOMException'].includes(error?.name) ? error.name : undefined; }
+function safeResponseTrace(response) {
+    const header = (name, maximum = 160) => {
+        const value = String(response?.headers?.get?.(name) ?? '').trim();
+        return value && /^[\x20-\x7e]+$/u.test(value) ? value.slice(0, maximum) : undefined;
+    };
+    return {
+        requestTraceId: header('x-request-id') ?? header('x-correlation-id'),
+        edgeTraceId: header('cf-ray', 80),
+        retryAfter: header('retry-after', 80),
+        server: header('server', 80),
+    };
+}
 function providerErrorCategory(status, message = '') {
     const text = String(message).toLowerCase();
     if (/anlas|balance|credit|quota|subscription|payment/u.test(text) || status === 402) return 'subscription_or_quota';
@@ -301,13 +313,26 @@ function buildBody(settings, positivePrompt, negativePrompt) {
             parameters,
         };
     }
+    const prompt = negativePrompt
+        ? `${positivePrompt}. Avoid the following visual elements: ${negativePrompt}.`
+        : positivePrompt;
+    const requestedSize = `${settings.width}x${settings.height}`;
+    const model = settings.model.toLowerCase();
+    const size = /^gpt-image-2(?:-|$)/u.test(model)
+        ? requestedSize
+        : /^gpt-image-/u.test(model)
+            ? (settings.width === settings.height ? '1024x1024' : settings.width > settings.height ? '1536x1024' : '1024x1536')
+            : model === 'dall-e-3'
+                ? (settings.width === settings.height ? '1024x1024' : settings.width > settings.height ? '1792x1024' : '1024x1792')
+                : model === 'dall-e-2'
+                    ? '1024x1024'
+                    : requestedSize;
     return {
         model: settings.model,
-        prompt: positivePrompt,
-        negative_prompt: negativePrompt,
-        size: `${settings.width}x${settings.height}`,
-        width: settings.width, height: settings.height, steps: settings.steps,
-        sampler: settings.sampler, seed: settings.seed, response_format: 'b64_json', n: 1,
+        prompt,
+        size,
+        ...(/^gpt-image-/iu.test(settings.model) ? {} : { response_format: 'b64_json' }),
+        n: 1,
     };
 }
 function normalizeRequest(input) {
@@ -324,14 +349,23 @@ function normalizeRequest(input) {
         signal: input.signal,
         timeoutMs: input.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : cleanInteger(input.timeoutMs, '超时时间', 1_000, 300_000),
         settings: {
-            apiMode, presetId: cleanText(settings.presetId, '生图连接 ID', 96),
-            baseUrl: safeBaseUrl(comfy ? (settings.comfyBaseUrl ?? settings.baseUrl) : settings.baseUrl),
-            endpointPath: safeEndpointPath(settings.endpointPath),
-            model: cleanText(comfy ? (settings.comfyModel ?? settings.model) : settings.model, '生图模型', 160, { allowEmpty: comfy }),
+            apiMode,
+            presetId: cleanText(apiMode === 'openai_compatible' ? (settings.openaiPresetId ?? settings.presetId) : settings.presetId, '生图连接 ID', 96),
+            baseUrl: safeBaseUrl(comfy
+                ? (settings.comfyBaseUrl ?? settings.baseUrl)
+                : apiMode === 'openai_compatible' ? (settings.openaiBaseUrl ?? settings.baseUrl) : settings.baseUrl),
+            endpointPath: safeEndpointPath(apiMode === 'openai_compatible' ? (settings.openaiEndpointPath ?? settings.endpointPath) : settings.endpointPath),
+            model: cleanText(comfy
+                ? (settings.comfyModel ?? settings.model)
+                : apiMode === 'openai_compatible' ? (settings.openaiModel ?? settings.model) : settings.model, '生图模型', 160, { allowEmpty: comfy }),
             sampler: cleanText(comfy ? (settings.comfySampler ?? settings.sampler) : settings.sampler, '采样器', 80),
             noiseSchedule: cleanText(comfy ? (settings.comfyScheduler ?? settings.noiseSchedule) : settings.noiseSchedule, '噪点表', 80),
-            width: cleanInteger(comfy ? (settings.comfyWidth ?? settings.width) : settings.width, '宽度', 64, 4096),
-            height: cleanInteger(comfy ? (settings.comfyHeight ?? settings.height) : settings.height, '高度', 64, 4096),
+            width: cleanInteger(comfy
+                ? (settings.comfyWidth ?? settings.width)
+                : apiMode === 'openai_compatible' ? (settings.openaiWidth ?? settings.width) : settings.width, '宽度', 64, 4096),
+            height: cleanInteger(comfy
+                ? (settings.comfyHeight ?? settings.height)
+                : apiMode === 'openai_compatible' ? (settings.openaiHeight ?? settings.height) : settings.height, '高度', 64, 4096),
             steps: cleanInteger(comfy ? (settings.comfySteps ?? settings.steps) : settings.steps, '步数', 1, 100),
             seed: cleanInteger(comfy ? (settings.comfySeed ?? settings.seed) : settings.seed, '种子', 0, 0xffffffff),
             guidance: cleanNumber(comfy ? (settings.comfyGuidance ?? settings.guidance) : settings.guidance, 'Prompt Guidance', 0, 30),
@@ -674,6 +708,26 @@ export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null
                     requestFields: Object.keys(requestBody),
                     parameterFields: request.settings.apiMode === 'novelai' ? Object.keys(requestBody.parameters) : undefined,
                 });
+                if (request.settings.apiMode === 'novelai') {
+                    emitImageDiagnostic(diagnosticLogger, 'info', 'NovelAI 请求合同', {
+                        requestId,
+                        model: request.settings.model,
+                        modelFamily: isNovelAIV4Model(request.settings.model) ? 'v4' : 'legacy',
+                        paramsVersion: requestBody.parameters?.params_version,
+                        hasV4PositiveCaption: Boolean(requestBody.parameters?.v4_prompt?.caption?.base_caption),
+                        hasV4NegativeCaption: Boolean(requestBody.parameters?.v4_negative_prompt?.caption),
+                        sampler: request.settings.sampler,
+                        noiseSchedule: request.settings.noiseSchedule,
+                        width: request.settings.width,
+                        height: request.settings.height,
+                        steps: request.settings.steps,
+                        guidance: request.settings.guidance,
+                        guidanceRescale: request.settings.guidanceRescale,
+                        qualityToggle: request.settings.qualityToggle,
+                        variety: request.settings.variety,
+                        elapsedMs: Date.now() - startedAt,
+                    });
+                }
                 try {
                     response = await fetchImpl(request.settings.baseUrl + request.settings.endpointPath, {
                         method: 'POST', headers: { Accept: 'application/json, image/png, image/jpeg, image/webp, application/zip', 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
@@ -702,6 +756,16 @@ export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null
                     elapsedMs: Date.now() - startedAt,
                 });
                 if (!response?.ok) {
+                    if (request.settings.apiMode === 'novelai') {
+                        emitImageDiagnostic(diagnosticLogger, 'error', 'NovelAI 错误响应定位', {
+                            requestId,
+                            status: Number.isInteger(response?.status) ? response.status : undefined,
+                            contentType: String(response?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined,
+                            contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined,
+                            ...safeResponseTrace(response),
+                            elapsedMs: Date.now() - startedAt,
+                        });
+                    }
                     emitImageDiagnostic(diagnosticLogger, 'error', '错误响应摘要', {
                         requestId,
                         provider: request.settings.apiMode,
