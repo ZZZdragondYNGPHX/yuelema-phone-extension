@@ -1286,6 +1286,8 @@
     box-shadow: var(--yl-shadow-1);
 }
 .yl-public-profile .yl-candidate-avatar { width: 72px; height: 72px; font-size: 1.4rem; }
+.yl-public-profile .yl-candidate-avatar.is-avatar-editable { cursor: pointer; }
+.yl-public-profile .yl-candidate-avatar.is-avatar-editable:focus-visible { outline: 2px solid var(--yl-accent); outline-offset: 3px; box-shadow: var(--yl-focus-ring); }
 .yl-public-profile h2 { font-size: var(--yl-type-title); font-weight: 800; }
 /* 发现工作台（媒体区 + 档案区；phone 纵向堆叠）
    §5-2 溢出硬伤修复：媒体区 clamp 收敛 + 档案区可内滚 + 操作行 sticky 卡底；

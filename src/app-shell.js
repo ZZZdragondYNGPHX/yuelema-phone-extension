@@ -162,7 +162,7 @@ function clearStoredLayoutPosition(storage, key) {
 }
 
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
-export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, imageLibrary = null, conversationImageStore = null, imageMatchCoordinator = null, imageGenerationClient = null, remoteImageImporter = null, extensionUpdater = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
+export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, characterAvatarStore = null, imageLibrary = null, conversationImageStore = null, imageMatchCoordinator = null, imageGenerationClient = null, remoteImageImporter = null, extensionUpdater = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
     const abortController = new AbortController();
     // 弹窗焦点统一由控制器管理：打开聚焦、Tab 焦点环、Escape 关栈顶、关闭礼貌回 opener。
     const dialogController = createDialogController({ documentRef });
@@ -187,6 +187,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let extensionUpdatePending = false;
     let activeMessageSessionUid = '';
     let renderedPrivateChatSessionUid = '';
+    let privateChatScrollRestoreGeneration = 0;
     let messageSearchQuery = '';
     let chatMoreMenuSessionUid = '';
     let chatConfirmationSessionUid = '';
@@ -273,6 +274,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let summaryToastTimer = null;
     let featureBindingDialogState = null;
     let avatarUploadPending = false;
+    let avatarDialogTarget = Object.freeze({ kind: 'player', uid: '', nickname: '' });
     let imageManagerPanel = null;
     const matchedImageByProfile = new Map();
     const imageMatchPending = new Map();
@@ -2305,8 +2307,20 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         content.appendChild(page);
         renderedPrivateChatSessionUid = activePage === 'private_chat' ? activeMessageSessionUid : '';
         if (privateChatScroll) {
-            const bottom = Math.max(0, (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0));
-            content.scrollTop = privateChatScroll.followBottom ? bottom : Math.min(privateChatScroll.top, bottom);
+            const restoreGeneration = ++privateChatScrollRestoreGeneration;
+            const restore = () => {
+                if (isDestroyed || restoreGeneration !== privateChatScrollRestoreGeneration
+                    || activePage !== 'private_chat' || activeMessageSessionUid !== renderedPrivateChatSessionUid) return;
+                const bottom = Math.max(0, (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0));
+                content.scrollTop = privateChatScroll.followBottom ? bottom : Math.min(privateChatScroll.top, bottom);
+            };
+            restore();
+            const requestFrame = globalThis.requestAnimationFrame;
+            if (typeof requestFrame === 'function') {
+                requestFrame(() => requestFrame(restore));
+            }
+        } else {
+            privateChatScrollRestoreGeneration += 1;
         }
         for (const [id, button] of navButtons) {
             const selected = id === primaryPage(activePage);
@@ -2343,7 +2357,16 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             operationActivity,
             onFeedback: createOperationFeedbackHandler({ ai: true, logActivity: false }),
             onConfigureFeature: (feature) => openFeatureBinding([feature], feature.title + '设置'),
-            onRegistered: () => { refreshState(); setActivePage('profile'); },
+            onRegistered: async ({ npcUid = '', avatar = null } = {}) => {
+                let avatarSaveFailed = false;
+                if (avatar?.kind === 'embedded' && npcUid && typeof characterAvatarStore?.setAvatar === 'function') {
+                    try { await characterAvatarStore.setAvatar(npcUid, avatar); }
+                    catch { avatarSaveFailed = true; }
+                }
+                refreshState();
+                setActivePage('profile');
+                if (avatarSaveFailed) setFeedback('角色已登记，但头像未能保存到当前浏览器。');
+            },
             // 链接导入 = 一次性下载字节 → 既有本地压缩/签名链 → embedded data URL；URL 本身不保存。
             importAvatarFromUrl: remoteImageImporter
                 ? async (url) => compressLocalAvatar(await remoteImageImporter.importImageFile(url))
@@ -2362,37 +2385,69 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         closeManagedDialog(avatarDialog);
         try { avatarFileInput.value = ''; } catch { /* file inputs may be immutable in host DOMs */ }
     }
-    function openAvatarDialog() {
-        if (!playerAvatarStore || typeof playerAvatarStore.snapshot !== 'function') {
+    function openAvatarDialog(target = null) {
+        const requested = target?.kind === 'character' && typeof target.uid === 'string'
+            ? Object.freeze({ kind: 'character', uid: target.uid, nickname: String(target.nickname ?? '').trim() })
+            : Object.freeze({ kind: 'player', uid: '', nickname: '' });
+        const store = requested.kind === 'character' ? characterAvatarStore : playerAvatarStore;
+        if (!store || typeof store.snapshot !== 'function') {
             setFeedback('本地头像存储尚未就绪。');
             return;
         }
+        avatarDialogTarget = requested;
+        const subject = requested.kind === 'character' ? (requested.nickname || '该角色') : '';
+        avatarDialogTitle.textContent = subject ? `更换${subject}的头像` : '更换头像';
+        avatarDialog.setAttribute('aria-label', subject ? `更换${subject}的头像` : '更换个人头像');
+        avatarDialogSummary.textContent = requested.kind === 'character'
+            ? '该角色头像仅保存到当前浏览器，不会写入公开资料、MVU、提示词或模板导出。'
+            : '头像仅保存到当前浏览器，不会写入公开资料、MVU 或提示词。';
         openManagedDialog(avatarDialog, { onRequestClose: closeAvatarDialog });
     }
     async function saveLocalAvatarFile(file) {
-        if (!file || avatarUploadPending || !playerAvatarStore || typeof playerAvatarStore.setAvatar !== 'function') return;
+        const target = avatarDialogTarget;
+        const store = target.kind === 'character' ? characterAvatarStore : playerAvatarStore;
+        if (!file || avatarUploadPending || !store || typeof store.setAvatar !== 'function') return;
         avatarUploadPending = true;
         avatarFileButton.disabled = true;
+        avatarRemoveButton.disabled = true;
         try {
             const compressed = await compressLocalAvatar(file);
-            playerAvatarStore.setAvatar({ kind: 'embedded', dataUrl: compressed.dataUrl });
+            if (target.kind === 'character') await store.setAvatar(target.uid, { kind: 'embedded', dataUrl: compressed.dataUrl });
+            else await store.setAvatar({ kind: 'embedded', dataUrl: compressed.dataUrl });
             closeAvatarDialog();
             setFeedback('本地头像已保存到当前浏览器。');
             renderPage();
         } catch (error) {
-            setFeedback(projectAvatarError(error).message);
+            setFeedback(typeof error?.code === 'string' && error.code.startsWith('CHARACTER_AVATAR_')
+                ? '角色头像未能保存到当前浏览器。'
+                : projectAvatarError(error).message);
         } finally {
             avatarUploadPending = false;
             avatarFileButton.disabled = false;
+            avatarRemoveButton.disabled = false;
             avatarFileInput.value = '';
         }
     }
-    function removePlayerAvatar() {
-        if (!playerAvatarStore || typeof playerAvatarStore.removeAvatar !== 'function') return;
-        try { playerAvatarStore.removeAvatar(); } catch { /* menu remains usable even if storage clearing fails */ }
-        closeAvatarDialog();
-        setFeedback('本地头像已移除。');
-        renderPage();
+    async function removeAvatar() {
+        const target = avatarDialogTarget;
+        const store = target.kind === 'character' ? characterAvatarStore : playerAvatarStore;
+        if (!store || typeof store.removeAvatar !== 'function' || avatarUploadPending) return;
+        avatarUploadPending = true;
+        avatarFileButton.disabled = true;
+        avatarRemoveButton.disabled = true;
+        try {
+            if (target.kind === 'character') await store.removeAvatar(target.uid);
+            else await store.removeAvatar();
+            closeAvatarDialog();
+            setFeedback('本地头像已移除。');
+            renderPage();
+        } catch {
+            setFeedback('本地头像移除失败，请稍后重试。');
+        } finally {
+            avatarUploadPending = false;
+            avatarFileButton.disabled = false;
+            avatarRemoveButton.disabled = false;
+        }
     }
                     function buildSettingsDetail() {
         if (activePage === 'settings_image_cache') {
@@ -2531,7 +2586,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         buildImageDirectiveCard, canAppendServiceExperienceDraft, candidateImageState, characterLibrary, chatDrafts, clearMatchedImageState, closeManagedDialog, content,
         dialogController, disableServiceHub, openManagedDialog, documentRef, formatDirectiveForDisplay, forumCommentDrafts, forumSettingsContent, forumSettingsDialog, forumSettingsTitle,
         groupAutoContent, groupAutoDialog, groupAutoTitle, groupForumStore, groupMemberPickerContent, groupMemberPickerDialog, groupMessageDrafts, imageAssetFailures,
-        conversationImageStore,
+        conversationImageStore, characterAvatarStore,
         imageAssetsReady, imageMatchPending, imageProfileKey, localProfileCharacterUid, matchedImageFor, meetupDrafts, nav, openAvatarDialog,
         openFeatureBinding, openMark, operationActivity, playerAvatarStore, privateImageDirectives, refreshState, renderPage, retryCandidateImage,
         root, selectedServiceProfileIds, serviceBoundaryDrafts, serviceGenerationBatches, serviceLocalProfiles, serviceNavButton, serviceOrderHistoryStore, setActivePage,
@@ -2650,7 +2705,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     }, abortController.signal);
     listen(avatarFileButton, avatarFileButton, 'click', () => { avatarFileInput.click?.(); }, abortController.signal);
     listen(avatarFileInput, avatarFileInput, 'change', () => { void saveLocalAvatarFile(avatarFileInput.files?.[0]); }, abortController.signal);
-    listen(avatarRemoveButton, avatarRemoveButton, 'click', removePlayerAvatar, abortController.signal);
+    listen(avatarRemoveButton, avatarRemoveButton, 'click', () => { void removeAvatar(); }, abortController.signal);
     listen(root, documentRef, "click", (event) => {
         if (!launcherTools.hidden && !nodeIsWithin(event.target, launcherTools) && !nodeIsWithin(event.target, launcher)) closeLauncherTools();
         if (chatMoreMenuSessionUid && !event.target?.closest?.('.yl-private-chat-actions')) ctx.closeChatMoreMenu();

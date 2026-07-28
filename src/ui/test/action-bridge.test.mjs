@@ -283,6 +283,7 @@ test('user-authored adult character is registered only through the controlled MV
     const result = await bridge.registerCharacter(adultCandidate());
 
     assert.equal(result.ok, true);
+    assert.equal(result.npcUid, 'npc_custom_13', '登记成功结果应返回受控边界分配的角色 UID，供浏览器本地头像建立映射');
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get', 'parse', 'replace', 'event']);
     const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
     assert.match(wrappedPatch, /npc_custom_13/u);

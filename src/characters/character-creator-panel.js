@@ -699,7 +699,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
             const template = templateFromEditor();
             submit.disabled = true;
             const activityHandle = startActivity('角色登记', '正在校验并登记角色……');
-            Promise.resolve(actionBridge.registerCharacter(template.character)).then((result) => {
+            Promise.resolve(actionBridge.registerCharacter(template.character)).then(async (result) => {
                 submit.disabled = false;
                 if (!result?.ok) {
                     settleActivity('fail', activityHandle, '角色未登记到当前聊天。', failureDetail(result, { operation: '角色登记', stage: '受控写入前校验' }));
@@ -708,10 +708,10 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
                 }
                 settleActivity('succeed', activityHandle, '角色已登记，将在关键词相近时于首页刷新或匹配中出现。');
                 if (saveLocal.checked && characterLibrary) {
-                    try { characterLibrary.importTemplate(template); renderLibrary(); } catch (error) { reportLibraryFailure('登记后保存本地模板', error); onFeedback(`角色已登记，但本地保存失败：${safeLibraryMessage(error)}`); onRegistered?.(); return; }
+                    try { characterLibrary.importTemplate(template); renderLibrary(); } catch (error) { reportLibraryFailure('登记后保存本地模板', error); onFeedback(`角色已登记，但本地保存失败：${safeLibraryMessage(error)}`); await onRegistered?.({ npcUid: result.npcUid, avatar: template.avatar }); return; }
                 }
                 onFeedback('角色已登记；当正权重关键词相近且匹配条件通过时，可在首页刷新或匹配中遇见。');
-                onRegistered?.();
+                await onRegistered?.({ npcUid: result.npcUid, avatar: template.avatar });
             }).catch((error) => {
                 submit.disabled = false;
                 settleActivity('fail', activityHandle, '角色未登记到当前聊天。', failureDetail(error, { operation: '角色登记', stage: '调用受控写入边界' }));

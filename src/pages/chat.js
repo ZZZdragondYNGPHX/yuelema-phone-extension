@@ -302,6 +302,8 @@ export function createChatPage(ctx) {
         if (deletingCharacter) {
             ctx.selectedCandidateUid = ctx.selectedCandidateUid === session.npcUid ? '' : ctx.selectedCandidateUid;
             ctx.clearMatchedImageState();
+            try { await ctx.characterAvatarStore?.removeAvatar?.(session.npcUid); }
+            catch { /* MVU deletion already succeeded; browser-local avatar cleanup is best effort. */ }
         }
         ctx.activeMessageSessionUid = '';
         ctx.activeChatToolsSessionUid = '';

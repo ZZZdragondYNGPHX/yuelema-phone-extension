@@ -1065,7 +1065,10 @@ export function createActionBridge({
             if (!read.ok) return read;
             const built = buildCharacterRegistrationPatch(read.state, { candidate });
             if (!built.ok) return rejectedFromBuild(built);
-            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            const roleCounter = read.state?.系统?.UID计数器?.角色;
+            const npcUid = Number.isInteger(roleCounter) ? `npc_custom_${roleCounter + 1}` : '';
+            const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            return applied.ok && npcUid ? { ...applied, npcUid } : applied;
         } finally {
             pending.delete(key);
         }

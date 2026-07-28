@@ -10,6 +10,7 @@ import { createSettingsStore } from './src/settings/settings-store.js';
 import { createBrowserSettingsStorage } from './src/settings/browser-storage.js';
 import { createCharacterTemplateLibraryStore } from './src/characters/character-template-library-store.js';
 import { createPlayerAvatarStore } from './src/player-avatar-store.js';
+import { createCharacterAvatarStore } from './src/character-avatar-store.js';
 import { createImageLibraryStore } from './src/images/image-library-store.js';
 import { createConversationImageStore, createMemoryConversationImageStorage } from './src/images/conversation-image-store.js';
 import { createImageMatchCoordinator } from './src/images/image-match-coordinator.js';
@@ -151,6 +152,8 @@ export async function onActivate() {
     const remoteImageImporter = fetchImpl ? createRemoteImageImporter({ fetchImpl }) : null;
     // Resolve the host's localforage adapter at activation time because SillyTavern may publish libs after module import.
     const imageLibrary = createImageLibraryStore({ storage: globalThis.SillyTavern?.libs?.localforage });
+    const characterAvatarStore = createCharacterAvatarStore({ storage: globalThis.SillyTavern?.libs?.localforage });
+    await characterAvatarStore.ready();
     let conversationImageStore;
     try {
         conversationImageStore = createConversationImageStore({ storage: globalThis.SillyTavern?.libs?.localforage });
@@ -192,6 +195,7 @@ export async function onActivate() {
         llmClient,
         characterLibrary,
         playerAvatarStore,
+        characterAvatarStore,
         imageLibrary,
         conversationImageStore,
         imageMatchCoordinator,
