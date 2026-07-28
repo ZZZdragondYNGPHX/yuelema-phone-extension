@@ -27,7 +27,7 @@ import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
 
-const UI_VERSION = '1.0.5';
+const UI_VERSION = '1.0.6';
 const UI_LAYOUT_STORAGE_KEY = 'yuelema.ui-layout/v1';
 const LAUNCHER_POSITION_STORAGE_KEY = 'yuelema.launcher-position/v1';
 const PHONE_PANEL_POSITION_STORAGE_KEY = 'yuelema.phone-panel-position/v1';
@@ -161,7 +161,7 @@ function clearStoredLayoutPosition(storage, key) {
 }
 
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
-export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, imageLibrary = null, imageMatchCoordinator = null, imageGenerationClient = null, remoteImageImporter = null, extensionUpdater = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
+export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, imageLibrary = null, conversationImageStore = null, imageMatchCoordinator = null, imageGenerationClient = null, remoteImageImporter = null, extensionUpdater = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
     const abortController = new AbortController();
     // 弹窗焦点统一由控制器管理：打开聚焦、Tab 焦点环、Escape 关栈顶、关闭礼貌回 opener。
     const dialogController = createDialogController({ documentRef });
@@ -275,13 +275,19 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let imageManagerPanel = null;
     const matchedImageByProfile = new Map();
     const imageMatchPending = new Map();
-    // Image presentation state stays in this mounted UI only. It never enters MVU,
-    // prompts, storage, diagnostics, or image-library records.
+    // Transient loading/failure presentation stays in this mounted UI. Successful
+    // conversation images and their narrow scene directives may be restored from
+    // the dedicated browser-local store; they never enter MVU or the image library.
     const imageMatchFailures = new Set();
     const imageAssetFailures = new Set();
     const imageAssetsReady = new Set();
     const privateImageDirectives = new Map();
     const conversationImageStates = new Map();
+    for (const record of conversationImageStore?.list?.() ?? []) {
+        const key = imageDirectiveStateKey(record.kind, record.conversationId, record.messageId);
+        conversationImageStates.set(key, { status: 'ready', directive: record.directive, imageSource: record.imageSource, message: '' });
+        if (record.kind === 'private') privateImageDirectives.set(`${record.conversationId}:${record.messageId}`, record.directive);
+    }
     const imageDirectiveLongPressTimers = new Set();
     const operationActivity = createOperationActivity();
     let unsubscribeOperationActivity = null;
@@ -611,7 +617,19 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (isDestroyed) return;
         const source = safeConversationImageSource(result?.image?.src ?? result?.image?.dataUrl ?? result?.dataUrl);
         if (result?.ok && source) {
+            let persisted = true;
+            if (typeof conversationImageStore?.put === 'function') {
+                try {
+                    await conversationImageStore.put({ kind, conversationId, messageId, directive, imageSource: source });
+                } catch {
+                    persisted = false;
+                }
+            } else {
+                persisted = false;
+            }
             conversationImageStates.set(key, { status: 'ready', directive, imageSource: source, message: '' });
+            if (kind === 'private') privateImageDirectives.set(`${conversationId}:${messageId}`, directive);
+            if (!persisted) setFeedback('图片已生成，但本地持久化失败，本次仅临时显示。');
         } else {
             const message = publicImageFailureMessage(result);
             conversationImageStates.set(key, { status: 'failed', directive, message });
@@ -624,6 +642,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         if (!formatted || !messageId || !conversationId) return null;
         const key = imageDirectiveStateKey(kind, conversationId, messageId);
         let state = conversationImageStates.get(key) ?? null;
+        if (!state) {
+            const stored = conversationImageStore?.peek?.(kind, conversationId, messageId);
+            if (stored) {
+                state = { status: 'ready', directive: stored.directive, imageSource: stored.imageSource, message: '' };
+                conversationImageStates.set(key, state);
+            }
+        }
         if (!state && imageGenerationEnabled() && conversationImageSettings(kind, conversationId).autoGenerate) {
             state = { status: 'queued', directive, message: '已识别生图结构，等待自动生成…' };
             conversationImageStates.set(key, state);
@@ -2342,6 +2367,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         buildImageDirectiveCard, canAppendServiceExperienceDraft, candidateImageState, characterLibrary, chatDrafts, clearMatchedImageState, closeManagedDialog, content,
         dialogController, disableServiceHub, openManagedDialog, documentRef, formatDirectiveForDisplay, forumCommentDrafts, forumSettingsContent, forumSettingsDialog, forumSettingsTitle,
         groupAutoContent, groupAutoDialog, groupAutoTitle, groupForumStore, groupMemberPickerContent, groupMemberPickerDialog, groupMessageDrafts, imageAssetFailures,
+        conversationImageStore,
         imageAssetsReady, imageMatchPending, imageProfileKey, localProfileCharacterUid, matchedImageFor, meetupDrafts, nav, openAvatarDialog,
         openFeatureBinding, openMark, operationActivity, playerAvatarStore, privateImageDirectives, refreshState, renderPage, retryCandidateImage,
         root, selectedServiceProfileIds, serviceBoundaryDrafts, serviceGenerationBatches, serviceLocalProfiles, serviceNavButton, serviceOrderHistoryStore, setActivePage,

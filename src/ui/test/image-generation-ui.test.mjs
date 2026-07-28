@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installMiniDom } from '../../test-support/minidom.mjs';
 import { createMemoryStorage, createSettingsStore } from '../../settings/settings-store.js';
+import { createConversationImageStore, createMemoryConversationImageStorage } from '../../images/conversation-image-store.js';
 
 const miniDom = installMiniDom();
 const { mountPhoneApp } = await import('../../app-shell.js');
@@ -170,6 +171,47 @@ test('private chat image directives use the bridge, keep regenerate available, a
         mounted.refreshState();
         await flushUi();
         assert.equal(imageRequests.length, 4, '失败状态重渲染后不得自动无限重试');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('private chat restores persisted generated image and directive after a new app mount without regenerating', async () => {
+    const storage = createMemoryConversationImageStorage();
+    const conversationImageStore = createConversationImageStore({ storage });
+    await conversationImageStore.ready();
+    await conversationImageStore.put({
+        kind: 'private',
+        conversationId: 'chat_drawing',
+        messageId: 'm_image_manual',
+        directive: manualDirective,
+        imageSource: 'data:image/png;base64,iVBORw0KGgo=',
+    });
+    let generationCalls = 0;
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document,
+        rootId: 'ylm-test-image-generation-persistence',
+        actionBridge: {
+            emit() {},
+            isPending() { return false; },
+            generateConversationImage() { generationCalls += 1; return Promise.resolve({ ok: false }); },
+        },
+        settingsStore: createSettingsStore({ storage: createMemoryStorage() }),
+        llmClient: null,
+        characterLibrary: null,
+        conversationImageStore,
+        readState: stateResult,
+    });
+    try {
+        click(byAria(miniDom.document, '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(byAria(miniDom.document, '打开与绘梨的私聊'));
+        const image = miniDom.document.querySelector('.yl-image-directive-image');
+        assert.ok(image, '新挂载实例应直接显示持久化图片');
+        assert.equal(image.getAttribute('src'), 'data:image/png;base64,iVBORw0KGgo=');
+        rightClick(image);
+        assert.match(byAria(miniDom.document, '当前图片结构化语句').value, /rainy Shanghai street/u);
+        assert.equal(generationCalls, 0, '恢复已有图片不得再次请求接口');
     } finally {
         mounted.destroy();
     }

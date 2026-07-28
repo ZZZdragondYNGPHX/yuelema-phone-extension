@@ -600,11 +600,23 @@ test('生图供应商按钮只显示对应专属面板并独立保存 ComfyUI �
     const keyPanel = panel.querySelectorAll('.yl-image-provider-panel').find((node) => node.getAttribute('id') === 'yl-key-provider-panel');
     const comfyPanel = panel.querySelectorAll('.yl-image-provider-panel').find((node) => node.getAttribute('id') === 'yl-comfyui-provider-panel');
     const naiTab = byName(panel, 'image-provider-novelai');
+    const openaiTab = byName(panel, 'image-provider-openai');
     const comfyTab = byName(panel, 'image-provider-comfyui');
     assert.equal(naiTab.getAttribute('aria-selected'), 'true');
     assert.equal(keyPanel.hidden, false);
     assert.equal(comfyPanel.hidden, true);
     assert.match(keyPanel.textContent, /NAI 专属配置/u);
+    assert.equal(byAria(panel, 'OpenAI 前置正面提示词').parentNode.hidden, true);
+
+    await click(openaiTab);
+    assert.equal(openaiTab.getAttribute('aria-selected'), 'true');
+    assert.match(keyPanel.textContent, /OpenAI-compatible 专属配置/u);
+    assert.equal(byAria(panel, '前置正面提示词').parentNode.hidden, true);
+    assert.equal(byAria(panel, 'OpenAI 前置正面提示词').parentNode.hidden, false);
+    byAria(panel, 'OpenAI 前置正面提示词').value = 'OpenAI natural language prefix';
+    byAria(panel, 'OpenAI 固定负面提示词').value = 'Avoid text.';
+    byAria(panel, 'OpenAI 生图站点').value = 'https://openai-images.example.invalid';
+    byAria(panel, 'OpenAI 生图模型').value = 'gpt-image-test';
 
     await click(comfyTab);
     assert.equal(comfyTab.getAttribute('aria-selected'), 'true');
@@ -627,6 +639,10 @@ test('生图供应商按钮只显示对应专属面板并独立保存 ComfyUI �
     assert.equal(saved.comfyNegativePrompt, 'comfy negative');
     assert.equal(saved.baseUrl, 'https://image.novelai.net', 'NAI 连接必须保持独立');
     assert.equal(saved.positivePrefix, '', 'NAI 提示词必须保持独立');
+    assert.equal(saved.openaiPositivePrefix, 'OpenAI natural language prefix');
+    assert.equal(saved.openaiNegativePrompt, 'Avoid text.');
+    assert.equal(saved.openaiBaseUrl, 'https://openai-images.example.invalid');
+    assert.equal(saved.openaiModel, 'gpt-image-test');
 
     const keyboard = keyEvent('ArrowLeft');
     comfyTab.dispatchEvent(keyboard);

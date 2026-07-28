@@ -1096,6 +1096,47 @@ test('conversation image bridge uses ComfyUI-specific prompts without borrowing 
     assert.doesNotMatch(request.positivePrompt, /nai/u);
 });
 
+test('conversation image bridge routes OpenAI-compatible prompts without borrowing NAI or ComfyUI presets', async () => {
+    let request;
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null },
+        mvu: createMvu({ initialState: state() }).mvu,
+        settingsStore: {
+            getImageGenerationSettings() {
+                return {
+                    enabled: true,
+                    apiMode: 'openai_compatible',
+                    positivePrefix: 'nai tags',
+                    positiveSuffix: 'nai suffix',
+                    negativePrompt: 'nai negative',
+                    openaiPositivePrefix: 'Create a realistic photograph of',
+                    openaiPositiveSuffix: 'Use natural light and documentary framing.',
+                    openaiNegativePrompt: 'Avoid text and watermarks.',
+                    comfyPositivePrefix: 'comfy tags',
+                    comfyPositiveSuffix: 'comfy suffix',
+                    comfyNegativePrompt: 'comfy negative',
+                };
+            },
+        },
+        imageGenerationClient: {
+            async generate(input) {
+                request = input;
+                return { kind: 'data_url', mimeType: 'image/png', src: 'data:image/png;base64,iVBORw0KGgo=' };
+            },
+        },
+    });
+    const result = await bridge.generateConversationImage({
+        kind: 'forum',
+        conversationId: 'post_openai',
+        messageId: 'message_openai_1',
+        directive: { kind: 'scene_snapshot', scene: 'a rain-soaked private garden at dusk' },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(request.positivePrompt, 'Create a realistic photograph of, a rain-soaked private garden at dusk, Use natural light and documentary framing.');
+    assert.equal(request.negativePrompt, 'Avoid text and watermarks.');
+    assert.doesNotMatch(request.positivePrompt, /nai|comfy/iu);
+});
+
 test('conversation image bridge projects prompt validation with its exact safe phase', async () => {
     const diagnostics = [];
     let imageCalls = 0;

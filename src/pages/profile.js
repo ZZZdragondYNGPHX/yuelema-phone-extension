@@ -13,9 +13,9 @@ import { createEmptyState } from '../ui/empty-state.js';
 import { SERVICE_UNLOCK_STORAGE_KEY } from './shared.js';
 
 const RECENT_RELEASE_NOTES = Object.freeze([
+    'v1.0.6：私聊、群聊与论坛生图可在刷新后恢复；NAI、OpenAI-compatible、ComfyUI 使用独立连接与提示词路由，并补充 NovelAI 脱敏诊断。',
     'v1.0.5：窗口右下角可自由拉伸至整个可视界面，归位同步复原尺寸；自建角色按正关键词权重在首页刷新或匹配中遇见。',
     'v1.0.4：角色模板字段名兼容末尾半角冒号与全角冒号，并补充可公开查阅的精确格式说明；安全与成年人校验保持不变。',
-    'v1.0.3：悬浮球新增归位与脱敏点击诊断；SFW/NSFW 约伴服务新增性别与性取向双向硬校验，错误性别不会进入候补或订单。',
 ]);
 
 export function createProfilePage(ctx) {

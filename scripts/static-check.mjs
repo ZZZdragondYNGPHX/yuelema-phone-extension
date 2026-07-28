@@ -13,8 +13,8 @@ const requiredFiles = [
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
     'src/recommendation/candidate.js', 'src/recommendation/drawing-dna-rules.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/custom-candidate-encounter.js', 'src/recommendation/match-candidate-materializer.js', 'src/recommendation/soul-text-match-service.js',
-    'src/images/image-directive.js', 'src/images/image-library-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js', 'src/images/remote-image-import.js',
-    'src/images/test/image-directive.test.mjs', 'src/images/test/image-library-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs', 'src/images/test/remote-image-import.test.mjs',
+    'src/images/image-directive.js', 'src/images/image-library-store.js', 'src/images/conversation-image-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js', 'src/images/remote-image-import.js',
+    'src/images/test/image-directive.test.mjs', 'src/images/test/image-library-store.test.mjs', 'src/images/test/conversation-image-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs', 'src/images/test/remote-image-import.test.mjs',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js', 'src/groups/group-forum-store.js', 'src/groups/local-conversation-summary-service.js',
     'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/conversation-summary.js', 'src/chat/interaction-rhythm.js', 'src/chat/relationship-progress.js', 'src/chat/message-read-store.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/conversation-summary.test.mjs', 'src/chat/test/interaction-rhythm.test.mjs', 'src/chat/test/relationship-progress.test.mjs', 'src/chat/test/message-read-store.test.mjs',
     'src/test-support/minidom.mjs', 'src/launcher-drag.js', 'src/ui/test/launcher-drag.test.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/character-template-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.0.5') fail('manifest.version 必须与扩展版本 1.0.5 统一');
+if (manifest.version !== '1.0.6') fail('manifest.version 必须与扩展版本 1.0.6 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -64,8 +64,8 @@ const sourceRelativeFiles = [
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
     'src/recommendation/candidate.js', 'src/recommendation/drawing-dna-rules.js', 'src/recommendation/recommendation-refresh.js', 'src/recommendation/match-scoring.js', 'src/recommendation/custom-candidate-encounter.js', 'src/recommendation/match-candidate-materializer.js', 'src/recommendation/soul-text-match-service.js',
-    'src/images/image-directive.js', 'src/images/image-library-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js', 'src/images/remote-image-import.js',
-    'src/images/test/image-directive.test.mjs', 'src/images/test/image-library-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs', 'src/images/test/remote-image-import.test.mjs',
+    'src/images/image-directive.js', 'src/images/image-library-store.js', 'src/images/conversation-image-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js', 'src/images/remote-image-import.js',
+    'src/images/test/image-directive.test.mjs', 'src/images/test/image-library-store.test.mjs', 'src/images/test/conversation-image-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs', 'src/images/test/remote-image-import.test.mjs',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js', 'src/groups/group-forum-store.js', 'src/groups/local-conversation-summary-service.js',
     'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/conversation-summary.js', 'src/chat/interaction-rhythm.js', 'src/chat/relationship-progress.js', 'src/chat/message-read-store.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/conversation-summary.test.mjs', 'src/chat/test/interaction-rhythm.test.mjs', 'src/chat/test/relationship-progress.test.mjs', 'src/chat/test/message-read-store.test.mjs',
     'src/test-support/minidom.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
@@ -121,7 +121,7 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.0.5'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.5 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.0.6'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.6 统一（必须位于壳层 app-shell.js）');
 if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
     || !appShellCore.includes("'placement_reset'")
     || !appShellCore.includes("'mvu_read_complete'")
@@ -317,7 +317,7 @@ const imageGenerationClient = await readFile(resolve(root, 'src/llm/image-genera
 const drawingDnaRules = await readFile(resolve(root, 'src/recommendation/drawing-dna-rules.js'), 'utf8');
 if (!index.includes('createImageGenerationClient') || !actionBridge.includes('generateConversationImage')) fail('缺少生图客户端注入或对话生图桥接');
 if (!appShell.includes("'settings_image_generation'") || !appShell.includes('buildConversationImageControls') || !appShell.includes('buildImageDirectiveCard') || !appShell.includes('generateConversationImage')) fail('缺少生图设置路由、会话开关或结构化指令 UI 接线');
-if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 17') || !settingsStore.includes('comfyBaseUrl') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema、ComfyUI 专属配置或逐会话自动生图隔离');
+if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 18') || !settingsStore.includes('openaiBaseUrl') || !settingsStore.includes('comfyBaseUrl') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema、OpenAI/ComfyUI 专属配置或逐会话自动生图隔离');
 if (!settingsPanel.includes('buildImageGenerationSection') || !settingsPanel.includes('positivePrefix') || !settingsPanel.includes('negativePrompt')) fail('缺少生图固定正负提示词设置界面');
 if (!imageDirective.includes('composeImagePrompt') || !imageDirective.includes('coreDna') || !imageDirective.includes('outfitDna')) fail('缺少固定顺序的绘图 DNA 提示词组合器');
 if (!imageGenerationClient.includes('requireSessionKey') || !imageGenerationClient.includes('fetchImpl') || !imageGenerationClient.includes('readResponseBytes') || !imageGenerationClient.includes('MAX_IMAGE_BYTES') || imageGenerationClient.includes("kind: 'url'")) fail('缺少注入式生图客户端、独立 Key、有界图片响应读取或仍允许 UI 远程图片 URL');

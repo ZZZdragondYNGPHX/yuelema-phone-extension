@@ -11,6 +11,7 @@ import { createBrowserSettingsStorage } from './src/settings/browser-storage.js'
 import { createCharacterTemplateLibraryStore } from './src/characters/character-template-library-store.js';
 import { createPlayerAvatarStore } from './src/player-avatar-store.js';
 import { createImageLibraryStore } from './src/images/image-library-store.js';
+import { createConversationImageStore, createMemoryConversationImageStorage } from './src/images/conversation-image-store.js';
 import { createImageMatchCoordinator } from './src/images/image-match-coordinator.js';
 import { createRemoteImageImporter } from './src/images/remote-image-import.js';
 import { createGroupForumStore } from './src/groups/group-forum-store.js';
@@ -150,6 +151,17 @@ export async function onActivate() {
     const remoteImageImporter = fetchImpl ? createRemoteImageImporter({ fetchImpl }) : null;
     // Resolve the host's localforage adapter at activation time because SillyTavern may publish libs after module import.
     const imageLibrary = createImageLibraryStore({ storage: globalThis.SillyTavern?.libs?.localforage });
+    let conversationImageStore;
+    try {
+        conversationImageStore = createConversationImageStore({ storage: globalThis.SillyTavern?.libs?.localforage });
+        await conversationImageStore.ready();
+    } catch (error) {
+        globalThis.console?.error?.('[约了吗][生图] 对话图片持久化不可用，本次仅临时保存', {
+            code: typeof error?.code === 'string' ? error.code : 'CONVERSATION_IMAGE_STORAGE_UNAVAILABLE',
+        });
+        conversationImageStore = createConversationImageStore({ storage: createMemoryConversationImageStorage() });
+        await conversationImageStore.ready();
+    }
     const imageMatchCoordinator = createImageMatchCoordinator({ imageLibrary, settingsStore, llmClient });
     // Group/forum conversations and their summaries are intentionally separate
     // from MVU. localforage keeps their bounded browser cache out of settings.json
@@ -181,6 +193,7 @@ export async function onActivate() {
         characterLibrary,
         playerAvatarStore,
         imageLibrary,
+        conversationImageStore,
         imageMatchCoordinator,
         imageGenerationClient,
         remoteImageImporter,

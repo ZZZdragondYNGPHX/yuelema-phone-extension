@@ -286,12 +286,18 @@ export function createChatPage(ctx) {
             return;
         }
         const sessionsToClear = deletingCharacter ? relatedSessionUids : [session.sessionUid];
+        let imageCleanupFailed = false;
         for (const sessionUid of sessionsToClear) {
             ctx.chatDrafts.delete(sessionUid);
             ctx.meetupDrafts.delete(sessionUid);
             meetupStepBySession.delete(sessionUid);
             introVisibleThisVisit.delete(sessionUid);
             ctx.messageReadStore?.forgetSession?.(sessionUid);
+            try {
+                await ctx.conversationImageStore?.removeConversation?.('private', sessionUid);
+            } catch {
+                imageCleanupFailed = true;
+            }
         }
         if (deletingCharacter) {
             ctx.selectedCandidateUid = ctx.selectedCandidateUid === session.npcUid ? '' : ctx.selectedCandidateUid;
@@ -307,7 +313,9 @@ export function createChatPage(ctx) {
         ctx.destructiveChatKind = '';
         ctx.refreshState();
         ctx.setActivePage('messages');
-        ctx.setFeedback(deletingCharacter ? '角色完整数据及其关联记录已删除。' : '聊天记录已清空，会话已从消息列表移除。');
+        ctx.setFeedback(imageCleanupFailed
+            ? '聊天已删除，但对应的本地生图缓存清理失败。'
+            : deletingCharacter ? '角色完整数据及其关联记录已删除。' : '聊天记录已清空，会话已从消息列表移除。');
     }
     /** 时间分隔 pill 文案：今天只显时分、跨天显“M月D日”，纯时分文本原样展示。 */
     function buildTimeDividerLabel(raw) {
@@ -430,7 +438,7 @@ export function createChatPage(ctx) {
             if (isNewMessage) bubble.classList.add('is-new');
             bubble.appendChild(element('p', { text: message.content }));
             if (!isPlayer) {
-                const directive = ctx.privateImageDirectives.get(message.messageUid);
+                const directive = ctx.privateImageDirectives.get(`${session.sessionUid}:${message.messageUid}`);
                 const imageCard = directive ? ctx.buildImageDirectiveCard({
                     kind: 'private', conversationId: session.sessionUid, messageId: message.messageUid, characterUid: session.npcUid, directive,
                 }) : null;
@@ -836,7 +844,7 @@ export function createChatPage(ctx) {
             ctx.chatDrafts.delete(session.sessionUid);
             for (const item of Array.isArray(result.imageDirectives) ? result.imageDirectives : []) {
                 if (typeof item?.messageUid === 'string' && item.messageUid && ctx.formatDirectiveForDisplay(item.directive)) {
-                    ctx.privateImageDirectives.set(item.messageUid, item.directive);
+                    ctx.privateImageDirectives.set(`${session.sessionUid}:${item.messageUid}`, item.directive);
                 }
             }
         } else if (isStillVisible()) {
