@@ -10,6 +10,13 @@ import { createEmptyState } from '../ui/empty-state.js';
 import { createSkeleton } from '../ui/skeleton.js';
 
 const ACCEPTED_IMAGE_TYPES = Object.freeze(['image/png', 'image/jpeg', 'image/webp']);
+const IMAGE_GENERATION_PROVIDERS = Object.freeze([
+    Object.freeze({ id: 'novelai', label: 'NovelAI' }),
+    Object.freeze({ id: 'openai_compatible', label: 'OpenAI-compatible' }),
+    Object.freeze({ id: 'comfyui', label: 'ComfyUI' }),
+]);
+const MAX_GENERATION_PROMPT_LENGTH = 1700;
+const MAX_GENERATED_DATA_URL_LENGTH = 32 * 1024 * 1024;
 const LONG_PRESS_DELAY_MS = 550;
 
 function noop() {}
@@ -47,6 +54,22 @@ function normalizeCompressedImage(result) {
     throw new TypeError('image_manager_compression_result_invalid');
 }
 
+function generatedDataUrlToBlob(value) {
+    if (typeof value !== 'string' || value.length > MAX_GENERATED_DATA_URL_LENGTH) {
+        throw new TypeError('image_manager_generated_image_invalid');
+    }
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/iu.exec(value);
+    if (!match || typeof globalThis.atob !== 'function' || typeof globalThis.Blob !== 'function') {
+        throw new TypeError('image_manager_generated_image_invalid');
+    }
+    let binary;
+    try { binary = globalThis.atob(match[2]); } catch { throw new TypeError('image_manager_generated_image_invalid'); }
+    if (!binary.length || binary.length > 24 * 1024 * 1024) throw new TypeError('image_manager_generated_image_invalid');
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new globalThis.Blob([bytes], { type: match[1].toLowerCase() });
+}
+
 function parseKeywordRows(rowsContainer) {
     const rows = rowsContainer.querySelectorAll('.yl-image-keyword-row');
     const output = [];
@@ -73,6 +96,7 @@ function feedbackMessage(error) {
     if (error?.message === 'image_manager_file_type_invalid') return '本地图片仅支持 PNG、JPEG 或 WebP。';
     if (error?.message === 'image_manager_compression_unavailable') return '当前页面无法压缩本地图片。';
     if (error?.message === 'image_manager_compression_result_invalid') return '本地图片压缩结果无效，未保存图片。';
+    if (typeof error?.message === 'string' && error.message.startsWith('avatar_codec_failed:')) return '图片无法压缩到图片库限制内，未保存图片。';
     if (error?.message === 'image_manager_keyword_invalid') return '关键词不能为空，且每项不能超过 40 个字符。';
     if (error?.message === 'image_manager_weight_invalid') return '关键词权重必须是 -5 到 5 的整数。';
     if (error?.message === 'image_manager_keyword_duplicate') return '同一张图片不能包含重复关键词。';
@@ -95,12 +119,15 @@ export function createImageManagerPanel({
     onFeedback = noop,
     onChange = noop,
     onConfigure = noop,
+    onConfigureGeneration = noop,
     dialogController = null,
     openDialog = null,
     // 一次性链接导入能力（url → Blob）。未注入时不渲染任何链接入口；
     // 下载结果仍必须走注入压缩链变成 embedded data URL，URL 本身不落库。
     importRemoteImageFile = null,
     downloadImagePack = null,
+    generateImage = null,
+    initialImageProvider = 'novelai',
 } = {}) {
     if (!documentRef || typeof documentRef.createElement !== 'function') {
         throw new TypeError('image_manager_document_invalid');
@@ -108,7 +135,8 @@ export function createImageManagerPanel({
     if (!imageLibrary || ['list', 'add', 'update', 'remove'].some((method) => typeof imageLibrary[method] !== 'function')) {
         throw new TypeError('image_manager_library_invalid');
     }
-    if (typeof onFeedback !== 'function' || typeof onChange !== 'function' || typeof onConfigure !== 'function') {
+    if (typeof onFeedback !== 'function' || typeof onChange !== 'function'
+        || typeof onConfigure !== 'function' || typeof onConfigureGeneration !== 'function') {
         throw new TypeError('image_manager_callback_invalid');
     }
 
@@ -120,15 +148,22 @@ export function createImageManagerPanel({
     let longPressTimer = null;
     let suppressedClickImageId = null;
     let suppressedClickTimer = null;
+    let generationAbortController = null;
+    let generationEpoch = 0;
     let operationTail = Promise.resolve();
 
     const element = createElement(documentRef, 'section', { className: 'yl-image-manager' });
     const heading = createElement(documentRef, 'header', { className: 'yl-image-manager-heading' });
     const titlebar = createElement(documentRef, 'div', { className: 'yl-image-manager-titlebar yl-heading-with-help' });
     titlebar.appendChild(createElement(documentRef, 'h2', { className: 'yl-image-manager-title', text: '图片管理' }));
+    const titleActions = createElement(documentRef, 'div', { className: 'yl-image-manager-title-actions' });
+    const generationEntryButton = createButton({ documentRef, variant: 'ghost', label: '生图', ariaLabel: '打开图片库生图' });
+    generationEntryButton.classList.add('yl-image-manager-generate-entry');
     const configureButton = createButton({ documentRef, variant: 'ghost', label: '设置', ariaLabel: '配置图片管理预设' });
     configureButton.classList.add('yl-feature-options', 'yl-image-manager-configure');
-    titlebar.appendChild(configureButton);
+    titleActions.appendChild(generationEntryButton);
+    titleActions.appendChild(configureButton);
+    titlebar.appendChild(titleActions);
     heading.appendChild(titlebar);
     heading.appendChild(createElement(documentRef, 'p', {
         className: 'yl-image-manager-description',
@@ -230,6 +265,57 @@ export function createImageManagerPanel({
     element.appendChild(contextMenu);
     element.appendChild(editorBackdrop);
 
+    const generationView = createElement(documentRef, 'section', { className: 'yl-image-generation-workbench', hidden: true });
+    const generationHeader = createElement(documentRef, 'header', { className: 'yl-image-generation-workbench-header' });
+    const generationBackButton = createButton({ documentRef, variant: 'ghost', icon: 'chevron_left', label: '返回图片库' });
+    generationBackButton.classList.add('yl-image-generation-back');
+    const generationHeading = createElement(documentRef, 'div', { className: 'yl-image-generation-workbench-heading' });
+    generationHeading.appendChild(createElement(documentRef, 'h2', { text: '生成图片' }));
+    generationHeading.appendChild(createElement(documentRef, 'p', { text: '选择已配置的接口，输入本次提示词；人物会强制按成年人生成，成功图片自动压缩并保存到图片库。' }));
+    generationHeader.appendChild(generationBackButton);
+    generationHeader.appendChild(generationHeading);
+
+    const generationForm = createElement(documentRef, 'div', { className: 'yl-image-generation-form' });
+    const providerLabel = createElement(documentRef, 'label', { className: 'yl-image-generation-field' });
+    providerLabel.appendChild(createElement(documentRef, 'span', { text: '生图接口' }));
+    const providerSelect = createElement(documentRef, 'select', { name: 'image-library-generation-provider' });
+    providerSelect.setAttribute('aria-label', '选择图片库生图接口');
+    for (const provider of IMAGE_GENERATION_PROVIDERS) {
+        const option = createElement(documentRef, 'option', { value: provider.id, text: provider.label });
+        providerSelect.appendChild(option);
+    }
+    providerSelect.value = IMAGE_GENERATION_PROVIDERS.some((provider) => provider.id === initialImageProvider)
+        ? initialImageProvider
+        : 'novelai';
+    providerLabel.appendChild(providerSelect);
+
+    const promptLabel = createElement(documentRef, 'label', { className: 'yl-image-generation-field' });
+    promptLabel.appendChild(createElement(documentRef, 'span', { text: '提示词' }));
+    const promptInput = createElement(documentRef, 'textarea', { name: 'image-library-generation-prompt' });
+    promptInput.rows = 7;
+    promptInput.setAttribute('maxlength', String(MAX_GENERATION_PROMPT_LENGTH));
+    promptInput.setAttribute('placeholder', '描述要生成的画面；会自动叠加所选接口已保存的前置、后置与负面提示词。');
+    promptInput.setAttribute('aria-label', '图片库生图提示词');
+    promptLabel.appendChild(promptInput);
+
+    const generationActions = createElement(documentRef, 'div', { className: 'yl-image-generation-actions' });
+    const generationSettingsButton = createButton({ documentRef, variant: 'tonal', label: '接口设置' });
+    const generationCancelButton = createButton({ documentRef, variant: 'ghost', label: '取消生成' });
+    generationCancelButton.hidden = true;
+    const generationButton = createButton({ documentRef, variant: 'primary', icon: 'sparkle', label: '生成并保存' });
+    generationActions.appendChild(generationSettingsButton);
+    generationActions.appendChild(generationCancelButton);
+    generationActions.appendChild(generationButton);
+    const generationStatus = createElement(documentRef, 'p', { className: 'yl-image-generation-status', text: '等待输入提示词。' });
+    generationStatus.setAttribute('aria-live', 'polite');
+    generationForm.appendChild(providerLabel);
+    generationForm.appendChild(promptLabel);
+    generationForm.appendChild(generationActions);
+    generationForm.appendChild(generationStatus);
+    generationView.appendChild(generationHeader);
+    generationView.appendChild(generationForm);
+    element.appendChild(generationView);
+
     function report(message) {
         if (!disposed) safeCallback(onFeedback, String(message));
     }
@@ -251,6 +337,37 @@ export function createImageManagerPanel({
         deleteButton.disabled = isBusy;
         if (remoteImportButton) remoteImportButton.disabled = isBusy;
         if (message) status.textContent = message;
+    }
+
+    function setGenerationBusy(isBusy, message = '') {
+        providerSelect.disabled = isBusy;
+        promptInput.disabled = isBusy;
+        generationButton.disabled = isBusy;
+        generationSettingsButton.disabled = isBusy;
+        generationCancelButton.hidden = !isBusy;
+        if (message) generationStatus.textContent = message;
+    }
+
+    function openGenerationView() {
+        closeContextMenu();
+        closeEditor();
+        side.hidden = true;
+        grid.hidden = true;
+        generationView.hidden = false;
+        generationStatus.textContent = '等待输入提示词。';
+        promptInput.focus?.();
+    }
+
+    function closeGenerationView({ restoreFocus = true } = {}) {
+        if (generationView.hidden) return;
+        generationEpoch += 1;
+        generationAbortController?.abort?.();
+        generationAbortController = null;
+        setGenerationBusy(false);
+        generationView.hidden = true;
+        side.hidden = false;
+        grid.hidden = false;
+        if (restoreFocus) generationEntryButton.focus?.();
     }
 
     function closeContextMenu() {
@@ -412,6 +529,10 @@ export function createImageManagerPanel({
     }
 
     function handleEscape() {
+        if (!generationView.hidden) {
+            closeGenerationView();
+            return true;
+        }
         // 有控制器时：编辑器的 Escape 由 app-shell 委托链先经 dialogController.handleKeydown 处理
         // （onRequestClose → closeEditor），本方法对编辑器一律返回 false，避免双通道重复关闭；
         // 右键菜单是 disclosure、不入控制器栈，Escape 仍由本方法接管。
@@ -578,6 +699,71 @@ export function createImageManagerPanel({
         });
     }
 
+    listen(generationEntryButton, 'click', openGenerationView);
+    listen(generationBackButton, 'click', () => closeGenerationView());
+    listen(generationSettingsButton, 'click', () => safeCallback(onConfigureGeneration));
+    listen(generationCancelButton, 'click', () => {
+        generationEpoch += 1;
+        generationAbortController?.abort?.();
+        generationAbortController = null;
+        setGenerationBusy(false, '本次生成已取消，提示词仍保留。');
+    });
+    listen(generationButton, 'click', () => {
+        const prompt = String(promptInput.value ?? '').trim();
+        if (!prompt) {
+            generationStatus.textContent = '请输入本次生图提示词。';
+            promptInput.focus?.();
+            return;
+        }
+        void enqueueOperation(async () => {
+            const epoch = ++generationEpoch;
+            generationAbortController?.abort?.();
+            generationAbortController = new AbortController();
+            setGenerationBusy(true, '正在生成图片；完成后会自动压缩并保存…');
+            try {
+                if (typeof generateImage !== 'function') throw new TypeError('image_manager_generation_unavailable');
+                if (typeof compressImageFile !== 'function') throw new TypeError('image_manager_compression_unavailable');
+                const result = await generateImage({
+                    provider: String(providerSelect.value ?? ''),
+                    prompt,
+                    signal: generationAbortController.signal,
+                });
+                if (disposed || epoch !== generationEpoch) return;
+                if (!result?.ok) {
+                    const message = typeof result?.message === 'string' && result.message.trim()
+                        ? result.message.trim().slice(0, 200)
+                        : '图片未生成，请检查接口设置后重试。';
+                    generationStatus.textContent = message;
+                    report(message);
+                    return;
+                }
+                const source = result?.image?.dataUrl || result?.image?.src;
+                const sourceBlob = generatedDataUrlToBlob(source);
+                const dataUrl = normalizeCompressedImage(await compressImageFile(sourceBlob));
+                if (disposed || epoch !== generationEpoch) return;
+                const added = await imageLibrary.add({ source: { kind: 'embedded', dataUrl }, keywordWeights: [] });
+                if (disposed) return;
+                promptInput.value = '';
+                closeGenerationView({ restoreFocus: false });
+                await completeMutation('generate', added, '图片已生成、压缩并保存到图片库。');
+            } catch (error) {
+                if (disposed || epoch !== generationEpoch) return;
+                const message = error?.message === 'image_manager_generation_unavailable'
+                    ? '生图服务当前未接入。'
+                    : error?.message === 'image_manager_generated_image_invalid'
+                        ? '生图接口返回的图片无效，未保存到图片库。'
+                        : feedbackMessage(error);
+                generationStatus.textContent = message;
+                report(message);
+            } finally {
+                if (generationAbortController?.signal && epoch === generationEpoch) {
+                    generationAbortController = null;
+                    if (!disposed) setGenerationBusy(false);
+                }
+            }
+        });
+    });
+
     listen(configureButton, 'click', () => safeCallback(onConfigure));
 
     listen(editMenuButton, 'click', () => {
@@ -665,6 +851,9 @@ export function createImageManagerPanel({
         dispose() {
             if (disposed) return;
             disposed = true;
+            generationEpoch += 1;
+            generationAbortController?.abort?.();
+            generationAbortController = null;
             clearLongPress();
             clearSuppressedClick();
             // 面板销毁时若编辑器仍在控制器栈内，先出栈（不回焦，宿主即将拆除 DOM），避免栈悬挂。
@@ -674,4 +863,3 @@ export function createImageManagerPanel({
         },
     });
 }
-

@@ -1196,6 +1196,110 @@ export function createActionBridge({
         }
     }
 
+    /**
+     * Generates one user-authored scene for the browser-local image library.
+     * The selected provider is a request-scoped override only: it does not mutate
+     * settings, MVU, prompts, or any conversation state.
+     */
+    async function generateLibraryImage({ provider, prompt, signal } = {}) {
+        const requestId = `library-image-${Date.now().toString(36)}-${(++conversationImageRequestSequence).toString(36)}`;
+        const startedAt = Date.now();
+        const allowedProviders = new Set(['novelai', 'openai_compatible', 'comfyui']);
+        const reject = (result, phase) => {
+            emitConversationImageDiagnostic(diagnosticLogger, 'error', '图片库生图前置拒绝', {
+                requestId,
+                phase,
+                provider: allowedProviders.has(provider) ? provider : undefined,
+                code: result.code,
+                message: result.message,
+                elapsedMs: Date.now() - startedAt,
+            });
+            return result;
+        };
+        if (!allowedProviders.has(provider)) {
+            return reject({ ok: false, status: 'rejected', code: 'image_provider_invalid', message: '请选择可用的生图接口。' }, 'provider_validation');
+        }
+        const key = actionKey('library_image', 'manual');
+        if (pending.has(key)) {
+            return reject({ ok: false, status: 'rejected', code: 'ui_action_pending', message: '已有图片正在生成，请稍候。' }, 'pending_guard');
+        }
+        pending.add(key);
+        let phase = 'settings_read';
+        try {
+            const settings = settingsStore?.getImageGenerationSettings?.();
+            phase = 'settings_gate';
+            if (!settings?.enabled) {
+                return reject({ ok: false, status: 'rejected', code: 'image_generation_disabled', message: '请先在生图设置中启用接口。' }, phase);
+            }
+            if (typeof imageGenerationClient?.generate !== 'function') {
+                return reject({ ok: false, status: 'rejected', code: 'image_generation_unavailable', message: '生图服务当前不可用。' }, 'client_gate');
+            }
+
+            phase = 'prompt_compose';
+            const useComfyUiPrompts = provider === 'comfyui';
+            const useOpenAiPrompts = provider === 'openai_compatible';
+            const adultScene = `all depicted people are adults age 18 or older, ${typeof prompt === 'string' ? prompt : ''}`;
+            const composed = composeImagePrompt({
+                positivePrefix: useComfyUiPrompts
+                    ? settings.comfyPositivePrefix
+                    : useOpenAiPrompts ? settings.openaiPositivePrefix : settings.positivePrefix,
+                directive: { kind: 'scene_snapshot', scene: adultScene },
+                positiveSuffix: useComfyUiPrompts
+                    ? settings.comfyPositiveSuffix
+                    : useOpenAiPrompts ? settings.openaiPositiveSuffix : settings.positiveSuffix,
+                negativePrompt: useComfyUiPrompts
+                    ? settings.comfyNegativePrompt
+                    : useOpenAiPrompts ? settings.openaiNegativePrompt : settings.negativePrompt,
+            });
+            emitConversationImageDiagnostic(diagnosticLogger, 'info', '图片库生图进入客户端', {
+                requestId,
+                provider,
+                promptChars: composed.directive.scene.length,
+                elapsedMs: Date.now() - startedAt,
+            });
+            phase = 'client_generation';
+            const generated = await imageGenerationClient.generate({
+                settings: { ...settings, apiMode: provider },
+                positivePrompt: composed.positivePrompt,
+                negativePrompt: composed.negativePrompt,
+                signal,
+            });
+            emitConversationImageDiagnostic(diagnosticLogger, 'info', '图片库生图完成', {
+                requestId,
+                provider,
+                mimeType: generated.mimeType,
+                elapsedMs: Date.now() - startedAt,
+            });
+            return {
+                ok: true,
+                status: 'generated',
+                image: Object.freeze({
+                    src: generated.src,
+                    dataUrl: generated.kind === 'data_url' ? generated.src : '',
+                    mimeType: generated.mimeType ?? '',
+                    kind: generated.kind,
+                }),
+            };
+        } catch (error) {
+            const publicError = error instanceof ImageDirectiveError
+                ? { code: error.code, message: error.message, retryable: false, status: undefined }
+                : toPublicImageGenerationError(error);
+            emitConversationImageDiagnostic(diagnosticLogger, 'error', '图片库生图失败', {
+                requestId,
+                phase,
+                provider,
+                code: publicError.code,
+                message: publicError.message,
+                status: publicError.status,
+                retryable: publicError.retryable,
+                elapsedMs: Date.now() - startedAt,
+            });
+            return { ok: false, status: 'failed', ...publicError };
+        } finally {
+            pending.delete(key);
+        }
+    }
+
     function isPending(kind, npcUid) {
         return pending.has(actionKey(kind, npcUid));
     }
@@ -1229,5 +1333,5 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, generateLibraryImage, isPending, appendMeetupDraft });
 }

@@ -30,6 +30,8 @@ const PROMPT_BUNDLE_SCHEMA = 'yuelema.prompt-preset-bundle';
 const PROMPT_BUNDLE_VERSION = 1;
 const PROMPT_ENTRY_ENVELOPE = 'yuelema.prompt-entries';
 const PROMPT_ENTRY_ENVELOPE_VERSION = 1;
+const IMAGE_PROMPT_BUNDLE_SCHEMA = 'yuelema.image-prompt-preset-bundle';
+const IMAGE_PROMPT_BUNDLE_VERSION = 1;
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
 const MAX_PROMPT_ENTRIES_PER_PRESET = 48;
 const MAX_PROMPT_BUNDLE_BYTES = 512 * 1024;
@@ -252,6 +254,25 @@ function readPromptBundle(rawJson) {
         throw new YueLeMaSettingsError('INVALID_IMPORT_JSON', '提示词预设导入文件版本不受支持。');
     }
     return parsed.promptPresets;
+}
+
+function readImagePromptBundle(rawJson, expectedProvider) {
+    const source = String(rawJson ?? '');
+    if (new TextEncoder().encode(source).byteLength > MAX_PROMPT_BUNDLE_BYTES) {
+        throw new YueLeMaSettingsError('SETTINGS_TOO_LARGE', '生图提示词预设文件超过允许的大小限制。');
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(source);
+    } catch {
+        throw new YueLeMaSettingsError('INVALID_IMPORT_JSON', '生图提示词预设不是有效 JSON。');
+    }
+    if (!isPlainObject(parsed) || Object.keys(parsed).some((key) => !['schema', 'schemaVersion', 'provider', 'presets'].includes(key))
+        || parsed.schema !== IMAGE_PROMPT_BUNDLE_SCHEMA || parsed.schemaVersion !== IMAGE_PROMPT_BUNDLE_VERSION
+        || parsed.provider !== expectedProvider || !Array.isArray(parsed.presets)) {
+        throw new YueLeMaSettingsError('INVALID_IMPORT_JSON', '生图提示词预设文件版本或接口归属不匹配。');
+    }
+    return parsed.presets;
 }
 
 /**
@@ -798,6 +819,12 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
     function buildImageGenerationSection(snapshot) {
         const section = element('section', { className: 'yl-settings-section yl-image-generation-settings' });
         const image = snapshot.imageGeneration ?? settingsStore.getImageGenerationSettings();
+        let imagePromptPresets = JSON.parse(JSON.stringify(image.promptPresets ?? { novelai: [], openai_compatible: [], comfyui: [] }));
+        let activeImagePromptPresetIds = {
+            novelai: image.activePromptPresetIds?.novelai ?? null,
+            openai_compatible: image.activePromptPresetIds?.openai_compatible ?? null,
+            comfyui: image.activePromptPresetIds?.comfyui ?? null,
+        };
         append(section, [
             sectionHeading('sparkle', '生图设置'),
             element('p', {
@@ -909,6 +936,145 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             refresh();
             return { actions };
         };
+        const buildImagePromptPresetManager = ({ provider, providerLabel, prefixInput, suffixInput, negativeInput }) => {
+            const manager = element('section', { className: 'yl-image-prompt-presets' });
+            manager.appendChild(element('h3', { className: 'yl-image-provider-title', text: `${providerLabel} 提示词预设` }));
+            manager.appendChild(element('p', {
+                className: 'yl-phone-page-description',
+                text: `仅管理 ${providerLabel} 的前置、后置与负面提示词；不会与其他生图接口共用。`,
+            }));
+            const presets = () => imagePromptPresets[provider] ?? [];
+            const picker = selectWithOptions([
+                { label: '选择已保存预设…', value: '' },
+                ...presets().map((preset) => ({ label: preset.name, value: preset.id })),
+            ], activeImagePromptPresetIds[provider] ?? '', `${providerLabel} 提示词预设`, `image-prompt-preset-${provider}`);
+            const name = element('input', {
+                className: 'yl-settings-control', type: 'text', maxLength: 80,
+                name: `image-prompt-preset-name-${provider}`, ariaLabel: `${providerLabel} 提示词预设名称`,
+                placeholder: '例如：人物写真',
+            });
+            const transfer = element('textarea', {
+                className: 'yl-settings-control yl-settings-textarea', rows: 5, maxLength: MAX_PROMPT_BUNDLE_BYTES,
+                name: `image-prompt-preset-transfer-${provider}`,
+                ariaLabel: `${providerLabel} 提示词预设导入导出 JSON`,
+                placeholder: `导出 ${providerLabel} 预设，或粘贴同接口预设 JSON 后导入`,
+            });
+            const loadPreset = (preset) => {
+                if (!preset) return;
+                activeImagePromptPresetIds[provider] = preset.id;
+                picker.value = preset.id;
+                name.value = preset.name;
+                prefixInput.value = preset.positivePrefix;
+                suffixInput.value = preset.positiveSuffix;
+                negativeInput.value = preset.negativePrompt;
+            };
+            const initial = presets().find((preset) => preset.id === activeImagePromptPresetIds[provider]);
+            if (initial) loadPreset(initial);
+            listen(picker, picker, 'change', () => {
+                const preset = presets().find((item) => item.id === picker.value);
+                if (!preset) return;
+                loadPreset(preset);
+                onFeedback(`已载入“${preset.name}”；点击“保存生图设置”即可把它用于后续生成。`);
+            }, signal);
+            const formPreset = (id) => ({
+                id,
+                name: name.value,
+                positivePrefix: prefixInput.value,
+                positiveSuffix: suffixInput.value,
+                negativePrompt: negativeInput.value,
+            });
+            const saveCollections = (nextCollections, nextActiveIds, success) => {
+                try {
+                    settingsStore.setImageGenerationSettings({
+                        ...formSettings(),
+                        promptPresets: nextCollections,
+                        activePromptPresetIds: nextActiveIds,
+                    });
+                    imagePromptPresets = nextCollections;
+                    activeImagePromptPresetIds = nextActiveIds;
+                    onFeedback(success);
+                    onRerender();
+                } catch (error) {
+                    onFeedback(safeErrorMessage(error, `${providerLabel} 提示词预设未保存。`));
+                }
+            };
+            manager.appendChild(field('已保存预设', picker));
+            manager.appendChild(field('预设名称', name));
+            const editActions = element('div', { className: 'yl-settings-actions yl-image-prompt-preset-actions' });
+            editActions.appendChild(actionButton('新建空白预设', async () => {
+                activeImagePromptPresetIds[provider] = null;
+                picker.value = '';
+                name.value = '';
+                prefixInput.value = '';
+                suffixInput.value = '';
+                negativeInput.value = '';
+                name.focus?.();
+                onFeedback(`已新建 ${providerLabel} 空白提示词预设草稿。`);
+            }, signal, { secondary: true, name: `image-prompt-preset-new-${provider}` }));
+            editActions.appendChild(actionButton('添加为新预设', async () => {
+                const nextCollections = JSON.parse(JSON.stringify(imagePromptPresets));
+                const id = nextId(`image_prompt_${provider.replace('_compatible', '')}`);
+                nextCollections[provider].push(formPreset(id));
+                const nextActiveIds = { ...activeImagePromptPresetIds, [provider]: id };
+                saveCollections(nextCollections, nextActiveIds, `${providerLabel} 提示词预设已添加。`);
+            }, signal, { name: `image-prompt-preset-add-${provider}` }));
+            editActions.appendChild(actionButton('保存当前预设编辑', async () => {
+                const activeId = activeImagePromptPresetIds[provider];
+                if (!activeId) {
+                    onFeedback(`请先选择一个 ${providerLabel} 提示词预设。`);
+                    return;
+                }
+                const nextCollections = JSON.parse(JSON.stringify(imagePromptPresets));
+                const index = nextCollections[provider].findIndex((preset) => preset.id === activeId);
+                if (index < 0) {
+                    onFeedback(`${providerLabel} 当前提示词预设不存在。`);
+                    return;
+                }
+                nextCollections[provider][index] = formPreset(activeId);
+                saveCollections(nextCollections, { ...activeImagePromptPresetIds }, `${providerLabel} 提示词预设编辑已保存。`);
+            }, signal, { name: `image-prompt-preset-edit-${provider}` }));
+            editActions.appendChild(actionButton('删除当前预设', async () => {
+                const activeId = activeImagePromptPresetIds[provider];
+                if (!activeId) {
+                    onFeedback(`请先选择一个 ${providerLabel} 提示词预设。`);
+                    return;
+                }
+                const nextCollections = JSON.parse(JSON.stringify(imagePromptPresets));
+                nextCollections[provider] = nextCollections[provider].filter((preset) => preset.id !== activeId);
+                const nextActiveIds = { ...activeImagePromptPresetIds, [provider]: null };
+                saveCollections(nextCollections, nextActiveIds, `${providerLabel} 提示词预设已删除；其他接口未改变。`);
+            }, signal, { secondary: true, danger: true, name: `image-prompt-preset-delete-${provider}` }));
+            manager.appendChild(editActions);
+            manager.appendChild(field(`${providerLabel} 预设 JSON`, transfer));
+            const transferActions = element('div', { className: 'yl-settings-actions yl-image-prompt-preset-actions' });
+            transferActions.appendChild(actionButton('导出此接口预设', async () => {
+                transfer.value = JSON.stringify({
+                    schema: IMAGE_PROMPT_BUNDLE_SCHEMA,
+                    schemaVersion: IMAGE_PROMPT_BUNDLE_VERSION,
+                    provider,
+                    presets: presets(),
+                }, null, 2);
+                onFeedback(`已导出 ${presets().length} 个 ${providerLabel} 提示词预设；不含 API Key。`);
+            }, signal, { secondary: true, name: `image-prompt-preset-export-${provider}` }));
+            transferActions.appendChild(actionButton('导入并覆盖此接口预设', async () => {
+                try {
+                    const imported = readImagePromptBundle(transfer.value, provider);
+                    const nextCollections = JSON.parse(JSON.stringify(imagePromptPresets));
+                    nextCollections[provider] = imported;
+                    const nextActiveIds = { ...activeImagePromptPresetIds, [provider]: imported[0]?.id ?? null };
+                    if (imported[0]) {
+                        prefixInput.value = imported[0].positivePrefix;
+                        suffixInput.value = imported[0].positiveSuffix;
+                        negativeInput.value = imported[0].negativePrompt;
+                    }
+                    saveCollections(nextCollections, nextActiveIds, `已导入 ${imported.length} 个 ${providerLabel} 提示词预设；其他接口未改变。`);
+                } catch (error) {
+                    onFeedback(safeErrorMessage(error, `${providerLabel} 提示词预设未导入。`));
+                }
+            }, signal, { name: `image-prompt-preset-import-${provider}` }));
+            manager.appendChild(transferActions);
+            return manager;
+        };
 
         const naiProviderPanel = element('div', { className: 'yl-image-provider-panel', id: 'yl-novelai-provider-panel' });
         naiProviderPanel.setAttribute('role', 'tabpanel');
@@ -927,6 +1093,10 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             field('NAI 前置正面提示词', positivePrefix), field('NAI 后置正面提示词', positiveSuffix), field('NAI 固定负面提示词', negativePrompt),
         ]);
         naiProviderPanel.appendChild(naiFields);
+        naiProviderPanel.appendChild(buildImagePromptPresetManager({
+            provider: 'novelai', providerLabel: 'NAI',
+            prefixInput: positivePrefix, suffixInput: positiveSuffix, negativeInput: negativePrompt,
+        }));
         naiProviderPanel.appendChild(field('NAI API Key', naiApiKey));
         naiProviderPanel.appendChild(naiKeyStatus);
         naiProviderPanel.appendChild(buildKeyControls({
@@ -951,6 +1121,10 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             field('OpenAI 固定负面提示词', openaiNegativePrompt),
         ]);
         openaiProviderPanel.appendChild(openaiFields);
+        openaiProviderPanel.appendChild(buildImagePromptPresetManager({
+            provider: 'openai_compatible', providerLabel: 'OpenAI-compatible',
+            prefixInput: openaiPositivePrefix, suffixInput: openaiPositiveSuffix, negativeInput: openaiNegativePrompt,
+        }));
         openaiProviderPanel.appendChild(field('OpenAI-compatible API Key', openaiApiKey));
         openaiProviderPanel.appendChild(openaiKeyStatus);
         openaiProviderPanel.appendChild(buildKeyControls({
@@ -1038,6 +1212,10 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             field('负面提示词', comfyNegativePrompt), field('工作流 JSON', comfyWorkflow),
         ]);
         comfyProviderPanel.appendChild(comfyFields);
+        comfyProviderPanel.appendChild(buildImagePromptPresetManager({
+            provider: 'comfyui', providerLabel: 'ComfyUI',
+            prefixInput: comfyPositivePrefix, suffixInput: comfyPositiveSuffix, negativeInput: comfyNegativePrompt,
+        }));
         section.appendChild(naiProviderPanel);
         section.appendChild(openaiProviderPanel);
         section.appendChild(comfyProviderPanel);
@@ -1090,6 +1268,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             comfySteps: numberValue(comfySteps, image.comfySteps), comfySeed: numberValue(comfySeed, image.comfySeed),
             comfyPositivePrefix: comfyPositivePrefix.value, comfyPositiveSuffix: comfyPositiveSuffix.value, comfyNegativePrompt: comfyNegativePrompt.value,
             comfyWorkflow: comfyWorkflow.value,
+            promptPresets: imagePromptPresets,
+            activePromptPresetIds: activeImagePromptPresetIds,
             conversationSettings: image.conversationSettings,
         });
         const save = actionButton('保存生图设置', async () => updateSettings(

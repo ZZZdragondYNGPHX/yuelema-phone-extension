@@ -665,3 +665,54 @@ test('生图供应商按钮显示三个独立面板并分别保存 NAI、OpenAI 
     assert.equal(keyboard.defaultPrevented, true);
     assert.equal(byName(panel, 'image-provider-openai').getAttribute('aria-selected'), 'true');
 });
+
+test('NAI、OpenAI 与 ComfyUI 各自管理可添加编辑删除及导入导出的提示词预设', async () => {
+    configurePersistentKeyStorage(createMemoryStorage());
+    const { panel, store, feedback } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { view: 'image_generation' });
+    const providerPanel = (id) => panel.querySelectorAll('.yl-image-provider-panel').find((node) => node.getAttribute('id') === id);
+    const naiPanel = providerPanel('yl-novelai-provider-panel');
+    const openaiPanel = providerPanel('yl-openai-provider-panel');
+    const comfyPanel = providerPanel('yl-comfyui-provider-panel');
+
+    byAria(naiPanel, 'NAI 提示词预设名称').value = 'NAI 人像';
+    byAria(naiPanel, '前置正面提示词').value = 'nai only prefix';
+    await click(button(naiPanel, '添加为新预设'));
+
+    await click(byName(panel, 'image-provider-openai'));
+    byAria(openaiPanel, 'OpenAI-compatible 提示词预设名称').value = 'OpenAI 写真';
+    byAria(openaiPanel, 'OpenAI 前置正面提示词').value = 'openai only prefix';
+    await click(button(openaiPanel, '添加为新预设'));
+
+    await click(byName(panel, 'image-provider-comfyui'));
+    byAria(comfyPanel, 'ComfyUI 提示词预设名称').value = 'Comfy 场景';
+    byAria(comfyPanel, 'ComfyUI 前置正面提示词').value = 'comfy only prefix';
+    await click(button(comfyPanel, '添加为新预设'));
+
+    let saved = store.snapshot().imageGeneration;
+    assert.deepEqual(saved.promptPresets.novelai.map((item) => item.name), ['NAI 人像']);
+    assert.deepEqual(saved.promptPresets.openai_compatible.map((item) => item.name), ['OpenAI 写真']);
+    assert.deepEqual(saved.promptPresets.comfyui.map((item) => item.name), ['Comfy 场景']);
+
+    await click(button(naiPanel, '导出此接口预设'));
+    const naiTransfer = byAria(naiPanel, 'NAI 提示词预设导入导出 JSON');
+    const naiBundle = JSON.parse(naiTransfer.value);
+    assert.equal(naiBundle.provider, 'novelai');
+    assert.equal(naiBundle.presets[0].positivePrefix, 'nai only prefix');
+    assert.doesNotMatch(naiTransfer.value, /openai only prefix|comfy only prefix|apiKey/iu);
+
+    await click(button(openaiPanel, '删除当前预设'));
+    saved = store.snapshot().imageGeneration;
+    assert.equal(saved.promptPresets.openai_compatible.length, 0);
+    assert.equal(saved.promptPresets.novelai.length, 1);
+    assert.equal(saved.promptPresets.comfyui.length, 1);
+
+    naiTransfer.value = JSON.stringify({
+        schema: 'yuelema.image-prompt-preset-bundle',
+        schemaVersion: 1,
+        provider: 'comfyui',
+        presets: [],
+    });
+    await click(button(naiPanel, '导入并覆盖此接口预设'));
+    assert.equal(store.snapshot().imageGeneration.promptPresets.novelai.length, 1, '错接口图包不得覆盖 NAI 预设');
+    assert.ok(feedback.some((message) => message.includes('接口归属不匹配')));
+});

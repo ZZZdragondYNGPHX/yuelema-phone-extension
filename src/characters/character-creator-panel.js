@@ -241,7 +241,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     });
     const publicBody = collapsibleBody(publicSection, publicHeading, '心动名片');
     const identityGroup = fieldGroup(publicBody, '基本印象', '', 'yl-character-field-grid yl-character-field-grid-two');
-    textField(identityGroup, '怎么称呼 TA', { name: 'public-昵称', required: true, placeholder: '例如：林夏' });
+    textField(identityGroup, '怎么称呼 TA', { name: 'public-昵称', required: true, placeholder: '填写一个自然的人名或昵称' });
     textField(identityGroup, '公开年龄段', { name: 'public-年龄段', required: true, placeholder: '例如：25-29', hint: '页面展示年龄段；实际年龄在私密资料中单独校验。' });
     textField(identityGroup, '性别认同', { name: 'public-性别', required: true, placeholder: '例如：女 / 男 / 非二元' });
     textField(identityGroup, '期待遇见谁', { name: 'public-性取向', required: true, placeholder: '例如：双性恋 / 异性恋' });

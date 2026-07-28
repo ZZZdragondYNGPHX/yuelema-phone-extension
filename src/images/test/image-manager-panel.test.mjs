@@ -33,7 +33,11 @@ async function flushUi(rounds = 4) {
     }
 }
 
-async function buildHarness({ seed = [], imageLibrary, compressImageFile, onChange, onFeedback, onConfigure, dialogController, downloadImagePack } = {}) {
+async function buildHarness({
+    seed = [], imageLibrary, compressImageFile, onChange, onFeedback, onConfigure,
+    onConfigureGeneration, dialogController, downloadImagePack, generateImage,
+    initialImageProvider,
+} = {}) {
     const store = imageLibrary ?? createStore();
     for (const input of seed) await store.add(input);
     const changes = [];
@@ -45,12 +49,97 @@ async function buildHarness({ seed = [], imageLibrary, compressImageFile, onChan
         onChange: onChange ?? ((event) => changes.push(event)),
         onFeedback: onFeedback ?? ((message) => feedback.push(message)),
         onConfigure,
+        onConfigureGeneration,
         dialogController,
         downloadImagePack,
+        generateImage,
+        initialImageProvider,
     });
     await flushUi();
     return { store, changes, feedback, ...api };
 }
+
+test('图片管理的生图按钮打开独立界面，选择接口并生成后直接压缩保存到图片库', async () => {
+    const requests = [];
+    const compressed = [];
+    const generationSettings = [];
+    const harness = await buildHarness({
+        initialImageProvider: 'openai_compatible',
+        generateImage: async (request) => {
+            requests.push(request);
+            return { ok: true, image: { dataUrl: WEBP_DATA_URL, src: WEBP_DATA_URL, mimeType: 'image/webp', kind: 'data_url' } };
+        },
+        compressImageFile: async (blob) => {
+            compressed.push({ type: blob.type, size: blob.size });
+            return WEBP_DATA_URL;
+        },
+        onConfigureGeneration: () => generationSettings.push('open'),
+    });
+    try {
+        buttonByText(harness.element, '生图').dispatchEvent(new Event('click', { cancelable: true }));
+        const workbench = harness.element.querySelector('.yl-image-generation-workbench');
+        assert.equal(workbench.hidden, false);
+        assert.equal(harness.element.querySelector('.yl-image-manager-side').hidden, true);
+        assert.equal(harness.element.querySelector('.yl-image-manager-grid').hidden, true);
+        assert.equal(harness.element.querySelector('[name="image-library-generation-provider"]').value, 'openai_compatible');
+
+        buttonByText(workbench, '接口设置').dispatchEvent(new Event('click', { cancelable: true }));
+        assert.deepEqual(generationSettings, ['open']);
+
+        const provider = harness.element.querySelector('[name="image-library-generation-provider"]');
+        const prompt = harness.element.querySelector('[name="image-library-generation-prompt"]');
+        provider.value = 'comfyui';
+        prompt.value = 'rainy neon city street';
+        buttonByText(workbench, '生成并保存').dispatchEvent(new Event('click', { cancelable: true }));
+        await flushUi(10);
+
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0].provider, 'comfyui');
+        assert.equal(requests[0].prompt, 'rainy neon city street');
+        assert.ok(requests[0].signal instanceof AbortSignal);
+        assert.deepEqual(compressed, [{ type: 'image/webp', size: 16 }]);
+        const records = await harness.store.list();
+        assert.equal(records.length, 1);
+        assert.equal(records[0].source.dataUrl, WEBP_DATA_URL);
+        assert.deepEqual(records[0].keywordWeights, []);
+        assert.equal(harness.changes.at(-1).type, 'generate');
+        assert.equal(workbench.hidden, true, '保存成功后应返回图片库');
+        assert.equal(harness.element.querySelector('.yl-image-manager-grid').hidden, false);
+        assert.ok(harness.feedback.includes('图片已生成、压缩并保存到图片库。'));
+    } finally {
+        harness.dispose();
+    }
+});
+
+test('图片库生图失败或取消时不保存图片，并保留提示词供重试', async () => {
+    let resolveGeneration;
+    const harness = await buildHarness({
+        generateImage: ({ signal }) => new Promise((resolve) => {
+            resolveGeneration = () => resolve(signal.aborted
+                ? { ok: false, message: '生图请求已取消。' }
+                : { ok: false, message: '接口暂时不可用。' });
+        }),
+        compressImageFile: async () => WEBP_DATA_URL,
+    });
+    try {
+        buttonByText(harness.element, '生图').dispatchEvent(new Event('click', { cancelable: true }));
+        const prompt = harness.element.querySelector('[name="image-library-generation-prompt"]');
+        prompt.value = 'quiet lakeside at dawn';
+        buttonByText(harness.element, '生成并保存').dispatchEvent(new Event('click', { cancelable: true }));
+        await flushUi(2);
+        const cancel = buttonByText(harness.element, '取消生成');
+        assert.equal(cancel.hidden, false);
+        cancel.dispatchEvent(new Event('click', { cancelable: true }));
+        resolveGeneration();
+        await flushUi(6);
+
+        assert.equal((await harness.store.list()).length, 0);
+        assert.equal(prompt.value, 'quiet lakeside at dawn');
+        assert.equal(harness.element.querySelector('.yl-image-generation-status').textContent, '本次生成已取消，提示词仍保留。');
+    } finally {
+        harness.dispose();
+    }
+});
 
 test('导出完整图包包含图片与关键词权重，并交给显式下载能力', async () => {
     const downloads = [];
@@ -233,7 +322,13 @@ test('右上角设置按钮明确可访问，点击只调用注入的 onConfigur
         assert.equal(button.getAttribute('type'), 'button');
         assert.equal(button.getAttribute('aria-label'), '配置图片管理预设');
         assert.equal(button.classList.contains('yl-image-manager-configure'), true);
-        assert.equal(button.parentNode.classList.contains('yl-image-manager-titlebar'), true);
+        assert.equal(button.parentNode.classList.contains('yl-image-manager-title-actions'), true);
+        assert.equal(button.parentNode.parentNode.classList.contains('yl-image-manager-titlebar'), true);
+        const generateButton = buttonByText(harness.element, '生图');
+        assert.equal(generateButton.getAttribute('aria-label'), '打开图片库生图');
+        assert.equal(generateButton.parentNode, button.parentNode);
+        assert.deepEqual(button.parentNode.childNodes.slice(0, 2), [generateButton, button], '生图文字按钮必须紧挨在设置按钮左侧');
+        assert.equal(generateButton.querySelector('svg'), null, '左上角入口保持为与设置一致的纯文字按钮');
 
         for (const method of Object.keys(operationCounts)) operationCounts[method] = 0;
         button.dispatchEvent(new Event('click', { cancelable: true }));

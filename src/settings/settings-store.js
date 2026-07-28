@@ -8,7 +8,7 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 19;
+export const SETTINGS_SCHEMA_VERSION = 20;
 // v12 rewrote the stock built-in prompt preset copy (阶段 55 内容尺度调整)，
 // v13 enriched the NSFW stock copy with concrete erotic-writing guidance,
 // v14 renamed the「语音匹配」stock presets to「描述匹配」(display name and
@@ -22,7 +22,8 @@ export const SETTINGS_SCHEMA_VERSION = 19;
 // deleted stock presets remain untouched.
 // v18 separates OpenAI-compatible fixed prompts from NovelAI tag prompts.
 // v19 separates OpenAI-compatible dimensions from NovelAI dimensions.
-const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14, 15, 16, 17, 18]);
+// v20 adds provider-isolated image prompt preset collections.
+const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14, 15, 16, 17, 18, 19]);
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -50,7 +51,9 @@ const SECRET_FIELD_NAMES = new Set([
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const PROMPT_POSITIONS = new Set(['before_character_definition', 'after_character_definition']);
 const IMAGE_GENERATION_CONVERSATION_KINDS = new Set(['private', 'group', 'forum']);
+const IMAGE_PROMPT_PROVIDERS = Object.freeze(['novelai', 'openai_compatible', 'comfyui']);
 const MAX_IMAGE_GENERATION_CONVERSATIONS = 256;
+const MAX_IMAGE_PROMPT_PRESETS_PER_PROVIDER = 32;
 
 export class YueLeMaSettingsError extends Error {
     constructor(code, message) {
@@ -410,6 +413,8 @@ export function defaultImageGenerationSettings() {
         comfyPositiveSuffix: '',
         comfyNegativePrompt: '',
         comfyWorkflow: '',
+        promptPresets: { novelai: [], openai_compatible: [], comfyui: [] },
+        activePromptPresetIds: { novelai: null, openai_compatible: null, comfyui: null },
         conversationSettings: { private: {}, group: {}, forum: {} },
     };
 }
@@ -451,6 +456,53 @@ function normalizeImageConversationSettings(input) {
     return { autoGenerate: candidate.autoGenerate };
 }
 
+function normalizeImagePromptPreset(input) {
+    const candidate = safeClone(input);
+    if (!isPlainObject(candidate) || Object.keys(candidate).some((key) => ![
+        'id', 'name', 'positivePrefix', 'positiveSuffix', 'negativePrompt',
+    ].includes(key))) {
+        fail('INVALID_IMAGE_GENERATION', '生图提示词预设字段无效。');
+    }
+    return {
+        id: cleanId(candidate.id, '生图提示词预设 ID'),
+        name: cleanImageText(candidate.name, '生图提示词预设名称', 80, { allowEmpty: false }),
+        positivePrefix: cleanImageText(candidate.positivePrefix, '生图预设前置正面提示词', 4000),
+        positiveSuffix: cleanImageText(candidate.positiveSuffix, '生图预设后置正面提示词', 4000),
+        negativePrompt: cleanImageText(candidate.negativePrompt, '生图预设固定负面提示词', 4000),
+    };
+}
+
+function normalizeImagePromptPresetCollections(input, activeInput) {
+    const candidate = safeClone(input);
+    const activeCandidate = safeClone(activeInput);
+    const exactProviderShape = (value) => isPlainObject(value)
+        && Object.keys(value).length === IMAGE_PROMPT_PROVIDERS.length
+        && IMAGE_PROMPT_PROVIDERS.every((provider) => Object.hasOwn(value, provider));
+    if (!exactProviderShape(candidate) || !exactProviderShape(activeCandidate)) {
+        fail('INVALID_IMAGE_GENERATION', '三个生图接口的提示词预设必须保持独立。');
+    }
+    const promptPresets = {};
+    const activePromptPresetIds = {};
+    for (const provider of IMAGE_PROMPT_PROVIDERS) {
+        if (!Array.isArray(candidate[provider]) || candidate[provider].length > MAX_IMAGE_PROMPT_PRESETS_PER_PROVIDER) {
+            fail('INVALID_IMAGE_GENERATION', '单个生图接口的提示词预设数量无效。');
+        }
+        const presets = candidate[provider].map(normalizeImagePromptPreset);
+        if (new Set(presets.map((preset) => preset.id)).size !== presets.length) {
+            fail('DUPLICATE_PRESET_ID', '同一生图接口内的提示词预设 ID 不可重复。');
+        }
+        const activeId = activeCandidate[provider] === null
+            ? null
+            : cleanId(activeCandidate[provider], '当前生图提示词预设 ID');
+        if (activeId !== null && !presets.some((preset) => preset.id === activeId)) {
+            fail('UNKNOWN_PRESET_ID', '当前生图提示词预设不存在。');
+        }
+        promptPresets[provider] = presets;
+        activePromptPresetIds[provider] = activeId;
+    }
+    return { promptPresets, activePromptPresetIds };
+}
+
 export function normalizeImageGenerationSettings(input) {
     if (input === undefined || input === null) return defaultImageGenerationSettings();
     const candidate = safeClone(input);
@@ -488,6 +540,7 @@ export function normalizeImageGenerationSettings(input) {
             normalizedConversations[kind][id] = normalizeImageConversationSettings(settings);
         }
     }
+    const promptPresetCollections = normalizeImagePromptPresetCollections(value.promptPresets, value.activePromptPresetIds);
     return {
         enabled: value.enabled,
         presetId,
@@ -536,6 +589,8 @@ export function normalizeImageGenerationSettings(input) {
         comfyPositiveSuffix: cleanImageText(value.comfyPositiveSuffix, 'ComfyUI 后置正面提示词', 4000),
         comfyNegativePrompt: cleanImageText(value.comfyNegativePrompt, 'ComfyUI 固定负面提示词', 4000),
         comfyWorkflow: cleanImageWorkflow(value.comfyWorkflow),
+        promptPresets: promptPresetCollections.promptPresets,
+        activePromptPresetIds: promptPresetCollections.activePromptPresetIds,
         conversationSettings: normalizedConversations,
     };
 }
@@ -751,10 +806,11 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         } catch {
             fail('INVALID_IMPORT_JSON', '设置 JSON 无法解析。');
         }
-        // Persist only a normalized current v19 document; an upgradeable
-        // v11–v18 document is migrated inside normalize: v11–v14 refresh all
+        // Persist only a normalized current v20 document; an upgradeable
+        // v11–v19 document is migrated inside normalize: v11–v14 refresh all
         // stock prompt copy, v15–v16 refresh only the service presets, and v18
-        // receives independent OpenAI dimensions without changing its other values.
+        // receives independent OpenAI dimensions; v19 receives isolated image
+        // prompt preset collections without changing its other values.
         return persist(parsed);
     }
 

@@ -209,10 +209,11 @@ console.log('✓ 角色模板、本地头像、AI 补全/完整创作草稿、�
 const imagePackStoreSource = await readFile(resolve(root, 'src/images/image-library-store.js'), 'utf8');
 const imagePackPanelSource = await readFile(resolve(root, 'src/images/image-manager-panel.js'), 'utf8');
 if (!imagePackStoreSource.includes('mergeImportLibrary') || !imagePackStoreSource.includes('importMerge')
-    || !imagePackPanelSource.includes('导出完整图包') || !imagePackPanelSource.includes('合并导入图包')) {
-    fail('缺少图片库完整图包导出或安全合并导入接线');
+    || !imagePackPanelSource.includes('导出完整图包') || !imagePackPanelSource.includes('合并导入图包')
+    || !imagePackPanelSource.includes('生成并保存') || !actionBridge.includes('generateLibraryImage')) {
+    fail('缺少图片库图包导入导出或手动生图保存接线');
 }
-console.log('✓ 图片库完整图包导出、安全合并导入与逐图关键词权重');
+console.log('✓ 图片库图包导入导出、逐图关键词权重与手动生图保存');
 
 const groupDiscoveryService = await readFile(resolve(root, 'src/groups/group-discovery-service.js'), 'utf8');
 if (!groupDiscoveryService.includes('buildGroupBrowseModel') || !groupDiscoveryService.includes('projectPublicGroupCharacter')) fail('缺少群组公开浏览或人物投影服务');
@@ -325,8 +326,11 @@ const imageGenerationClient = await readFile(resolve(root, 'src/llm/image-genera
 const drawingDnaRules = await readFile(resolve(root, 'src/recommendation/drawing-dna-rules.js'), 'utf8');
 if (!index.includes('createImageGenerationClient') || !actionBridge.includes('generateConversationImage')) fail('缺少生图客户端注入或对话生图桥接');
 if (!appShell.includes("'settings_image_generation'") || !appShell.includes("'settings_image_cache'") || !appShell.includes('buildConversationImageControls') || !appShell.includes('buildImageDirectiveCard') || !appShell.includes('buildConversationImageCachePage') || !appShell.includes('openImageOriginalDialog') || !appShell.includes('generateConversationImage')) fail('缺少生图设置 / 缓存路由、会话开关、结构化指令或原图 UI 接线');
-if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 19') || !settingsStore.includes('openaiBaseUrl') || !settingsStore.includes('openaiWidth') || !settingsStore.includes('comfyBaseUrl') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema、OpenAI/ComfyUI 专属配置或逐会话自动生图隔离');
-if (!settingsPanel.includes('buildImageGenerationSection') || !settingsPanel.includes('positivePrefix') || !settingsPanel.includes('negativePrompt')) fail('缺少生图固定正负提示词设置界面');
+if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 20') || !settingsStore.includes('openaiBaseUrl') || !settingsStore.includes('openaiWidth') || !settingsStore.includes('comfyBaseUrl') || !settingsStore.includes('promptPresets') || !settingsStore.includes('activePromptPresetIds') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema、三接口独立提示词预设、OpenAI/ComfyUI 专属配置或逐会话自动生图隔离');
+if (!settingsPanel.includes('buildImageGenerationSection') || !settingsPanel.includes('buildImagePromptPresetManager')
+    || !settingsPanel.includes('IMAGE_PROMPT_BUNDLE_SCHEMA') || !settingsPanel.includes('positivePrefix') || !settingsPanel.includes('negativePrompt')) {
+    fail('缺少三接口独立生图提示词预设或固定正负提示词设置界面');
+}
 if (!imageDirective.includes('composeImagePrompt') || !imageDirective.includes('coreDna') || !imageDirective.includes('outfitDna')) fail('缺少固定顺序的绘图 DNA 提示词组合器');
 if (!imageGenerationClient.includes('requireSessionKey') || !imageGenerationClient.includes('fetchImpl') || !imageGenerationClient.includes('readResponseBytes') || !imageGenerationClient.includes('MAX_IMAGE_BYTES') || imageGenerationClient.includes("kind: 'url'")) fail('缺少注入式生图客户端、独立 Key、有界图片响应读取或仍允许 UI 远程图片 URL');
 if (!drawingDnaRules.includes('core_dna') || !drawingDnaRules.includes('outfit_dna')) fail('缺少角色绘图 DNA 生成规则');

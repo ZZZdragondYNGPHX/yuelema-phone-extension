@@ -3780,6 +3780,15 @@
 .yl-comfyui-provider-panel > .yl-settings-button { width: 100%; }
 .yl-image-generation-fields { align-items: start; }
 .yl-image-generation-fields .yl-settings-field:has(textarea) { grid-column: 1 / -1; }
+.yl-image-prompt-presets {
+    display: grid;
+    gap: var(--yl-space-3);
+    padding: var(--yl-space-3);
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-card);
+    background: var(--yl-surface-2);
+}
+.yl-image-prompt-preset-actions { flex-wrap: wrap; }
 .yl-image-generation-key-status {
     padding: var(--yl-space-2) var(--yl-space-3);
     border: 1px solid color-mix(in srgb, var(--yl-accent-2) 30%, transparent);
@@ -4142,6 +4151,7 @@
 }
 .yl-image-manager-heading { display: grid; gap: 6px; }
 .yl-image-manager-titlebar { display: flex; align-items: center; justify-content: space-between; gap: var(--yl-space-2); }
+.yl-image-manager-title-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--yl-space-2); }
 .yl-image-manager-title { font-size: var(--yl-type-title); font-weight: 750; }
 .yl-image-manager-configure { flex: 0 0 auto; }
 .yl-image-manager-description, .yl-image-manager-status { color: var(--yl-text-2); font-size: var(--yl-type-caption); line-height: 1.5; }
@@ -4171,6 +4181,49 @@
 .yl-image-pack-transfer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--yl-space-2); }
 .yl-image-pack-transfer > * { min-width: 0; }
 .yl-image-pack-import-label { background: var(--yl-surface-2); }
+.yl-image-generation-workbench {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: var(--yl-space-4);
+    min-width: 0;
+}
+.yl-image-generation-workbench[hidden] { display: none; }
+.yl-image-generation-workbench-header {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--yl-space-3);
+}
+.yl-image-generation-workbench-heading { display: grid; gap: var(--yl-space-1); min-width: 0; }
+.yl-image-generation-workbench-heading h2 { font-size: var(--yl-type-title); }
+.yl-image-generation-workbench-heading p, .yl-image-generation-status {
+    color: var(--yl-text-2);
+    font-size: var(--yl-type-caption);
+    line-height: 1.5;
+}
+.yl-image-generation-form {
+    display: grid;
+    gap: var(--yl-space-4);
+    width: min(100%, 760px);
+    padding: var(--yl-space-4);
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-card);
+    background: var(--yl-surface);
+    box-shadow: var(--yl-shadow-1);
+}
+.yl-image-generation-field { display: grid; gap: var(--yl-space-2); min-width: 0; color: var(--yl-text); font-weight: 700; }
+.yl-image-generation-field select, .yl-image-generation-field textarea {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding: var(--yl-space-3);
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-ctrl);
+    color: var(--yl-text);
+    background: var(--yl-surface-2);
+    font: inherit;
+}
+.yl-image-generation-field textarea { resize: vertical; line-height: 1.55; }
+.yl-image-generation-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--yl-space-2); }
 .yl-image-remote-import { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--yl-space-2); align-items: center; }
 .yl-image-remote-import-hint { color: var(--yl-text-2); font-size: var(--yl-type-xs); line-height: 1.45; }
 /* 面板按钮已全部换 createButton（yl-btn 变体分级），此处不再自绘按钮基类 */
@@ -4272,6 +4325,8 @@
 @media (max-width: 430px) {
     .yl-image-remote-import { grid-template-columns: 1fr; }
     .yl-image-pack-transfer { grid-template-columns: 1fr; }
+    .yl-image-generation-workbench-header { display: grid; }
+    .yl-image-generation-actions > * { flex: 1 1 120px; }
     .yl-image-card-preview { min-height: 180px; }
     .yl-image-keyword-row { grid-template-columns: minmax(0, 1fr) 62px auto; }
     .yl-image-keyword-actions > * { flex: 1 1 90px; }

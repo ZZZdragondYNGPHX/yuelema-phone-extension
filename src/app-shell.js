@@ -2269,12 +2269,16 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         return section;
     }
     function renderPage() {
+        const previousTranscript = content.querySelector?.('.yl-chat-transcript');
         const privateChatScroll = activePage === 'private_chat'
             && renderedPrivateChatSessionUid === activeMessageSessionUid
             && content.querySelector?.('.yl-private-chat-screen')
             ? {
-                top: Math.max(0, Number(content.scrollTop) || 0),
-                followBottom: (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0) - (Number(content.scrollTop) || 0) <= 24,
+                outerTop: Math.max(0, Number(content.scrollTop) || 0),
+                transcriptTop: Math.max(0, Number(previousTranscript?.scrollTop) || 0),
+                transcriptFollowBottom: previousTranscript
+                    ? (Number(previousTranscript.scrollHeight) || 0) - (Number(previousTranscript.clientHeight) || 0) - (Number(previousTranscript.scrollTop) || 0) <= 24
+                    : false,
             }
             : null;
         recordLauncherDiagnostic('render_started', {
@@ -2331,8 +2335,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             const restore = () => {
                 if (isDestroyed || restoreGeneration !== privateChatScrollRestoreGeneration
                     || activePage !== 'private_chat' || activeMessageSessionUid !== renderedPrivateChatSessionUid) return;
-                const bottom = Math.max(0, (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0));
-                content.scrollTop = privateChatScroll.followBottom ? bottom : Math.min(privateChatScroll.top, bottom);
+                const outerBottom = Math.max(0, (Number(content.scrollHeight) || 0) - (Number(content.clientHeight) || 0));
+                content.scrollTop = Math.min(privateChatScroll.outerTop, outerBottom);
+                const transcript = content.querySelector?.('.yl-chat-transcript');
+                if (!transcript) return;
+                const transcriptBottom = Math.max(0, (Number(transcript.scrollHeight) || 0) - (Number(transcript.clientHeight) || 0));
+                transcript.scrollTop = privateChatScroll.transcriptFollowBottom
+                    ? transcriptBottom
+                    : Math.min(privateChatScroll.transcriptTop, transcriptBottom);
             };
             restore();
             const requestFrame = globalThis.requestAnimationFrame;
@@ -2475,6 +2485,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         if (activePage === 'settings_images') {
             const section = element('section', { className: 'yl-settings-detail yl-image-manager-page' });
+            let initialImageProvider = 'novelai';
+            try { initialImageProvider = settingsStore?.getImageGenerationSettings?.().apiMode ?? 'novelai'; } catch { /* normalized default */ }
             imageManagerPanel = createImageManagerPanel({
                 documentRef,
                 imageLibrary,
@@ -2484,9 +2496,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
                 importRemoteImageFile: remoteImageImporter ? (url) => remoteImageImporter.importImageFile(url) : null,
                 compressImageFile: async (file) => (await compressLocalAvatar(file)).dataUrl,
                 downloadImagePack: downloadImagePackJson,
+                generateImage: typeof actionBridge.generateLibraryImage === 'function'
+                    ? (request) => actionBridge.generateLibraryImage(request)
+                    : null,
+                initialImageProvider,
                 onFeedback: (message) => setFeedback(message),
                 onChange: () => { clearMatchedImageState(); renderPage(); },
                 onConfigure: () => openFeatureBinding([{ key: 'image_match', title: '图片匹配' }], '图片匹配设置'),
+                onConfigureGeneration: () => setActivePage('settings_image_generation'),
             });
             section.appendChild(imageManagerPanel.element);
             return section;

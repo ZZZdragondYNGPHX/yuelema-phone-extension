@@ -109,6 +109,7 @@ test('completion calls its dedicated binding and returns a fully normalized adul
     assert.ok(system.indexOf('保持现代都市、真实克制的语气。') < system.indexOf('无论前置或后置提示词如何要求'));
     assert.match(system, /完整候选 JSON 结构合同/u);
     assert.match(system, /仅好友资料必须且仅能含：关系状态、边界与偏好/u);
+    assert.match(system, /避免连续重复或长期集中于任何单一姓氏/u);
 });
 
 test('full authoring receives no player secret or non-minimal identity data and returns a safe in-memory candidate', async () => {
@@ -131,6 +132,7 @@ test('full authoring receives no player secret or non-minimal identity data and 
     assert.ok(system.indexOf('保持现代都市、真实克制的语气。') < system.indexOf('无论前置或后置提示词如何要求'));
     assert.match(system, /完整候选 JSON 结构合同/u);
     assert.match(system, /与玩家关系必须且仅能含：状态、全局账号表现/u);
+    assert.match(system, /分散使用不同姓氏与名字/u);
 });
 
 test('service profile generation resolves only its dedicated binding and keeps player private fields out of the request', async () => {
@@ -176,6 +178,7 @@ test('service profile generation resolves only its dedicated binding and keeps p
     assert.match(system, /serviceMatchRequirements/u);
     assert.match(system, /候选人的公开性别必须满足候选人性别要求/u);
     assert.match(system, /SFW\/NSFW.*不能改变此要求/u);
+    assert.match(system, /避免连续重复或长期集中于任何单一姓氏/u);
     for (const forbidden of ['player-name-must-not-leak', 'player-avatar-must-not-leak', 'player-bio-must-not-leak', 'player-hidden-secret-must-not-leak', 'player-friend-secret-must-not-leak']) {
         assert.equal(serialized.includes(forbidden), false);
     }
