@@ -31,6 +31,7 @@ const ICON_PATHS = Object.freeze({
     info: Object.freeze(['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z', 'M12 10.5V16M12 7.5h.01']),
     chevron_right: Object.freeze(['m9 5 7 7-7 7']),
     chevron_left: Object.freeze(['m15 5-7 7 7 7']),
+    chevron_down: Object.freeze(['m5 9 7 7 7-7']),
     close: Object.freeze(['M6.5 6.5l11 11M17.5 6.5l-11 11']),
     more_vertical: Object.freeze(['M12 5.75h.01M12 12h.01M12 18.25h.01']),
     refresh: Object.freeze(['M19.5 12a7.5 7.5 0 1 1-2.2-5.3', 'M19.5 4.5v4.7h-4.7']),
@@ -86,4 +87,3 @@ export function createUiIcon(documentRef, name, { className = 'yl-ui-icon', size
 }
 
 export const UI_ICON_NAMES = Object.freeze(Object.keys(ICON_PATHS));
-

@@ -148,6 +148,7 @@ export function createSharedHelpers(ctx) {
             ctx.activeMeetupSessionUid = '';
         }
         ctx.activeMessageSessionUid = session.sessionUid;
+        ctx.requestPrivateChatScrollToBottom?.(session.sessionUid);
         ctx.setActivePage('private_chat', { preserveOperation });
     }
     function chatSummarySettings() {
