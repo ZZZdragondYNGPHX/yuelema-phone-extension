@@ -342,8 +342,8 @@ test('ComfyUI submits an API workflow, polls history, and reads the generated im
             1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: '%MODEL_NAME%' } },
             2: { class_type: 'CLIPTextEncode', inputs: { text: '%prompt%', clip: ['1', 1] } },
             3: { class_type: 'EmptyLatentImage', inputs: { width: '%width%', height: '%height%', batch_size: 1 } },
-            4: { class_type: 'VAELoader', inputs: { vae_name: '%VAE_NAME%' } },
-            5: { class_type: 'CLIPLoader', inputs: { clip_name: '%CLIP_NAME%' } },
+            4: { class_type: 'VAELoader', inputs: { vae_name: '%vae%' } },
+            5: { class_type: 'CLIPLoader', inputs: { clip_name: '%clip%' } },
         }),
     };
     const client = createImageGenerationClient({
@@ -384,6 +384,48 @@ test('ComfyUI submits an API workflow, polls history, and reads the generated im
     assert.equal(diagnostics[1][2].customWorkflow, true);
     assert.equal(diagnostics[1][2].nodeCount, 5);
     assert.doesNotMatch(JSON.stringify(diagnostics), /adult portrait|lowres|task-1|done\.png/u);
+    assert.equal(diagnostics[0][2].timeoutMs, 600_000);
+});
+
+test('ComfyUI reports a terminal execution error instead of waiting for the timeout', async () => {
+    resetPersistentKeyStorage();
+    const diagnostics = [];
+    let calls = 0;
+    const client = createImageGenerationClient({
+        diagnosticLogger: { error: (...args) => diagnostics.push(args) },
+        fetchImpl: async (url) => {
+            calls += 1;
+            if (url.endsWith('/prompt')) return new Response(JSON.stringify({ prompt_id: 'task-1' }), { status: 200 });
+            return new Response(JSON.stringify({ 'task-1': { status: { status_str: 'error', completed: false, messages: ['private server details'], exception_message: 'private exception' }, outputs: { '2': { images: [{ filename: 'partial.png', subfolder: '', type: 'output' }] } } } }), { status: 200 });
+        },
+    });
+    await assert.rejects(
+        () => client.generate({
+            settings: { ...settings, apiMode: 'comfyui', baseUrl: 'http://127.0.0.1:8188', comfyWorkflow: '{"1":{"class_type":"SaveImage","inputs":{}}}' },
+            positivePrompt: 'scene', negativePrompt: '',
+        }),
+        (error) => error?.code === 'COMFY_TASK_FAILED',
+    );
+    assert.equal(calls, 2);
+    assert.equal(diagnostics[0]?.[0], '[约了吗][生图] ComfyUI 任务终态失败');
+    assert.equal(diagnostics[1]?.[1]?.code, 'COMFY_TASK_FAILED');
+    assert.doesNotMatch(JSON.stringify(diagnostics), /private server details|private exception/u);
+});
+
+test('ComfyUI reports a completed workflow without a compatible image output', async () => {
+    resetPersistentKeyStorage();
+    const client = createImageGenerationClient({
+        fetchImpl: async (url) => url.endsWith('/prompt')
+            ? new Response(JSON.stringify({ prompt_id: 'task-1' }), { status: 200 })
+            : new Response(JSON.stringify({ 'task-1': { status: { status_str: 'success', completed: true }, outputs: { '2': { text: ['done'] } } } }), { status: 200 }),
+    });
+    await assert.rejects(
+        () => client.generate({
+            settings: { ...settings, apiMode: 'comfyui', baseUrl: 'http://127.0.0.1:8188', comfyWorkflow: '{"1":{"class_type":"SaveImage","inputs":{}}}' },
+            positivePrompt: 'scene', negativePrompt: '',
+        }),
+        (error) => error?.code === 'COMFY_TASK_NO_IMAGE' && /SaveImage|PreviewImage/u.test(error.message),
+    );
 });
 
 test('ComfyUI rejects UI-format workflows and unsafe workflow keys before network access', async () => {

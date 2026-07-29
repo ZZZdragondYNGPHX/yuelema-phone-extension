@@ -7,6 +7,7 @@ const MAX_COMFY_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_COMFY_OBJECT_INFO_BYTES = 32 * 1024 * 1024;
 const MAX_HTTP_ERROR_DIAGNOSTIC_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_COMFY_CUSTOM_WORKFLOW_TIMEOUT_MS = 600_000;
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
 const UNSAFE_WORKFLOW_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SAFE_PROVIDER_ERROR_FIELDS = Object.freeze(['input', 'model', 'action', 'parameters', 'v4_prompt', 'v4_negative_prompt', 'negative_prompt', 'width', 'height', 'scale', 'cfg_rescale', 'steps', 'sampler', 'noise_schedule', 'seed']);
@@ -343,11 +344,15 @@ function normalizeRequest(input) {
         ? 'openai_compatible'
         : settings.apiMode === 'novelai' ? 'novelai' : settings.apiMode === 'comfyui' ? 'comfyui' : fail('INVALID_IMAGE_REQUEST', '生图接口模式无效。');
     const comfy = apiMode === 'comfyui';
+    const comfyWorkflow = cleanWorkflow(settings.comfyWorkflow ?? '');
+    const customComfyWorkflow = comfy && Boolean(comfyWorkflow);
+    const defaultTimeoutMs = customComfyWorkflow ? DEFAULT_COMFY_CUSTOM_WORKFLOW_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+    const maximumTimeoutMs = customComfyWorkflow ? 900_000 : 300_000;
     return {
         positivePrompt: cleanText(input.positivePrompt, '正面提示词', 32_000),
         negativePrompt: cleanText(input.negativePrompt ?? '', '负面提示词', 12_000, { allowEmpty: true }),
         signal: input.signal,
-        timeoutMs: input.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : cleanInteger(input.timeoutMs, '超时时间', 1_000, 300_000),
+        timeoutMs: input.timeoutMs === undefined ? defaultTimeoutMs : cleanInteger(input.timeoutMs, '超时时间', 1_000, maximumTimeoutMs),
         settings: {
             apiMode,
             presetId: cleanText(apiMode === 'openai_compatible' ? (settings.openaiPresetId ?? settings.presetId) : settings.presetId, '生图连接 ID', 96),
@@ -373,7 +378,7 @@ function normalizeRequest(input) {
             qualityToggle: settings.qualityToggle !== false, variety: settings.variety === true,
             comfyVae: cleanText(settings.comfyVae ?? '', 'ComfyUI VAE', 160, { allowEmpty: true }),
             comfyClip: cleanText(settings.comfyClip ?? '', 'ComfyUI CLIP', 160, { allowEmpty: true }),
-            comfyWorkflow: cleanWorkflow(settings.comfyWorkflow ?? ''),
+            comfyWorkflow,
         },
     };
 }
@@ -446,8 +451,8 @@ function buildComfyWorkflow(settings, positivePrompt, negativePrompt) {
         '%cfg_scale%': settings.guidance, '%cfg%': settings.guidance, '%cfg_rescale%': settings.guidanceRescale,
         '%seed%': settings.seed, '%sampler_name%': settings.sampler, '%scheduler%': settings.noiseSchedule,
         '%MODEL_NAME%': settings.model, '%model%': settings.model,
-        '%VAE_NAME%': settings.comfyVae, '%vae_name%': settings.comfyVae,
-        '%CLIP_NAME%': settings.comfyClip, '%clip_name%': settings.comfyClip,
+        '%VAE_NAME%': settings.comfyVae, '%vae_name%': settings.comfyVae, '%vae%': settings.comfyVae,
+        '%CLIP_NAME%': settings.comfyClip, '%clip_name%': settings.comfyClip, '%clip%': settings.comfyClip,
     };
     return replaceWorkflowPlaceholders(parseComfyWorkflow(settings.comfyWorkflow), replacements);
 }
@@ -460,17 +465,29 @@ async function readJsonResponse(response, maximum = MAX_COMFY_JSON_BYTES, tooLar
         fail('INVALID_IMAGE_RESPONSE', 'ComfyUI 返回了无效响应。');
     }
 }
-function comfyOutputFromHistory(payload, promptId) {
+function comfyHistorySnapshot(payload, promptId) {
     const root = payload?.[promptId] ?? payload;
+    let image = null;
+    let outputCount = 0;
     for (const output of Object.values(root?.outputs ?? {})) {
-        const image = Array.isArray(output?.images) ? output.images.find((item) => typeof item?.filename === 'string' && item.filename.trim()) : null;
-        if (image) return {
-            filename: image.filename.trim(),
-            subfolder: typeof image.subfolder === 'string' ? image.subfolder : '',
-            type: typeof image.type === 'string' && image.type ? image.type : 'output',
-        };
+        outputCount += 1;
+        const candidate = Array.isArray(output?.images) ? output.images.find((item) => typeof item?.filename === 'string' && item.filename.trim()) : null;
+        if (candidate) {
+            image = {
+                filename: candidate.filename.trim(),
+                subfolder: typeof candidate.subfolder === 'string' ? candidate.subfolder : '',
+                type: typeof candidate.type === 'string' && candidate.type ? candidate.type : 'output',
+            };
+            break;
+        }
     }
-    return null;
+    const status = typeof root?.status?.status_str === 'string' ? root.status.status_str.trim().toLowerCase() : '';
+    return {
+        image,
+        outputCount,
+        status,
+        completed: root?.status?.completed === true || status === 'success' || status === 'error' || status === 'failed',
+    };
 }
 async function generateWithComfyUI(fetchImpl, request, signal, {
     diagnosticLogger,
@@ -530,8 +547,21 @@ async function generateWithComfyUI(fetchImpl, request, signal, {
         });
         if (!history?.ok) fail('IMAGE_HTTP_ERROR', '无法读取 ComfyUI 任务状态。', { retryable: history?.status >= 500, status: Number.isInteger(history?.status) ? history.status : undefined });
         setPhase?.('history_response_parse');
-        image = comfyOutputFromHistory(await readJsonResponse(history), promptId);
+        const snapshot = comfyHistorySnapshot(await readJsonResponse(history), promptId);
+        if (snapshot.status === 'error' || snapshot.status === 'failed') {
+            emitImageDiagnostic(diagnosticLogger, 'error', 'ComfyUI 任务终态失败', {
+                requestId, attempt: pollAttempt, status: snapshot.status, outputCount: snapshot.outputCount, elapsedMs: Date.now() - startedAt,
+            });
+            fail('COMFY_TASK_FAILED', 'ComfyUI 工作流执行失败，请检查自定义节点、模型和节点连线。');
+        }
+        image = snapshot.image;
         if (image) break;
+        if (snapshot.completed) {
+            emitImageDiagnostic(diagnosticLogger, 'error', 'ComfyUI 任务未返回图片', {
+                requestId, attempt: pollAttempt, status: snapshot.status || undefined, outputCount: snapshot.outputCount, elapsedMs: Date.now() - startedAt,
+            });
+            fail('COMFY_TASK_NO_IMAGE', 'ComfyUI 工作流已结束但未返回图片；请确认末尾有可写入历史输出的 SaveImage 或 PreviewImage 节点。');
+        }
         await new Promise((resolve, reject) => {
             const timer = setTimeout(resolve, 1_000);
             signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')); }, { once: true });
