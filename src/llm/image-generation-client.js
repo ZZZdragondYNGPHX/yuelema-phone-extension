@@ -10,6 +10,7 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
 const UNSAFE_WORKFLOW_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SAFE_PROVIDER_ERROR_FIELDS = Object.freeze(['input', 'model', 'action', 'parameters', 'v4_prompt', 'v4_negative_prompt', 'negative_prompt', 'width', 'height', 'scale', 'cfg_rescale', 'steps', 'sampler', 'noise_schedule', 'seed']);
+const HOST_IMAGE_ENDPOINTS = Object.freeze({ novelai: '/api/novelai/generate-image', openai_compatible: '/api/openai/generate-image', comfyui: '/api/sd/comfy/generate' });
 let imageRequestSequence = 0;
 
 export class YueLeMaImageGenerationError extends Error {
@@ -335,6 +336,23 @@ function buildBody(settings, positivePrompt, negativePrompt) {
         n: 1,
     };
 }
+function hostImageEndpoint(apiMode) {
+    const endpoint = HOST_IMAGE_ENDPOINTS[apiMode];
+    if (!endpoint) fail('INVALID_IMAGE_REQUEST', '生图接口模式无效。');
+    return endpoint;
+}
+function buildHostImageBody(settings, positivePrompt, negativePrompt) {
+    if (settings.apiMode === 'novelai') return { prompt: positivePrompt, model: settings.model, sampler: settings.sampler, scheduler: settings.noiseSchedule, steps: settings.steps, scale: settings.guidance, width: settings.width, height: settings.height, negative_prompt: negativePrompt, decrisper: false, variety_boost: settings.variety, sm: settings.variety, sm_dyn: settings.variety, seed: settings.seed };
+    if (settings.apiMode === 'comfyui') return { url: settings.baseUrl, prompt: JSON.stringify({ prompt: buildComfyWorkflow(settings, positivePrompt, negativePrompt) }) };
+    return buildBody(settings, positivePrompt, negativePrompt);
+}
+function getHostImageRequestHeaders(getRequestHeaders) {
+    if (typeof getRequestHeaders !== 'function') fail('HOST_IMAGE_BACKEND_UNAVAILABLE', '当前酒馆未提供生图后端请求能力。');
+    let supplied;
+    try { supplied = getRequestHeaders(); } catch { fail('HOST_IMAGE_BACKEND_UNAVAILABLE', '当前酒馆未提供生图后端请求能力。'); }
+    if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) fail('HOST_IMAGE_BACKEND_UNAVAILABLE', '当前酒馆未提供生图后端请求能力。');
+    return { ...supplied, Accept: 'application/json, image/png, image/jpeg, image/webp, application/zip', 'Content-Type': 'application/json' };
+}
 function normalizeRequest(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_IMAGE_REQUEST', '生图请求无效。');
     const settings = input.settings;
@@ -343,6 +361,7 @@ function normalizeRequest(input) {
         ? 'openai_compatible'
         : settings.apiMode === 'novelai' ? 'novelai' : settings.apiMode === 'comfyui' ? 'comfyui' : fail('INVALID_IMAGE_REQUEST', '生图接口模式无效。');
     const comfy = apiMode === 'comfyui';
+    const clientMode = settings.clientMode === 'browser' ? 'browser' : settings.clientMode === 'sillytavern' ? 'sillytavern' : fail('INVALID_IMAGE_REQUEST', '生图客户端模式无效。');
     return {
         positivePrompt: cleanText(input.positivePrompt, '正面提示词', 32_000),
         negativePrompt: cleanText(input.negativePrompt ?? '', '负面提示词', 12_000, { allowEmpty: true }),
@@ -350,6 +369,7 @@ function normalizeRequest(input) {
         timeoutMs: input.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : cleanInteger(input.timeoutMs, '超时时间', 1_000, 300_000),
         settings: {
             apiMode,
+            clientMode,
             presetId: cleanText(apiMode === 'openai_compatible' ? (settings.openaiPresetId ?? settings.presetId) : settings.presetId, '生图连接 ID', 96),
             baseUrl: safeBaseUrl(comfy
                 ? (settings.comfyBaseUrl ?? settings.baseUrl)
@@ -387,19 +407,21 @@ async function parseResponse(response) {
         fail('INVALID_IMAGE_RESPONSE', '生图接口返回的压缩图片无法读取。');
     }
     let payload;
+    let responseText = '';
     try {
         const bytes = await readResponseBytes(response, MAX_JSON_RESPONSE_BYTES);
-        payload = JSON.parse(new TextDecoder().decode(bytes));
+        responseText = new TextDecoder().decode(bytes).trim();
+        payload = JSON.parse(responseText);
     } catch (error) {
         if (error instanceof YueLeMaImageGenerationError) throw error;
-        fail('INVALID_IMAGE_RESPONSE', '生图接口没有返回可用图片。');
+        try { return imageResultFromBytes(base64ToBytes(responseText.replace(/^data:image\/(?:png|jpeg|webp);base64,/iu, ''))); }
+        catch { fail('INVALID_IMAGE_RESPONSE', '生图接口没有返回可用图片。'); }
     }
     const first = Array.isArray(payload?.data) ? payload.data[0] : null;
-    const b64 = first?.b64_json ?? payload?.b64_json ?? payload?.image;
+    const b64 = typeof payload?.data === 'string' ? payload.data : first?.b64_json ?? payload?.b64_json ?? payload?.image;
     if (typeof b64 === 'string') return imageResultFromBytes(base64ToBytes(b64.replace(/^data:image\/(?:png|jpeg|webp);base64,/iu, '')));
     fail('INVALID_IMAGE_RESPONSE', '生图接口没有返回可用图片。');
 }
-
 function defaultComfyWorkflow() {
     return {
         3: { inputs: { seed: '%seed%', steps: '%steps%', cfg: '%cfg_scale%', sampler_name: '%sampler_name%', scheduler: '%scheduler%', denoise: 1, model: ['4', 0], positive: ['6', 0], negative: ['7', 0], latent_image: ['5', 0] }, class_type: 'KSampler' },
@@ -643,51 +665,30 @@ async function fetchComfyUIResources(fetchImpl, baseUrl, signal, diagnosticLogge
     }
 }
 
-export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null } = {}) {
+export function createImageGenerationClient({ fetchImpl, getRequestHeaders = null, diagnosticLogger = null } = {}) {
     if (typeof fetchImpl !== 'function') throw new TypeError('image generation client requires injected fetchImpl');
     return Object.freeze({
-        fetchComfyUIResources({ baseUrl, signal } = {}) {
-            return fetchComfyUIResources(fetchImpl, baseUrl, signal, diagnosticLogger);
-        },
+        fetchComfyUIResources({ baseUrl, signal } = {}) { return fetchComfyUIResources(fetchImpl, baseUrl, signal, diagnosticLogger); },
         async generate(input) {
             const requestId = `image-${Date.now().toString(36)}-${(++imageRequestSequence).toString(36)}`;
             const startedAt = Date.now();
-            let request;
-            let controller;
-            let timer;
-            let forwardAbort;
-            let phase = 'request_validation';
+            let request; let controller; let timer; let forwardAbort; let phase = 'request_validation';
             try {
                 request = normalizeRequest(input);
+                const useHostBackend = request.settings.clientMode === 'sillytavern';
                 phase = 'credential_lookup';
-                const key = request.settings.apiMode === 'comfyui' ? '' : requireSessionKey(request.settings.presetId);
+                const key = !useHostBackend && request.settings.apiMode !== 'comfyui' ? requireSessionKey(request.settings.presetId) : '';
+                const hostHeaders = useHostBackend ? getHostImageRequestHeaders(getRequestHeaders) : null;
+                const endpoint = useHostBackend ? hostImageEndpoint(request.settings.apiMode) : request.settings.apiMode === 'comfyui' ? `${request.settings.baseUrl}/prompt` : request.settings.baseUrl + request.settings.endpointPath;
                 controller = new AbortController();
                 timer = setTimeout(() => controller.abort('timeout'), request.timeoutMs);
                 forwardAbort = () => controller.abort('external');
                 request.signal?.addEventListener?.('abort', forwardAbort, { once: true });
-                emitImageDiagnostic(diagnosticLogger, 'info', '请求开始', {
-                    requestId,
-                    provider: request.settings.apiMode,
-                    endpoint: request.settings.apiMode === 'comfyui'
-                        ? `${request.settings.baseUrl}/prompt`
-                        : request.settings.baseUrl + request.settings.endpointPath,
-                    model: request.settings.model,
-                    width: request.settings.width,
-                    height: request.settings.height,
-                    timeoutMs: request.timeoutMs,
-                });
-                if (request.settings.apiMode === 'comfyui') {
+                emitImageDiagnostic(diagnosticLogger, 'info', '请求开始', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, endpoint, model: request.settings.model, width: request.settings.width, height: request.settings.height, timeoutMs: request.timeoutMs });
+                if (!useHostBackend && request.settings.apiMode === 'comfyui') {
                     try {
-                        const generated = await generateWithComfyUI(fetchImpl, request, controller.signal, {
-                            diagnosticLogger,
-                            requestId,
-                            startedAt,
-                            setPhase: (nextPhase) => { phase = nextPhase; },
-                        });
-                        emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', {
-                            requestId, provider: request.settings.apiMode, mimeType: generated.mimeType,
-                            elapsedMs: Date.now() - startedAt,
-                        });
+                        const generated = await generateWithComfyUI(fetchImpl, request, controller.signal, { diagnosticLogger, requestId, startedAt, setPhase: (nextPhase) => { phase = nextPhase; } });
+                        emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, mimeType: generated.mimeType, elapsedMs: Date.now() - startedAt });
                         return generated;
                     } catch (error) {
                         if (error instanceof YueLeMaImageGenerationError) throw error;
@@ -695,101 +696,31 @@ export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null
                         fail('IMAGE_NETWORK_ERROR', '无法连接 ComfyUI，请检查地址、服务状态或跨域配置。', { retryable: true });
                     }
                 }
-                let response;
                 phase = 'network_request';
-                const requestBody = buildBody(request.settings, request.positivePrompt, request.negativePrompt);
+                const requestBody = useHostBackend ? buildHostImageBody(request.settings, request.positivePrompt, request.negativePrompt) : buildBody(request.settings, request.positivePrompt, request.negativePrompt);
                 const serializedBody = JSON.stringify(requestBody);
-                emitImageDiagnostic(diagnosticLogger, 'info', '请求体准备完成', {
-                    requestId,
-                    provider: request.settings.apiMode,
-                    requestBytes: new TextEncoder().encode(serializedBody).length,
-                    positivePromptChars: request.positivePrompt.length,
-                    negativePromptChars: request.negativePrompt.length,
-                    requestFields: Object.keys(requestBody),
-                    parameterFields: request.settings.apiMode === 'novelai' ? Object.keys(requestBody.parameters) : undefined,
-                });
-                if (request.settings.apiMode === 'novelai') {
-                    emitImageDiagnostic(diagnosticLogger, 'info', 'NovelAI 请求合同', {
-                        requestId,
-                        model: request.settings.model,
-                        modelFamily: isNovelAIV4Model(request.settings.model) ? 'v4' : 'legacy',
-                        paramsVersion: requestBody.parameters?.params_version,
-                        hasV4PositiveCaption: Boolean(requestBody.parameters?.v4_prompt?.caption?.base_caption),
-                        hasV4NegativeCaption: Boolean(requestBody.parameters?.v4_negative_prompt?.caption),
-                        sampler: request.settings.sampler,
-                        noiseSchedule: request.settings.noiseSchedule,
-                        width: request.settings.width,
-                        height: request.settings.height,
-                        steps: request.settings.steps,
-                        guidance: request.settings.guidance,
-                        guidanceRescale: request.settings.guidanceRescale,
-                        qualityToggle: request.settings.qualityToggle,
-                        variety: request.settings.variety,
-                        elapsedMs: Date.now() - startedAt,
-                    });
-                }
-                try {
-                    response = await fetchImpl(request.settings.baseUrl + request.settings.endpointPath, {
-                        method: 'POST', headers: { Accept: 'application/json, image/png, image/jpeg, image/webp, application/zip', 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-                        body: serializedBody, signal: controller.signal,
-                    });
-                } catch (error) {
-                    emitImageDiagnostic(diagnosticLogger, 'error', '传输失败', {
-                        requestId,
-                        provider: request.settings.apiMode,
-                        errorType: safeErrorType(error),
-                        aborted: controller.signal.aborted,
-                        abortSource: controller.signal.aborted ? (request.signal?.aborted ? 'external' : 'timeout') : undefined,
-                        elapsedMs: Date.now() - startedAt,
-                    });
+                emitImageDiagnostic(diagnosticLogger, 'info', '请求体准备完成', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, requestBytes: new TextEncoder().encode(serializedBody).length, requestFields: Object.keys(requestBody), parameterFields: request.settings.apiMode === 'novelai' && !useHostBackend ? Object.keys(requestBody.parameters) : undefined });
+                if (request.settings.apiMode === 'novelai') emitImageDiagnostic(diagnosticLogger, 'info', 'NovelAI 请求合同', { requestId, clientMode: request.settings.clientMode, model: request.settings.model, modelFamily: isNovelAIV4Model(request.settings.model) ? 'v4' : 'legacy', paramsVersion: requestBody.parameters?.params_version, hasV4PositiveCaption: Boolean(requestBody.parameters?.v4_prompt?.caption?.base_caption), hasV4NegativeCaption: Boolean(requestBody.parameters?.v4_negative_prompt?.caption), sampler: request.settings.sampler, noiseSchedule: request.settings.noiseSchedule, width: request.settings.width, height: request.settings.height, steps: request.settings.steps, guidance: request.settings.guidance, guidanceRescale: request.settings.guidanceRescale, qualityToggle: request.settings.qualityToggle, variety: request.settings.variety, elapsedMs: Date.now() - startedAt });
+                let response;
+                try { response = await fetchImpl(endpoint, { method: 'POST', headers: useHostBackend ? hostHeaders : { Accept: 'application/json, image/png, image/jpeg, image/webp, application/zip', 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }, body: serializedBody, signal: controller.signal }); }
+                catch (error) {
+                    emitImageDiagnostic(diagnosticLogger, 'error', '传输失败', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, errorType: safeErrorType(error), aborted: controller.signal.aborted, abortSource: controller.signal.aborted ? (request.signal?.aborted ? 'external' : 'timeout') : undefined, elapsedMs: Date.now() - startedAt });
                     if (controller.signal.aborted) fail('IMAGE_REQUEST_ABORTED', request.signal?.aborted ? '生图请求已取消。' : '生图请求超时，请稍后重试。', { retryable: true });
                     fail('IMAGE_NETWORK_ERROR', '无法连接生图服务，请检查 URL、网络或跨域配置。', { retryable: true });
                 }
                 phase = 'http_response';
-                emitImageDiagnostic(diagnosticLogger, response?.ok ? 'info' : 'error', '收到响应', {
-                    requestId,
-                    provider: request.settings.apiMode,
-                    status: Number.isInteger(response?.status) ? response.status : undefined,
-                    ok: Boolean(response?.ok),
-                    contentType: String(response?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined,
-                    contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined,
-                    elapsedMs: Date.now() - startedAt,
-                });
+                emitImageDiagnostic(diagnosticLogger, response?.ok ? 'info' : 'error', '收到响应', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, status: Number.isInteger(response?.status) ? response.status : undefined, ok: Boolean(response?.ok), contentType: String(response?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined, contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined, elapsedMs: Date.now() - startedAt });
                 if (!response?.ok) {
-                    if (request.settings.apiMode === 'novelai') {
-                        emitImageDiagnostic(diagnosticLogger, 'error', 'NovelAI 错误响应定位', {
-                            requestId,
-                            status: Number.isInteger(response?.status) ? response.status : undefined,
-                            contentType: String(response?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined,
-                            contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined,
-                            ...safeResponseTrace(response),
-                            elapsedMs: Date.now() - startedAt,
-                        });
-                    }
-                    emitImageDiagnostic(diagnosticLogger, 'error', '错误响应摘要', {
-                        requestId,
-                        provider: request.settings.apiMode,
-                        status: Number.isInteger(response?.status) ? response.status : undefined,
-                        ...await safeHttpErrorDiagnostic(response, [key, request.positivePrompt, request.negativePrompt]),
-                        elapsedMs: Date.now() - startedAt,
-                    });
+                    if (request.settings.apiMode === 'novelai') emitImageDiagnostic(diagnosticLogger, 'error', 'NovelAI 错误响应定位', { requestId, status: Number.isInteger(response?.status) ? response.status : undefined, contentType: String(response?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined, contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined, ...safeResponseTrace(response), elapsedMs: Date.now() - startedAt });
+                    emitImageDiagnostic(diagnosticLogger, 'error', '错误响应摘要', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, status: Number.isInteger(response?.status) ? response.status : undefined, ...await safeHttpErrorDiagnostic(response, [key, request.positivePrompt, request.negativePrompt]), elapsedMs: Date.now() - startedAt });
                     fail('IMAGE_HTTP_ERROR', '生图服务拒绝了本次请求，请检查接口设置或稍后重试。', { retryable: response?.status >= 500, status: Number.isInteger(response?.status) ? response.status : undefined });
                 }
                 phase = 'response_parse';
                 const generated = await parseResponse(response);
-                emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', {
-                    requestId, provider: request.settings.apiMode, mimeType: generated.mimeType,
-                    elapsedMs: Date.now() - startedAt,
-                });
+                emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, mimeType: generated.mimeType, elapsedMs: Date.now() - startedAt });
                 return generated;
             } catch (error) {
-                emitImageDiagnostic(diagnosticLogger, 'error', '请求失败', {
-                    requestId,
-                    provider: request?.settings?.apiMode,
-                    phase,
-                    ...imageErrorDetails(error),
-                    elapsedMs: Date.now() - startedAt,
-                });
+                emitImageDiagnostic(diagnosticLogger, 'error', '请求失败', { requestId, provider: request?.settings?.apiMode, clientMode: request?.settings?.clientMode, phase, ...imageErrorDetails(error), elapsedMs: Date.now() - startedAt });
                 throw error;
             } finally {
                 if (timer !== undefined) clearTimeout(timer);

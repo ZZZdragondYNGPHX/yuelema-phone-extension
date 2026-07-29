@@ -146,6 +146,7 @@ export async function onActivate() {
     const llmClient = fetchImpl ? createOpenAICompatibleClient({ fetchImpl }) : null;
     const imageGenerationClient = fetchImpl ? createImageGenerationClient({
         fetchImpl,
+        getRequestHeaders,
         diagnosticLogger: globalThis.console,
     }) : null;
     // 一次性远程图片导入（用户主动触发才请求；URL 不落库、不作渲染来源）。
