@@ -1308,3 +1308,80 @@ test('conversation image pending scope is per message and rejects malformed mess
     assert.equal((await second).ok, true);
     assert.deepEqual(calls, [], '对话生图不得写入 MVU');
 });
+
+test('conversation image bridge reports distinct adult-character gates without sending any provider request', async () => {
+    const cases = [
+        {
+            name: 'missing character association',
+            characterUid: '',
+            setup() {},
+            code: 'image_character_required',
+            characterGate: 'missing_association',
+        },
+        {
+            name: 'associated role missing from the current character pool',
+            characterUid: 'npc_sensitive_missing',
+            setup() {},
+            code: 'image_character_not_found',
+            characterGate: 'role_not_found',
+        },
+        {
+            name: 'associated role has not confirmed adult status',
+            characterUid: 'npc_sensitive_unconfirmed',
+            setup(initialState) {
+                initialState.角色池.npc_sensitive_unconfirmed = { ...adultCandidate(), 成人验证: false };
+            },
+            code: 'image_character_adult_unconfirmed',
+            characterGate: 'adult_verification_required',
+        },
+        {
+            name: 'associated role does not meet the adult condition',
+            characterUid: 'npc_sensitive_ineligible',
+            setup(initialState) {
+                initialState.角色池.npc_sensitive_ineligible = {
+                    ...adultCandidate(),
+                    隐藏资料: { ...adultCandidate().隐藏资料, 实际年龄: 17 },
+                };
+            },
+            code: 'image_character_adult_ineligible',
+            characterGate: 'adult_requirement_not_met',
+        },
+    ];
+
+    for (const scenario of cases) {
+        const initialState = state();
+        scenario.setup(initialState);
+        const { mvu, calls } = createMvu({ initialState });
+        const diagnostics = [];
+        let imageCalls = 0;
+        const bridge = createActionBridge({
+            documentRef: { querySelector: () => null },
+            mvu,
+            settingsStore: { getImageGenerationSettings() { return { enabled: true, apiMode: 'comfyui', comfyPositivePrefix: '', comfyPositiveSuffix: '', comfyNegativePrompt: '' }; } },
+            imageGenerationClient: { async generate() { imageCalls += 1; } },
+            diagnosticLogger: {
+                info: (...args) => diagnostics.push(['info', ...args]),
+                error: (...args) => diagnostics.push(['error', ...args]),
+            },
+        });
+
+        const result = await bridge.generateConversationImage({
+            kind: 'private',
+            conversationId: 'chat_diagnostic',
+            messageId: 'message_diagnostic',
+            characterUid: scenario.characterUid,
+            directive: { kind: 'selfie', scene: 'private scene text must not enter diagnostics' },
+        });
+
+        assert.equal(result.code, scenario.code, scenario.name);
+        assert.equal(imageCalls, 0, `${scenario.name} must not call the image provider`);
+        assert.equal(calls.some(([name]) => name === 'parse' || name === 'replace'), false, `${scenario.name} must not write MVU`);
+        const rejection = diagnostics.find(([, label]) => label === '[约了吗][生图] 对话生图前置拒绝');
+        assert.equal(rejection?.[2]?.phase, 'adult_character_gate', scenario.name);
+        assert.equal(rejection?.[2]?.characterGate, scenario.characterGate, scenario.name);
+        const serialized = JSON.stringify(diagnostics);
+        assert.equal(serialized.includes('private scene text must not enter diagnostics'), false, scenario.name);
+        assert.equal(serialized.includes('npc_sensitive'), false, scenario.name);
+        assert.equal(serialized.includes('17'), false, scenario.name);
+    }
+});

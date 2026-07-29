@@ -5,7 +5,7 @@ import { createImageLibraryStore, createMemoryImageLibraryStorage } from '../../
 import { createMemoryStorage, createSettingsStore } from '../../settings/settings-store.js';
 
 const miniDom = installMiniDom();
-const { mountPhoneApp } = await import('../../app-shell.js');
+const { mountPhoneApp, publicImageFailureMessage } = await import('../../app-shell.js');
 
 test.after(() => miniDom.restore());
 
@@ -211,4 +211,12 @@ test('图片管理设置按钮打开 image_match 预设绑定', async () => {
         assert.ok(miniDom.document.querySelector('[name="image_match-quick-connection"]'));
         assert.ok(miniDom.document.querySelector('[name="image_match-quick-prompt"]'));
     } finally { mounted.destroy(); }
+});
+
+
+test('人物生图失败文案区分未关联角色和未确认成年角色', () => {
+    assert.equal(publicImageFailureMessage({ code: 'image_character_required' }), '这张人物图片未关联角色，无法生成。请在已建立私聊的已确认成年角色消息中生成。');
+    assert.equal(publicImageFailureMessage({ code: 'image_character_adult_unconfirmed' }), '关联角色尚未确认成年，无法生成人物图片。');
+    assert.equal(publicImageFailureMessage({ code: 'image_character_adult_ineligible' }), '关联角色未满足成年条件，无法生成人物图片。');
+    assert.equal(publicImageFailureMessage({ code: 'image_character_not_found' }), '这张图片关联的角色当前不可用，无法生成。');
 });

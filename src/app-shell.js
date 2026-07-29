@@ -29,6 +29,17 @@ import { createProfilePage } from './pages/profile.js';
 
 const UI_VERSION = '1.0.9';
 
+export function publicImageFailureMessage(result) {
+    if (result?.code === 'image_generation_disabled') return '请先在生图设置中启用接口。';
+    if (result?.code === 'image_character_required') return '这张人物图片未关联角色，无法生成。请在已建立私聊的已确认成年角色消息中生成。';
+    if (result?.code === 'image_character_not_found') return '这张图片关联的角色当前不可用，无法生成。';
+    if (result?.code === 'image_character_adult_unconfirmed') return '关联角色尚未确认成年，无法生成人物图片。';
+    if (result?.code === 'image_character_adult_ineligible') return '关联角色未满足成年条件，无法生成人物图片。';
+    if (result?.code === 'ui_action_pending') return '当前会话已有图片正在生成，请稍候。';
+    if (typeof result?.message === 'string' && result.message.trim()) return result.message.trim().slice(0, 200);
+    return '图片未生成，请稍后重试或检查生图设置。';
+}
+
 function downloadImagePackJson(json) {
     if (typeof json !== 'string' || typeof globalThis.Blob !== 'function'
         || typeof globalThis.URL?.createObjectURL !== 'function'
@@ -692,13 +703,6 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         const nickname = String(profile?.nickname ?? profile?.昵称 ?? '').trim();
         if (!nickname) return '';
         return ctx.messageSessions().find((session) => ctx.chatNickname(session) === nickname)?.npcUid ?? '';
-    }
-    function publicImageFailureMessage(result) {
-        if (result?.code === 'image_generation_disabled') return '请先在生图设置中启用接口。';
-        if (result?.code === 'image_character_required' || result?.code === 'image_character_unavailable') return '这张人物图片暂时没有可用的成年角色绘图资料。';
-        if (result?.code === 'ui_action_pending') return '当前会话已有图片正在生成，请稍候。';
-        if (typeof result?.message === 'string' && result.message.trim()) return result.message.trim().slice(0, 200);
-        return '图片未生成，请稍后重试或检查生图设置。';
     }
     async function generateConversationImage({ kind, conversationId, messageId, characterUid = '', directive, automatic = false }) {
         const key = imageDirectiveStateKey(kind, conversationId, messageId);

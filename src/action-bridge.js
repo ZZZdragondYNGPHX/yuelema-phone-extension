@@ -1091,7 +1091,7 @@ export function createActionBridge({
     async function generateConversationImage({ kind, conversationId, messageId, characterUid = '', directive, signal } = {}) {
         const requestId = `conversation-image-${Date.now().toString(36)}-${(++conversationImageRequestSequence).toString(36)}`;
         const startedAt = Date.now();
-        const reject = (result, phase) => {
+        const reject = (result, phase, { characterGate } = {}) => {
             emitConversationImageDiagnostic(diagnosticLogger, 'error', '对话生图前置拒绝', {
                 requestId,
                 phase,
@@ -1099,6 +1099,7 @@ export function createActionBridge({
                 directiveKind: typeof directive?.kind === 'string' ? directive.kind : undefined,
                 code: result.code,
                 message: result.message,
+                ...(typeof characterGate === 'string' ? { characterGate } : {}),
                 elapsedMs: Date.now() - startedAt,
             });
             return result;
@@ -1132,8 +1133,14 @@ export function createActionBridge({
                 const read = readLatestState({ mvu: resolveMvu(mvu) });
                 if (!read.ok) return reject(read, 'character_state_read');
                 const character = read.state?.角色池?.[uid];
-                if (!character || character.成人验证 !== true || Number(character.隐藏资料?.实际年龄) < 18) {
-                    return reject({ ok: false, status: 'rejected', code: 'image_character_unavailable', message: '只能为已确认的成年角色生成图片。' }, 'adult_character_gate');
+                if (!character) {
+                    return reject({ ok: false, status: 'rejected', code: 'image_character_not_found', message: '关联角色当前不可用，无法生成图片。' }, 'adult_character_gate', { characterGate: 'role_not_found' });
+                }
+                if (character.成人验证 !== true) {
+                    return reject({ ok: false, status: 'rejected', code: 'image_character_adult_unconfirmed', message: '关联角色尚未确认成年，无法生成人物图片。' }, 'adult_character_gate', { characterGate: 'adult_verification_required' });
+                }
+                if (Number(character.隐藏资料?.实际年龄) < 18) {
+                    return reject({ ok: false, status: 'rejected', code: 'image_character_adult_ineligible', message: '关联角色未满足成年条件，无法生成人物图片。' }, 'adult_character_gate', { characterGate: 'adult_requirement_not_met' });
                 }
                 coreDna = typeof character.绘图?.core_dna === 'string' ? character.绘图.core_dna : '';
                 outfitDna = typeof character.绘图?.outfit_dna === 'string' ? character.绘图.outfit_dna : '';
@@ -1157,7 +1164,7 @@ export function createActionBridge({
                     : useOpenAiPrompts ? settings.openaiNegativePrompt : settings.negativePrompt,
             });
             if (!uid && prompt.directive.kind !== 'scene_snapshot') {
-                return reject({ ok: false, status: 'rejected', code: 'image_character_required', message: '人物图片需要关联一位已确认的成年角色。' }, 'adult_character_gate');
+                return reject({ ok: false, status: 'rejected', code: 'image_character_required', message: '人物图片未关联角色，无法生成。' }, 'adult_character_gate', { characterGate: 'missing_association' });
             }
             emitConversationImageDiagnostic(diagnosticLogger, 'info', '对话生图进入客户端', {
                 requestId,
