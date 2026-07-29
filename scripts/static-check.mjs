@@ -344,10 +344,17 @@ if (!settingsPanel.includes('buildImageGenerationSection') || !settingsPanel.inc
     || !settingsPanel.includes('IMAGE_PROMPT_BUNDLE_SCHEMA') || !settingsPanel.includes('positivePrefix') || !settingsPanel.includes('negativePrompt')) {
     fail('缺少三接口独立生图提示词预设或固定正负提示词设置界面');
 }
-if (!imageDirective.includes('composeImagePrompt') || !imageDirective.includes('coreDna') || !imageDirective.includes('outfitDna')) fail('缺少固定顺序的绘图 DNA 提示词组合器');
+if (!imageDirective.includes('composeImagePrompt') || !imageDirective.includes('coreDna') || !imageDirective.includes('outfitDna')
+    || !imageDirective.includes('normalizePrivateChatImageDirective') || !imageDirective.includes("const effectiveOutfit = Object.hasOwn(safeDirective, 'outfit') ? safeDirective.outfit : outfitDna")) {
+    fail('缺少私聊 scene/DNA 隔离或临时 outfit 替代的绘图提示词组合器');
+}
+if (!privateChatResponse.includes('normalizePrivateChatImageDirective') || !privateChatService.includes('scene 只允许英文描述动作、表情、镜头、背景、光线和道具')
+    || !privateChatService.includes('扩展会自行拼接角色固定的 core_dna 与 outfit_dna') || !privateChatService.includes('outfit 不得包含身份或外貌，不会持久化，也绝不修改角色数据')) {
+    fail('缺少私聊生图 scene 与临时 outfit 的严格模型合同或响应校验');
+}
 if (!imageGenerationClient.includes('requireSessionKey') || !imageGenerationClient.includes('fetchImpl') || !imageGenerationClient.includes('readResponseBytes') || !imageGenerationClient.includes('MAX_IMAGE_BYTES') || imageGenerationClient.includes("kind: 'url'")) fail('缺少注入式生图客户端、独立 Key、有界图片响应读取或仍允许 UI 远程图片 URL');
 if (!drawingDnaRules.includes('core_dna') || !drawingDnaRules.includes('outfit_dna')) fail('缺少角色绘图 DNA 生成规则');
-console.log('✓ 生图设置、逐会话自动生成、绘图 DNA 与注入式安全客户端接线');
+console.log('✓ 生图设置、私聊 scene/DNA 隔离、临时 outfit 替代与注入式安全客户端接线');
 
 const remoteImageImport = await readFile(resolve(root, 'src/images/remote-image-import.js'), 'utf8');
 if (!remoteImageImport.includes('fetchImpl') || /globalThis\s*\.\s*fetch/.test(remoteImageImport) || remoteImageImport.includes("kind: 'url'")) fail('远程图片导入必须使用注入式 transport，且不得引入 URL 渲染来源');

@@ -5,7 +5,7 @@
  * transport output belongs to the caller so a string, SDK response, or other
  * wrapper cannot accidentally be treated as an already validated reply.
  */
-import { normalizeImageDirective } from '../images/image-directive.js';
+import { normalizePrivateChatImageDirective } from '../images/image-directive.js';
 
 export const MAX_PRIVATE_CHAT_REPLY_COUNT = 6;
 export const MAX_PRIVATE_CHAT_REPLY_LENGTH = 600;
@@ -157,7 +157,7 @@ function normalizeImageDirectives(value, replyCount) {
         }
         seen.add(replyIndex);
         let directive;
-        try { directive = normalizeImageDirective(ownEnumerableData(item, 'directive')); }
+        try { directive = normalizePrivateChatImageDirective(ownEnumerableData(item, 'directive')); }
         catch { fail('private_chat_response_invalid', { field: `imageDirectives[${index}].directive`, hint: '生图指令不符合白名单结构' }); }
         return { replyIndex, directive };
     });

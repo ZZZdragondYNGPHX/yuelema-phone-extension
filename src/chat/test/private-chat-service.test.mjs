@@ -242,6 +242,47 @@ test('NSFW core contract permits consensual adult chat without treating explicit
     assert.match(request.messages[0].content, /普通问候或日常友好交流应使用 none 或 friendly/u);
 });
 
+test('private chat assigns character DNA to the extension and accepts only a scene plus transient outfit directive', async () => {
+    let request;
+    const result = await generatePrivateChatReply({
+        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '想看看你现在在做什么。', settingsStore: settingsStore(),
+        llmClient: {
+            async chat(input) {
+                request = input;
+                return {
+                    text: JSON.stringify({
+                        ...response(),
+                        imageDirectives: [{
+                            replyIndex: 0,
+                            directive: {
+                                kind: 'selfie',
+                                scene: 'smiling toward the camera, close-up selfie framing, warm bedroom light',
+                                outfit: 'blue denim jacket, silver hoop earrings',
+                            },
+                        }],
+                    }),
+                };
+            },
+        },
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.response.imageDirectives, [{
+        replyIndex: 0,
+        directive: {
+            kind: 'selfie',
+            scene: 'smiling toward the camera, close-up selfie framing, warm bedroom light',
+            outfit: 'blue denim jacket, silver hoop earrings',
+        },
+    }]);
+    const systemPrompt = request.messages[0].content;
+    assert.match(systemPrompt, /scene 只允许英文描述动作、表情、镜头、背景、光线和道具/u);
+    assert.match(systemPrompt, /不得包含人物身份、年龄、性别、族裔、脸部、体型、发色、眼睛、衣物、妆容、角色 DNA/u);
+    assert.match(systemPrompt, /扩展会自行拼接角色固定的 core_dna 与 outfit_dna/u);
+    assert.match(systemPrompt, /outfit 返回英文的本图临时服装或配饰/u);
+    assert.match(systemPrompt, /outfit 不得包含身份或外貌，不会持久化，也绝不修改角色数据/u);
+});
+
 test('private chat summary uses its dedicated preset and returns only validated in-memory text and anchors', async () => {
     const current = state();
     let request;

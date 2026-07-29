@@ -43,6 +43,40 @@ test('accepts replies and returns an independent canonical clone', () => {
 });
 
 
+test('private-chat image directives reject DNA-bearing scenes and accept a transient outfit separately', () => {
+    const forbiddenScenes = [
+        'cosplay costume, mirror selfie framing',
+        'wearing a blue wig, mirror selfie framing',
+        'young Asian woman smiling at the camera',
+        'delicate blue and white dress, softly lit bedroom',
+    ];
+    for (const scene of forbiddenScenes) {
+        expectCode(
+            () => normalizePrivateChatResponse(response({ imageDirectives: [{ replyIndex: 0, directive: { kind: 'selfie', scene } }] })),
+            'private_chat_response_invalid',
+        );
+    }
+
+    const normalized = normalizePrivateChatResponse(response({
+        imageDirectives: [{
+            replyIndex: 1,
+            directive: {
+                kind: 'selfie',
+                scene: 'smiling toward the camera, close-up selfie framing, warm bedroom light',
+                outfit: 'blue denim jacket, silver hoop earrings',
+            },
+        }],
+    }));
+    assert.deepEqual(normalized.imageDirectives, [{
+        replyIndex: 1,
+        directive: {
+            kind: 'selfie',
+            scene: 'smiling toward the camera, close-up selfie framing, warm bedroom light',
+            outfit: 'blue denim jacket, silver hoop earrings',
+        },
+    }]);
+});
+
 test('accepts only the assessment categories allowed by the current content mode', () => {
     assert.deepEqual(
         normalizePrivateChatResponse(response({ bondAssessment: { kind: 'romantic_flirt', intensity: 2 } }), { contentMode: 'SFW' }).bondAssessment,

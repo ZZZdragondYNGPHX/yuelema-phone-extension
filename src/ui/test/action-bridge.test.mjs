@@ -1021,7 +1021,7 @@ test('candidate match rejects a hard gender-orientation mismatch without any MVU
     assert.deepEqual(calls.map(([name]) => name), ['get']);
 });
 
-test('conversation image bridge composes immutable drawing prompts and never writes MVU', async () => {
+test('conversation image bridge uses a temporary private-chat outfit override without changing character DNA or MVU', async () => {
     const initialState = state();
     initialState.角色池.npc_ava = {
         ...adultCandidate(),
@@ -1053,13 +1053,14 @@ test('conversation image bridge composes immutable drawing prompts and never wri
 
     const result = await bridge.generateConversationImage({
         kind: 'private', conversationId: 'chat_ava', messageId: 'message_ava_1', characterUid: 'npc_ava',
-        directive: { kind: 'selfie', scene: 'smiling at a cafe table' },
+        directive: { kind: 'selfie', outfit: 'navy dinner dress, silver earrings', scene: 'smiling at a cafe table' },
     });
 
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.image.dataUrl, 'data:image/png;base64,iVBORw0KGgo=');
     assert.equal(imageRequests.length, 1);
-    assert.equal(imageRequests[0].positivePrompt, 'masterpiece, adult woman, short black hair, cream cardigan, street fashion, smiling at a cafe table, soft lighting');
+    assert.equal(imageRequests[0].positivePrompt, 'masterpiece, adult woman, short black hair, navy dinner dress, silver earrings, smiling at a cafe table, soft lighting');
+    assert.deepEqual(result.directive, { kind: 'selfie', outfit: 'navy dinner dress, silver earrings', scene: 'smiling at a cafe table' });
     assert.equal(imageRequests[0].negativePrompt, 'lowres');
     assert.deepEqual(calls.map(([name]) => name), ['get']);
 });
