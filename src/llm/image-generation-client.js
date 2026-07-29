@@ -13,6 +13,27 @@ const UNSAFE_WORKFLOW_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SAFE_PROVIDER_ERROR_FIELDS = Object.freeze(['input', 'model', 'action', 'parameters', 'v4_prompt', 'v4_negative_prompt', 'negative_prompt', 'width', 'height', 'scale', 'cfg_rescale', 'steps', 'sampler', 'noise_schedule', 'seed']);
 let imageRequestSequence = 0;
 
+function defaultRandomUint32() {
+    if (typeof globalThis.crypto?.getRandomValues === 'function') {
+        const values = new Uint32Array(1);
+        globalThis.crypto.getRandomValues(values);
+        return values[0];
+    }
+    return Math.floor(Math.random() * 0x1_0000_0000);
+}
+function createComfyRuntimeSeedGenerator(randomUint32) {
+    let previousSeed = 0;
+    return () => {
+        let candidate;
+        try { candidate = Number(randomUint32()); } catch { candidate = defaultRandomUint32(); }
+        if (!Number.isInteger(candidate) || candidate < 0 || candidate > 0xffffffff) candidate = defaultRandomUint32();
+        let seed = (candidate >>> 0) || 1;
+        if (seed === previousSeed) seed = seed === 0xffffffff ? 1 : seed + 1;
+        previousSeed = seed;
+        return seed;
+    };
+}
+
 export class YueLeMaImageGenerationError extends Error {
     constructor(code, message, { retryable = false, status } = {}) {
         super(message);
@@ -673,8 +694,10 @@ async function fetchComfyUIResources(fetchImpl, baseUrl, signal, diagnosticLogge
     }
 }
 
-export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null } = {}) {
+export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null, randomUint32 = defaultRandomUint32 } = {}) {
     if (typeof fetchImpl !== 'function') throw new TypeError('image generation client requires injected fetchImpl');
+    if (typeof randomUint32 !== 'function') throw new TypeError('image generation client requires a randomUint32 function');
+    const nextComfyRuntimeSeed = createComfyRuntimeSeedGenerator(randomUint32);
     return Object.freeze({
         fetchComfyUIResources({ baseUrl, signal } = {}) {
             return fetchComfyUIResources(fetchImpl, baseUrl, signal, diagnosticLogger);
@@ -689,6 +712,9 @@ export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null
             let phase = 'request_validation';
             try {
                 request = normalizeRequest(input);
+                if (request.settings.apiMode === 'comfyui' && request.settings.seed === 0) {
+                    request = { ...request, settings: { ...request.settings, seed: nextComfyRuntimeSeed() } };
+                }
                 phase = 'credential_lookup';
                 const key = request.settings.apiMode === 'comfyui' ? '' : requireSessionKey(request.settings.presetId);
                 controller = new AbortController();

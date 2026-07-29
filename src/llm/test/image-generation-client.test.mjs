@@ -387,6 +387,52 @@ test('ComfyUI submits an API workflow, polls history, and reads the generated im
     assert.equal(diagnostics[0][2].timeoutMs, 600_000);
 });
 
+test('ComfyUI seed 0 materializes a new runtime seed per generation while fixed seeds remain reproducible', async () => {
+    resetPersistentKeyStorage();
+    const submissions = [];
+    const randomSeeds = [101, 202, 303, 404];
+    const client = createImageGenerationClient({
+        randomUint32: () => randomSeeds.shift(),
+        fetchImpl: async (url, init) => {
+            if (url.endsWith('/prompt')) {
+                submissions.push(JSON.parse(init.body));
+                return new Response(JSON.stringify({ prompt_id: `task-${submissions.length}` }), { status: 200 });
+            }
+            if (url.includes('/history/')) {
+                const promptId = url.slice(url.lastIndexOf('/') + 1);
+                return new Response(JSON.stringify({ [promptId]: { outputs: { 9: { images: [{ filename: `${promptId}.png`, subfolder: '', type: 'output' }] } } } }), { status: 200 });
+            }
+            return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } });
+        },
+    });
+    const base = {
+        ...settings,
+        apiMode: 'comfyui',
+        comfyBaseUrl: 'http://127.0.0.1:8188',
+        comfyModel: 'portrait.safetensors',
+        comfySampler: 'euler',
+        comfyScheduler: 'normal',
+        comfySeed: 0,
+        comfyWorkflow: '',
+    };
+
+    await client.generate({ settings: base, positivePrompt: 'scene one', negativePrompt: '' });
+    await client.generate({ settings: base, positivePrompt: 'scene two', negativePrompt: '' });
+    const custom = {
+        ...base,
+        comfyWorkflow: JSON.stringify({ 1: { class_type: 'KSampler', inputs: { seed: '%seed%' } } }),
+    };
+    await client.generate({ settings: custom, positivePrompt: 'scene three', negativePrompt: '' });
+    await client.generate({ settings: custom, positivePrompt: 'scene four', negativePrompt: '' });
+
+    assert.deepEqual(submissions.slice(0, 2).map((item) => item.prompt['3'].inputs.seed), [101, 202]);
+    assert.deepEqual(submissions.slice(2, 4).map((item) => item.prompt['1'].inputs.seed), [303, 404]);
+
+    const fixed = { ...custom, comfySeed: 42 };
+    await client.generate({ settings: fixed, positivePrompt: 'fixed one', negativePrompt: '' });
+    await client.generate({ settings: fixed, positivePrompt: 'fixed two', negativePrompt: '' });
+    assert.deepEqual(submissions.slice(4, 6).map((item) => item.prompt['1'].inputs.seed), [42, 42]);
+});
 test('ComfyUI reports a terminal execution error instead of waiting for the timeout', async () => {
     resetPersistentKeyStorage();
     const diagnostics = [];

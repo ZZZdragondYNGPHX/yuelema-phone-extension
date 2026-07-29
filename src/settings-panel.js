@@ -1137,8 +1137,10 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         }).actions);
 
         const comfyBaseUrl = element('input', { className: 'yl-settings-control', type: 'url', name: 'image-generation-comfy-base-url', value: image.comfyBaseUrl, maxLength: 512, ariaLabel: 'ComfyUI 地址' });
-        const resourceSelect = (value, ariaLabel, name, emptyLabel) => selectWithOptions(
-            [{ label: value || emptyLabel, value: value || '' }],
+        const resourceSelect = (value, ariaLabel, name, emptyLabel, { allowEmpty = false } = {}) => selectWithOptions(
+            allowEmpty
+                ? [{ label: emptyLabel, value: '' }, ...(value ? [{ label: value, value }] : [])]
+                : [{ label: value || emptyLabel, value: value || '' }],
             value || '',
             ariaLabel,
             name,
@@ -1146,8 +1148,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         const comfyModel = resourceSelect(image.comfyModel, 'ComfyUI 模型', 'image-generation-comfy-model', '未选择模型');
         const comfySampler = resourceSelect(image.comfySampler, 'ComfyUI 采样器', 'image-generation-comfy-sampler', 'euler');
         const comfyScheduler = resourceSelect(image.comfyScheduler, 'ComfyUI 调度器', 'image-generation-comfy-scheduler', 'normal');
-        const comfyVae = resourceSelect(image.comfyVae, 'ComfyUI VAE', 'image-generation-comfy-vae', '不指定 VAE');
-        const comfyClip = resourceSelect(image.comfyClip, 'ComfyUI CLIP', 'image-generation-comfy-clip', '不指定 CLIP');
+        const comfyVae = resourceSelect(image.comfyVae, 'ComfyUI VAE', 'image-generation-comfy-vae', '不指定 VAE', { allowEmpty: true });
+        const comfyClip = resourceSelect(image.comfyClip, 'ComfyUI CLIP', 'image-generation-comfy-clip', '不指定 CLIP', { allowEmpty: true });
         const comfyGuidance = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-comfy-guidance', value: String(image.comfyGuidance), min: 0, max: 30, ariaLabel: 'ComfyUI CFG' });
         const comfyWidth = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-comfy-width', value: String(image.comfyWidth), min: 256, max: 2048, ariaLabel: 'ComfyUI 图片宽度' });
         const comfyHeight = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-comfy-height', value: String(image.comfyHeight), min: 256, max: 2048, ariaLabel: 'ComfyUI 图片高度' });
@@ -1176,13 +1178,13 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         comfyConnectionFields.appendChild(field('ComfyUI 地址（支持 HTTP / HTTPS）', comfyBaseUrl));
         comfyProviderPanel.appendChild(comfyConnectionFields);
         const resourceStatus = element('p', { className: 'yl-image-generation-key-status', text: '连接后可从 /object_info 读取模型、采样器、调度器、VAE 与 CLIP。' });
-        const replaceResourceOptions = (select, values, emptyLabel) => {
+        const replaceResourceOptions = (select, values, emptyLabel, { allowEmpty = false } = {}) => {
             const selected = String(select.value ?? '');
             const choices = selected && !values.includes(selected) ? [selected, ...values] : values;
             select.replaceChildren();
-            if (!selected || !choices.length) select.appendChild(element('option', { text: emptyLabel, value: '' }));
+            if (allowEmpty || !selected || !choices.length) select.appendChild(element('option', { text: emptyLabel, value: '' }));
             for (const value of choices) select.appendChild(element('option', { text: value, value }));
-            select.value = choices.includes(selected) ? selected : (choices[0] ?? '');
+            select.value = (allowEmpty && selected === '') || choices.includes(selected) ? selected : (choices[0] ?? '');
         };
         const refreshResources = actionButton('连接并刷新 ComfyUI 数据', async () => {
             if (typeof imageGenerationClient?.fetchComfyUIResources !== 'function') {
@@ -1195,8 +1197,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
                 replaceResourceOptions(comfyModel, resources.models, '未读取到模型');
                 replaceResourceOptions(comfySampler, resources.samplers, '未读取到采样器');
                 replaceResourceOptions(comfyScheduler, resources.schedulers, '未读取到调度器');
-                replaceResourceOptions(comfyVae, resources.vae, '不指定 VAE');
-                replaceResourceOptions(comfyClip, resources.clips, '不指定 CLIP');
+                replaceResourceOptions(comfyVae, resources.vae, '不指定 VAE', { allowEmpty: true });
+                replaceResourceOptions(comfyClip, resources.clips, '不指定 CLIP', { allowEmpty: true });
                 resourceStatus.textContent = `已读取：模型 ${resources.models.length}、采样器 ${resources.samplers.length}、调度器 ${resources.schedulers.length}、VAE ${resources.vae.length}、CLIP ${resources.clips.length}。`;
                 onFeedback('ComfyUI 数据已刷新；保存后用于后续生图。');
             } catch (error) {

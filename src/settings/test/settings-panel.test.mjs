@@ -583,6 +583,50 @@ test('生图设置只保存非机密配置，API Key 清空后留在独立浏览
     assert.ok(feedback.some((message) => message.includes('NAI API Key 已保存到当前浏览器')));
 });
 
+test('已保存的 ComfyUI VAE 与 CLIP 在重开和刷新后仍可改回不指定', async () => {
+    const store = createSettingsStore({ storage: createMemoryStorage() });
+    store.setImageGenerationSettings({
+        ...store.getImageGenerationSettings(),
+        apiMode: 'comfyui',
+        comfyVae: 'saved-vae.safetensors',
+        comfyClip: 'saved-clip.safetensors',
+    });
+    const imageGenerationClient = {
+        async fetchComfyUIResources() {
+            return {
+                models: ['portrait.safetensors'],
+                samplers: ['euler'],
+                schedulers: ['normal'],
+                vae: ['saved-vae.safetensors', 'other-vae.safetensors'],
+                clips: ['saved-clip.safetensors', 'other-clip.safetensors'],
+            };
+        },
+    };
+    const { panel } = buildHarness(store, { view: 'image_generation', imageGenerationClient });
+    const vae = byAria(panel, 'ComfyUI VAE');
+    const clip = byAria(panel, 'ComfyUI CLIP');
+    const options = (select) => select.querySelectorAll('option').map((option) => ({ value: option.value, label: option.textContent }));
+
+    assert.equal(vae.value, 'saved-vae.safetensors');
+    assert.equal(clip.value, 'saved-clip.safetensors');
+    assert.deepEqual(options(vae)[0], { value: '', label: '不指定 VAE' });
+    assert.deepEqual(options(clip)[0], { value: '', label: '不指定 CLIP' });
+
+    await click(button(panel, '连接并刷新 ComfyUI 数据'));
+    assert.equal(vae.value, 'saved-vae.safetensors');
+    assert.equal(clip.value, 'saved-clip.safetensors');
+    assert.deepEqual(options(vae)[0], { value: '', label: '不指定 VAE' });
+    assert.deepEqual(options(clip)[0], { value: '', label: '不指定 CLIP' });
+
+    vae.value = '';
+    clip.value = '';
+    await click(button(panel, '连接并刷新 ComfyUI 数据'));
+    assert.equal(vae.value, '');
+    assert.equal(clip.value, '');
+    await click(button(panel, '保存生图设置'));
+    assert.equal(store.snapshot().imageGeneration.comfyVae, '');
+    assert.equal(store.snapshot().imageGeneration.comfyClip, '');
+});
 test('生图供应商按钮显示三个独立面板并分别保存 NAI、OpenAI 与 ComfyUI 参数', async () => {
     configurePersistentKeyStorage(createMemoryStorage());
     const imageGenerationClient = {
