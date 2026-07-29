@@ -435,3 +435,17 @@ test('service order projection supports every unified person category in SFW and
     assert.equal(byId.service_legacy_sfw.category, '咖啡与散步');
     assert.equal(byId.service_legacy_nsfw.category, '成人直白陪伴');
 });
+
+
+test('profile onboarding gate projects only a strict false boolean without exposing raw software state', () => {
+    const missing = createPhoneView(readResult());
+    assert.equal(missing.profileOnboardingRequired, false);
+    const requiredRead = readResult();
+    requiredRead.state.软件.功能开关 = { 玩家已建档: false, 内部开关: 'never-render' };
+    const required = createPhoneView(requiredRead);
+    assert.equal(required.profileOnboardingRequired, true);
+    assert.equal(JSON.stringify(required).includes('内部开关'), false);
+    requiredRead.state.软件.功能开关.玩家已建档 = true;
+    assert.equal(createPhoneView(requiredRead).profileOnboardingRequired, false);
+    assert.equal(createPhoneView({ ok: false, code: 'mvu_get_unavailable' }).profileOnboardingRequired, false);
+});

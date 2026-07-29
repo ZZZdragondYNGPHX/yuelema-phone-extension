@@ -6,7 +6,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const requiredFiles = [
     'manifest.json', 'index.js', 'style.css', 'README.md', 'AGENTS.md', 'RELEASE_REVIEW.md', 'test/extension-lifecycle.test.mjs',
-    'src/app-shell.js', 'src/host-extension-update.js', 'src/service-order-history-store.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
+    'src/app-shell.js', 'src/host-extension-update.js', 'src/service-order-history-store.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/onboarding/onboarding-flow.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
     'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
     'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
@@ -22,7 +22,7 @@ const requiredFiles = [
     'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/custom-candidate-encounter.test.mjs', 'src/recommendation/test/match-candidate-materializer.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs', 'src/groups/test/group-forum-store.test.mjs', 'src/groups/test/local-conversation-summary-service.test.mjs',
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs', 'src/mvu/test/service-order-handoff.test.mjs',
-    'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs', 'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/ui/test/service-hub-ui.test.mjs', 'src/ui/test/profile-settings-ui.test.mjs', 'src/test/host-extension-update.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs', 'src/character-avatar-store.js', 'src/test/character-avatar-store.test.mjs',
+    'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs', 'src/ui/test/ui-model.test.mjs', 'src/ui/test/onboarding-ui.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/ui/test/service-hub-ui.test.mjs', 'src/ui/test/profile-settings-ui.test.mjs', 'src/test/host-extension-update.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs', 'src/character-avatar-store.js', 'src/test/character-avatar-store.test.mjs',
     'src/ui/icon.js', 'src/ui/romance-hearts.js', 'src/ui/media-state.js', 'src/ui/dialog-controller.js', 'src/ui/test/icon.test.mjs', 'src/ui/test/media-state.test.mjs', 'src/ui/test/dialog-controller.test.mjs', 'src/ui/test/app-shell-message-search.test.mjs', 'src/ui/test/style-token-contract.test.mjs',
     'src/ui/button.js', 'src/ui/badge.js', 'src/ui/list-row.js', 'src/ui/segmented-control.js', 'src/ui/bottom-sheet.js', 'src/ui/empty-state.js', 'src/ui/skeleton.js', 'src/ui/COMPONENTS.md',
     'src/ui/test/button.test.mjs', 'src/ui/test/badge.test.mjs', 'src/ui/test/list-row.test.mjs', 'src/ui/test/segmented-control.test.mjs', 'src/ui/test/bottom-sheet.test.mjs', 'src/ui/test/empty-state.test.mjs', 'src/ui/test/skeleton.test.mjs', 'src/ui/test/icon-design-system.test.mjs',
@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.0.9') fail('manifest.version 必须与扩展版本 1.0.9 统一');
+if (manifest.version !== '1.0.10') fail('manifest.version 必须与扩展版本 1.0.10 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -73,7 +73,7 @@ const sourceRelativeFiles = [
     'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/custom-candidate-encounter.test.mjs', 'src/recommendation/test/match-candidate-materializer.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs', 'src/groups/test/group-forum-store.test.mjs', 'src/groups/test/local-conversation-summary-service.test.mjs',
     'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
-    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/ui/test/service-hub-ui.test.mjs', 'src/ui/test/profile-settings-ui.test.mjs', 'src/test/host-extension-update.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs', 'src/character-avatar-store.js', 'src/test/character-avatar-store.test.mjs',
+    'src/ui/test/ui-model.test.mjs', 'src/ui/test/onboarding-ui.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/ui/test/service-hub-ui.test.mjs', 'src/ui/test/profile-settings-ui.test.mjs', 'src/test/host-extension-update.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs', 'src/character-avatar-store.js', 'src/test/character-avatar-store.test.mjs',
     'src/ui/icon.js', 'src/ui/romance-hearts.js', 'src/ui/media-state.js', 'src/ui/dialog-controller.js', 'src/ui/test/icon.test.mjs', 'src/ui/test/media-state.test.mjs', 'src/ui/test/dialog-controller.test.mjs', 'src/ui/test/app-shell-message-search.test.mjs', 'src/ui/test/style-token-contract.test.mjs',
     'src/ui/button.js', 'src/ui/badge.js', 'src/ui/list-row.js', 'src/ui/segmented-control.js', 'src/ui/bottom-sheet.js', 'src/ui/empty-state.js', 'src/ui/skeleton.js',
     'src/ui/test/button.test.mjs', 'src/ui/test/badge.test.mjs', 'src/ui/test/list-row.test.mjs', 'src/ui/test/segmented-control.test.mjs', 'src/ui/test/bottom-sheet.test.mjs', 'src/ui/test/empty-state.test.mjs', 'src/ui/test/skeleton.test.mjs', 'src/ui/test/icon-design-system.test.mjs',
@@ -121,7 +121,15 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.0.9'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.9 统一（必须位于壳层 app-shell.js）');
+const onboardingFlow = await readFile(resolve(root, 'src/onboarding/onboarding-flow.js'), 'utf8');
+if (!appShellCore.includes("const UI_VERSION = '1.0.10'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.10 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("import { createOnboardingFlow } from './onboarding/onboarding-flow.js'")
+    || !appShellCore.includes('saveProfile: (profile) => actionBridge.runSavePlayerPublicProfile(profile)')
+    || !uiModel.includes('玩家已建档 === false')
+    || !onboardingFlow.includes("头像引用: '', ...normalized")) {
+    fail('缺少首次公开资料引导、严格建档 gate 或受控公开资料保存接线');
+}
+console.log('✓ 首次公开资料引导仅在严格未建档 gate 下显示，并接入受控资料保存');
 if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
     || !appShellCore.includes("'placement_reset'")
     || !appShellCore.includes("'mvu_read_complete'")

@@ -13,9 +13,9 @@ import { createEmptyState } from '../ui/empty-state.js';
 import { SERVICE_UNLOCK_STORAGE_KEY } from './shared.js';
 
 const RECENT_RELEASE_NOTES = Object.freeze([
+    'v1.0.10：首次开局新增城市信号引导，分步填写公开资料并在确认后通过受控 MVU 管线保存；完成后自动进入“我的”查看个人资料。',
     'v1.0.9：改进 ComfyUI 外部 API 工作流兼容；自定义工作流等待预算提升至 600 秒，兼容 %vae% / %clip%；VAE / CLIP 可随时改回不指定，种子 0 每次生成随机，非零种子保持复现。',
     'v1.0.8：正文经历按对象独立回流私聊；当前对象与其他对象记忆分区防串台；清除旧长期摘要平行字段。',
-    'v1.0.7：图片管理新增醒目的生图入口与直接入库；三种生图接口各自管理提示词预设；修复私聊发送/回复回顶，并减少 AI 角色姓名集中于单一姓氏。',
 ]);
 
 export function createProfilePage(ctx) {

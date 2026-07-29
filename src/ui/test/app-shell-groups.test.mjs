@@ -486,7 +486,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             click(version());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /当前版本：1.0.9/u);
+            assert.match(dialog.textContent, /当前版本：1.0.10/u);
         }
         const modeEntry = miniDom.document.querySelector('[name="about-content-mode-entry"]');
         assert.ok(modeEntry, '连续五次版本信息后应显示内容模式隐藏入口');
@@ -504,7 +504,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
             assert.match(dialog.textContent, /最近三次更新/u);
-            assert.match(dialog.textContent, /v1.0.9/u);
+            assert.match(dialog.textContent, /v1.0.10/u);
         }
         const serviceEntry = miniDom.document.querySelector('[name="about-service-entry"]');
         assert.ok(serviceEntry, '连续五次更新日志后应显示专属服务入口');
