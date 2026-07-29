@@ -850,7 +850,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         section.appendChild(transportFields);
         const hostTransportNotice = element('p', {
             className: 'yl-image-generation-key-status',
-            text: '酒馆后端：NAI 与 OpenAI 使用酒馆已配置的官方凭据；ComfyUI 由酒馆转发到填写的地址。不会读取或写入浏览器 API Key。',
+            text: '酒馆后端：ComfyUI 由酒馆转发到填写的地址；NAI 会临时写入、激活此页浏览器 Key，完成后恢复原活动 NovelAI 凭据并删除临时副本；OpenAI-compatible 仅经酒馆 custom 代理转发到 Chat Completions。当前酒馆版本可能记录请求/响应日志；包含私密提示词或图片 Data URI 时请改用浏览器端。',
         });
         hostTransportNotice.hidden = clientMode.value !== 'sillytavern';
         section.appendChild(hostTransportNotice);
@@ -978,7 +978,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
                 ariaLabel: `${providerLabel} 提示词预设导入导出 JSON`,
                 placeholder: `导出 ${providerLabel} 预设，或粘贴同接口预设 JSON 后导入`,
             });
-            const loadPreset = (preset) => {
+            const loadPreset = (preset, { persistClientMode = false } = {}) => {
                 if (!preset) return;
                 activeImagePromptPresetIds[provider] = preset.id;
                 picker.value = preset.id;
@@ -1003,6 +1003,9 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
                     qualityToggle.checked = preset.qualityToggle;
                     variety.checked = preset.variety;
                     updateClientModeVisibility();
+                    // A user-selected NAI overall preset also changes the shared transport mode.
+                    // Persist only that non-secret switch; leave the remaining preset fields as form drafts.
+                    if (persistClientMode) persistClientModeImmediately();
                 }
             };
             const initial = presets().find((preset) => preset.id === activeImagePromptPresetIds[provider]);
@@ -1010,8 +1013,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             listen(picker, picker, 'change', () => {
                 const preset = presets().find((item) => item.id === picker.value);
                 if (!preset) return;
-                loadPreset(preset);
-                onFeedback(`已载入“${preset.name}”；点击“保存生图设置”即可把它用于后续生成。`);
+                loadPreset(preset, { persistClientMode: true });
+                onFeedback(`已载入“${preset.name}”；客户端已即时保存，其余参数点击“保存生图设置”后生效。`);
             }, signal);
             const formPreset = (id) => ({
                 id,
@@ -1125,7 +1128,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         naiProviderPanel.setAttribute('aria-labelledby', 'yl-image-provider-tab-novelai');
         append(naiProviderPanel, [
             element('h3', { className: 'yl-image-provider-title', text: 'NAI 专属配置' }),
-            element('p', { className: 'yl-phone-page-description', text: 'NAI 整体预设保存连接、采样、尺寸与提示词。浏览器端使用独立浏览器 Key；酒馆后端使用酒馆已配置的 NovelAI 凭据。' }),
+            element('p', { className: 'yl-phone-page-description', text: 'NAI 整体预设保存连接、采样、尺寸与提示词。两种客户端都从独立浏览器 Key 缓存读取 NAI Key；酒馆后端会暂时替换酒馆当前活动 NovelAI 凭据，生图后恢复原凭据并删除临时副本。若清理失败会明确报错，需到酒馆密钥管理中处理。' }),
             insecureTransportWarning(),
         ]);
         const naiFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
@@ -1155,7 +1158,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         openaiProviderPanel.setAttribute('aria-labelledby', 'yl-image-provider-tab-openai_compatible');
         append(openaiProviderPanel, [
             element('h3', { className: 'yl-image-provider-title', text: 'OpenAI-compatible 专属配置' }),
-            element('p', { className: 'yl-phone-page-description', text: '浏览器端配置 OpenAI-compatible 的接口、模型、尺寸、提示词与浏览器 Key；酒馆后端仅使用酒馆已保存的官方 OpenAI 凭据，不支持自定义兼容站点。' }),
+            element('p', { className: 'yl-phone-page-description', text: '两种客户端均使用此处的 OpenAI-compatible 接口、模型、尺寸、提示词与浏览器 Key。浏览器端可使用 /images/generations；酒馆后端仅通过 custom_url 与 custom_include_headers 转发到 Chat Completions，目标必须支持 /chat/completions 并在回复中内嵌 data:image Base64，不能转发远程图片 URL。' }),
             insecureTransportWarning(),
         ]);
         const openaiFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
@@ -1299,29 +1302,31 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         updateClientModeVisibility = () => {
             const host = clientMode.value === 'sillytavern';
             hostTransportNotice.hidden = !host;
-            naiBrowserKeyControls.hidden = host;
-            openaiBrowserKeyControls.hidden = host;
-            presetId.disabled = host;
+            naiBrowserKeyControls.hidden = false;
+            openaiBrowserKeyControls.hidden = false;
+            // NAI's host route is fixed by SillyTavern, but it still needs this preset's Key.
+            presetId.disabled = false;
             baseUrl.disabled = host;
             endpointPath.disabled = host;
-            openaiPresetId.disabled = host;
-            openaiBaseUrl.disabled = host;
-            openaiEndpointPath.disabled = host;
-            naiApiKey.value = '';
-            openaiApiKey.value = '';
+            // The custom chat-completions proxy uses the OpenAI-compatible connection fields in both modes.
+            openaiPresetId.disabled = false;
+            openaiBaseUrl.disabled = false;
+            openaiEndpointPath.disabled = false;
         };
         const persistClientModeImmediately = () => {
+            let persistedClientMode = image.clientMode;
             try {
                 // The client selector is a transport switch, not a draft-only field:
                 // save just this non-secret value without committing other unsaved form inputs.
                 const savedImageSettings = settingsStore.getImageGenerationSettings();
+                persistedClientMode = savedImageSettings.clientMode;
                 settingsStore.setImageGenerationSettings({ ...savedImageSettings, clientMode: clientMode.value });
                 updateClientModeVisibility();
                 onFeedback(`生图客户端已保存为${clientMode.value === 'sillytavern' ? '酒馆后端' : '浏览器端'}。`);
             } catch (error) {
                 // Keep the selector truthful if local persistence is unavailable; never silently
                 // leave the visible mode different from the mode used after a reload.
-                clientMode.value = image.clientMode;
+                clientMode.value = persistedClientMode;
                 updateClientModeVisibility();
                 onFeedback(safeErrorMessage(error, '生图客户端未保存，已恢复为原来的客户端。'));
             }

@@ -338,8 +338,8 @@ if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 21') || !settingsStore.in
 if (!settingsPanel.includes('image-generation-client-mode') || !settingsPanel.includes('updateClientModeVisibility') || !settingsPanel.includes('NAI 整体预设')) {
     fail('缺少三供应商共享客户端模式选择或 NAI 整体预设界面');
 }
-if (!index.includes('getRequestHeaders') || !imageGenerationClient.includes('HOST_IMAGE_ENDPOINTS') || !imageGenerationClient.includes("/api/novelai/generate-image") || !imageGenerationClient.includes("/api/openai/generate-image") || !imageGenerationClient.includes("/api/sd/comfy/generate") || !imageGenerationClient.includes('HOST_IMAGE_BACKEND_UNAVAILABLE')) {
-    fail('缺少三供应商酒馆后端固定路由、宿主请求头注入或失效关闭');
+if (!index.includes('getRequestHeaders') || !imageGenerationClient.includes('HOST_IMAGE_ENDPOINTS') || !imageGenerationClient.includes("/api/novelai/generate-image") || !imageGenerationClient.includes("/api/backends/chat-completions/generate") || !imageGenerationClient.includes("/api/sd/comfy/generate") || !imageGenerationClient.includes('withTemporaryNovelAIHostSecret') || !imageGenerationClient.includes('readActiveNovelAISecretId') || !imageGenerationClient.includes('deleteTemporaryNovelAISecret') || !imageGenerationClient.includes('acquireNovelAIHostLock') || !imageGenerationClient.includes('custom_include_headers') || !imageGenerationClient.includes('HOST_IMAGE_BACKEND_UNAVAILABLE')) {
+    fail('缺少三供应商酒馆后端路由、独立凭据转发、宿主请求头注入或失效关闭');
 }
 if (!settingsPanel.includes('buildImageGenerationSection') || !settingsPanel.includes('buildImagePromptPresetManager')
     || !settingsPanel.includes('IMAGE_PROMPT_BUNDLE_SCHEMA') || !settingsPanel.includes('positivePrefix') || !settingsPanel.includes('negativePrompt')) {
