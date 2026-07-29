@@ -569,8 +569,9 @@ test('preference 子视图只查看并保存当前 contentMode 的独立关键�
 
 test('生图设置只保存非机密配置，API Key 清空后留在独立浏览器缓存', async () => {
     const keyStorage = createMemoryStorage();
+    const settingsStorage = createMemoryStorage();
     configurePersistentKeyStorage(keyStorage);
-    const { panel, store, feedback, navigations } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { view: 'image_generation' });
+    const { panel, store, feedback, navigations } = buildHarness(createSettingsStore({ storage: settingsStorage }), { view: 'image_generation' });
     assert.match(panel.textContent, /前置 → core_dna → outfit_dna → AI 场景 → 后置/u);
     const clientMode = byName(panel, 'image-generation-client-mode');
     assert.equal(clientMode.tagName, 'SELECT');
@@ -588,6 +589,8 @@ test('生图设置只保存非机密配置，API Key 清空后留在独立浏览
 
     clientMode.value = 'sillytavern';
     clientMode.dispatchEvent(new Event('change'));
+    assert.equal(store.snapshot().imageGeneration.clientMode, 'sillytavern', '切换后必须立即写入当前设置快照。');
+    assert.equal(createSettingsStore({ storage: settingsStorage }).snapshot().imageGeneration.clientMode, 'sillytavern', '切换后必须立即写入浏览器存储，而不是等待保存生图设置。');
     assert.equal(byAria(panel, 'NAI API Key').parentNode.parentNode.hidden, true);
     assert.equal(byAria(panel, 'OpenAI-compatible API Key').parentNode.parentNode.hidden, true);
     assert.equal(byName(panel, 'image-generation-preset-id').disabled, true);

@@ -1310,7 +1310,23 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             naiApiKey.value = '';
             openaiApiKey.value = '';
         };
-        listen(clientMode, clientMode, 'change', updateClientModeVisibility, signal);
+        const persistClientModeImmediately = () => {
+            try {
+                // The client selector is a transport switch, not a draft-only field:
+                // save just this non-secret value without committing other unsaved form inputs.
+                const savedImageSettings = settingsStore.getImageGenerationSettings();
+                settingsStore.setImageGenerationSettings({ ...savedImageSettings, clientMode: clientMode.value });
+                updateClientModeVisibility();
+                onFeedback(`生图客户端已保存为${clientMode.value === 'sillytavern' ? '酒馆后端' : '浏览器端'}。`);
+            } catch (error) {
+                // Keep the selector truthful if local persistence is unavailable; never silently
+                // leave the visible mode different from the mode used after a reload.
+                clientMode.value = image.clientMode;
+                updateClientModeVisibility();
+                onFeedback(safeErrorMessage(error, '生图客户端未保存，已恢复为原来的客户端。'));
+            }
+        };
+        listen(clientMode, clientMode, 'change', persistClientModeImmediately, signal);
         updateClientModeVisibility();
         setProvider(image.apiMode);
 
