@@ -10,7 +10,20 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
 const UNSAFE_WORKFLOW_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SAFE_PROVIDER_ERROR_FIELDS = Object.freeze(['input', 'model', 'action', 'parameters', 'v4_prompt', 'v4_negative_prompt', 'negative_prompt', 'width', 'height', 'scale', 'cfg_rescale', 'steps', 'sampler', 'noise_schedule', 'seed']);
+const HOST_IMAGE_ENDPOINTS = Object.freeze({ novelai: '/api/novelai/generate-image', openai_compatible: '/api/backends/chat-completions/generate', comfyui: '/api/sd/comfy/generate' });
+const NOVELAI_SECRET_KEY = 'api_key_novel';
+const NOVELAI_SECRET_LABEL = '约了吗小手机 NovelAI 生图';
 let imageRequestSequence = 0;
+let novelAIHostQueue = Promise.resolve();
+
+async function acquireNovelAIHostLock() {
+    let release;
+    const turn = new Promise((resolve) => { release = resolve; });
+    const previous = novelAIHostQueue;
+    novelAIHostQueue = previous.catch(() => undefined).then(() => turn);
+    await previous.catch(() => undefined);
+    return release;
+}
 
 export class YueLeMaImageGenerationError extends Error {
     constructor(code, message, { retryable = false, status } = {}) {
@@ -335,6 +348,134 @@ function buildBody(settings, positivePrompt, negativePrompt) {
         n: 1,
     };
 }
+function hostImageEndpoint(apiMode) {
+    const endpoint = HOST_IMAGE_ENDPOINTS[apiMode];
+    if (!endpoint) fail('INVALID_IMAGE_REQUEST', '生图接口模式无效。');
+    return endpoint;
+}
+function hostChatBaseUrl(settings) {
+    const endpoint = `${settings.baseUrl}${settings.endpointPath}`;
+    const baseUrl = endpoint.replace(/\/(?:images\/generations|chat\/completions)\/?$/iu, '');
+    if (baseUrl === endpoint || !baseUrl) fail('INVALID_IMAGE_REQUEST', 'OpenAI-compatible 酒馆后端需要以 /images/generations 或 /chat/completions 结尾的接口路径。');
+    return baseUrl;
+}
+function buildOpenAIHostImageBody(settings, positivePrompt, negativePrompt, apiKey) {
+    const imageBody = buildBody(settings, positivePrompt, negativePrompt);
+    return {
+        chat_completion_source: 'custom',
+        custom_url: hostChatBaseUrl(settings),
+        custom_include_headers: `Authorization: ${JSON.stringify(`Bearer ${apiKey}`)}`,
+        custom_include_body: `size: ${JSON.stringify(imageBody.size)}`,
+        model: settings.model,
+        messages: [{ role: 'user', content: imageBody.prompt }],
+        n: 1,
+        stream: false,
+    };
+}
+function buildHostImageBody(settings, positivePrompt, negativePrompt, apiKey) {
+    if (settings.apiMode === 'novelai') return { prompt: positivePrompt, model: settings.model, sampler: settings.sampler, scheduler: settings.noiseSchedule, steps: settings.steps, scale: settings.guidance, width: settings.width, height: settings.height, negative_prompt: negativePrompt, decrisper: false, variety_boost: settings.variety, sm: settings.variety, sm_dyn: settings.variety, seed: settings.seed };
+    if (settings.apiMode === 'comfyui') return { url: settings.baseUrl, prompt: JSON.stringify({ prompt: buildComfyWorkflow(settings, positivePrompt, negativePrompt) }) };
+    return buildOpenAIHostImageBody(settings, positivePrompt, negativePrompt, apiKey);
+}
+function hostCredentialError(code, message, response, retryable = false) {
+    return new YueLeMaImageGenerationError(code, message, {
+        retryable: retryable || response?.status >= 500,
+        status: Number.isInteger(response?.status) ? response.status : undefined,
+    });
+}
+async function requestHostSecret(fetchImpl, path, headers, signal, body, { code, message, retryable = false } = {}) {
+    let response;
+    try {
+        response = await fetchImpl(path, {
+            method: 'POST', headers,
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+            signal,
+        });
+    } catch {
+        throw hostCredentialError(code, message, null, true);
+    }
+    if (!response?.ok) throw hostCredentialError(code, message, response, retryable);
+    return response;
+}
+function activeNovelAISecretId(state) {
+    const candidates = state?.[NOVELAI_SECRET_KEY];
+    if (candidates === null || candidates === undefined) return null;
+    if (!Array.isArray(candidates)) throw hostCredentialError('HOST_IMAGE_CREDENTIAL_READ_FAILED', '酒馆 NovelAI 凭据状态无效，未发送生图请求。');
+    const active = candidates.filter((candidate) => candidate && typeof candidate === 'object' && candidate.active === true);
+    if (active.length > 1) throw hostCredentialError('HOST_IMAGE_CREDENTIAL_READ_FAILED', '酒馆 NovelAI 凭据状态不明确，未发送生图请求。');
+    if (active.length === 0) return null;
+    const id = active[0].id;
+    if (typeof id !== 'string' || id.length < 1 || id.length > 256) throw hostCredentialError('HOST_IMAGE_CREDENTIAL_READ_FAILED', '酒馆 NovelAI 凭据状态无效，未发送生图请求。');
+    return id;
+}
+async function readActiveNovelAISecretId(fetchImpl, headers, signal) {
+    const response = await requestHostSecret(fetchImpl, '/api/secrets/read', headers, signal, undefined, {
+        code: 'HOST_IMAGE_CREDENTIAL_READ_FAILED', message: '无法读取酒馆当前 NovelAI 凭据，未发送生图请求。', retryable: true,
+    });
+    let state;
+    try { state = await response.json(); } catch { throw hostCredentialError('HOST_IMAGE_CREDENTIAL_READ_FAILED', '酒馆 NovelAI 凭据状态无效，未发送生图请求。'); }
+    return activeNovelAISecretId(state);
+}
+async function writeTemporaryNovelAISecret(fetchImpl, apiKey, headers, signal) {
+    const response = await requestHostSecret(fetchImpl, '/api/secrets/write', headers, signal, {
+        key: NOVELAI_SECRET_KEY, value: apiKey, label: NOVELAI_SECRET_LABEL,
+    }, {
+        code: 'HOST_IMAGE_CREDENTIAL_WRITE_FAILED', message: '无法向酒馆写入 NovelAI 凭据，未发送生图请求。', retryable: true,
+    });
+    let secretId;
+    try { secretId = (await response.json())?.id; } catch { /* Fail closed below without exposing the response. */ }
+    if (typeof secretId !== 'string' || secretId.length < 1 || secretId.length > 256) throw hostCredentialError('HOST_IMAGE_CREDENTIAL_WRITE_FAILED', '酒馆未确认 NovelAI 凭据，未发送生图请求。');
+    return secretId;
+}
+async function rotateNovelAISecret(fetchImpl, secretId, headers, signal, { cleanup = false } = {}) {
+    await requestHostSecret(fetchImpl, '/api/secrets/rotate', headers, signal, {
+        key: NOVELAI_SECRET_KEY, id: secretId,
+    }, {
+        code: cleanup ? 'HOST_IMAGE_CREDENTIAL_CLEANUP_FAILED' : 'HOST_IMAGE_CREDENTIAL_WRITE_FAILED',
+        message: cleanup ? '酒馆 NovelAI 临时凭据清理失败；请在酒馆密钥管理中检查当前活动凭据。' : '酒馆未能激活 NovelAI 凭据，未发送生图请求。',
+        retryable: true,
+    });
+}
+async function deleteTemporaryNovelAISecret(fetchImpl, secretId, headers, signal) {
+    await requestHostSecret(fetchImpl, '/api/secrets/delete', headers, signal, {
+        key: NOVELAI_SECRET_KEY, id: secretId,
+    }, {
+        code: 'HOST_IMAGE_CREDENTIAL_CLEANUP_FAILED', message: '酒馆 NovelAI 临时凭据清理失败；请在酒馆密钥管理中删除“约了吗小手机 NovelAI 生图”项。', retryable: true,
+    });
+}
+async function withTemporaryNovelAIHostSecret(fetchImpl, apiKey, headers, signal, operation) {
+    const previousSecretId = await readActiveNovelAISecretId(fetchImpl, headers, signal);
+    let temporarySecretId = null;
+    let operationError = null;
+    let result;
+    try {
+        temporarySecretId = await writeTemporaryNovelAISecret(fetchImpl, apiKey, headers, signal);
+        await rotateNovelAISecret(fetchImpl, temporarySecretId, headers, signal);
+        result = await operation();
+    } catch (error) {
+        operationError = error;
+    }
+    if (temporarySecretId) {
+        let cleanupError = null;
+        if (previousSecretId) {
+            try { await rotateNovelAISecret(fetchImpl, previousSecretId, headers, undefined, { cleanup: true }); }
+            catch (error) { cleanupError = error; }
+        }
+        if (!cleanupError) {
+            try { await deleteTemporaryNovelAISecret(fetchImpl, temporarySecretId, headers, undefined); }
+            catch (error) { cleanupError = error; }
+        }
+        if (cleanupError) throw cleanupError;
+    }
+    if (operationError) throw operationError;
+    return result;
+}function getHostImageRequestHeaders(getRequestHeaders) {
+    if (typeof getRequestHeaders !== 'function') fail('HOST_IMAGE_BACKEND_UNAVAILABLE', '当前酒馆未提供生图后端请求能力。');
+    let supplied;
+    try { supplied = getRequestHeaders(); } catch { fail('HOST_IMAGE_BACKEND_UNAVAILABLE', '当前酒馆未提供生图后端请求能力。'); }
+    if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) fail('HOST_IMAGE_BACKEND_UNAVAILABLE', '当前酒馆未提供生图后端请求能力。');
+    return { ...supplied, Accept: 'application/json, image/png, image/jpeg, image/webp, application/zip', 'Content-Type': 'application/json' };
+}
 function normalizeRequest(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_IMAGE_REQUEST', '生图请求无效。');
     const settings = input.settings;
@@ -343,6 +484,7 @@ function normalizeRequest(input) {
         ? 'openai_compatible'
         : settings.apiMode === 'novelai' ? 'novelai' : settings.apiMode === 'comfyui' ? 'comfyui' : fail('INVALID_IMAGE_REQUEST', '生图接口模式无效。');
     const comfy = apiMode === 'comfyui';
+    const clientMode = settings.clientMode === 'browser' ? 'browser' : settings.clientMode === 'sillytavern' ? 'sillytavern' : fail('INVALID_IMAGE_REQUEST', '生图客户端模式无效。');
     return {
         positivePrompt: cleanText(input.positivePrompt, '正面提示词', 32_000),
         negativePrompt: cleanText(input.negativePrompt ?? '', '负面提示词', 12_000, { allowEmpty: true }),
@@ -350,6 +492,7 @@ function normalizeRequest(input) {
         timeoutMs: input.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : cleanInteger(input.timeoutMs, '超时时间', 1_000, 300_000),
         settings: {
             apiMode,
+            clientMode,
             presetId: cleanText(apiMode === 'openai_compatible' ? (settings.openaiPresetId ?? settings.presetId) : settings.presetId, '生图连接 ID', 96),
             baseUrl: safeBaseUrl(comfy
                 ? (settings.comfyBaseUrl ?? settings.baseUrl)
@@ -387,19 +530,26 @@ async function parseResponse(response) {
         fail('INVALID_IMAGE_RESPONSE', '生图接口返回的压缩图片无法读取。');
     }
     let payload;
+    let responseText = '';
     try {
         const bytes = await readResponseBytes(response, MAX_JSON_RESPONSE_BYTES);
-        payload = JSON.parse(new TextDecoder().decode(bytes));
+        responseText = new TextDecoder().decode(bytes).trim();
+        payload = JSON.parse(responseText);
     } catch (error) {
         if (error instanceof YueLeMaImageGenerationError) throw error;
-        fail('INVALID_IMAGE_RESPONSE', '生图接口没有返回可用图片。');
+        try { return imageResultFromBytes(base64ToBytes(responseText.replace(/^data:image\/(?:png|jpeg|webp);base64,/iu, ''))); }
+        catch { fail('INVALID_IMAGE_RESPONSE', '生图接口没有返回可用图片。'); }
     }
     const first = Array.isArray(payload?.data) ? payload.data[0] : null;
-    const b64 = first?.b64_json ?? payload?.b64_json ?? payload?.image;
+    const directB64 = typeof payload?.data === 'string' ? payload.data : first?.b64_json ?? payload?.b64_json ?? payload?.image;
+    const chatContent = payload?.choices?.[0]?.message?.content;
+    const inlineImage = typeof chatContent === 'string'
+        ? chatContent.match(/data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})/iu)?.[1]
+        : undefined;
+    const b64 = directB64 ?? inlineImage;
     if (typeof b64 === 'string') return imageResultFromBytes(base64ToBytes(b64.replace(/^data:image\/(?:png|jpeg|webp);base64,/iu, '')));
     fail('INVALID_IMAGE_RESPONSE', '生图接口没有返回可用图片。');
 }
-
 function defaultComfyWorkflow() {
     return {
         3: { inputs: { seed: '%seed%', steps: '%steps%', cfg: '%cfg_scale%', sampler_name: '%sampler_name%', scheduler: '%scheduler%', denoise: 1, model: ['4', 0], positive: ['6', 0], negative: ['7', 0], latent_image: ['5', 0] }, class_type: 'KSampler' },
@@ -643,51 +793,32 @@ async function fetchComfyUIResources(fetchImpl, baseUrl, signal, diagnosticLogge
     }
 }
 
-export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null } = {}) {
+export function createImageGenerationClient({ fetchImpl, getRequestHeaders = null, diagnosticLogger = null } = {}) {
     if (typeof fetchImpl !== 'function') throw new TypeError('image generation client requires injected fetchImpl');
     return Object.freeze({
-        fetchComfyUIResources({ baseUrl, signal } = {}) {
-            return fetchComfyUIResources(fetchImpl, baseUrl, signal, diagnosticLogger);
-        },
+        fetchComfyUIResources({ baseUrl, signal } = {}) { return fetchComfyUIResources(fetchImpl, baseUrl, signal, diagnosticLogger); },
         async generate(input) {
+            const requestedHostNovelAI = input?.settings?.clientMode === 'sillytavern' && input?.settings?.apiMode === 'novelai';
+            const releaseNovelAIHostLock = requestedHostNovelAI ? await acquireNovelAIHostLock() : null;
             const requestId = `image-${Date.now().toString(36)}-${(++imageRequestSequence).toString(36)}`;
             const startedAt = Date.now();
-            let request;
-            let controller;
-            let timer;
-            let forwardAbort;
-            let phase = 'request_validation';
+            let request; let controller; let timer; let forwardAbort; let phase = 'request_validation';
             try {
                 request = normalizeRequest(input);
+                const useHostBackend = request.settings.clientMode === 'sillytavern';
                 phase = 'credential_lookup';
-                const key = request.settings.apiMode === 'comfyui' ? '' : requireSessionKey(request.settings.presetId);
+                const hostHeaders = useHostBackend ? getHostImageRequestHeaders(getRequestHeaders) : null;
+                const key = request.settings.apiMode !== 'comfyui' ? requireSessionKey(request.settings.presetId) : '';
+                const endpoint = useHostBackend ? hostImageEndpoint(request.settings.apiMode) : request.settings.apiMode === 'comfyui' ? `${request.settings.baseUrl}/prompt` : request.settings.baseUrl + request.settings.endpointPath;
                 controller = new AbortController();
                 timer = setTimeout(() => controller.abort('timeout'), request.timeoutMs);
                 forwardAbort = () => controller.abort('external');
                 request.signal?.addEventListener?.('abort', forwardAbort, { once: true });
-                emitImageDiagnostic(diagnosticLogger, 'info', '请求开始', {
-                    requestId,
-                    provider: request.settings.apiMode,
-                    endpoint: request.settings.apiMode === 'comfyui'
-                        ? `${request.settings.baseUrl}/prompt`
-                        : request.settings.baseUrl + request.settings.endpointPath,
-                    model: request.settings.model,
-                    width: request.settings.width,
-                    height: request.settings.height,
-                    timeoutMs: request.timeoutMs,
-                });
-                if (request.settings.apiMode === 'comfyui') {
+                emitImageDiagnostic(diagnosticLogger, 'info', '请求开始', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, endpoint, model: request.settings.model, width: request.settings.width, height: request.settings.height, timeoutMs: request.timeoutMs });
+                if (!useHostBackend && request.settings.apiMode === 'comfyui') {
                     try {
-                        const generated = await generateWithComfyUI(fetchImpl, request, controller.signal, {
-                            diagnosticLogger,
-                            requestId,
-                            startedAt,
-                            setPhase: (nextPhase) => { phase = nextPhase; },
-                        });
-                        emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', {
-                            requestId, provider: request.settings.apiMode, mimeType: generated.mimeType,
-                            elapsedMs: Date.now() - startedAt,
-                        });
+                        const generated = await generateWithComfyUI(fetchImpl, request, controller.signal, { diagnosticLogger, requestId, startedAt, setPhase: (nextPhase) => { phase = nextPhase; } });
+                        emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, mimeType: generated.mimeType, elapsedMs: Date.now() - startedAt });
                         return generated;
                     } catch (error) {
                         if (error instanceof YueLeMaImageGenerationError) throw error;
@@ -695,105 +826,44 @@ export function createImageGenerationClient({ fetchImpl, diagnosticLogger = null
                         fail('IMAGE_NETWORK_ERROR', '无法连接 ComfyUI，请检查地址、服务状态或跨域配置。', { retryable: true });
                     }
                 }
-                let response;
                 phase = 'network_request';
-                const requestBody = buildBody(request.settings, request.positivePrompt, request.negativePrompt);
+                const requestBody = useHostBackend ? buildHostImageBody(request.settings, request.positivePrompt, request.negativePrompt, key) : buildBody(request.settings, request.positivePrompt, request.negativePrompt);
                 const serializedBody = JSON.stringify(requestBody);
-                emitImageDiagnostic(diagnosticLogger, 'info', '请求体准备完成', {
-                    requestId,
-                    provider: request.settings.apiMode,
-                    requestBytes: new TextEncoder().encode(serializedBody).length,
-                    positivePromptChars: request.positivePrompt.length,
-                    negativePromptChars: request.negativePrompt.length,
-                    requestFields: Object.keys(requestBody),
-                    parameterFields: request.settings.apiMode === 'novelai' ? Object.keys(requestBody.parameters) : undefined,
-                });
-                if (request.settings.apiMode === 'novelai') {
-                    emitImageDiagnostic(diagnosticLogger, 'info', 'NovelAI 请求合同', {
-                        requestId,
-                        model: request.settings.model,
-                        modelFamily: isNovelAIV4Model(request.settings.model) ? 'v4' : 'legacy',
-                        paramsVersion: requestBody.parameters?.params_version,
-                        hasV4PositiveCaption: Boolean(requestBody.parameters?.v4_prompt?.caption?.base_caption),
-                        hasV4NegativeCaption: Boolean(requestBody.parameters?.v4_negative_prompt?.caption),
-                        sampler: request.settings.sampler,
-                        noiseSchedule: request.settings.noiseSchedule,
-                        width: request.settings.width,
-                        height: request.settings.height,
-                        steps: request.settings.steps,
-                        guidance: request.settings.guidance,
-                        guidanceRescale: request.settings.guidanceRescale,
-                        qualityToggle: request.settings.qualityToggle,
-                        variety: request.settings.variety,
-                        elapsedMs: Date.now() - startedAt,
-                    });
-                }
-                try {
-                    response = await fetchImpl(request.settings.baseUrl + request.settings.endpointPath, {
-                        method: 'POST', headers: { Accept: 'application/json, image/png, image/jpeg, image/webp, application/zip', 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-                        body: serializedBody, signal: controller.signal,
-                    });
-                } catch (error) {
-                    emitImageDiagnostic(diagnosticLogger, 'error', '传输失败', {
-                        requestId,
-                        provider: request.settings.apiMode,
-                        errorType: safeErrorType(error),
-                        aborted: controller.signal.aborted,
-                        abortSource: controller.signal.aborted ? (request.signal?.aborted ? 'external' : 'timeout') : undefined,
-                        elapsedMs: Date.now() - startedAt,
-                    });
-                    if (controller.signal.aborted) fail('IMAGE_REQUEST_ABORTED', request.signal?.aborted ? '生图请求已取消。' : '生图请求超时，请稍后重试。', { retryable: true });
-                    fail('IMAGE_NETWORK_ERROR', '无法连接生图服务，请检查 URL、网络或跨域配置。', { retryable: true });
-                }
-                phase = 'http_response';
-                emitImageDiagnostic(diagnosticLogger, response?.ok ? 'info' : 'error', '收到响应', {
-                    requestId,
-                    provider: request.settings.apiMode,
-                    status: Number.isInteger(response?.status) ? response.status : undefined,
-                    ok: Boolean(response?.ok),
-                    contentType: String(response?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined,
-                    contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined,
-                    elapsedMs: Date.now() - startedAt,
-                });
-                if (!response?.ok) {
-                    if (request.settings.apiMode === 'novelai') {
-                        emitImageDiagnostic(diagnosticLogger, 'error', 'NovelAI 错误响应定位', {
-                            requestId,
-                            status: Number.isInteger(response?.status) ? response.status : undefined,
-                            contentType: String(response?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined,
-                            contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined,
-                            ...safeResponseTrace(response),
-                            elapsedMs: Date.now() - startedAt,
-                        });
+                emitImageDiagnostic(diagnosticLogger, 'info', '请求体准备完成', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, requestBytes: new TextEncoder().encode(serializedBody).length, requestFields: Object.keys(requestBody), parameterFields: request.settings.apiMode === 'novelai' && !useHostBackend ? Object.keys(requestBody.parameters) : undefined });
+                if (request.settings.apiMode === 'novelai') emitImageDiagnostic(diagnosticLogger, 'info', 'NovelAI 请求合同', { requestId, clientMode: request.settings.clientMode, model: request.settings.model, modelFamily: isNovelAIV4Model(request.settings.model) ? 'v4' : 'legacy', paramsVersion: requestBody.parameters?.params_version, hasV4PositiveCaption: Boolean(requestBody.parameters?.v4_prompt?.caption?.base_caption), hasV4NegativeCaption: Boolean(requestBody.parameters?.v4_negative_prompt?.caption), sampler: request.settings.sampler, noiseSchedule: request.settings.noiseSchedule, width: request.settings.width, height: request.settings.height, steps: request.settings.steps, guidance: request.settings.guidance, guidanceRescale: request.settings.guidanceRescale, qualityToggle: request.settings.qualityToggle, variety: request.settings.variety, elapsedMs: Date.now() - startedAt });
+                const sendImageRequest = async () => {
+                    try {
+                        return await fetchImpl(endpoint, { method: 'POST', headers: useHostBackend ? hostHeaders : { Accept: 'application/json, image/png, image/jpeg, image/webp, application/zip', 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }, body: serializedBody, signal: controller.signal });
+                    } catch (error) {
+                        emitImageDiagnostic(diagnosticLogger, 'error', '传输失败', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, errorType: safeErrorType(error), aborted: controller.signal.aborted, abortSource: controller.signal.aborted ? (request.signal?.aborted ? 'external' : 'timeout') : undefined, elapsedMs: Date.now() - startedAt });
+                        if (controller.signal.aborted) fail('IMAGE_REQUEST_ABORTED', request.signal?.aborted ? '生图请求已取消。' : '生图请求超时，请稍后重试。', { retryable: true });
+                        fail('IMAGE_NETWORK_ERROR', '无法连接生图服务，请检查 URL、网络或跨域配置。', { retryable: true });
                     }
-                    emitImageDiagnostic(diagnosticLogger, 'error', '错误响应摘要', {
-                        requestId,
-                        provider: request.settings.apiMode,
-                        status: Number.isInteger(response?.status) ? response.status : undefined,
-                        ...await safeHttpErrorDiagnostic(response, [key, request.positivePrompt, request.negativePrompt]),
-                        elapsedMs: Date.now() - startedAt,
-                    });
+                };
+                const response = useHostBackend && request.settings.apiMode === 'novelai'
+                    ? await withTemporaryNovelAIHostSecret(fetchImpl, key, hostHeaders, controller.signal, async () => {
+                        phase = 'host_credential_write';
+                        return sendImageRequest();
+                    })
+                    : await sendImageRequest();
+                phase = 'http_response';
+                emitImageDiagnostic(diagnosticLogger, response?.ok ? 'info' : 'error', '收到响应', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, status: Number.isInteger(response?.status) ? response.status : undefined, ok: Boolean(response?.ok), contentType: String(response?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined, contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined, elapsedMs: Date.now() - startedAt });
+                if (!response?.ok) {
+                    if (request.settings.apiMode === 'novelai') emitImageDiagnostic(diagnosticLogger, 'error', 'NovelAI 错误响应定位', { requestId, status: Number.isInteger(response?.status) ? response.status : undefined, contentType: String(response?.headers?.get?.('content-type') ?? '').split(';')[0].trim().toLowerCase() || undefined, contentLength: String(response?.headers?.get?.('content-length') ?? '') || undefined, ...safeResponseTrace(response), elapsedMs: Date.now() - startedAt });
+                    emitImageDiagnostic(diagnosticLogger, 'error', '错误响应摘要', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, status: Number.isInteger(response?.status) ? response.status : undefined, ...await safeHttpErrorDiagnostic(response, [key, request.positivePrompt, request.negativePrompt]), elapsedMs: Date.now() - startedAt });
                     fail('IMAGE_HTTP_ERROR', '生图服务拒绝了本次请求，请检查接口设置或稍后重试。', { retryable: response?.status >= 500, status: Number.isInteger(response?.status) ? response.status : undefined });
                 }
                 phase = 'response_parse';
                 const generated = await parseResponse(response);
-                emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', {
-                    requestId, provider: request.settings.apiMode, mimeType: generated.mimeType,
-                    elapsedMs: Date.now() - startedAt,
-                });
+                emitImageDiagnostic(diagnosticLogger, 'info', '请求完成', { requestId, provider: request.settings.apiMode, clientMode: request.settings.clientMode, mimeType: generated.mimeType, elapsedMs: Date.now() - startedAt });
                 return generated;
             } catch (error) {
-                emitImageDiagnostic(diagnosticLogger, 'error', '请求失败', {
-                    requestId,
-                    provider: request?.settings?.apiMode,
-                    phase,
-                    ...imageErrorDetails(error),
-                    elapsedMs: Date.now() - startedAt,
-                });
+                emitImageDiagnostic(diagnosticLogger, 'error', '请求失败', { requestId, provider: request?.settings?.apiMode, clientMode: request?.settings?.clientMode, phase, ...imageErrorDetails(error), elapsedMs: Date.now() - startedAt });
                 throw error;
             } finally {
                 if (timer !== undefined) clearTimeout(timer);
                 if (forwardAbort) request?.signal?.removeEventListener?.('abort', forwardAbort);
+                releaseNovelAIHostLock?.();
             }
         },
     });

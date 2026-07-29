@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.0.8') fail('manifest.version 必须与扩展版本 1.0.8 统一');
+if (manifest.version !== '1.0.11') fail('manifest.version 必须与扩展版本 1.0.11 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -121,7 +121,7 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.0.8'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.8 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.0.11'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.11 统一（必须位于壳层 app-shell.js）');
 if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
     || !appShellCore.includes("'placement_reset'")
     || !appShellCore.includes("'mvu_read_complete'")
@@ -331,7 +331,16 @@ const imageGenerationClient = await readFile(resolve(root, 'src/llm/image-genera
 const drawingDnaRules = await readFile(resolve(root, 'src/recommendation/drawing-dna-rules.js'), 'utf8');
 if (!index.includes('createImageGenerationClient') || !actionBridge.includes('generateConversationImage')) fail('缺少生图客户端注入或对话生图桥接');
 if (!appShell.includes("'settings_image_generation'") || !appShell.includes("'settings_image_cache'") || !appShell.includes('buildConversationImageControls') || !appShell.includes('buildImageDirectiveCard') || !appShell.includes('buildConversationImageCachePage') || !appShell.includes('openImageOriginalDialog') || !appShell.includes('generateConversationImage')) fail('缺少生图设置 / 缓存路由、会话开关、结构化指令或原图 UI 接线');
-if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 20') || !settingsStore.includes('openaiBaseUrl') || !settingsStore.includes('openaiWidth') || !settingsStore.includes('comfyBaseUrl') || !settingsStore.includes('promptPresets') || !settingsStore.includes('activePromptPresetIds') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) fail('缺少生图设置 schema、三接口独立提示词预设、OpenAI/ComfyUI 专属配置或逐会话自动生图隔离');
+if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 21') || !settingsStore.includes('IMAGE_CLIENT_MODES') || !settingsStore.includes('NAI_SAMPLER_OPTIONS') || !settingsStore.includes('NAI_NOISE_SCHEDULE_OPTIONS')
+    || !settingsStore.includes('openaiBaseUrl') || !settingsStore.includes('openaiWidth') || !settingsStore.includes('comfyBaseUrl') || !settingsStore.includes('promptPresets') || !settingsStore.includes('activePromptPresetIds') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) {
+    fail('缺少生图设置 schema、三接口独立提示词预设、客户端模式、NAI 固定选项、OpenAI/ComfyUI 专属配置或逐会话自动生图隔离');
+}
+if (!settingsPanel.includes('image-generation-client-mode') || !settingsPanel.includes('updateClientModeVisibility') || !settingsPanel.includes('NAI 整体预设')) {
+    fail('缺少三供应商共享客户端模式选择或 NAI 整体预设界面');
+}
+if (!index.includes('getRequestHeaders') || !imageGenerationClient.includes('HOST_IMAGE_ENDPOINTS') || !imageGenerationClient.includes("/api/novelai/generate-image") || !imageGenerationClient.includes("/api/backends/chat-completions/generate") || !imageGenerationClient.includes("/api/sd/comfy/generate") || !imageGenerationClient.includes('withTemporaryNovelAIHostSecret') || !imageGenerationClient.includes('readActiveNovelAISecretId') || !imageGenerationClient.includes('deleteTemporaryNovelAISecret') || !imageGenerationClient.includes('acquireNovelAIHostLock') || !imageGenerationClient.includes('custom_include_headers') || !imageGenerationClient.includes('HOST_IMAGE_BACKEND_UNAVAILABLE')) {
+    fail('缺少三供应商酒馆后端路由、独立凭据转发、宿主请求头注入或失效关闭');
+}
 if (!settingsPanel.includes('buildImageGenerationSection') || !settingsPanel.includes('buildImagePromptPresetManager')
     || !settingsPanel.includes('IMAGE_PROMPT_BUNDLE_SCHEMA') || !settingsPanel.includes('positivePrefix') || !settingsPanel.includes('negativePrompt')) {
     fail('缺少三接口独立生图提示词预设或固定正负提示词设置界面');

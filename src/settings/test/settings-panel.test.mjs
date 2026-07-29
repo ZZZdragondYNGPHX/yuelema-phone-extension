@@ -13,6 +13,22 @@ import {
 } from '../../llm/session-key-store.js';
 
 const miniDom = installMiniDom();
+// The production panel uses insertBefore to keep the transport notice before tabs.
+// Add that DOM primitive only to this focused MiniDOM test harness.
+const miniNodePrototype = Object.getPrototypeOf(Object.getPrototypeOf(document.createElement('div')));
+if (typeof miniNodePrototype.insertBefore !== 'function') {
+    Object.defineProperty(miniNodePrototype, 'insertBefore', {
+        value(child, referenceNode) {
+            if (referenceNode === null || referenceNode === undefined) return this.appendChild(child);
+            const index = this.childNodes.indexOf(referenceNode);
+            if (index < 0) throw new Error('insertBefore 参考节点不属于当前父节点。');
+            child.remove();
+            this.childNodes.splice(index, 0, child);
+            child.parentNode = this;
+            return child;
+        },
+    });
+}
 const { buildSettingsPanel } = await import('../../settings-panel.js');
 const { createDialogController } = await import('../../ui/dialog-controller.js');
 
@@ -553,9 +569,14 @@ test('preference 子视图只查看并保存当前 contentMode 的独立关键�
 
 test('生图设置只保存非机密配置，API Key 清空后留在独立浏览器缓存', async () => {
     const keyStorage = createMemoryStorage();
+    const settingsStorage = createMemoryStorage();
     configurePersistentKeyStorage(keyStorage);
-    const { panel, store, feedback, navigations } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { view: 'image_generation' });
+    const { panel, store, feedback, navigations } = buildHarness(createSettingsStore({ storage: settingsStorage }), { view: 'image_generation' });
     assert.match(panel.textContent, /前置 → core_dna → outfit_dna → AI 场景 → 后置/u);
+    const clientMode = byName(panel, 'image-generation-client-mode');
+    assert.equal(clientMode.tagName, 'SELECT');
+    assert.equal(clientMode.value, 'browser');
+    assert.deepEqual(clientMode.childNodes.map((option) => [option.value, option.textContent]), [['browser', '浏览器端'], ['sillytavern', '酒馆后端']]);
     await click(button(panel, '查看图片缓存'));
     assert.deepEqual(navigations, ['settings_image_cache']);
 
@@ -566,6 +587,25 @@ test('生图设置只保存非机密配置，API Key 清空后留在独立浏览
     assert.equal(byAria(panel, 'NAI API Key').value, '');
     assert.equal(requireSessionKey('image_preset'), 'image-browser-cache-secret');
 
+    clientMode.value = 'sillytavern';
+    clientMode.dispatchEvent(new Event('change'));
+    assert.equal(store.snapshot().imageGeneration.clientMode, 'sillytavern', '切换后必须立即写入当前设置快照。');
+    assert.equal(createSettingsStore({ storage: settingsStorage }).snapshot().imageGeneration.clientMode, 'sillytavern', '切换后必须立即写入浏览器存储，而不是等待保存生图设置。');
+    assert.equal(byAria(panel, 'NAI API Key').parentNode.parentNode.hidden, false);
+    assert.equal(byAria(panel, 'OpenAI-compatible API Key').parentNode.parentNode.hidden, false);
+    assert.equal(byName(panel, 'image-generation-preset-id').disabled, false);
+    assert.equal(byAria(panel, '生图站点').disabled, true);
+    assert.equal(byAria(panel, '生图接口路径').disabled, true);
+    assert.equal(byAria(panel, 'OpenAI 生图密钥预设 ID').disabled, false);
+    assert.equal(byAria(panel, 'OpenAI 生图站点').disabled, false);
+    assert.equal(byAria(panel, 'OpenAI 生图接口路径').disabled, false);
+    clientMode.value = 'browser';
+    clientMode.dispatchEvent(new Event('change'));
+    assert.equal(byName(panel, 'image-generation-preset-id').disabled, false);
+    assert.equal(byAria(panel, 'OpenAI 生图站点').disabled, false);
+    clientMode.value = 'sillytavern';
+    clientMode.dispatchEvent(new Event('change'));
+
     byAria(panel, '前置正面提示词').value = 'masterpiece';
     byAria(panel, '后置正面提示词').value = 'cinematic light';
     byAria(panel, '固定负面提示词').value = 'lowres';
@@ -574,6 +614,7 @@ test('生图设置只保存非机密配置，API Key 清空后留在独立浏览
     await click(button(panel, '保存生图设置'));
 
     assert.equal(store.snapshot().imageGeneration.enabled, true);
+    assert.equal(store.snapshot().imageGeneration.clientMode, 'sillytavern');
     assert.equal(store.snapshot().imageGeneration.presetId, 'image_preset');
     assert.equal(store.snapshot().imageGeneration.positivePrefix, 'masterpiece');
     assert.equal(store.snapshot().imageGeneration.positiveSuffix, 'cinematic light');
@@ -583,6 +624,57 @@ test('生图设置只保存非机密配置，API Key 清空后留在独立浏览
     assert.ok(feedback.some((message) => message.includes('NAI API Key 已保存到当前浏览器')));
 });
 
+test('载入 NAI 整体预设时只即时保存客户端模式', () => {
+    const store = createSettingsStore({ storage: createMemoryStorage() });
+    const image = store.getImageGenerationSettings();
+    store.setImageGenerationSettings({
+        ...image,
+        clientMode: 'browser',
+        promptPresets: {
+            ...image.promptPresets,
+            novelai: [{
+                id: 'host-nai-preset', name: '酒馆 NAI', positivePrefix: 'preset prefix', positiveSuffix: '', negativePrompt: '',
+                clientMode: 'sillytavern', presetId: 'nai-host', baseUrl: image.baseUrl, endpointPath: image.endpointPath,
+                model: image.model, sampler: image.sampler, noiseSchedule: image.noiseSchedule,
+                guidance: image.guidance, guidanceRescale: image.guidanceRescale, width: image.width, height: image.height,
+                steps: image.steps, seed: image.seed, qualityToggle: image.qualityToggle, variety: image.variety,
+            }],
+        },
+        activePromptPresetIds: { ...image.activePromptPresetIds, novelai: null },
+    });
+    const { panel } = buildHarness(store, { view: 'image_generation' });
+    const picker = byName(panel, 'image-prompt-preset-novelai');
+    picker.value = 'host-nai-preset';
+    picker.dispatchEvent(new Event('change'));
+
+    assert.equal(store.snapshot().imageGeneration.clientMode, 'sillytavern');
+    assert.equal(byName(panel, 'image-generation-client-mode').value, 'sillytavern');
+    assert.equal(byAria(panel, '生图站点').disabled, true, 'NAI 酒馆模式必须立即反映固定宿主路由限制。');
+    assert.equal(byAria(panel, '前置正面提示词').value, 'preset prefix');
+});
+
+test('客户端即时持久化失败时回退到最近一次成功保存的模式', () => {
+    const backingStore = createSettingsStore({ storage: createMemoryStorage() });
+    let allowWrites = true;
+    const store = {
+        ...backingStore,
+        setImageGenerationSettings(next) {
+            if (!allowWrites) throw new Error('storage unavailable');
+            return backingStore.setImageGenerationSettings(next);
+        },
+    };
+    const { panel } = buildHarness(store, { view: 'image_generation' });
+    const clientMode = byName(panel, 'image-generation-client-mode');
+    clientMode.value = 'sillytavern';
+    clientMode.dispatchEvent(new Event('change'));
+    assert.equal(backingStore.snapshot().imageGeneration.clientMode, 'sillytavern');
+
+    allowWrites = false;
+    clientMode.value = 'browser';
+    clientMode.dispatchEvent(new Event('change'));
+    assert.equal(clientMode.value, 'sillytavern');
+    assert.equal(backingStore.snapshot().imageGeneration.clientMode, 'sillytavern');
+});
 test('生图供应商按钮显示三个独立面板并分别保存 NAI、OpenAI 与 ComfyUI 参数', async () => {
     configurePersistentKeyStorage(createMemoryStorage());
     const imageGenerationClient = {
@@ -612,8 +704,12 @@ test('生图供应商按钮显示三个独立面板并分别保存 NAI、OpenAI 
     assert.equal(openaiPanel.hidden, true);
     assert.equal(comfyPanel.hidden, true);
     assert.match(naiPanel.textContent, /NAI 专属配置/u);
-    assert.equal(byAria(panel, 'NAI API Key').parentNode.parentNode, naiPanel);
-    assert.equal(byAria(panel, 'OpenAI-compatible API Key').parentNode.parentNode, openaiPanel);
+    assert.equal(byName(panel, 'image-generation-sampler').tagName, 'SELECT');
+    assert.equal(byName(panel, 'image-generation-noise-schedule').tagName, 'SELECT');
+    assert.deepEqual(byName(panel, 'image-generation-sampler').childNodes.map((option) => option.textContent), ['Euler Ancestral', 'Euler', 'DPM++ 2M', 'DPM++ 2M SDE', 'DPM++ 2S Ancestral', 'DPM2', 'DPM Fast', 'DDIM']);
+    assert.deepEqual(byName(panel, 'image-generation-noise-schedule').childNodes.map((option) => option.textContent), ['Karras', 'Exponential', 'Polyexponential', 'Sine', 'Linear', 'Cosine', 'Beta']);
+    assert.equal(isWithin(byAria(panel, 'NAI API Key'), naiPanel), true);
+    assert.equal(isWithin(byAria(panel, 'OpenAI-compatible API Key'), openaiPanel), true);
 
     await click(openaiTab);
     assert.equal(openaiTab.getAttribute('aria-selected'), 'true');
@@ -667,7 +763,7 @@ test('生图供应商按钮显示三个独立面板并分别保存 NAI、OpenAI 
     assert.equal(byName(panel, 'image-provider-openai').getAttribute('aria-selected'), 'true');
 });
 
-test('NAI、OpenAI 与 ComfyUI 各自管理可添加编辑删除及导入导出的提示词预设', async () => {
+test('NAI 整体预设与 OpenAI、ComfyUI 提示词预设可添加、载入、删除及导入导出', async () => {
     configurePersistentKeyStorage(createMemoryStorage());
     const { panel, store, feedback } = buildHarness(createSettingsStore({ storage: createMemoryStorage() }), { view: 'image_generation' });
     const providerPanel = (id) => panel.querySelectorAll('.yl-image-provider-panel').find((node) => node.getAttribute('id') === id);
@@ -675,7 +771,23 @@ test('NAI、OpenAI 与 ComfyUI 各自管理可添加编辑删除及导入导出�
     const openaiPanel = providerPanel('yl-openai-provider-panel');
     const comfyPanel = providerPanel('yl-comfyui-provider-panel');
 
+    assert.match(naiPanel.textContent, /NAI 整体预设/u);
     byAria(naiPanel, 'NAI 提示词预设名称').value = 'NAI 人像';
+    byName(panel, 'image-generation-client-mode').value = 'sillytavern';
+    byName(panel, 'image-generation-preset-id').value = 'nai_preset_slot';
+    byAria(panel, '生图站点').value = 'https://nai-preset.example.invalid';
+    byAria(panel, '生图接口路径').value = '/ai/generate-image';
+    byAria(panel, '生图模型').value = 'nai-test-model';
+    byName(panel, 'image-generation-sampler').value = 'k_dpmpp_2m_sde';
+    byName(panel, 'image-generation-noise-schedule').value = 'polyexponential';
+    byAria(panel, 'Guidance').value = '6.5';
+    byAria(panel, 'Guidance Rescale').value = '0.2';
+    byAria(panel, '图片宽度').value = '832';
+    byAria(panel, '图片高度').value = '1216';
+    byAria(panel, '步数').value = '32';
+    byAria(panel, '种子').value = '42';
+    byAria(panel, '质量标签').checked = false;
+    byAria(panel, '随机性').checked = true;
     byAria(naiPanel, '前置正面提示词').value = 'nai only prefix';
     await click(button(naiPanel, '添加为新预设'));
 
@@ -693,12 +805,36 @@ test('NAI、OpenAI 与 ComfyUI 各自管理可添加编辑删除及导入导出�
     assert.deepEqual(saved.promptPresets.novelai.map((item) => item.name), ['NAI 人像']);
     assert.deepEqual(saved.promptPresets.openai_compatible.map((item) => item.name), ['OpenAI 写真']);
     assert.deepEqual(saved.promptPresets.comfyui.map((item) => item.name), ['Comfy 场景']);
+    assert.deepEqual(saved.promptPresets.novelai[0], {
+        id: saved.promptPresets.novelai[0].id, name: 'NAI 人像',
+        positivePrefix: 'nai only prefix', positiveSuffix: '', negativePrompt: '',
+        clientMode: 'sillytavern', presetId: 'nai_preset_slot', baseUrl: 'https://nai-preset.example.invalid', endpointPath: '/ai/generate-image',
+        model: 'nai-test-model', sampler: 'k_dpmpp_2m_sde', noiseSchedule: 'polyexponential',
+        guidance: 6.5, guidanceRescale: 0.2, width: 832, height: 1216, steps: 32, seed: 42, qualityToggle: false, variety: true,
+    });
+    const reopened = buildHarness(store, { view: 'image_generation' }).panel;
+    assert.equal(byName(reopened, 'image-generation-client-mode').value, 'sillytavern');
+    assert.equal(byName(reopened, 'image-generation-preset-id').disabled, false, '载入酒馆后端 NAI 整体预设后，必须可读取该预设对应的浏览器 Key。');
+    assert.equal(byName(reopened, 'image-generation-preset-id').value, 'nai_preset_slot');
+    assert.equal(byAria(reopened, '生图站点').value, 'https://nai-preset.example.invalid');
+    assert.equal(byName(reopened, 'image-generation-sampler').value, 'k_dpmpp_2m_sde');
+    assert.equal(byName(reopened, 'image-generation-noise-schedule').value, 'polyexponential');
+    assert.equal(byAria(reopened, '图片宽度').value, '832');
+    assert.equal(byAria(reopened, '图片高度').value, '1216');
+    assert.equal(byAria(reopened, '固定负面提示词').value, '');
 
     await click(button(naiPanel, '导出此接口预设'));
     const naiTransfer = byAria(naiPanel, 'NAI 提示词预设导入导出 JSON');
     const naiBundle = JSON.parse(naiTransfer.value);
     assert.equal(naiBundle.provider, 'novelai');
     assert.equal(naiBundle.presets[0].positivePrefix, 'nai only prefix');
+    assert.equal(naiBundle.presets[0].clientMode, 'sillytavern');
+    assert.equal(naiBundle.presets[0].presetId, 'nai_preset_slot');
+    assert.equal(naiBundle.presets[0].sampler, 'k_dpmpp_2m_sde');
+    assert.equal(naiBundle.presets[0].noiseSchedule, 'polyexponential');
+    assert.equal(naiBundle.presets[0].width, 832);
+    assert.equal(naiBundle.presets[0].height, 1216);
+    assert.doesNotMatch(naiTransfer.value, /apiKey|token|authorization|not-a-real-key/iu);
     assert.doesNotMatch(naiTransfer.value, /openai only prefix|comfy only prefix|apiKey/iu);
 
     await click(button(openaiPanel, '删除当前预设'));

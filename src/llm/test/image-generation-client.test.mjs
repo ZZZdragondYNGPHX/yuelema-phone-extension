@@ -4,7 +4,7 @@ import { createImageGenerationClient, toPublicImageGenerationError } from '../im
 import { configurePersistentKeyStorage, resetPersistentKeyStorage, unlockSessionKey } from '../session-key-store.js';
 
 const png = Uint8Array.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0]);
-const settings = { apiMode: 'openai_compatible', presetId: 'image_generation_default', baseUrl: 'https://img.example.test', endpointPath: '/v1/images/generations', model: 'model', sampler: 'euler', noiseSchedule: 'native', width: 512, height: 512, steps: 20, seed: 0, guidance: 7, guidanceRescale: 0, qualityToggle: true, variety: false };
+const settings = { clientMode: 'browser', apiMode: 'openai_compatible', presetId: 'image_generation_default', baseUrl: 'https://img.example.test', endpointPath: '/v1/images/generations', model: 'model', sampler: 'euler', noiseSchedule: 'native', width: 512, height: 512, steps: 20, seed: 0, guidance: 7, guidanceRescale: 0, qualityToggle: true, variety: false };
 
 function storage() { const m = new Map(); return { getItem:k=>m.get(k)??null, setItem:(k,v)=>m.set(k,String(v)), removeItem:k=>m.delete(k) }; }
 function zipWithDataDescriptor(filename, payload) {
@@ -185,7 +185,7 @@ test('client emits safe stage diagnostics without logging credentials or prompts
     const serialized = JSON.stringify(calls);
     assert.doesNotMatch(serialized, /secret-image-key-never-log|private prompt never log|private negative never log/u);
     assert.match(serialized, /"provider":"openai_compatible"/u);
-    assert.match(serialized, /"positivePromptChars":24/u);
+    assert.doesNotMatch(serialized, /positivePrompt|negativePrompt|requestBody|responseBody|authorization|api[_-]?key|token/iu);
     assert.match(serialized, /"status":200/u);
     assert.match(serialized, /"mimeType":"image\/png"/u);
 });
@@ -235,6 +235,7 @@ test('client logs a bounded redacted provider error excerpt without leaking cred
     assert.deepEqual(failure?.[2], {
         requestId: failure?.[2]?.requestId,
         provider: 'novelai',
+        clientMode: 'browser',
         phase: 'http_response',
         code: 'IMAGE_HTTP_ERROR',
         message: '生图服务拒绝了本次请求，请检查接口设置或稍后重试。',
@@ -484,4 +485,242 @@ test('ComfyUI resource refresh turns transport failures into safe staged diagnos
     assert.equal(diagnostics[0]?.[1]?.phase, 'network_request');
     assert.equal(diagnostics[0]?.[1]?.code, 'IMAGE_NETWORK_ERROR');
     assert.doesNotMatch(JSON.stringify(diagnostics), /private browser transport details/u);
+});
+
+function assertSillyTavernHostHeaders(headers, expectedHostHeader) {
+    const normalized = Object.fromEntries(new Headers(headers).entries());
+    assert.deepEqual(normalized, {
+        accept: 'application/json, image/png, image/jpeg, image/webp, application/zip',
+        'content-type': 'application/json',
+        'x-host-csrf': expectedHostHeader,
+    });
+}
+
+test('SillyTavern NovelAI temporarily activates this preset Key, restores the prior active secret, then deletes the temporary copy', async () => {
+    unlockSessionKey('novelai-host-preset', 'nai-host-secret');
+    const requests = [];
+    const client = createImageGenerationClient({
+        getRequestHeaders: () => ({ 'X-Host-CSRF': 'nai-host-csrf' }),
+        fetchImpl: async (url, init) => {
+            requests.push({ url, init });
+            if (url === '/api/secrets/read') return new Response(JSON.stringify({ api_key_novel: [{ id: 'prior-novel-secret-id', active: true }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+            if (url === '/api/secrets/write') return new Response(JSON.stringify({ id: 'temporary-novel-secret-id' }), { status: 200, headers: { 'content-type': 'application/json' } });
+            if (url === '/api/secrets/rotate' || url === '/api/secrets/delete') return new Response(null, { status: 204 });
+            return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } });
+        },
+    });
+
+    const result = await client.generate({
+        settings: {
+            ...settings,
+            clientMode: 'sillytavern',
+            apiMode: 'novelai',
+            presetId: 'novelai-host-preset',
+            baseUrl: 'https://must-not-be-used.example',
+            endpointPath: '/must-not-be-used',
+            model: 'nai-diffusion-4-5-full',
+            sampler: 'k_euler_ancestral',
+            noiseSchedule: 'karras',
+        },
+        positivePrompt: 'NAI host prompt',
+        negativePrompt: 'NAI host negative',
+    });
+
+    assert.deepEqual(requests.map((request) => request.url), ['/api/secrets/read', '/api/secrets/write', '/api/secrets/rotate', '/api/novelai/generate-image', '/api/secrets/rotate', '/api/secrets/delete']);
+    for (const request of requests) assertSillyTavernHostHeaders(request.init.headers, 'nai-host-csrf');
+    assert.equal(requests[0].init.body, undefined);
+    assert.deepEqual(JSON.parse(requests[1].init.body), { key: 'api_key_novel', value: 'nai-host-secret', label: '约了吗小手机 NovelAI 生图' });
+    assert.deepEqual(JSON.parse(requests[2].init.body), { key: 'api_key_novel', id: 'temporary-novel-secret-id' });
+    assert.deepEqual(JSON.parse(requests[3].init.body), {
+        prompt: 'NAI host prompt', model: 'nai-diffusion-4-5-full', sampler: 'k_euler_ancestral', scheduler: 'karras', steps: 20, scale: 7,
+        width: 512, height: 512, negative_prompt: 'NAI host negative', decrisper: false, variety_boost: false, sm: false, sm_dyn: false, seed: 0,
+    });
+    assert.deepEqual(JSON.parse(requests[4].init.body), { key: 'api_key_novel', id: 'prior-novel-secret-id' });
+    assert.deepEqual(JSON.parse(requests[5].init.body), { key: 'api_key_novel', id: 'temporary-novel-secret-id' });
+    assert.match(result.src, /^data:image\/png;base64,/u);
+});
+
+test('SillyTavern NovelAI does not call generate-image when temporary credential write fails', async () => {
+    unlockSessionKey('novelai-host-secret-failure', 'nai-host-secret-that-must-not-leak');
+    const requests = [];
+    const client = createImageGenerationClient({
+        getRequestHeaders: () => ({ 'X-Host-CSRF': 'nai-host-csrf' }),
+        fetchImpl: async (url, init) => {
+            requests.push({ url, init });
+            if (url === '/api/secrets/read') return new Response(JSON.stringify({ api_key_novel: null }), { status: 200, headers: { 'content-type': 'application/json' } });
+            return new Response(null, { status: 503 });
+        },
+    });
+    await assert.rejects(
+        () => client.generate({
+            settings: { ...settings, clientMode: 'sillytavern', apiMode: 'novelai', presetId: 'novelai-host-secret-failure' },
+            positivePrompt: 'NAI secret failure prompt', negativePrompt: 'NAI secret failure negative',
+        }),
+        (error) => error?.code === 'HOST_IMAGE_CREDENTIAL_WRITE_FAILED' && error.status === 503,
+    );
+    assert.deepEqual(requests.map((request) => request.url), ['/api/secrets/read', '/api/secrets/write']);
+});
+test('SillyTavern NovelAI serializes temporary-secret lifecycles so concurrent draws cannot cross credentials', async () => {
+    unlockSessionKey('novelai-host-serial-a', 'nai-host-key-a');
+    unlockSessionKey('novelai-host-serial-b', 'nai-host-key-b');
+    const requests = [];
+    let releaseFirstImage;
+    let firstImageStarted;
+    const firstImageGate = new Promise((resolve) => { releaseFirstImage = resolve; });
+    const firstImageStartedGate = new Promise((resolve) => { firstImageStarted = resolve; });
+    const client = createImageGenerationClient({
+        getRequestHeaders: () => ({ 'X-Host-CSRF': 'nai-host-csrf' }),
+        fetchImpl: async (url, init) => {
+            requests.push({ url, init });
+            if (url === '/api/secrets/read') return new Response(JSON.stringify({ api_key_novel: null }), { status: 200, headers: { 'content-type': 'application/json' } });
+            if (url === '/api/secrets/write') return new Response(JSON.stringify({ id: `temporary-${requests.filter((request) => request.url === '/api/secrets/write').length}` }), { status: 200, headers: { 'content-type': 'application/json' } });
+            if (url === '/api/secrets/rotate' || url === '/api/secrets/delete') return new Response(null, { status: 204 });
+            if (JSON.parse(init.body).prompt === 'first serial prompt') {
+                firstImageStarted();
+                await firstImageGate;
+            }
+            return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } });
+        },
+    });
+    const commonSettings = { ...settings, clientMode: 'sillytavern', apiMode: 'novelai' };
+    const first = client.generate({ settings: { ...commonSettings, presetId: 'novelai-host-serial-a' }, positivePrompt: 'first serial prompt', negativePrompt: '' });
+    await firstImageStartedGate;
+    const second = client.generate({ settings: { ...commonSettings, presetId: 'novelai-host-serial-b' }, positivePrompt: 'second serial prompt', negativePrompt: '' });
+    await Promise.resolve();
+    assert.deepEqual(requests.map((request) => request.url), ['/api/secrets/read', '/api/secrets/write', '/api/secrets/rotate', '/api/novelai/generate-image']);
+    releaseFirstImage();
+    await Promise.all([first, second]);
+    assert.deepEqual(requests.map((request) => request.url), [
+        '/api/secrets/read', '/api/secrets/write', '/api/secrets/rotate', '/api/novelai/generate-image', '/api/secrets/delete',
+        '/api/secrets/read', '/api/secrets/write', '/api/secrets/rotate', '/api/novelai/generate-image', '/api/secrets/delete',
+    ]);
+});
+
+test('SillyTavern OpenAI-compatible uses the preset Key and custom chat-completions proxy', async () => {
+    unlockSessionKey('openai-host-preset', 'openai-host-secret');
+    let request;
+    const client = createImageGenerationClient({
+        getRequestHeaders: () => ({ 'X-Host-CSRF': 'openai-host-csrf' }),
+        fetchImpl: async (url, init) => {
+            request = { url, init };
+            return new Response(JSON.stringify({ choices: [{ message: { content: `generated data:image/png;base64,${Buffer.from(png).toString('base64')}` } }] }), {
+                status: 200, headers: { 'content-type': 'application/json' },
+            });
+        },
+    });
+
+    const result = await client.generate({
+        settings: {
+            ...settings,
+            clientMode: 'sillytavern',
+            apiMode: 'openai_compatible',
+            openaiPresetId: 'openai-host-preset',
+            openaiBaseUrl: 'https://custom-image.example',
+            openaiEndpointPath: '/v1/images/generations',
+            openaiModel: 'banana-image-model',
+            openaiWidth: 832,
+            openaiHeight: 1216,
+        },
+        positivePrompt: 'OpenAI host prompt',
+        negativePrompt: 'OpenAI host negative',
+    });
+
+    assert.equal(request.url, '/api/backends/chat-completions/generate');
+    assert.equal(request.init.method, 'POST');
+    assertSillyTavernHostHeaders(request.init.headers, 'openai-host-csrf');
+    assert.equal(new Headers(request.init.headers).has('authorization'), false);
+    assert.deepEqual(JSON.parse(request.init.body), {
+        chat_completion_source: 'custom',
+        custom_url: 'https://custom-image.example/v1',
+        custom_include_headers: 'Authorization: "Bearer openai-host-secret"',
+        custom_include_body: 'size: "832x1216"',
+        model: 'banana-image-model',
+        messages: [{ role: 'user', content: 'OpenAI host prompt. Avoid the following visual elements: OpenAI host negative.' }],
+        n: 1,
+        stream: false,
+    });
+    assert.match(result.src, /^data:image\/png;base64,/u);
+});
+
+test('SillyTavern ComfyUI sends the host wrapper and accepts its base64 response', async () => {
+    let request;
+    const client = createImageGenerationClient({
+        getRequestHeaders: () => ({ 'X-Host-CSRF': 'comfy-host-csrf' }),
+        fetchImpl: async (url, init) => {
+            request = { url, init };
+            return new Response(JSON.stringify({ format: 'png', data: Buffer.from(png).toString('base64') }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        },
+    });
+
+    const result = await client.generate({
+        settings: {
+            ...settings,
+            clientMode: 'sillytavern',
+            apiMode: 'comfyui',
+            presetId: 'comfy-host-without-browser-key',
+            baseUrl: 'http://127.0.0.1:8188',
+            comfyBaseUrl: 'http://127.0.0.1:8188',
+            comfyModel: 'portrait.safetensors',
+            comfySampler: 'euler',
+            comfyScheduler: 'karras',
+        },
+        positivePrompt: 'Comfy host prompt',
+        negativePrompt: 'Comfy host negative',
+    });
+
+    assert.equal(request.url, '/api/sd/comfy/generate');
+    assert.equal(request.init.method, 'POST');
+    assertSillyTavernHostHeaders(request.init.headers, 'comfy-host-csrf');
+    assert.equal(new Headers(request.init.headers).has('authorization'), false);
+    const hostBody = JSON.parse(request.init.body);
+    assert.deepEqual(Object.keys(hostBody).sort(), ['prompt', 'url']);
+    assert.equal(hostBody.url, 'http://127.0.0.1:8188');
+    const hostPrompt = JSON.parse(hostBody.prompt);
+    assert.equal(hostPrompt.prompt['6'].inputs.text, 'Comfy host prompt');
+    assert.equal(hostPrompt.prompt['7'].inputs.text, 'Comfy host negative');
+    assert.equal(hostPrompt.prompt['4'].inputs.ckpt_name, 'portrait.safetensors');
+    assert.match(result.src, /^data:image\/png;base64,/u);
+});
+
+test('SillyTavern mode fails closed before transport when host request headers are unavailable', async () => {
+    let fetchCalls = 0;
+    const diagnostics = [];
+    const client = createImageGenerationClient({
+        diagnosticLogger: { info: (...args) => diagnostics.push(['info', ...args]), error: (...args) => diagnostics.push(['error', ...args]) },
+        fetchImpl: async () => { fetchCalls += 1; throw new Error('must not fetch'); },
+    });
+
+    await assert.rejects(
+        () => client.generate({
+            settings: { ...settings, clientMode: 'sillytavern', apiMode: 'novelai', presetId: 'missing-host-headers-and-browser-key' },
+            positivePrompt: 'host prompt must not leak',
+            negativePrompt: 'host negative must not leak',
+        }),
+        (error) => error?.code === 'HOST_IMAGE_BACKEND_UNAVAILABLE',
+    );
+    assert.equal(fetchCalls, 0);
+    const serialized = JSON.stringify(diagnostics);
+    assert.doesNotMatch(serialized, /host prompt must not leak|host negative must not leak|positivePrompt|negativePrompt|requestBody|responseBody|authorization|api[_-]?key|token/iu);
+});
+
+test('SillyTavern host diagnostics never serialize prompts, credentials, or request bodies', async () => {
+    const diagnostics = [];
+    const client = createImageGenerationClient({
+        diagnosticLogger: { info: (...args) => diagnostics.push(['info', ...args]), error: (...args) => diagnostics.push(['error', ...args]) },
+        getRequestHeaders: () => ({ 'X-Host-CSRF': 'host-csrf-secret-never-log' }),
+        fetchImpl: async () => new Response(png, { status: 200, headers: { 'content-type': 'image/png' } }),
+    });
+
+    await client.generate({
+        settings: { ...settings, clientMode: 'sillytavern', apiMode: 'comfyui', presetId: 'host-diagnostic-without-browser-key', comfyBaseUrl: 'http://127.0.0.1:8188', baseUrl: 'http://127.0.0.1:8188', comfyModel: 'portrait.safetensors', comfySampler: 'euler', comfyScheduler: 'karras' },
+        positivePrompt: 'host private prompt never log',
+        negativePrompt: 'host private negative never log',
+    });
+
+    const serialized = JSON.stringify(diagnostics);
+    assert.doesNotMatch(serialized, /host private prompt never log|host private negative never log|host-csrf-secret-never-log|positivePrompt|negativePrompt|requestBody|responseBody|authorization|api[_-]?key|token/iu);
+    assert.match(serialized, /"clientMode":"sillytavern"/u);
 });

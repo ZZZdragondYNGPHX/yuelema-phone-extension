@@ -1,6 +1,6 @@
 import { append, element, listen } from './dom.js';
 import { createUiIcon } from './ui/icon.js';
-import { CONTENT_MODES, FUNCTION_KEYS, YueLeMaSettingsError } from './settings/settings-store.js';
+import { CONTENT_MODES, FUNCTION_KEYS, IMAGE_CLIENT_MODES, NAI_NOISE_SCHEDULE_OPTIONS, NAI_SAMPLER_OPTIONS, YueLeMaSettingsError } from './settings/settings-store.js';
 import {
     deletePersistentKey,
     hasMemorySessionKey,
@@ -841,8 +841,21 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         }, signal, { secondary: true, name: 'image-generation-cache-open' }));
 
         const enabled = element('input', { className: 'yl-settings-checkbox', type: 'checkbox', checked: image.enabled, name: 'image-generation-enabled', ariaLabel: '启用生图接口' });
-        section.appendChild(field('启用生图接口', switchShell(enabled)));
+        const clientMode = selectWithOptions([
+            { value: 'browser', label: '浏览器端' },
+            { value: 'sillytavern', label: '酒馆后端' },
+        ], IMAGE_CLIENT_MODES.includes(image.clientMode) ? image.clientMode : 'browser', '生图客户端', 'image-generation-client-mode');
+        const transportFields = element('div', { className: 'yl-settings-fields yl-image-transport-fields' });
+        append(transportFields, [field('启用生图接口', switchShell(enabled)), field('客户端', clientMode)]);
+        section.appendChild(transportFields);
+        const hostTransportNotice = element('p', {
+            className: 'yl-image-generation-key-status',
+            text: '酒馆后端：ComfyUI 由酒馆转发到填写的地址；NAI 会临时写入、激活此页浏览器 Key，完成后恢复原活动 NovelAI 凭据并删除临时副本；OpenAI-compatible 仅经酒馆 custom 代理转发到 Chat Completions。当前酒馆版本可能记录请求/响应日志；包含私密提示词或图片 Data URI 时请改用浏览器端。',
+        });
+        hostTransportNotice.hidden = clientMode.value !== 'sillytavern';
+        section.appendChild(hostTransportNotice);
 
+        let updateClientModeVisibility = () => {};
         const apiMode = element('input', { type: 'hidden', name: 'image-generation-api-mode', value: image.apiMode });
         section.appendChild(apiMode);
         const providerTabs = element('div', { className: 'yl-image-provider-tabs' });
@@ -875,8 +888,8 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         const baseUrl = element('input', { className: 'yl-settings-control', type: 'url', name: 'image-generation-base-url', value: image.baseUrl, maxLength: 512, ariaLabel: '生图站点' });
         const endpointPath = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-endpoint-path', value: image.endpointPath, maxLength: 256, ariaLabel: '生图接口路径' });
         const model = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-model', value: image.model, maxLength: 160, ariaLabel: '生图模型' });
-        const sampler = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-sampler', value: image.sampler, maxLength: 80, ariaLabel: '采样器' });
-        const noiseSchedule = element('input', { className: 'yl-settings-control', type: 'text', name: 'image-generation-noise-schedule', value: image.noiseSchedule, maxLength: 80, ariaLabel: '噪点表' });
+        const sampler = selectWithOptions(NAI_SAMPLER_OPTIONS, image.sampler, '采样器', 'image-generation-sampler');
+        const noiseSchedule = selectWithOptions(NAI_NOISE_SCHEDULE_OPTIONS, image.noiseSchedule, '噪点表', 'image-generation-noise-schedule');
         const guidance = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-guidance', value: String(image.guidance), min: 0, max: 30, ariaLabel: 'Guidance' });
         const guidanceRescale = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-guidance-rescale', value: String(image.guidanceRescale), min: 0, max: 1, ariaLabel: 'Guidance Rescale' });
         const width = element('input', { className: 'yl-settings-control', type: 'number', name: 'image-generation-width', value: String(image.width), min: 256, max: 2048, ariaLabel: '图片宽度' });
@@ -942,10 +955,12 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         };
         const buildImagePromptPresetManager = ({ provider, providerLabel, prefixInput, suffixInput, negativeInput }) => {
             const manager = element('section', { className: 'yl-image-prompt-presets' });
-            manager.appendChild(element('h3', { className: 'yl-image-provider-title', text: `${providerLabel} 提示词预设` }));
+            manager.appendChild(element('h3', { className: 'yl-image-provider-title', text: provider === 'novelai' ? 'NAI 整体预设' : `${providerLabel} 提示词预设` }));
             manager.appendChild(element('p', {
                 className: 'yl-phone-page-description',
-                text: `仅管理 ${providerLabel} 的前置、后置与负面提示词；不会与其他生图接口共用。`,
+                text: provider === 'novelai'
+                    ? '保存 NAI 的连接、采样、尺寸与提示词；只保存密钥预设 ID，不含 API Key。'
+                    : `仅管理 ${providerLabel} 的前置、后置与负面提示词；不会与其他生图接口共用。`,
             }));
             const presets = () => imagePromptPresets[provider] ?? [];
             const picker = selectWithOptions([
@@ -963,7 +978,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
                 ariaLabel: `${providerLabel} 提示词预设导入导出 JSON`,
                 placeholder: `导出 ${providerLabel} 预设，或粘贴同接口预设 JSON 后导入`,
             });
-            const loadPreset = (preset) => {
+            const loadPreset = (preset, { persistClientMode = false } = {}) => {
                 if (!preset) return;
                 activeImagePromptPresetIds[provider] = preset.id;
                 picker.value = preset.id;
@@ -971,14 +986,35 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
                 prefixInput.value = preset.positivePrefix;
                 suffixInput.value = preset.positiveSuffix;
                 negativeInput.value = preset.negativePrompt;
+                if (provider === 'novelai' && Object.hasOwn(preset, 'clientMode')) {
+                    clientMode.value = preset.clientMode;
+                    presetId.value = preset.presetId;
+                    baseUrl.value = preset.baseUrl;
+                    endpointPath.value = preset.endpointPath;
+                    model.value = preset.model;
+                    sampler.value = preset.sampler;
+                    noiseSchedule.value = preset.noiseSchedule;
+                    guidance.value = String(preset.guidance);
+                    guidanceRescale.value = String(preset.guidanceRescale);
+                    width.value = String(preset.width);
+                    height.value = String(preset.height);
+                    steps.value = String(preset.steps);
+                    seed.value = String(preset.seed);
+                    qualityToggle.checked = preset.qualityToggle;
+                    variety.checked = preset.variety;
+                    updateClientModeVisibility();
+                    // A user-selected NAI overall preset also changes the shared transport mode.
+                    // Persist only that non-secret switch; leave the remaining preset fields as form drafts.
+                    if (persistClientMode) persistClientModeImmediately();
+                }
             };
             const initial = presets().find((preset) => preset.id === activeImagePromptPresetIds[provider]);
             if (initial) loadPreset(initial);
             listen(picker, picker, 'change', () => {
                 const preset = presets().find((item) => item.id === picker.value);
                 if (!preset) return;
-                loadPreset(preset);
-                onFeedback(`已载入“${preset.name}”；点击“保存生图设置”即可把它用于后续生成。`);
+                loadPreset(preset, { persistClientMode: true });
+                onFeedback(`已载入“${preset.name}”；客户端已即时保存，其余参数点击“保存生图设置”后生效。`);
             }, signal);
             const formPreset = (id) => ({
                 id,
@@ -986,6 +1022,13 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
                 positivePrefix: prefixInput.value,
                 positiveSuffix: suffixInput.value,
                 negativePrompt: negativeInput.value,
+                ...(provider === 'novelai' ? {
+                    clientMode: clientMode.value, presetId: presetId.value, baseUrl: baseUrl.value, endpointPath: endpointPath.value,
+                    model: model.value, sampler: sampler.value, noiseSchedule: noiseSchedule.value,
+                    guidance: numberValue(guidance, image.guidance), guidanceRescale: numberValue(guidanceRescale, image.guidanceRescale),
+                    width: numberValue(width, image.width), height: numberValue(height, image.height), steps: numberValue(steps, image.steps), seed: numberValue(seed, image.seed),
+                    qualityToggle: Boolean(qualityToggle.checked), variety: Boolean(variety.checked),
+                } : {}),
             });
             const saveCollections = (nextCollections, nextActiveIds, success) => {
                 try {
@@ -1085,7 +1128,7 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
         naiProviderPanel.setAttribute('aria-labelledby', 'yl-image-provider-tab-novelai');
         append(naiProviderPanel, [
             element('h3', { className: 'yl-image-provider-title', text: 'NAI 专属配置' }),
-            element('p', { className: 'yl-phone-page-description', text: '这里只配置 NovelAI 的连接、采样、尺寸、提示词与浏览器 Key。' }),
+            element('p', { className: 'yl-phone-page-description', text: 'NAI 整体预设保存连接、采样、尺寸与提示词。两种客户端都从独立浏览器 Key 缓存读取 NAI Key；酒馆后端会暂时替换酒馆当前活动 NovelAI 凭据，生图后恢复原凭据并删除临时副本。若清理失败会明确报错，需到酒馆密钥管理中处理。' }),
             insecureTransportWarning(),
         ]);
         const naiFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
@@ -1101,19 +1144,21 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             provider: 'novelai', providerLabel: 'NAI',
             prefixInput: positivePrefix, suffixInput: positiveSuffix, negativeInput: negativePrompt,
         }));
-        naiProviderPanel.appendChild(field('NAI API Key', naiApiKey));
-        naiProviderPanel.appendChild(naiKeyStatus);
-        naiProviderPanel.appendChild(buildKeyControls({
+        const naiBrowserKeyControls = element('div', { className: 'yl-image-browser-key-controls' });
+        naiBrowserKeyControls.appendChild(field('NAI API Key', naiApiKey));
+        naiBrowserKeyControls.appendChild(naiKeyStatus);
+        naiBrowserKeyControls.appendChild(buildKeyControls({
             providerLabel: 'NAI', presetInput: presetId, keyInput: naiApiKey, keyStatus: naiKeyStatus,
             saveName: 'image-generation-nai-key-save', deleteName: 'image-generation-nai-key-delete',
         }).actions);
+        naiProviderPanel.appendChild(naiBrowserKeyControls);
 
         const openaiProviderPanel = element('div', { className: 'yl-image-provider-panel', id: 'yl-openai-provider-panel' });
         openaiProviderPanel.setAttribute('role', 'tabpanel');
         openaiProviderPanel.setAttribute('aria-labelledby', 'yl-image-provider-tab-openai_compatible');
         append(openaiProviderPanel, [
             element('h3', { className: 'yl-image-provider-title', text: 'OpenAI-compatible 专属配置' }),
-            element('p', { className: 'yl-phone-page-description', text: '这里只配置 OpenAI-compatible 的接口、模型、尺寸、提示词与浏览器 Key；不会读取 NAI 参数。' }),
+            element('p', { className: 'yl-phone-page-description', text: '两种客户端均使用此处的 OpenAI-compatible 接口、模型、尺寸、提示词与浏览器 Key。浏览器端可使用 /images/generations；酒馆后端仅通过 custom_url 与 custom_include_headers 转发到 Chat Completions，目标必须支持 /chat/completions 并在回复中内嵌 data:image Base64，不能转发远程图片 URL。' }),
             insecureTransportWarning(),
         ]);
         const openaiFields = element('div', { className: 'yl-settings-fields yl-image-generation-fields' });
@@ -1129,12 +1174,14 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
             provider: 'openai_compatible', providerLabel: 'OpenAI-compatible',
             prefixInput: openaiPositivePrefix, suffixInput: openaiPositiveSuffix, negativeInput: openaiNegativePrompt,
         }));
-        openaiProviderPanel.appendChild(field('OpenAI-compatible API Key', openaiApiKey));
-        openaiProviderPanel.appendChild(openaiKeyStatus);
-        openaiProviderPanel.appendChild(buildKeyControls({
+        const openaiBrowserKeyControls = element('div', { className: 'yl-image-browser-key-controls' });
+        openaiBrowserKeyControls.appendChild(field('OpenAI-compatible API Key', openaiApiKey));
+        openaiBrowserKeyControls.appendChild(openaiKeyStatus);
+        openaiBrowserKeyControls.appendChild(buildKeyControls({
             providerLabel: 'OpenAI-compatible', presetInput: openaiPresetId, keyInput: openaiApiKey, keyStatus: openaiKeyStatus,
             saveName: 'image-generation-openai-key-save', deleteName: 'image-generation-openai-key-delete',
         }).actions);
+        openaiProviderPanel.appendChild(openaiBrowserKeyControls);
 
         const comfyBaseUrl = element('input', { className: 'yl-settings-control', type: 'url', name: 'image-generation-comfy-base-url', value: image.comfyBaseUrl, maxLength: 512, ariaLabel: 'ComfyUI 地址' });
         const resourceSelect = (value, ariaLabel, name, emptyLabel) => selectWithOptions(
@@ -1252,10 +1299,44 @@ export function buildSettingsPanel({ settingsStore, llmClient, imageGenerationCl
                 providerButtons.get(providers[next])?.focus?.();
             }, signal);
         }
+        updateClientModeVisibility = () => {
+            const host = clientMode.value === 'sillytavern';
+            hostTransportNotice.hidden = !host;
+            naiBrowserKeyControls.hidden = false;
+            openaiBrowserKeyControls.hidden = false;
+            // NAI's host route is fixed by SillyTavern, but it still needs this preset's Key.
+            presetId.disabled = false;
+            baseUrl.disabled = host;
+            endpointPath.disabled = host;
+            // The custom chat-completions proxy uses the OpenAI-compatible connection fields in both modes.
+            openaiPresetId.disabled = false;
+            openaiBaseUrl.disabled = false;
+            openaiEndpointPath.disabled = false;
+        };
+        const persistClientModeImmediately = () => {
+            let persistedClientMode = image.clientMode;
+            try {
+                // The client selector is a transport switch, not a draft-only field:
+                // save just this non-secret value without committing other unsaved form inputs.
+                const savedImageSettings = settingsStore.getImageGenerationSettings();
+                persistedClientMode = savedImageSettings.clientMode;
+                settingsStore.setImageGenerationSettings({ ...savedImageSettings, clientMode: clientMode.value });
+                updateClientModeVisibility();
+                onFeedback(`生图客户端已保存为${clientMode.value === 'sillytavern' ? '酒馆后端' : '浏览器端'}。`);
+            } catch (error) {
+                // Keep the selector truthful if local persistence is unavailable; never silently
+                // leave the visible mode different from the mode used after a reload.
+                clientMode.value = persistedClientMode;
+                updateClientModeVisibility();
+                onFeedback(safeErrorMessage(error, '生图客户端未保存，已恢复为原来的客户端。'));
+            }
+        };
+        listen(clientMode, clientMode, 'change', persistClientModeImmediately, signal);
+        updateClientModeVisibility();
         setProvider(image.apiMode);
 
         const formSettings = () => ({
-            enabled: Boolean(enabled.checked), presetId: presetId.value, apiMode: apiMode.value, baseUrl: baseUrl.value, endpointPath: endpointPath.value,
+            enabled: Boolean(enabled.checked), clientMode: clientMode.value, presetId: presetId.value, apiMode: apiMode.value, baseUrl: baseUrl.value, endpointPath: endpointPath.value,
             model: model.value, sampler: sampler.value, noiseSchedule: noiseSchedule.value,
             guidance: numberValue(guidance, image.guidance), guidanceRescale: numberValue(guidanceRescale, image.guidanceRescale),
             width: numberValue(width, image.width), height: numberValue(height, image.height), steps: numberValue(steps, image.steps), seed: numberValue(seed, image.seed),

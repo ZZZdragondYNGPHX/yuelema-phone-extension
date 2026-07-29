@@ -8,7 +8,7 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 20;
+export const SETTINGS_SCHEMA_VERSION = 21;
 // v12 rewrote the stock built-in prompt preset copy (阶段 55 内容尺度调整)，
 // v13 enriched the NSFW stock copy with concrete erotic-writing guidance,
 // v14 renamed the「语音匹配」stock presets to「描述匹配」(display name and
@@ -23,7 +23,31 @@ export const SETTINGS_SCHEMA_VERSION = 20;
 // v18 separates OpenAI-compatible fixed prompts from NovelAI tag prompts.
 // v19 separates OpenAI-compatible dimensions from NovelAI dimensions.
 // v20 adds provider-isolated image prompt preset collections.
-const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14, 15, 16, 17, 18, 19]);
+// v21 adds the shared browser/host transport setting, strict NAI choices, and
+// complete non-secret NovelAI presets.
+const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+export const IMAGE_CLIENT_MODES = Object.freeze(['browser', 'sillytavern']);
+export const NAI_SAMPLER_OPTIONS = Object.freeze([
+    { value: 'k_euler_ancestral', label: 'Euler Ancestral' },
+    { value: 'k_euler', label: 'Euler' },
+    { value: 'k_dpmpp_2m', label: 'DPM++ 2M' },
+    { value: 'k_dpmpp_2m_sde', label: 'DPM++ 2M SDE' },
+    { value: 'k_dpmpp_2s_ancestral', label: 'DPM++ 2S Ancestral' },
+    { value: 'k_dpm_2', label: 'DPM2' },
+    { value: 'k_dpm_fast', label: 'DPM Fast' },
+    { value: 'ddim_v3', label: 'DDIM' },
+]);
+export const NAI_NOISE_SCHEDULE_OPTIONS = Object.freeze([
+    { value: 'karras', label: 'Karras' },
+    { value: 'exponential', label: 'Exponential' },
+    { value: 'polyexponential', label: 'Polyexponential' },
+    { value: 'sine', label: 'Sine' },
+    { value: 'linear', label: 'Linear' },
+    { value: 'cosine', label: 'Cosine' },
+    { value: 'beta', label: 'Beta' },
+]);
+const NAI_SAMPLERS = new Set(NAI_SAMPLER_OPTIONS.map((item) => item.value));
+const NAI_NOISE_SCHEDULES = new Set(NAI_NOISE_SCHEDULE_OPTIONS.map((item) => item.value));
 export const SETTINGS_STORAGE_KEY = 'yuelema.settings.v1';
 export const MAX_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CONNECTION_PRESETS = 64;
@@ -372,12 +396,13 @@ export function defaultImageGenerationSettings() {
     return {
         enabled: false,
         presetId: 'image_generation_default',
+        clientMode: 'browser',
         apiMode: 'novelai',
         baseUrl: 'https://image.novelai.net',
         endpointPath: '/ai/generate-image',
         model: 'nai-diffusion-4-5-full',
         sampler: 'k_euler',
-        noiseSchedule: 'native',
+        noiseSchedule: 'karras',
         guidance: 7,
         guidanceRescale: 0,
         width: 1024,
@@ -456,22 +481,48 @@ function normalizeImageConversationSettings(input) {
     return { autoGenerate: candidate.autoGenerate };
 }
 
-function normalizeImagePromptPreset(input) {
+function normalizeImagePromptPreset(input, provider) {
     const candidate = safeClone(input);
-    if (!isPlainObject(candidate) || Object.keys(candidate).some((key) => ![
-        'id', 'name', 'positivePrefix', 'positiveSuffix', 'negativePrompt',
-    ].includes(key))) {
+    const common = ['id', 'name', 'positivePrefix', 'positiveSuffix', 'negativePrompt'];
+    const naiExtra = ['clientMode', 'presetId', 'baseUrl', 'endpointPath', 'model', 'sampler', 'noiseSchedule', 'guidance', 'guidanceRescale', 'width', 'height', 'steps', 'seed', 'qualityToggle', 'variety'];
+    const allowed = new Set(provider === 'novelai' ? [...common, ...naiExtra] : common);
+    if (!isPlainObject(candidate) || Object.keys(candidate).some((key) => !allowed.has(key))) {
         fail('INVALID_IMAGE_GENERATION', '生图提示词预设字段无效。');
     }
-    return {
+    const normalized = {
         id: cleanId(candidate.id, '生图提示词预设 ID'),
         name: cleanImageText(candidate.name, '生图提示词预设名称', 80, { allowEmpty: false }),
         positivePrefix: cleanImageText(candidate.positivePrefix, '生图预设前置正面提示词', 4000),
         positiveSuffix: cleanImageText(candidate.positiveSuffix, '生图预设后置正面提示词', 4000),
         negativePrompt: cleanImageText(candidate.negativePrompt, '生图预设固定负面提示词', 4000),
     };
+    // v20 prompt-only NAI presets remain valid. A v21 NAI overall preset is
+    // recognized only when it carries every non-secret NAI setting.
+    const hasAnyExtra = naiExtra.some((key) => Object.hasOwn(candidate, key));
+    if (provider !== 'novelai' || !hasAnyExtra) return normalized;
+    if (!naiExtra.every((key) => Object.hasOwn(candidate, key))) fail('INVALID_IMAGE_GENERATION', 'NAI 整体预设必须包含完整非机密参数。');
+    const cleanPresetUrl = (raw, field) => {
+        const text = cleanImageText(raw, field, 512, { allowEmpty: false });
+        let url; try { url = new URL(text); } catch { fail('INVALID_IMAGE_GENERATION', field + '必须是有效 URL。'); }
+        if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) fail('INVALID_IMAGE_GENERATION', field + '必须是安全 HTTP/HTTPS URL。');
+        return url.toString().replace(/\/$/, '');
+    };
+    const endpointPath = cleanImageText(candidate.endpointPath, 'NAI 接口路径', 256, { allowEmpty: false });
+    if (!endpointPath.startsWith('/') || endpointPath.startsWith('//') || endpointPath.includes('..') || endpointPath.includes('?') || endpointPath.includes('#')) fail('INVALID_IMAGE_GENERATION', 'NAI 接口路径无效。');
+    if (!IMAGE_CLIENT_MODES.includes(candidate.clientMode)) fail('INVALID_IMAGE_GENERATION', '生图客户端模式无效。');
+    if (!NAI_SAMPLERS.has(candidate.sampler) || !NAI_NOISE_SCHEDULES.has(candidate.noiseSchedule)) fail('INVALID_IMAGE_GENERATION', 'NAI 采样器或噪点表不受支持。');
+    return { ...normalized,
+        clientMode: candidate.clientMode, presetId: cleanId(candidate.presetId, 'NAI 密钥预设 ID'),
+        baseUrl: cleanPresetUrl(candidate.baseUrl, 'NAI 生图站点'), endpointPath,
+        model: cleanImageText(candidate.model, 'NAI 模型', 160, { allowEmpty: false }),
+        sampler: candidate.sampler, noiseSchedule: candidate.noiseSchedule,
+        guidance: cleanFiniteNumber(candidate.guidance, 'NAI Guidance', 0, 30),
+        guidanceRescale: cleanFiniteNumber(candidate.guidanceRescale, 'NAI Guidance Rescale', 0, 1),
+        width: cleanInteger(candidate.width, 'NAI 图片宽度', 256, 2048), height: cleanInteger(candidate.height, 'NAI 图片高度', 256, 2048),
+        steps: cleanInteger(candidate.steps, 'NAI 步数', 1, 100), seed: cleanInteger(candidate.seed, 'NAI 种子', 0, 4294967295),
+        qualityToggle: candidate.qualityToggle === true, variety: candidate.variety === true,
+    };
 }
-
 function normalizeImagePromptPresetCollections(input, activeInput) {
     const candidate = safeClone(input);
     const activeCandidate = safeClone(activeInput);
@@ -487,7 +538,7 @@ function normalizeImagePromptPresetCollections(input, activeInput) {
         if (!Array.isArray(candidate[provider]) || candidate[provider].length > MAX_IMAGE_PROMPT_PRESETS_PER_PROVIDER) {
             fail('INVALID_IMAGE_GENERATION', '单个生图接口的提示词预设数量无效。');
         }
-        const presets = candidate[provider].map(normalizeImagePromptPreset);
+        const presets = candidate[provider].map((preset) => normalizeImagePromptPreset(preset, provider));
         if (new Set(presets.map((preset) => preset.id)).size !== presets.length) {
             fail('DUPLICATE_PRESET_ID', '同一生图接口内的提示词预设 ID 不可重复。');
         }
@@ -513,6 +564,7 @@ export function normalizeImageGenerationSettings(input) {
     const value = { ...defaults, ...candidate };
     if (typeof value.enabled !== 'boolean' || typeof value.qualityToggle !== 'boolean' || typeof value.variety !== 'boolean') fail('INVALID_IMAGE_GENERATION', '生图开关必须为布尔值。');
     if (!['novelai', 'openai_compatible', 'comfyui'].includes(value.apiMode)) fail('INVALID_IMAGE_GENERATION', '生图接口模式不受支持。');
+    if (!IMAGE_CLIENT_MODES.includes(value.clientMode)) fail('INVALID_IMAGE_GENERATION', '生图客户端模式不受支持。');
     const presetId = cleanId(value.presetId, '生图密钥预设 ID');
     const normalizeImageBaseUrl = (raw, field) => {
         const baseUrl = cleanImageText(raw, field, 512, { allowEmpty: false });
@@ -545,11 +597,12 @@ export function normalizeImageGenerationSettings(input) {
         enabled: value.enabled,
         presetId,
         apiMode: value.apiMode,
+        clientMode: value.clientMode,
         baseUrl,
         endpointPath,
         model: cleanImageText(value.model, '生图模型', 160, { allowEmpty: false }),
-        sampler: cleanImageText(value.sampler, '采样器', 80, { allowEmpty: false }),
-        noiseSchedule: cleanImageText(value.noiseSchedule, '噪点表', 80, { allowEmpty: false }),
+        sampler: NAI_SAMPLERS.has(value.sampler) ? value.sampler : fail('INVALID_IMAGE_GENERATION', 'NAI 采样器不受支持。'),
+        noiseSchedule: NAI_NOISE_SCHEDULES.has(value.noiseSchedule) ? value.noiseSchedule : fail('INVALID_IMAGE_GENERATION', 'NAI 噪点表不受支持。'),
         guidance: cleanFiniteNumber(value.guidance, 'Guidance', 0, 30),
         guidanceRescale: cleanFiniteNumber(value.guidanceRescale, 'Guidance Rescale', 0, 1),
         width: cleanInteger(value.width, '图片宽度', 256, 2048),
@@ -689,6 +742,8 @@ export function normalizeSettingsDocument(input) {
     if (isUpgradeableLegacySchema && isPlainObject(imageGenerationInput)) {
         imageGenerationInput = {
             ...imageGenerationInput,
+            clientMode: imageGenerationInput.clientMode ?? 'browser',
+            noiseSchedule: imageGenerationInput.noiseSchedule === 'native' ? 'karras' : imageGenerationInput.noiseSchedule,
             ...(candidate.schemaVersion <= 17 ? {
                 openaiPositivePrefix: imageGenerationInput.positivePrefix ?? '',
                 openaiPositiveSuffix: imageGenerationInput.positiveSuffix ?? '',
