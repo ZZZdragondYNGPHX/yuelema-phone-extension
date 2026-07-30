@@ -4,6 +4,7 @@ import { YueLeMaLlmError } from '../../llm/openai-compatible-client.js';
 import { buildPrivateChatContext, consumePrivateChatDiagnostics, generatePrivateChatReply, generatePrivateChatSummary } from '../private-chat-service.js';
 import { buildPrivateChatPatch, validateControlledPatchAgainstState } from '../../mvu/controlled-patch.js';
 import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
+import { bodyRelationshipEventIdForSource, createEmptyBodyRelationshipCandidate } from '../../mvu/body-relationship-candidate.js';
 
 function state() {
     return {
@@ -35,6 +36,10 @@ function state() {
         正文记忆: {
             npc_adult: '玩家与小满在线下见过一次，一起喝了咖啡。',
             npc_other: '玩家与周遥一起看过展览，分别时约定分享书单。',
+        },
+        正文关系候选: {
+            npc_adult: createEmptyBodyRelationshipCandidate(),
+            npc_other: createEmptyBodyRelationshipCandidate(),
         },
         关系叙事: {
             npc_adult: createEmptyRelationshipNarrative(),
@@ -221,6 +226,74 @@ test('private chat requests replies and returns only validated multi-bubble data
     assert.match(request.messages[0].content, /不能作为 bondAssessment 的依据/u);
     assert.doesNotMatch(JSON.stringify(request.messages), /绝不泄露|不得发送|实际年龄/);
     assert.deepEqual(current, before);
+});
+
+test('B.2 body candidate is safely projected and atomically consumed only after the matching phone review', () => {
+    const current = state();
+    current.软件.内容模式 = 'SFW';
+    current.角色池.npc_adult.与玩家关系.友情值 = 38;
+    current.正文关系候选.npc_adult = {
+        ...createEmptyBodyRelationshipCandidate(),
+        状态: '待复盘',
+        角色UID: 'npc_adult',
+        事件ID: bodyRelationshipEventIdForSource('meetup_1', 1),
+        来源面基UID: 'meetup_1',
+        来源摘要版本: 1,
+        事件类别: '兑现承诺',
+        关系路线: 'SFW友情',
+        允许影响关系值: ['友情值'],
+        建议方向: '正向',
+        严重度: '常规',
+        证据摘要: '双方兑现了此前的散步约定，并保留了各自的舒适边界。',
+        需再次确认: true,
+    };
+    current.面基记录.meetup_1 = {
+        对象UID: 'npc_adult', 状态: '已结束', 关系路线: '友情',
+        正文结果摘要: '两人完成了此前约定的散步，交流自然，也保留了各自的舒适边界。',
+    };
+
+    const context = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我也很珍惜那天，一起慢慢来。' });
+    assert.equal(context.ok, true);
+    assert.deepEqual(context.context.bodyEventCandidate, {
+        事件类别: '兑现承诺',
+        关系路线: 'SFW友情',
+        证据摘要: '双方兑现了此前的散步约定，并保留了各自的舒适边界。',
+        需再次确认: true,
+    });
+    assert.equal(context.bodyCandidateEventId, 'body:meetup_1:1');
+    const serializedContext = JSON.stringify(context.context);
+    assert.doesNotMatch(serializedContext, /npc_adult|meetup_1|body:|来源摘要版本/u);
+
+    const committed = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1',
+        npcUid: 'npc_adult',
+        playerMessage: '我也很珍惜那天，一起慢慢来。',
+        bodyCandidateEventId: context.bodyCandidateEventId,
+        response: {
+            replies: ['我也很开心。', '谢谢你愿意把节奏留给我们。'],
+            relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+            bodyEventReview: 'confirm',
+            bondAssessment: { kind: 'friendly', intensity: 3, direction: 'increase' },
+        },
+    });
+    assert.equal(committed.ok, true);
+    assert.equal(validateControlledPatchAgainstState(current, committed.value).ok, true);
+    const bondChange = committed.value.find((operation) => operation.path === '/角色池/npc_adult/与玩家关系/友情值');
+    assert.deepEqual(bondChange, { op: 'replace', path: '/角色池/npc_adult/与玩家关系/友情值', value: 40 });
+    assert.equal(committed.value.filter((operation) => operation.path === '/角色池/npc_adult/与玩家关系/友情值').length, 1);
+    assert.equal(committed.value.some((operation) => operation.path === '/关系叙事/npc_adult/进程/已消费事件ID'
+        && operation.value.includes('body:meetup_1:1')), true);
+    const cleared = committed.value.find((operation) => operation.path === '/正文关系候选/npc_adult');
+    assert.deepEqual(cleared?.value, createEmptyBodyRelationshipCandidate());
+
+    const staleReference = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我也很珍惜那天，一起慢慢来。',
+        bodyCandidateEventId: 'body:meetup_other:1',
+        response: { replies: ['我听见了。'], relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 }, bodyEventReview: 'confirm' },
+    });
+    assert.equal(staleReference.ok, true);
+    assert.equal(staleReference.value.some((operation) => operation.path === '/正文关系候选/npc_adult'), false);
+    assert.equal(staleReference.value.some((operation) => operation.path === '/角色池/npc_adult/与玩家关系/友情值'), false);
 });
 
 test('NSFW core contract permits consensual adult chat without treating explicitness as local block pressure', async () => {

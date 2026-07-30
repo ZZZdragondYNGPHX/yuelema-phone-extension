@@ -1,5 +1,5 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildRelationshipNarrativeBackfillPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch } from './mvu/controlled-patch.js';
+import { buildBodyRelationshipCandidateBackfillPatch, buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildRelationshipNarrativeBackfillPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply, generatePrivateChatSummary } from './chat/private-chat-service.js';
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
@@ -335,6 +335,14 @@ export function createActionBridge({
                 firstRead = readLatestState({ mvu: currentMvu });
                 if (!firstRead.ok) return firstRead;
             }
+            const bodyCandidateBackfill = buildBodyRelationshipCandidateBackfillPatch(firstRead.state);
+            if (!bodyCandidateBackfill.ok) return rejectedFromBuild(bodyCandidateBackfill);
+            if (bodyCandidateBackfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: bodyCandidateBackfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                firstRead = readLatestState({ mvu: currentMvu });
+                if (!firstRead.ok) return firstRead;
+            }
             const generated = await generatePrivateChatReply({
                 state: firstRead.state, sessionUid, npcUid, playerMessage, settingsStore, llmClient, signal,
             });
@@ -343,7 +351,11 @@ export function createActionBridge({
             const secondRead = readLatestState({ mvu: currentMvu });
             if (!secondRead.ok) return secondRead;
             const built = buildPrivateChatPatch(secondRead.state, {
-                sessionUid, npcUid, playerMessage: generated.playerMessage, response: generated.response,
+                sessionUid,
+                npcUid,
+                playerMessage: generated.playerMessage,
+                response: generated.response,
+                bodyCandidateEventId: generated.bodyCandidateEventId,
             });
             if (!built.ok) return rejectedFromBuild(built);
             const interactionOutcome = built.value.some((operation) => operation?.op === 'replace'

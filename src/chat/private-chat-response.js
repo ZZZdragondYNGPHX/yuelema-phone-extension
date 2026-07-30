@@ -25,6 +25,9 @@ const BOND_ASSESSMENT_KINDS = Object.freeze({
     NSFW: new Set(['none', 'friendly', 'romantic_flirt', 'romantic_desire', 'sexual_desire']),
 });
 const BOND_DIRECTIONS = new Set(['increase', 'decrease', 'none']);
+// A body-event review is deliberately tiny: it binds only to the candidate
+// that the local request context supplied, never to a model-provided ID.
+const BODY_EVENT_REVIEWS = new Set(['defer', 'confirm', 'decline']);
 const USER_MESSAGES = Object.freeze({
     private_chat_response_required: '私聊回复必须是 JSON 对象。',
     private_chat_response_unsafe_prototype: '私聊回复包含不安全的数据结构。',
@@ -224,13 +227,23 @@ function normalizeBondAssessment(value, contentMode) {
     }
 }
 
+function normalizeBodyEventReview(value) {
+    if (typeof value !== 'string' || !BODY_EVENT_REVIEWS.has(value)) {
+        fail('private_chat_response_relationship_invalid', {
+            field: 'bodyEventReview',
+            expected: 'defer/confirm/decline 之一；不得包含事件 ID、分数或路径',
+        });
+    }
+    return value;
+}
+
 /**
  * Validates the current parsed model response shape and returns a fresh,
  * safe data-only clone.
  */
 export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
     try {
-        assertExactRecord(raw, ['replies', 'relationship'], ['bondAssessment', 'imageDirectives']);
+        assertExactRecord(raw, ['replies', 'relationship'], ['bondAssessment', 'bodyEventReview', 'imageDirectives']);
         const replies = normalizeReplies(ownEnumerableData(raw, 'replies'));
 
         const normalized = {
@@ -238,7 +251,10 @@ export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
             relationship: normalizeRelationship(ownEnumerableData(raw, 'relationship')),
             bondAssessment: Object.hasOwn(raw, 'bondAssessment')
                 ? normalizeBondAssessment(ownEnumerableData(raw, 'bondAssessment'), contentMode)
-                : { kind: 'none', intensity: 0, direction: 'none' }
+                : { kind: 'none', intensity: 0, direction: 'none' },
+            bodyEventReview: Object.hasOwn(raw, 'bodyEventReview')
+                ? normalizeBodyEventReview(ownEnumerableData(raw, 'bodyEventReview'))
+                : 'defer',
         };
         if (Object.hasOwn(raw, 'imageDirectives')) normalized.imageDirectives = normalizeImageDirectives(ownEnumerableData(raw, 'imageDirectives'), replies.length);
         return normalized;

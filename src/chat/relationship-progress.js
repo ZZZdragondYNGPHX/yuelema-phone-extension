@@ -5,6 +5,9 @@ export const SFW_MEETUP_ROUTE_THRESHOLD = 50;
 export const NSFW_MEETUP_ROUTE_THRESHOLD = 60;
 export const MEETUP_ROUTE_THRESHOLD = SFW_MEETUP_ROUTE_THRESHOLD;
 export const SFW_UNDERSTANDING_THRESHOLD = 60;
+// Body-event confirmation is a semantic review only.  It never carries a
+// score, route, UID, JSON Pointer, or event ID from the model.
+export const BODY_EVENT_REVIEW_STATES = Object.freeze(['defer', 'confirm', 'decline']);
 
 const MODE_KINDS = Object.freeze({
     SFW: Object.freeze(['none', 'friendly', 'romantic_flirt']),
@@ -86,6 +89,40 @@ function progressUpdatesForNsfw({ progress, turnId, eventId }) {
     });
 }
 
+function progressUpdatesForBodyEvent({ progress, currentValue, nextValue, turnId, eventId }) {
+    // B.2 is currently constrained to the SFW friendship route, so a verified
+    // body event must cross the same 20/40/50 milestones as an ordinary chat
+    // settlement. It must not create a parallel, silently divergent ladder.
+    return progressUpdatesForSfw({ progress, currentValue, nextValue, turnId, eventId });
+}
+
+function emptyBodyCandidateSettlement(status = 'none') {
+    return Object.freeze({
+        handled: false,
+        consume: false,
+        status,
+        field: '',
+        delta: 0,
+        nextValue: 0,
+        eventId: '',
+        progressUpdates: Object.freeze({}),
+    });
+}
+
+function bodyCandidateDelta(candidate, currentValue) {
+    if (candidate?.建议方向 === '正向') {
+        const requested = candidate.事件类别 === '尊重拒绝' ? 1 : 2;
+        return Math.min(100 - currentValue, requested);
+    }
+    if (candidate?.建议方向 === '负向') {
+        const requested = candidate.严重度 === '常规' ? 2
+            : candidate.严重度 === '明显' ? 3
+                : candidate.严重度 === '严重' ? 4 : 0;
+        return requested ? -Math.min(currentValue, requested) : 0;
+    }
+    return 0;
+}
+
 export function normalizeContentMode(value) {
     return value === 'NSFW' ? 'NSFW' : 'SFW';
 }
@@ -156,6 +193,79 @@ export function settleRelationshipProgress({ contentMode, relationship, progress
             : progressUpdatesForNsfw({ progress: safeProgress, turnId, eventId }))
         : Object.freeze({});
     return Object.freeze({ field, delta, nextValue, kind, direction, eventId, progressUpdates });
+}
+
+/**
+ * Settles one already-validated, explicit body-event candidate.  The caller
+ * owns candidate/source validation; this pure step only maps its constrained
+ * semantics to the global step sizes and the existing per-role event lock.
+ *
+ * B.2 intentionally supports SFW friendship only.  Other routes remain
+ * deferred for their dedicated state-machine phases instead of being guessed
+ * from an otherwise valid-looking body record.
+ */
+export function settleBodyRelationshipCandidate({
+    contentMode,
+    relationship,
+    progress,
+    candidate,
+    review = 'defer',
+    turnId = '',
+    replied = true,
+} = {}) {
+    if (!candidate || typeof candidate !== 'object') return emptyBodyCandidateSettlement();
+    if (!replied) return emptyBodyCandidateSettlement('no_reply');
+    const safeProgress = isProgressRecord(progress) ? progress : {};
+    const eventId = typeof candidate.事件ID === 'string' ? candidate.事件ID : '';
+    const field = candidate?.关系路线 === 'SFW友情'
+        && Array.isArray(candidate?.允许影响关系值)
+        && candidate.允许影响关系值.length === 1
+        && candidate.允许影响关系值[0] === '友情值'
+        ? '友情值' : '';
+    if (!eventId || !field) return emptyBodyCandidateSettlement('invalid');
+
+    const consumed = Array.isArray(safeProgress.已消费事件ID) ? safeProgress.已消费事件ID : [];
+    if (consumed.includes(eventId)) {
+        return Object.freeze({
+            ...emptyBodyCandidateSettlement('already_consumed'),
+            consume: true,
+            eventId,
+        });
+    }
+    if (normalizeContentMode(contentMode) !== 'SFW' || progressBlocksField(safeProgress, field)) {
+        return emptyBodyCandidateSettlement('deferred');
+    }
+    if (safeProgress.最后结算回合UID === turnId) return emptyBodyCandidateSettlement('turn_locked');
+
+    const normalizedReview = BODY_EVENT_REVIEW_STATES.includes(review) ? review : 'defer';
+    if (candidate.需再次确认 === true && normalizedReview === 'defer') {
+        return emptyBodyCandidateSettlement('awaiting_confirmation');
+    }
+
+    const current = relationship && typeof relationship === 'object' ? relationship : {};
+    const currentValue = integerScore(current[field]);
+    // An explicit retraction always wins, even for a candidate that would not
+    // otherwise need another confirmation. `需再次确认` only decides whether
+    // silence/defer may settle; it never turns a clear decline into consent.
+    const declined = normalizedReview === 'decline';
+    const delta = declined ? 0 : bodyCandidateDelta(candidate, currentValue);
+    const nextValue = currentValue + delta;
+    return Object.freeze({
+        handled: true,
+        consume: true,
+        status: declined ? 'declined' : candidate.建议方向 === '无变化' ? 'no_change' : 'settled',
+        field,
+        delta,
+        nextValue,
+        eventId,
+        progressUpdates: progressUpdatesForBodyEvent({
+            progress: safeProgress,
+            currentValue,
+            nextValue,
+            turnId,
+            eventId,
+        }),
+    });
 }
 
 /** Backwards-compatible name for callers that only need the projected change. */

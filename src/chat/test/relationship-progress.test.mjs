@@ -7,6 +7,7 @@ import {
     deriveMeetupAccess,
     projectBondProgress,
     relationshipEventIdForTurn,
+    settleBodyRelationshipCandidate,
     settleRelationshipProgress,
 } from '../relationship-progress.js';
 
@@ -114,4 +115,84 @@ test('NSFW keeps its existing route gate for phase C but adopts the global bound
     assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 50, 心动值: 0, 欲望值: 0 } }).route, '友情');
     assert.equal(deriveMeetupAccess({ contentMode: 'NSFW', relationship: { 友情值: 50, 心动值: 50, 欲望值: 59 } }).unlocked, false);
     assert.equal(deriveMeetupAccess({ contentMode: 'NSFW', relationship: { 友情值: 60, 心动值: 70, 欲望值: 80 } }).route, '欲望');
+});
+
+function bodyCandidate(overrides = {}) {
+    return {
+        事件ID: 'body:meetup_1:1',
+        事件类别: '共同完成',
+        关系路线: 'SFW友情',
+        允许影响关系值: ['友情值'],
+        建议方向: '正向',
+        严重度: '明显',
+        需再次确认: false,
+        ...overrides,
+    };
+}
+
+test('B.2 body candidates use only the global bounded deltas and atomically consume body IDs', () => {
+    const positive = settleBodyRelationshipCandidate({
+        contentMode: 'SFW', relationship: { 友情值: 98 }, progress: progress(),
+        candidate: bodyCandidate(), turnId: 'msg_chat_1_p_9',
+    });
+    assert.deepEqual(
+        { handled: positive.handled, consume: positive.consume, field: positive.field, delta: positive.delta, nextValue: positive.nextValue },
+        { handled: true, consume: true, field: '友情值', delta: 2, nextValue: 100 },
+    );
+    assert.deepEqual(positive.progressUpdates.已消费事件ID, ['body:meetup_1:1']);
+    assert.equal(positive.progressUpdates.最后结算回合UID, 'msg_chat_1_p_9');
+
+    const crossesSharedMilestone = settleBodyRelationshipCandidate({
+        contentMode: 'SFW', relationship: { 友情值: 39 }, progress: progress(),
+        candidate: bodyCandidate(), turnId: 'msg_chat_1_p_13',
+    });
+    assert.equal(crossesSharedMilestone.nextValue, 41);
+    assert.equal(crossesSharedMilestone.progressUpdates.SFW朋友分享已触发, true);
+
+    const declineCases = [
+        ['常规', -2], ['明显', -3], ['严重', -4],
+    ];
+    for (const [severity, expected] of declineCases) {
+        const result = settleBodyRelationshipCandidate({
+            contentMode: 'SFW', relationship: { 友情值: 80 }, progress: progress(),
+            candidate: bodyCandidate({ 事件类别: '边界不匹配', 建议方向: '负向', 严重度: severity }),
+            turnId: `msg_chat_1_p_${severity}`,
+        });
+        assert.equal(result.delta, expected);
+    }
+});
+
+test('B.2 candidates defer pending confirmation, consume a decline as zero, and never cross into NSFW', () => {
+    const pending = bodyCandidate({ 需再次确认: true });
+    assert.equal(settleBodyRelationshipCandidate({
+        contentMode: 'SFW', relationship: { 友情值: 40 }, progress: progress(), candidate: pending, turnId: 'msg_chat_1_p_10',
+    }).status, 'awaiting_confirmation');
+    const declined = settleBodyRelationshipCandidate({
+        contentMode: 'SFW', relationship: { 友情值: 40 }, progress: progress(), candidate: pending,
+        review: 'decline', turnId: 'msg_chat_1_p_10',
+    });
+    assert.deepEqual({ handled: declined.handled, consume: declined.consume, delta: declined.delta, status: declined.status }, {
+        handled: true, consume: true, delta: 0, status: 'declined',
+    });
+    const explicitRetraction = settleBodyRelationshipCandidate({
+        contentMode: 'SFW', relationship: { 友情值: 40 }, progress: progress(), candidate: bodyCandidate(),
+        review: 'decline', turnId: 'msg_chat_1_p_10b',
+    });
+    assert.deepEqual({ handled: explicitRetraction.handled, consume: explicitRetraction.consume, delta: explicitRetraction.delta, status: explicitRetraction.status }, {
+        handled: true, consume: true, delta: 0, status: 'declined',
+    }, 'an explicit retraction must override a no-confirmation candidate');
+    assert.equal(settleBodyRelationshipCandidate({
+        contentMode: 'NSFW', relationship: { 友情值: 40 }, progress: progress(), candidate: bodyCandidate(), turnId: 'msg_chat_1_p_11',
+    }).status, 'deferred');
+});
+
+test('a stale consumed body candidate is removable without suppressing a new ordinary chat settlement', () => {
+    const result = settleBodyRelationshipCandidate({
+        contentMode: 'SFW', relationship: { 友情值: 40 },
+        progress: progress({ 已消费事件ID: ['body:meetup_1:1'] }),
+        candidate: bodyCandidate(), turnId: 'msg_chat_1_p_12',
+    });
+    assert.deepEqual({ handled: result.handled, consume: result.consume, status: result.status, eventId: result.eventId }, {
+        handled: false, consume: true, status: 'already_consumed', eventId: 'body:meetup_1:1',
+    });
 });

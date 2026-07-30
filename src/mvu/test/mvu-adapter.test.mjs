@@ -4,9 +4,11 @@ import { runInNewContext } from 'node:vm';
 
 import { decodeJsonPointer, getAtPointer } from '../json-pointer.js';
 import { createEmptyRelationshipNarrative, validateRelationshipNarrative } from '../relationship-narrative.js';
+import { createEmptyBodyRelationshipCandidate } from '../body-relationship-candidate.js';
 import {
     LATEST_MESSAGE_SCOPE,
     buildClearPrivateChatPatch,
+    buildBodyRelationshipCandidateBackfillPatch,
     buildControlledPatch,
     buildPrivateChatPatch,
     buildRecommendationInitialCandidatePatch,
@@ -41,6 +43,7 @@ function stateFixture() {
         玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
         角色池: {},
         正文记忆: {},
+        正文关系候选: {},
         关系叙事: {},
         会话: {},
         推荐: {
@@ -90,6 +93,7 @@ test('favorite promotes a trusted candidate by move without serializing its hidd
         { op: 'move', from: '/推荐/临时候选池/npc_alpha', path: '/角色池/npc_alpha' },
         { op: 'add', path: '/正文记忆/npc_alpha', value: '' },
         { op: 'add', path: '/关系叙事/npc_alpha', value: createEmptyRelationshipNarrative() },
+        { op: 'add', path: '/正文关系候选/npc_alpha', value: createEmptyBodyRelationshipCandidate() },
         { op: 'add', path: '/推荐/收藏角色UID/-', value: 'npc_alpha' },
         { op: 'remove', path: '/推荐/当前队列/0' },
     ]);
@@ -453,10 +457,11 @@ test('service-order handoff persists when the schema supplies its empty legal co
         parseMessage: async (_raw, data) => {
             calls.push('parse');
             const next = structuredClone(data);
-            const [role, memory, narrative, order, roleCounter, orderCounter] = built.value.patch;
+            const [role, memory, narrative, bodyCandidate, order, roleCounter, orderCounter] = built.value.patch;
             next.stat_data.角色池.npc_service_2 = role.value;
             next.stat_data.正文记忆.npc_service_2 = memory.value;
             next.stat_data.关系叙事.npc_service_2 = narrative.value;
+            next.stat_data.正文关系候选.npc_service_2 = bodyCandidate.value;
             next.stat_data.服务订单.service_1 = { ...order.value, 合法结束条件: { 已满足: false, 摘要: '', 记录时间: '' } };
             next.stat_data.系统.UID计数器.角色 = roleCounter.value;
             next.stat_data.系统.UID计数器.服务订单 = orderCounter.value;
@@ -493,10 +498,11 @@ test('service-order schema omissions report the precise safe postcondition diagn
         parseMessage: async (_raw, data) => {
             calls.push('parse');
             const next = structuredClone(data);
-            const [role, memory, narrative, order, roleCounter, orderCounter] = built.value.patch;
+            const [role, memory, narrative, bodyCandidate, order, roleCounter, orderCounter] = built.value.patch;
             next.stat_data.角色池.npc_service_2 = role.value;
             next.stat_data.正文记忆.npc_service_2 = memory.value;
             next.stat_data.关系叙事.npc_service_2 = narrative.value;
+            next.stat_data.正文关系候选.npc_service_2 = bodyCandidate.value;
             const { 合法结束条件: _omitted, ...legacyOrder } = order.value;
             next.stat_data.服务订单.service_1 = legacyOrder;
             next.stat_data.系统.UID计数器.角色 = roleCounter.value;
@@ -516,14 +522,14 @@ test('service-order schema omissions report the precise safe postcondition diagn
     assert.equal(result.ok, false);
     assert.equal(result.code, 'mvu_parse_postcondition_failed');
     assert.deepEqual(result.detail, {
-        operationIndex: 3, operation: 'add', path: '/服务订单/service_1/合法结束条件',
+        operationIndex: 4, operation: 'add', path: '/服务订单/service_1/合法结束条件',
         kind: 'missing_key', expectedType: 'object', actualType: 'missing',
     });
     assert.deepEqual(diagnosticCalls, [[
         '[约了吗][MVU 受控写入被拒绝]',
         {
             code: 'mvu_parse_postcondition_failed', phase: 'provider_postcondition',
-            reason: 'MVU provider 返回结果缺少 Patch 预期字段', operationIndex: 3, operation: 'add',
+            reason: 'MVU provider 返回结果缺少 Patch 预期字段', operationIndex: 4, operation: 'add',
             path: '/服务订单/service_1/合法结束条件', kind: 'missing_key', expectedType: 'object', actualType: 'missing',
         },
     ]]);
@@ -593,6 +599,7 @@ test('stripped B.1 relationship-progress leaves fail closed as a narrative-schem
     oldData.stat_data.推荐.当前队列 = [];
     oldData.stat_data.推荐.临时候选池 = {};
     oldData.stat_data.正文记忆.npc_alpha = '';
+    oldData.stat_data.正文关系候选.npc_alpha = createEmptyBodyRelationshipCandidate();
     oldData.stat_data.关系叙事.npc_alpha = createEmptyRelationshipNarrative();
     oldData.stat_data.会话.chat_1 = { 对象UID: 'npc_alpha', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' };
     const built = buildPrivateChatPatch(oldData.stat_data, {
@@ -632,6 +639,39 @@ test('stripped B.1 relationship-progress leaves fail closed as a narrative-schem
     assert.equal(result.detail.path, '/关系叙事/npc_alpha/进程/已消费事件ID');
     assert.deepEqual(calls, ['parse']);
     assert.deepEqual(oldData.stat_data.关系叙事.npc_alpha.进程.已消费事件ID, []);
+});
+
+test('stripped B.2 body-candidate slot identifies an outdated schema without committing a partial parse', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    oldData.stat_data.角色池.npc_alpha = npc({ status: '已匹配' });
+    oldData.stat_data.推荐.当前队列 = [];
+    oldData.stat_data.推荐.临时候选池 = {};
+    const built = buildBodyRelationshipCandidateBackfillPatch(oldData.stat_data);
+    assert.deepEqual(built, {
+        ok: true,
+        value: [{ op: 'add', path: '/正文关系候选/npc_alpha', value: createEmptyBodyRelationshipCandidate() }],
+    });
+
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async (_raw, data) => {
+            calls.push('parse');
+            const next = structuredClone(data);
+            // Simulate an older card schema that silently discards the B.2 slot
+            // while still returning a superficially changed envelope.
+            next.stat_data.面基记录 = {};
+            return next;
+        },
+        replaceMvuData: async () => calls.push('replace'),
+    };
+    const result = await applyControlledPatch({ patch: built.value, mvu, eventEmit: async () => calls.push('event'), diagnosticLogger: { error() {} } });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.code, 'mvu_body_relationship_candidate_schema_outdated');
+    assert.deepEqual(calls, ['parse']);
+    assert.equal(Object.hasOwn(oldData.stat_data.正文关系候选, 'npc_alpha'), false);
 });
 
 test('content-mode toggle is persisted only when provider output satisfies the exact replace', async () => {

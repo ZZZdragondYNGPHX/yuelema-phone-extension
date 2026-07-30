@@ -30,6 +30,7 @@ test('accepts replies and returns an independent canonical clone', () => {
         replies: ['今晚方便聊聊吗？', '我刚好有空。'],
         relationship: raw.relationship,
         bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
+        bodyEventReview: 'defer',
     });
     assert.notStrictEqual(normalized, raw);
     assert.notStrictEqual(normalized.replies, raw.replies);
@@ -40,6 +41,19 @@ test('accepts replies and returns an independent canonical clone', () => {
     assert.deepEqual(normalized.replies, ['今晚方便聊聊吗？', '我刚好有空。']);
     assert.equal(normalized.relationship.好感, 2);
     assert.deepEqual(normalizePrivateChatResponse(normalized), normalized);
+});
+
+test('allows only the local B.2 body-event review vocabulary', () => {
+    assert.equal(normalizePrivateChatResponse(response({ bodyEventReview: 'confirm' })).bodyEventReview, 'confirm');
+    assert.equal(normalizePrivateChatResponse(response({ bodyEventReview: 'decline' })).bodyEventReview, 'decline');
+    expectCode(
+        () => normalizePrivateChatResponse(response({ bodyEventReview: 'body:meetup_one:1' })),
+        'private_chat_response_relationship_invalid',
+    );
+    expectCode(
+        () => normalizePrivateChatResponse(response({ bodyEventReview: { review: 'confirm' } })),
+        'private_chat_response_relationship_invalid',
+    );
 });
 
 

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createActionBridge } from '../../action-bridge.js';
 import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
+import { createEmptyBodyRelationshipCandidate } from '../../mvu/body-relationship-candidate.js';
 
 function adultCandidate() {
     return {
@@ -20,6 +21,7 @@ function state() {
         玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
         角色池: {},
         正文记忆: {},
+        正文关系候选: {},
         关系叙事: {},
         推荐: {
             当前队列: ['npc_ava'],
@@ -360,6 +362,7 @@ test('private chat runs model validation before one official MVU write transacti
     initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } };
     initialState.正文记忆.npc_ava = '玩家与艾娃此前在线下见过一次。';
     initialState.关系叙事.npc_ava = createEmptyRelationshipNarrative();
+    initialState.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -391,6 +394,7 @@ test('private chat backfills only its missing relationship-narrative slot before
     };
     initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } };
     initialState.正文记忆.npc_ava = '';
+    initialState.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
     const { mvu, calls } = createMvu({ initialState, persistReplacement: true });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); }, settingsStore,
@@ -426,6 +430,7 @@ test('private chat returns read_without_reply after the local rhythm builder sup
     initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
     initialState.正文记忆.npc_ava = '';
     initialState.关系叙事.npc_ava = createEmptyRelationshipNarrative();
+    initialState.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -458,6 +463,7 @@ test('private chat returns blocked only after the controlled patch atomically bl
     initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
     initialState.正文记忆.npc_ava = '';
     initialState.关系叙事.npc_ava = createEmptyRelationshipNarrative();
+    initialState.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -511,6 +517,7 @@ test('deleteCharacter reads fresh state and atomically removes every character r
         npc_other: { ...adultCandidate(), 公开资料: { ...adultCandidate().公开资料, 昵称: '其他角色' } },
     };
     initialState.正文记忆 = { npc_ava: '玩家与艾娃的经历。', npc_other: '玩家与其他角色的经历。' };
+    initialState.正文关系候选 = { npc_ava: createEmptyBodyRelationshipCandidate(), npc_other: createEmptyBodyRelationshipCandidate() };
     initialState.关系叙事 = { npc_ava: createEmptyRelationshipNarrative(), npc_other: createEmptyRelationshipNarrative() };
     initialState.推荐 = {
         当前队列: ['npc_ava', 'npc_other'],

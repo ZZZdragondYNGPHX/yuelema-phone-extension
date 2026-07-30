@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCandidateMatchOutcomePatch, buildCandidateMatchSessionPatch, buildControlledPatch, buildLikeMatchPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import { createEmptyBodyRelationshipCandidate } from '../body-relationship-candidate.js';
 import { createEmptyRelationshipNarrative } from '../relationship-narrative.js';
 
 function candidate({ threshold = 60 } = {}) {
@@ -21,7 +22,7 @@ function state({ threshold = 60 } = {}) {
     return {
         系统: { UID计数器: { 角色: 1, 会话: 5, 面基: 0 } }, 软件: { 内容模式: 'SFW', 关于软件点击数: 0 },
         玩家: { 成人验证: true, 公开资料: { 城市: '上海', 寻找意图: '聊天约会', 兴趣标签: ['电影', '展览'], 生活方式标签: ['夜猫子'], 性格标签: ['直接'], 沟通风格标签: ['慢热'] }, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
-        角色池: {}, 正文记忆: {}, 关系叙事: {}, 会话: {},
+        角色池: {}, 正文记忆: {}, 正文关系候选: {}, 关系叙事: {}, 会话: {},
         推荐: { 当前队列: ['npc_case'], 临时候选池: { npc_case: candidate({ threshold }) }, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
     };
 }
@@ -58,6 +59,7 @@ test('a saved favourite is no longer a homepage like target but can still be dis
     const likedState = state();
     likedState.角色池.npc_case = likedState.推荐.临时候选池.npc_case;
     likedState.正文记忆.npc_case = '';
+    likedState.正文关系候选.npc_case = createEmptyBodyRelationshipCandidate();
     likedState.关系叙事.npc_case = createEmptyRelationshipNarrative();
     delete likedState.推荐.临时候选池.npc_case;
     likedState.推荐.当前队列 = [];
@@ -70,6 +72,7 @@ test('a saved favourite is no longer a homepage like target but can still be dis
     const dislikedState = state();
     dislikedState.角色池.npc_case = dislikedState.推荐.临时候选池.npc_case;
     dislikedState.正文记忆.npc_case = '';
+    dislikedState.正文关系候选.npc_case = createEmptyBodyRelationshipCandidate();
     dislikedState.关系叙事.npc_case = createEmptyRelationshipNarrative();
     delete dislikedState.推荐.临时候选池.npc_case;
     dislikedState.推荐.当前队列 = [];
@@ -86,6 +89,7 @@ test('a compatible favourite clears a high role threshold through the shared loo
     const favoriteState = state({ threshold: 95 });
     favoriteState.角色池.npc_case = favoriteState.推荐.临时候选池.npc_case;
     favoriteState.正文记忆.npc_case = '';
+    favoriteState.正文关系候选.npc_case = createEmptyBodyRelationshipCandidate();
     favoriteState.关系叙事.npc_case = createEmptyRelationshipNarrative();
     delete favoriteState.推荐.临时候选池.npc_case;
     favoriteState.推荐.当前队列 = [];
@@ -109,6 +113,7 @@ test('a favourite invitation below the shared acceptance line still records a re
     favoriteState.玩家.推荐偏好.标签权重.SFW = { 电影: -5, 夜猫子: -5, 直接: -5, 慢热: -5 };
     favoriteState.角色池.npc_case = favoriteState.推荐.临时候选池.npc_case;
     favoriteState.正文记忆.npc_case = '';
+    favoriteState.正文关系候选.npc_case = createEmptyBodyRelationshipCandidate();
     favoriteState.关系叙事.npc_case = createEmptyRelationshipNarrative();
     delete favoriteState.推荐.临时候选池.npc_case;
     favoriteState.推荐.当前队列 = [];
@@ -129,12 +134,13 @@ test('AI match commits a brand-new npc_match role and matched session without to
         ['add', '/角色池/npc_match_2'],
         ['add', '/正文记忆/npc_match_2'],
         ['add', '/关系叙事/npc_match_2'],
+        ['add', '/正文关系候选/npc_match_2'],
         ['add', '/会话/chat_6'],
         ['replace', '/系统/UID计数器/角色'],
         ['replace', '/系统/UID计数器/会话'],
     ]);
     assert.equal(result.value[0].value.与玩家关系.状态, '已匹配');
-    assert.equal(result.value[3].value.对象UID, 'npc_match_2');
+    assert.equal(result.value[4].value.对象UID, 'npc_match_2');
     assert.equal(validateControlledPatchAgainstState(before, result.value).ok, true);
 });
 
@@ -146,6 +152,7 @@ test('AI match below the local cancellation threshold records a declined role wi
         ['add', '/角色池/npc_match_2'],
         ['add', '/正文记忆/npc_match_2'],
         ['add', '/关系叙事/npc_match_2'],
+        ['add', '/正文关系候选/npc_match_2'],
         ['replace', '/系统/UID计数器/角色'],
     ]);
     assert.equal(result.value[0].value.与玩家关系.状态, '已取消');
@@ -161,6 +168,7 @@ test('clicking a saved favourite again removes its bookmark and disposable candi
     const savedState = state();
     savedState.角色池.npc_case = savedState.推荐.临时候选池.npc_case;
     savedState.正文记忆.npc_case = '';
+    savedState.正文关系候选.npc_case = createEmptyBodyRelationshipCandidate();
     savedState.关系叙事.npc_case = createEmptyRelationshipNarrative();
     delete savedState.推荐.临时候选池.npc_case;
     savedState.推荐.当前队列 = [];
@@ -173,6 +181,7 @@ test('clicking a saved favourite again removes its bookmark and disposable candi
     assert.deepEqual(removed.value.map((operation) => [operation.op, operation.path]), [
         ['remove', '/推荐/收藏角色UID/0'],
         ['remove', '/正文记忆/npc_case'],
+        ['remove', '/正文关系候选/npc_case'],
         ['remove', '/关系叙事/npc_case'],
         ['remove', '/角色池/npc_case'],
     ]);
@@ -194,7 +203,7 @@ test('forged mutual-match session or relationship operation is rejected before t
     const before = state();
     const result = buildCandidateMatchSessionPatch(before, { candidate: candidate() });
     const forged = structuredClone(result.value);
-    forged[3].value.对象UID = 'npc_other';
+    forged[4].value.对象UID = 'npc_other';
     assert.equal(validateControlledPatchAgainstState(before, forged).ok, false);
     const nameForged = structuredClone(result.value);
     nameForged[0].value.公开资料.昵称 = '智核玩家';

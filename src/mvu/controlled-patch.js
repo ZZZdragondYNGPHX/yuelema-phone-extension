@@ -3,7 +3,7 @@ import { normalizeGeneratedCandidate } from '../recommendation/candidate.js';
 import { normalizePrivateChatResponse } from '../chat/private-chat-response.js';
 import { validatePrivateChatRequest } from '../chat/private-chat-service.js';
 import { decideInteractionRhythm } from '../chat/interaction-rhythm.js';
-import { allowedAssessmentKinds, deriveMeetupAccess, meetupRouteGuidance, settleRelationshipProgress } from '../chat/relationship-progress.js';
+import { BODY_EVENT_REVIEW_STATES, allowedAssessmentKinds, deriveMeetupAccess, meetupRouteGuidance, settleBodyRelationshipCandidate, settleRelationshipProgress } from '../chat/relationship-progress.js';
 import {
     MAX_CHAT_HISTORY_MESSAGES,
     MAX_CHAT_SUMMARY_RECORDS,
@@ -18,6 +18,11 @@ import {
 import { MATCH_ACCEPTANCE_THRESHOLD, scoreFavoritePrivateChatInvitation } from '../recommendation/match-scoring.js';
 import { normalizeSoulMatchDraft } from '../recommendation/soul-text-match-service.js';
 import { createEmptyRelationshipNarrative, validateRelationshipNarrative } from './relationship-narrative.js';
+import {
+    createEmptyBodyRelationshipCandidate,
+    selectPendingBodyRelationshipCandidate,
+    validateBodyRelationshipCandidate,
+} from './body-relationship-candidate.js';
 
 export const LATEST_MESSAGE_SCOPE = Object.freeze({ type: 'message', message_id: 'latest' });
 export const NPC_UID_PATTERN = /^npc_[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -46,7 +51,7 @@ const RELATIONSHIP_NARRATIVE_PROGRESS_BOOLEAN_FIELDS = new Set([
     'SFW细微裂缝已触发', 'SFW朋友分享已触发', 'SFW面基已解锁',
 ]);
 const RELATIONSHIP_NARRATIVE_TURN_ID_PATTERN = /^msg_chat_[A-Za-z0-9][A-Za-z0-9_-]{0,63}_p_[1-9]\d*$/u;
-const RELATIONSHIP_NARRATIVE_EVENT_ID_PATTERN = /^chat:[A-Za-z0-9][A-Za-z0-9_-]{0,63}:[1-9]\d*$/u;
+const RELATIONSHIP_NARRATIVE_EVENT_ID_PATTERN = /^(?:chat:[A-Za-z0-9][A-Za-z0-9_-]{0,63}:[1-9]\d*|body:meetup_[A-Za-z0-9][A-Za-z0-9_-]{0,63}:1)$/u;
 const MAX_CHAT_MESSAGE_LENGTH = 600;
 const MAX_SERVICE_ORDER_PARTICIPANTS = 3;
 const EMPTY_SERVICE_COMPLETION_SIGNAL = Object.freeze({ 已满足: false, 摘要: '', 记录时间: '' });
@@ -105,6 +110,31 @@ function validRelationshipNarrativeEventIds(value) {
             seen.add(eventId);
         }
         return names.every((name) => name === 'length' || /^(0|[1-9]\d*)$/u.test(name) && Number(name) < value.length);
+    } catch {
+        return false;
+    }
+}
+
+function isEmptyBodyRelationshipCandidate(value) {
+    const validated = validateBodyRelationshipCandidate(value);
+    if (!validated.ok) return false;
+    try {
+        return JSON.stringify(value) === JSON.stringify(createEmptyBodyRelationshipCandidate());
+    } catch {
+        return false;
+    }
+}
+
+function isEmptyBodyRelationshipCandidateRegistry(value) {
+    if (!ownRecord(value)) return false;
+    try {
+        const keys = Object.keys(value);
+        if (Reflect.ownKeys(value).length !== keys.length) return false;
+        return keys.every((uid) => {
+            const descriptor = Object.getOwnPropertyDescriptor(value, uid);
+            return isNpcUid(uid) && descriptor?.enumerable && Object.hasOwn(descriptor, 'value')
+                && isEmptyBodyRelationshipCandidate(descriptor.value);
+        });
     } catch {
         return false;
     }
@@ -385,6 +415,14 @@ function appendEmptyRelationshipNarrative(state, npcUid, operations) {
     return success(undefined);
 }
 
+function appendEmptyBodyRelationshipCandidate(state, npcUid, operations) {
+    const candidates = ownRecord(state.正文关系候选);
+    if (!candidates) return fail('mvu_body_relationship_candidate_schema_outdated');
+    if (Object.hasOwn(candidates, npcUid)) return fail('body_relationship_candidate_uid_conflict');
+    operations.push({ op: 'add', path: encodeJsonPointer(['正文关系候选', npcUid]), value: createEmptyBodyRelationshipCandidate() });
+    return success(undefined);
+}
+
 /**
  * Reconciles pre-v1.0.8 saves without touching any retained memory text.
  * Missing role slots are created empty and orphan slots are removed; malformed
@@ -444,6 +482,47 @@ export function buildRelationshipNarrativeBackfillPatch(state) {
         if (!Object.hasOwn(roles, uid)) return fail('relationship_narrative_backfill_orphan');
     }
     return success(operations);
+}
+
+/**
+ * Adds only missing, per-formal-role empty body-candidate slots.  Unlike the
+ * legacy free-text story-memory migration, a malformed or orphan candidate is
+ * never deleted automatically: it may be a real pending body fact, so B.2
+ * stops safely and leaves the state untouched for diagnosis/retry.
+ */
+export function buildBodyRelationshipCandidateBackfillPatch(state) {
+    if (!ownRecord(state)) return fail('body_relationship_candidate_backfill_state_invalid');
+    const roles = ownRecord(state.角色池);
+    if (!roles) return fail('body_relationship_candidate_backfill_state_invalid');
+
+    const candidateRootExists = Object.hasOwn(state, '正文关系候选');
+    const candidates = candidateRootExists ? ownRecord(state.正文关系候选) : null;
+    if (candidateRootExists && !candidates) return fail('mvu_body_relationship_candidate_schema_outdated');
+
+    const emptyByUid = {};
+    for (const uid of Object.keys(roles).sort()) {
+        if (!isNpcUid(uid) || !ownRecord(roles[uid])) return fail('body_relationship_candidate_backfill_state_invalid');
+        if (!candidates) {
+            emptyByUid[uid] = createEmptyBodyRelationshipCandidate();
+            continue;
+        }
+        if (!Object.hasOwn(candidates, uid)) {
+            emptyByUid[uid] = createEmptyBodyRelationshipCandidate();
+            continue;
+        }
+        if (!validateBodyRelationshipCandidate(candidates[uid]).ok) return fail('body_relationship_candidate_backfill_state_invalid');
+    }
+    if (candidates) {
+        for (const uid of Object.keys(candidates).sort()) {
+            if (!isNpcUid(uid) || !Object.hasOwn(roles, uid) || !validateBodyRelationshipCandidate(candidates[uid]).ok) {
+                return fail('body_relationship_candidate_backfill_state_invalid');
+            }
+        }
+    }
+    if (!candidateRootExists) return success([{ op: 'add', path: '/正文关系候选', value: emptyByUid }]);
+    return success(Object.entries(emptyByUid).map(([uid, value]) => ({
+        op: 'add', path: encodeJsonPointer(['正文关系候选', uid]), value,
+    })));
 }
 
 function isMeetupUid(value) {
@@ -709,6 +788,8 @@ export function buildServiceOrderHandoffPatch(state, { candidate, candidates, ca
         if (!memory.ok) return memory;
         const narrative = appendEmptyRelationshipNarrative(state, npcUids[index], patch);
         if (!narrative.ok) return narrative;
+        const bodyCandidate = appendEmptyBodyRelationshipCandidate(state, npcUids[index], patch);
+        if (!bodyCandidate.ok) return bodyCandidate;
     }
     patch.push(
         { op: 'add', path: encodeJsonPointer(['服务订单', orderUid]), value: order },
@@ -812,10 +893,11 @@ export function buildServiceHistoryRolesDeletionPatch(state, { npcUids } = {}) {
     const operations = [];
     for (const npcUid of npcUids) {
         const built = buildDeleteCharacterPatch(state, { npcUid });
-        if (!built.ok || built.value.length !== 3
+        if (!built.ok || built.value.length !== 4
             || built.value[0]?.op !== 'remove' || built.value[0]?.path !== encodeJsonPointer(['正文记忆', npcUid])
-            || built.value[1]?.op !== 'remove' || built.value[1]?.path !== encodeJsonPointer(['关系叙事', npcUid])
-            || built.value[2]?.op !== 'remove' || built.value[2]?.path !== encodeJsonPointer(['角色池', npcUid])) {
+            || built.value[1]?.op !== 'remove' || built.value[1]?.path !== encodeJsonPointer(['正文关系候选', npcUid])
+            || built.value[2]?.op !== 'remove' || built.value[2]?.path !== encodeJsonPointer(['关系叙事', npcUid])
+            || built.value[3]?.op !== 'remove' || built.value[3]?.path !== encodeJsonPointer(['角色池', npcUid])) {
             return fail('service_history_delete_not_isolated', '', '服务角色仍被会话、面基或推荐列表引用，无法作为孤立角色删除');
         }
         operations.push(...built.value);
@@ -935,7 +1017,7 @@ export function buildServiceOrderFinalizePatch(state, { orderUid } = {}) {
     }
     return success([{ op: 'remove', path: encodeJsonPointer(['服务订单', orderUid]) }]);
 }
-export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage, response } = {}) {
+export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage, response, bodyCandidateEventId = '' } = {}) {
     const request = validatePrivateChatRequest({ state, sessionUid, npcUid, playerMessage });
     if (!request.ok) return fail(request.code);
     if (!isChatSessionUid(sessionUid)) return fail('private_chat_invalid_target');
@@ -947,6 +1029,15 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
     const { session, npc, relationship, playerMessage: normalizedMessage } = request.value;
     const relationshipNarrative = validateRelationshipNarrative(ownRecord(ownRecord(state.关系叙事)?.[npcUid]));
     if (!relationshipNarrative.ok) return fail('mvu_relationship_narrative_schema_outdated');
+    if (typeof bodyCandidateEventId !== 'string') return fail('private_chat_body_candidate_reference_invalid');
+    const pendingBodyCandidate = selectPendingBodyRelationshipCandidate(state, npcUid);
+    if (!pendingBodyCandidate.ok) return fail(pendingBodyCandidate.code ?? 'mvu_body_relationship_candidate_schema_outdated');
+    // The event ID stays outside the model context and must still name the
+    // exact candidate seen before the async request. A newer candidate is left
+    // pending instead of being settled by an old reply.
+    const bodyCandidate = bodyCandidateEventId && pendingBodyCandidate.value?.事件ID === bodyCandidateEventId
+        ? pendingBodyCandidate.value
+        : null;
     const recentMessages = Array.isArray(session.最近消息) ? session.最近消息 : null;
     if (!recentMessages || recentMessages.length > MAX_CHAT_HISTORY_MESSAGES) return fail('private_chat_session_messages_invalid');
     for (const field of RELATIONSHIP_VALUE_FIELDS) {
@@ -1022,28 +1113,62 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
         const next = rhythm.projectedRelationship[field];
         if (next !== relationship[field]) operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', field]), value: next });
     }
-    const bondProgress = settleRelationshipProgress({
+    const bodySettlement = settleBodyRelationshipCandidate({
         contentMode: ownRecord(state.软件)?.内容模式,
         relationship,
         progress: relationshipNarrative.value.进程,
-        assessment: normalizedResponse.bondAssessment,
-        // A reply may still be natural on a repeated message, but a copied or
-        // recently repeated utterance is not a new relationship fact in B.1.
-        replied: rhythm.outcome === 'replied' && !repeatsRecentPlayerMessage(recentMessages, normalizedMessage),
+        candidate: bodyCandidate,
+        review: normalizedResponse.bodyEventReview,
+        replied: rhythm.outcome === 'replied',
         turnId: playerMessageUid,
     });
-    if (bondProgress.delta !== 0 && BOND_VALUE_FIELDS.includes(bondProgress.field)) {
+    if (bodySettlement.handled && bodySettlement.delta !== 0 && BOND_VALUE_FIELDS.includes(bodySettlement.field)) {
         operations.push({
-            op: Object.hasOwn(relationship, bondProgress.field) ? 'replace' : 'add',
-            path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', bondProgress.field]),
-            value: bondProgress.nextValue,
+            op: Object.hasOwn(relationship, bodySettlement.field) ? 'replace' : 'add',
+            path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', bodySettlement.field]),
+            value: bodySettlement.nextValue,
         });
-        for (const [field, value] of Object.entries(bondProgress.progressUpdates)) {
+    }
+    if (bodySettlement.handled) {
+        for (const [field, value] of Object.entries(bodySettlement.progressUpdates)) {
             operations.push({
                 op: 'replace',
                 path: encodeJsonPointer(['关系叙事', npcUid, '进程', field]),
                 value,
             });
+        }
+    }
+    if (bodySettlement.consume) {
+        operations.push({
+            op: 'replace',
+            path: encodeJsonPointer(['正文关系候选', npcUid]),
+            value: createEmptyBodyRelationshipCandidate(),
+        });
+    }
+    if (!bodySettlement.handled) {
+        const bondProgress = settleRelationshipProgress({
+            contentMode: ownRecord(state.软件)?.内容模式,
+            relationship,
+            progress: relationshipNarrative.value.进程,
+            assessment: normalizedResponse.bondAssessment,
+            // A reply may still be natural on a repeated message, but a copied or
+            // recently repeated utterance is not a new relationship fact in B.1.
+            replied: rhythm.outcome === 'replied' && !repeatsRecentPlayerMessage(recentMessages, normalizedMessage),
+            turnId: playerMessageUid,
+        });
+        if (bondProgress.delta !== 0 && BOND_VALUE_FIELDS.includes(bondProgress.field)) {
+            operations.push({
+                op: Object.hasOwn(relationship, bondProgress.field) ? 'replace' : 'add',
+                path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', bondProgress.field]),
+                value: bondProgress.nextValue,
+            });
+            for (const [field, value] of Object.entries(bondProgress.progressUpdates)) {
+                operations.push({
+                    op: 'replace',
+                    path: encodeJsonPointer(['关系叙事', npcUid, '进程', field]),
+                    value,
+                });
+            }
         }
     }
     operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '对话层数']), value: nextLayer });
@@ -1253,8 +1378,9 @@ export function buildDeleteCharacterPatch(state, { npcUid } = {}) {
     const meetups = ownRecord(state.面基记录);
     const groups = ownRecord(state.群组);
     const storyMemories = ownRecord(state.正文记忆);
+    const bodyCandidates = ownRecord(state.正文关系候选);
     const narratives = ownRecord(state.关系叙事);
-    if (!rolePool || !recommendation || !candidatePool || !sessions || !meetups || !groups || !storyMemories || !narratives) {
+    if (!rolePool || !recommendation || !candidatePool || !sessions || !meetups || !groups || !storyMemories || !bodyCandidates || !narratives) {
         return fail('character_delete_state_invalid');
     }
     if (!Object.hasOwn(rolePool, npcUid) && !Object.hasOwn(candidatePool, npcUid)) {
@@ -1311,7 +1437,11 @@ export function buildDeleteCharacterPatch(state, { npcUid } = {}) {
         if (!Object.hasOwn(narratives, npcUid) || !validateRelationshipNarrative(narratives[npcUid]).ok) {
             return fail('mvu_relationship_narrative_schema_outdated');
         }
+        if (!Object.hasOwn(bodyCandidates, npcUid) || !validateBodyRelationshipCandidate(bodyCandidates[npcUid]).ok) {
+            return fail('mvu_body_relationship_candidate_schema_outdated');
+        }
         operations.push({ op: 'remove', path: encodeJsonPointer(['正文记忆', npcUid]) });
+        operations.push({ op: 'remove', path: encodeJsonPointer(['正文关系候选', npcUid]) });
         operations.push({ op: 'remove', path: encodeJsonPointer(['关系叙事', npcUid]) });
         operations.push({ op: 'remove', path: encodeJsonPointer(['角色池', npcUid]) });
     }
@@ -1422,6 +1552,8 @@ function promoteCandidateIfNeeded(state, uid, operations) {
     if (!memory.ok) return memory;
     const narrative = appendEmptyRelationshipNarrative(state, uid, operations);
     if (!narrative.ok) return narrative;
+    const bodyCandidate = appendEmptyBodyRelationshipCandidate(state, uid, operations);
+    if (!bodyCandidate.ok) return bodyCandidate;
     return success('candidate');
 }
 
@@ -1481,6 +1613,8 @@ export function buildCandidateMatchOutcomePatch(state, { candidate, accepted } =
     if (!memory.ok) return memory;
     const narrative = appendEmptyRelationshipNarrative(state, npcUid, operations);
     if (!narrative.ok) return narrative;
+    const bodyCandidate = appendEmptyBodyRelationshipCandidate(state, npcUid, operations);
+    if (!bodyCandidate.ok) return bodyCandidate;
     let sessionUid = '';
     if (accepted) {
         sessionUid = 'chat_' + (sessionCounter + 1);
@@ -1525,6 +1659,8 @@ export function buildCustomCandidateMatchPatch(state, { candidateUid, matchScore
     if (!memory.ok) return memory;
     const narrative = appendEmptyRelationshipNarrative(state, candidateUid, operations);
     if (!narrative.ok) return narrative;
+    const bodyCandidate = appendEmptyBodyRelationshipCandidate(state, candidateUid, operations);
+    if (!bodyCandidate.ok) return bodyCandidate;
     operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', candidateUid, '与玩家关系', 'NPC专属匹配度']), value: matchScore });
     operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', candidateUid, '与玩家关系', '状态']), value: '已匹配' });
     operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid]), value: matchedSession(candidateUid) });
@@ -1753,11 +1889,16 @@ export function buildControlledPatch(state, command) {
             } else if (roleAt(state, uid)) {
                 const memories = ownRecord(state.正文记忆);
                 if (!memories || !Object.hasOwn(memories, uid)) return fail('mvu_story_memory_schema_outdated');
+                const bodyCandidates = ownRecord(state.正文关系候选);
+                if (!bodyCandidates || !Object.hasOwn(bodyCandidates, uid) || !validateBodyRelationshipCandidate(bodyCandidates[uid]).ok) {
+                    return fail('mvu_body_relationship_candidate_schema_outdated');
+                }
                 const narratives = ownRecord(state.关系叙事);
                 if (!narratives || !Object.hasOwn(narratives, uid) || !validateRelationshipNarrative(narratives[uid]).ok) {
                     return fail('mvu_relationship_narrative_schema_outdated');
                 }
                 operations.push({ op: 'remove', path: encodeJsonPointer(['正文记忆', uid]) });
+                operations.push({ op: 'remove', path: encodeJsonPointer(['正文关系候选', uid]) });
                 operations.push({ op: 'remove', path: encodeJsonPointer(['关系叙事', uid]) });
                 operations.push({ op: 'remove', path: encodeJsonPointer(['角色池', uid]) });
             }
@@ -1890,6 +2031,11 @@ export function validateControlledPatchWhitelist(patch) {
         const storyMemory = /^\/正文记忆\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(path);
         if (operation.op === 'add' && storyMemory && isNpcUid(storyMemory[1]) && operation.value === '') continue;
         if (operation.op === 'remove' && storyMemory && isNpcUid(storyMemory[1])) continue;
+        if (operation.op === 'add' && path === '/正文关系候选' && isEmptyBodyRelationshipCandidateRegistry(operation.value)) continue;
+        const bodyRelationshipCandidate = /^\/正文关系候选\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(path);
+        if ((operation.op === 'add' || operation.op === 'replace') && bodyRelationshipCandidate && isNpcUid(bodyRelationshipCandidate[1])
+            && isEmptyBodyRelationshipCandidate(operation.value)) continue;
+        if (operation.op === 'remove' && bodyRelationshipCandidate && isNpcUid(bodyRelationshipCandidate[1])) continue;
         const relationshipNarrativeProgress = /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\/(SFW细微裂缝已触发|SFW朋友分享已触发|SFW面基已解锁|最后结算回合UID|已消费事件ID)$/u.exec(path);
         if (operation.op === 'replace' && relationshipNarrativeProgress && isNpcUid(relationshipNarrativeProgress[1])) {
             const progressField = relationshipNarrativeProgress[2];
@@ -2040,8 +2186,19 @@ export function validateControlledPatchAgainstState(state, patch) {
         if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
     }
 
+    if (patch.length >= 1 && patch.every((operation) => {
+        const path = operation?.path ?? '';
+        return operation?.op === 'add'
+            && (path === '/正文关系候选'
+                ? isEmptyBodyRelationshipCandidateRegistry(operation.value)
+                : /^\/正文关系候选\/npc_[A-Za-z0-9_-]{1,64}$/u.test(path) && isEmptyBodyRelationshipCandidate(operation.value));
+    })) {
+        const expected = buildBodyRelationshipCandidateBackfillPatch(state);
+        if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+    }
+
     const serviceRoleRemovals = patch.filter((operation) => operation?.op === 'remove' && /^\/角色池\/npc_service_\d+$/u.test(operation.path));
-    if (serviceRoleRemovals.length >= 1 && patch.length === serviceRoleRemovals.length * 3) {
+    if (serviceRoleRemovals.length >= 1 && patch.length === serviceRoleRemovals.length * 4) {
         const expected = buildServiceHistoryRolesDeletionPatch(state, { npcUids: serviceRoleRemovals.map((operation) => decodeJsonPointer(operation.path).at(-1)) });
         if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
     }
@@ -2149,12 +2306,23 @@ export function validateControlledPatchAgainstState(state, patch) {
                         for (let intensity = 1; intensity <= 3; intensity += 1) assessments.push({ kind, intensity, direction });
                     }
                 }
+                const pendingCandidate = selectPendingBodyRelationshipCandidate(state, npcUid);
+                const bodyCandidateEventIds = pendingCandidate.ok && pendingCandidate.value?.事件ID
+                    ? ['', pendingCandidate.value.事件ID]
+                    : [''];
                 for (const bondAssessment of assessments) {
-                    const expected = buildPrivateChatPatch(state, {
-                        sessionUid, npcUid, playerMessage: playerOperation.value?.内容,
-                        response: { ...response, bondAssessment },
-                    });
-                    if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+                    for (const bodyEventReview of BODY_EVENT_REVIEW_STATES) {
+                        for (const bodyCandidateEventId of bodyCandidateEventIds) {
+                            const expected = buildPrivateChatPatch(state, {
+                                sessionUid,
+                                npcUid,
+                                playerMessage: playerOperation.value?.内容,
+                                response: { ...response, bondAssessment, bodyEventReview },
+                                bodyCandidateEventId,
+                            });
+                            if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+                        }
+                    }
                 }
             }
         }

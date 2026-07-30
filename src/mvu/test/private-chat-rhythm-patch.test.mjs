@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildPrivateChatPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import { createEmptyBodyRelationshipCandidate } from '../body-relationship-candidate.js';
 import { createEmptyRelationshipNarrative } from '../relationship-narrative.js';
 
 function state({ readThreshold = 55, blockThreshold = 90, relationship } = {}) {
@@ -17,6 +18,7 @@ function state({ readThreshold = 55, blockThreshold = 90, relationship } = {}) {
             },
         },
         正文记忆: { npc_one: '' },
+        正文关系候选: { npc_one: createEmptyBodyRelationshipCandidate() },
         关系叙事: { npc_one: createEmptyRelationshipNarrative() },
         会话: { chat_1: { 对象UID: 'npc_one', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } },
         推荐: { 当前队列: [], 临时候选池: {}, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
@@ -262,6 +264,7 @@ test('deleteCharacter removes the complete character record and every controlled
     otherRole.公开资料.昵称 = '其他角色';
     current.角色池.npc_other = otherRole;
     current.正文记忆.npc_other = '其他对象自己的经历';
+    current.正文关系候选.npc_other = createEmptyBodyRelationshipCandidate();
     current.关系叙事.npc_other = createEmptyRelationshipNarrative();
     current.推荐 = {
         当前队列: ['npc_one', 'npc_other'],
@@ -297,6 +300,7 @@ test('deleteCharacter removes the complete character record and every controlled
         { op: 'replace', path: '/群组/group_city/可发现角色UID', value: [] },
         { op: 'remove', path: '/推荐/临时候选池/npc_one' },
         { op: 'remove', path: '/正文记忆/npc_one' },
+        { op: 'remove', path: '/正文关系候选/npc_one' },
         { op: 'remove', path: '/关系叙事/npc_one' },
         { op: 'remove', path: '/角色池/npc_one' },
     ]);
