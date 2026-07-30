@@ -8,7 +8,7 @@ const requiredFiles = [
     'manifest.json', 'index.js', 'style.css', 'README.md', 'AGENTS.md', 'RELEASE_REVIEW.md', 'test/extension-lifecycle.test.mjs',
     'src/app-shell.js', 'src/host-extension-update.js', 'src/service-order-history-store.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
     'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
-    'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
+    'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.0.11') fail('manifest.version 必须与扩展版本 1.0.11 统一');
+if (manifest.version !== '1.0.12') fail('manifest.version 必须与扩展版本 1.0.12 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -59,7 +59,7 @@ const sourceRelativeFiles = [
     'index.js', 'test/extension-lifecycle.test.mjs',
     'src/app-shell.js', 'src/host-extension-update.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js',
     'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
-    'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
+    'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
@@ -121,7 +121,7 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.0.11'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.11 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.0.12'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.12 统一（必须位于壳层 app-shell.js）');
 if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
     || !appShellCore.includes("'placement_reset'")
     || !appShellCore.includes("'mvu_read_complete'")

@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
 
 import { decodeJsonPointer, getAtPointer } from '../json-pointer.js';
+import { createEmptyRelationshipNarrative, validateRelationshipNarrative } from '../relationship-narrative.js';
 import {
     LATEST_MESSAGE_SCOPE,
     buildClearPrivateChatPatch,
     buildControlledPatch,
     buildRecommendationInitialCandidatePatch,
+    buildRelationshipNarrativeBackfillPatch,
     buildServiceOrderHandoffPatch,
     buildStoryMemoryBackfillPatch,
     buildUpdateVariable,
@@ -38,6 +40,7 @@ function stateFixture() {
         玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
         角色池: {},
         正文记忆: {},
+        关系叙事: {},
         会话: {},
         推荐: {
             当前队列: ['npc_alpha'],
@@ -85,6 +88,7 @@ test('favorite promotes a trusted candidate by move without serializing its hidd
     assert.deepEqual(result.value, [
         { op: 'move', from: '/推荐/临时候选池/npc_alpha', path: '/角色池/npc_alpha' },
         { op: 'add', path: '/正文记忆/npc_alpha', value: '' },
+        { op: 'add', path: '/关系叙事/npc_alpha', value: createEmptyRelationshipNarrative() },
         { op: 'add', path: '/推荐/收藏角色UID/-', value: 'npc_alpha' },
         { op: 'remove', path: '/推荐/当前队列/0' },
     ]);
@@ -112,6 +116,48 @@ test('story-memory backfill creates every missing role slot and removes only orp
         ...current,
         正文记忆: { npc_alpha: 42, npc_beta: '' },
     }).code, 'story_memory_backfill_value_invalid');
+});
+
+test('relationship narrative records are exact, bounded, and backfill never deletes orphan state', () => {
+    const current = stateFixture();
+    current.角色池.npc_alpha = npc();
+    current.角色池.npc_beta = npc();
+    const retained = createEmptyRelationshipNarrative();
+    retained.人生底色.公开轮廓 = '保留的公开轮廓。';
+    retained.人生底色.生活痕迹 = ['晨跑'];
+    retained.未竟心愿.线索节点 = ['一封未寄出的信'];
+    retained.进程.最后结算回合UID = 'turn_20260730_1';
+    retained.进程.已消费事件ID = ['event_1'];
+    current.关系叙事 = { npc_beta: retained };
+
+    const built = buildRelationshipNarrativeBackfillPatch(current);
+    assert.deepEqual(built, { ok: true, value: [
+        { op: 'add', path: '/关系叙事/npc_alpha', value: createEmptyRelationshipNarrative() },
+    ] });
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+    assert.deepEqual(current.关系叙事.npc_beta, retained);
+
+    const forged = structuredClone(built.value);
+    forged[0].value.进程.NSFW路线锁定 = '伪造路线';
+    assert.equal(validateControlledPatchAgainstState(current, forged).ok, false);
+
+    const malformed = createEmptyRelationshipNarrative();
+    malformed.未竟心愿.变化轨迹 = '随意改写';
+    assert.equal(validateRelationshipNarrative(malformed).ok, false);
+    const getterBacked = createEmptyRelationshipNarrative();
+    Object.defineProperty(getterBacked, '版本', { enumerable: true, get: () => 1 });
+    assert.equal(validateRelationshipNarrative(getterBacked).ok, false);
+    const duplicatedIds = createEmptyRelationshipNarrative();
+    duplicatedIds.进程.已消费事件ID = ['event_1', 'event_1'];
+    assert.equal(validateRelationshipNarrative(duplicatedIds).ok, false);
+
+    const orphanState = structuredClone(current);
+    orphanState.关系叙事.npc_orphan = createEmptyRelationshipNarrative();
+    const before = structuredClone(orphanState.关系叙事);
+    assert.deepEqual(buildRelationshipNarrativeBackfillPatch(orphanState), {
+        ok: false, code: 'relationship_narrative_backfill_orphan', detail: '',
+    });
+    assert.deepEqual(orphanState.关系叙事, before);
 });
 
 test('like only records homepage feedback and never creates a role or matched session', () => {
@@ -406,9 +452,10 @@ test('service-order handoff persists when the schema supplies its empty legal co
         parseMessage: async (_raw, data) => {
             calls.push('parse');
             const next = structuredClone(data);
-            const [role, memory, order, roleCounter, orderCounter] = built.value.patch;
+            const [role, memory, narrative, order, roleCounter, orderCounter] = built.value.patch;
             next.stat_data.角色池.npc_service_2 = role.value;
             next.stat_data.正文记忆.npc_service_2 = memory.value;
+            next.stat_data.关系叙事.npc_service_2 = narrative.value;
             next.stat_data.服务订单.service_1 = { ...order.value, 合法结束条件: { 已满足: false, 摘要: '', 记录时间: '' } };
             next.stat_data.系统.UID计数器.角色 = roleCounter.value;
             next.stat_data.系统.UID计数器.服务订单 = orderCounter.value;
@@ -445,9 +492,10 @@ test('service-order schema omissions report the precise safe postcondition diagn
         parseMessage: async (_raw, data) => {
             calls.push('parse');
             const next = structuredClone(data);
-            const [role, memory, order, roleCounter, orderCounter] = built.value.patch;
+            const [role, memory, narrative, order, roleCounter, orderCounter] = built.value.patch;
             next.stat_data.角色池.npc_service_2 = role.value;
             next.stat_data.正文记忆.npc_service_2 = memory.value;
+            next.stat_data.关系叙事.npc_service_2 = narrative.value;
             const { 合法结束条件: _omitted, ...legacyOrder } = order.value;
             next.stat_data.服务订单.service_1 = legacyOrder;
             next.stat_data.系统.UID计数器.角色 = roleCounter.value;
@@ -467,14 +515,14 @@ test('service-order schema omissions report the precise safe postcondition diagn
     assert.equal(result.ok, false);
     assert.equal(result.code, 'mvu_parse_postcondition_failed');
     assert.deepEqual(result.detail, {
-        operationIndex: 2, operation: 'add', path: '/服务订单/service_1/合法结束条件',
+        operationIndex: 3, operation: 'add', path: '/服务订单/service_1/合法结束条件',
         kind: 'missing_key', expectedType: 'object', actualType: 'missing',
     });
     assert.deepEqual(diagnosticCalls, [[
         '[约了吗][MVU 受控写入被拒绝]',
         {
             code: 'mvu_parse_postcondition_failed', phase: 'provider_postcondition',
-            reason: 'MVU provider 返回结果缺少 Patch 预期字段', operationIndex: 2, operation: 'add',
+            reason: 'MVU provider 返回结果缺少 Patch 预期字段', operationIndex: 3, operation: 'add',
             path: '/服务订单/service_1/合法结束条件', kind: 'missing_key', expectedType: 'object', actualType: 'missing',
         },
     ]]);

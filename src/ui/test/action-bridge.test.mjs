@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createActionBridge } from '../../action-bridge.js';
+import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
 
 function adultCandidate() {
     return {
@@ -19,6 +20,7 @@ function state() {
         玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
         角色池: {},
         正文记忆: {},
+        关系叙事: {},
         推荐: {
             当前队列: ['npc_ava'],
             临时候选池: {
@@ -354,6 +356,7 @@ test('private chat runs model validation before one official MVU write transacti
     };
     initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } };
     initialState.正文记忆.npc_ava = '玩家与艾娃此前在线下见过一次。';
+    initialState.关系叙事.npc_ava = createEmptyRelationshipNarrative();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -372,6 +375,37 @@ test('private chat runs model validation before one official MVU write transacti
     assert.doesNotMatch(wrappedPatch, /不得发送/u);
 });
 
+test('private chat backfills only its missing relationship-narrative slot before generating a reply', async () => {
+    const initialState = recommendationState();
+    initialState.角色池 = {
+        npc_ava: {
+            成人验证: true,
+            公开资料: { 昵称: '艾娃' },
+            仅好友资料: {}, 隐藏资料: { 实际年龄: 24, 私人备注: '不得发送' },
+            偏好与边界: '', 拒绝阈值: 0, 已读不回阈值: 80, 取消匹配阈值: 80, 拉黑阈值: 90,
+            与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0 },
+        },
+    };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } };
+    initialState.正文记忆.npc_ava = '';
+    const { mvu, calls } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); }, settingsStore,
+        llmClient: { async chat() { return { text: JSON.stringify({ replies: ['晚上好。'], relationship: { 好感: 1, 信任: 0, 戒备: 0, 面基意愿: 0 } }) }; } },
+    });
+
+    const result = await bridge.runPrivateChat({ sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '晚上好' });
+
+    assert.equal(result.ok, true);
+    const parsedPatches = calls.filter(([name]) => name === 'parse')
+        .map(([, raw]) => JSON.parse(raw.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)[1]));
+    assert.equal(parsedPatches.length, 2);
+    assert.deepEqual(parsedPatches[0].map((operation) => operation.path), ['/关系叙事/npc_ava']);
+    assert.equal(parsedPatches[0][0].op, 'add');
+    assert.deepEqual(parsedPatches[0][0].value, createEmptyRelationshipNarrative());
+    assert.equal(parsedPatches[1].some((operation) => operation.path === '/会话/chat_1/最近消息/-'), true);
+});
+
 
 test('private chat returns read_without_reply after the local rhythm builder suppresses model bubbles', async () => {
     const initialState = recommendationState();
@@ -388,6 +422,7 @@ test('private chat returns read_without_reply after the local rhythm builder sup
     };
     initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
     initialState.正文记忆.npc_ava = '';
+    initialState.关系叙事.npc_ava = createEmptyRelationshipNarrative();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -419,6 +454,7 @@ test('private chat returns blocked only after the controlled patch atomically bl
     // 拉黑只在开局宽限层数之外仍持续恶化/不改善时触发。
     initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
     initialState.正文记忆.npc_ava = '';
+    initialState.关系叙事.npc_ava = createEmptyRelationshipNarrative();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -472,6 +508,7 @@ test('deleteCharacter reads fresh state and atomically removes every character r
         npc_other: { ...adultCandidate(), 公开资料: { ...adultCandidate().公开资料, 昵称: '其他角色' } },
     };
     initialState.正文记忆 = { npc_ava: '玩家与艾娃的经历。', npc_other: '玩家与其他角色的经历。' };
+    initialState.关系叙事 = { npc_ava: createEmptyRelationshipNarrative(), npc_other: createEmptyRelationshipNarrative() };
     initialState.推荐 = {
         当前队列: ['npc_ava', 'npc_other'],
         临时候选池: { npc_ava: adultCandidate() },
@@ -502,6 +539,7 @@ test('deleteCharacter reads fresh state and atomically removes every character r
     const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
     const patch = JSON.parse(wrappedPatch.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)[1]);
     assert.equal(patch.some((operation) => operation.path === '/角色池/npc_ava' && operation.op === 'remove'), true);
+    assert.equal(patch.some((operation) => operation.path === '/关系叙事/npc_ava' && operation.op === 'remove'), true);
     assert.equal(patch.some((operation) => operation.path === '/推荐/临时候选池/npc_ava' && operation.op === 'remove'), true);
     assert.equal(patch.some((operation) => operation.path === '/会话/chat_1' && operation.op === 'remove'), true);
     assert.equal(patch.some((operation) => operation.path === '/面基记录/meetup_1' && operation.op === 'remove'), true);
@@ -510,6 +548,7 @@ test('deleteCharacter reads fresh state and atomically removes every character r
     assert.deepEqual(result.data.stat_data.群组.group_city.成员UID, ['npc_other']);
     assert.deepEqual(result.data.stat_data.群组.group_city.可发现角色UID, []);
     assert.equal(Object.hasOwn(result.data.stat_data.角色池, 'npc_ava'), false);
+    assert.equal(Object.hasOwn(result.data.stat_data.关系叙事, 'npc_ava'), false);
     assert.equal(Object.hasOwn(result.data.stat_data.会话, 'chat_other'), true);
     assert.equal(Object.hasOwn(result.data.stat_data.面基记录, 'meetup_other'), true);
     assert.deepEqual(result.data.stat_data.系统.UID计数器, { 角色: 12, 会话: 8, 面基: 4, 群组: 2 });

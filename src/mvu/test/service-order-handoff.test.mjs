@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderRebookPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRepairPatch, buildServiceHistoryRolesDeletionPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
 import { normalizeGeneratedCandidate } from '../../recommendation/candidate.js';
+import { createEmptyRelationshipNarrative } from '../relationship-narrative.js';
 
 function adultCandidate(nickname = '林澈') {
     return {
@@ -20,6 +21,7 @@ function serviceState() {
         软件: { 内容模式: 'SFW' },
         角色池: {},
         正文记忆: {},
+        关系叙事: {},
         推荐: { 临时候选池: {} },
         服务订单: {},
     };
@@ -39,6 +41,7 @@ function repeatState({ status = '已完成' } = {}) {
     state.系统.UID计数器.服务订单 = 1;
     state.角色池.npc_service_1 = adultCandidate();
     state.正文记忆.npc_service_1 = '';
+    state.关系叙事.npc_service_1 = createEmptyRelationshipNarrative();
     state.服务订单.service_1 = terminalOrder({ status });
     return state;
 }
@@ -50,18 +53,18 @@ test('service handoff atomically copies an adult local draft and opens one pendi
     assert.equal(built.value.npcUid, 'npc_service_1');
     assert.equal(built.value.orderUid, 'service_1');
     assert.deepEqual(built.value.patch.map(({ op, path }) => [op, path]), [
-        ['add', '/角色池/npc_service_1'], ['add', '/正文记忆/npc_service_1'], ['add', '/服务订单/service_1'],
+        ['add', '/角色池/npc_service_1'], ['add', '/正文记忆/npc_service_1'], ['add', '/关系叙事/npc_service_1'], ['add', '/服务订单/service_1'],
         ['replace', '/系统/UID计数器/角色'], ['replace', '/系统/UID计数器/服务订单'],
     ]);
-    assert.equal(built.value.patch[2].value.状态, '待确认');
-    assert.equal(built.value.patch[2].value.服务分类, 'girl_shuren');
-    assert.equal(built.value.patch[2].value.已确认边界, '');
-    assert.deepEqual(built.value.patch[2].value.合法结束条件, { 已满足: false, 摘要: '', 记录时间: '' });
+    assert.equal(built.value.patch[3].value.状态, '待确认');
+    assert.equal(built.value.patch[3].value.服务分类, 'girl_shuren');
+    assert.equal(built.value.patch[3].value.已确认边界, '');
+    assert.deepEqual(built.value.patch[3].value.合法结束条件, { 已满足: false, 摘要: '', 记录时间: '' });
     assert.equal(validateControlledPatchAgainstState(state, built.value.patch).ok, true);
-    const forged = structuredClone(built.value.patch); forged[2].value.状态 = '进行中';
+    const forged = structuredClone(built.value.patch); forged[3].value.状态 = '进行中';
     assert.equal(validateControlledPatchAgainstState(state, forged).ok, false, 'UI may not forge confirmed/active status');
     const forgedCompletion = structuredClone(built.value.patch);
-    forgedCompletion[2].value.合法结束条件 = { 已满足: true, 摘要: '伪造完成', 记录时间: '现在' };
+    forgedCompletion[3].value.合法结束条件 = { 已满足: true, 摘要: '伪造完成', 记录时间: '现在' };
     assert.equal(validateControlledPatchAgainstState(state, forgedCompletion).ok, false, 'UI may not forge a satisfied completion signal');
     assert.deepEqual(state, serviceState());
 });
@@ -83,7 +86,7 @@ test('service handoff accepts every adult candidate the local generation gate ac
         const state = serviceState();
         const built = buildServiceOrderHandoffPatch(state, { candidate: generated, categoryId: 'girl_shuren' });
         assert.equal(built.ok, true, `昵称「${nickname}」的成年本地角色必须可以下单`);
-        assert.equal(built.value.patch[2].value.服务主题, `熟人商品：与${nickname}的文字协商`);
+        assert.equal(built.value.patch[3].value.服务主题, `熟人商品：与${nickname}的文字协商`);
         assert.equal(validateControlledPatchAgainstState(state, built.value.patch).ok, true, `昵称「${nickname}」的受控 Patch 必须通过白名单校验`);
     }
 });
@@ -203,7 +206,8 @@ test('service lifecycle permits only exact start, cancel, complete, finalize, an
     assert.equal(handoff.ok, true);
     pending.角色池[handoff.value.npcUid] = handoff.value.patch[0].value;
     pending.正文记忆[handoff.value.npcUid] = '';
-    pending.服务订单[handoff.value.orderUid] = structuredClone(handoff.value.patch[2].value);
+    pending.关系叙事[handoff.value.npcUid] = handoff.value.patch[2].value;
+    pending.服务订单[handoff.value.orderUid] = structuredClone(handoff.value.patch[3].value);
     pending.系统.UID计数器.角色 = 1;
     pending.系统.UID计数器.服务订单 = 1;
     const baseBoundaries = { 内容模式: 'SFW', 主题: '熟人商品', 允许项: '公开聊天与结伴散步', 排除项: '未协商事项', 强度: '轻松陪伴', 隐私处理: '仅保留最小摘要', 服务信息: { 价格: '正文协商', 时长: '两小时', 排期: '本周末', 套餐: '基础陪伴', 评价: '', 投诉: '', 退款: '', 服务者信用: '新服务者' } };
@@ -251,7 +255,8 @@ test('service lifecycle permits only exact start, cancel, complete, finalize, an
     const cancelledHandoff = buildServiceOrderHandoffPatch(cancelled, { candidate: adultCandidate(), categoryId: 'girl_shuren' });
     cancelled.角色池[cancelledHandoff.value.npcUid] = cancelledHandoff.value.patch[0].value;
     cancelled.正文记忆[cancelledHandoff.value.npcUid] = '';
-    cancelled.服务订单[cancelledHandoff.value.orderUid] = structuredClone(cancelledHandoff.value.patch[2].value);
+    cancelled.关系叙事[cancelledHandoff.value.npcUid] = cancelledHandoff.value.patch[2].value;
+    cancelled.服务订单[cancelledHandoff.value.orderUid] = structuredClone(cancelledHandoff.value.patch[3].value);
     cancelled.系统.UID计数器.角色 = 1;
     cancelled.系统.UID计数器.服务订单 = 1;
     const cancel = buildServiceOrderCancelPatch(cancelled, { orderUid: 'service_1' });
@@ -267,15 +272,15 @@ test('three-person handoff derives ordered service roles atomically and rejects 
     assert.deepEqual(built.value.npcUids, ['npc_service_1', 'npc_service_2', 'npc_service_3']);
     assert.equal(built.value.orderUid, 'service_1');
     assert.deepEqual(built.value.patch.map(({ op, path }) => [op, path]), [
-        ['add', '/角色池/npc_service_1'], ['add', '/正文记忆/npc_service_1'],
-        ['add', '/角色池/npc_service_2'], ['add', '/正文记忆/npc_service_2'],
-        ['add', '/角色池/npc_service_3'], ['add', '/正文记忆/npc_service_3'],
+        ['add', '/角色池/npc_service_1'], ['add', '/正文记忆/npc_service_1'], ['add', '/关系叙事/npc_service_1'],
+        ['add', '/角色池/npc_service_2'], ['add', '/正文记忆/npc_service_2'], ['add', '/关系叙事/npc_service_2'],
+        ['add', '/角色池/npc_service_3'], ['add', '/正文记忆/npc_service_3'], ['add', '/关系叙事/npc_service_3'],
         ['add', '/服务订单/service_1'], ['replace', '/系统/UID计数器/角色'], ['replace', '/系统/UID计数器/服务订单'],
     ]);
-    assert.deepEqual(built.value.patch[6].value.角色UID列表, built.value.npcUids);
-    assert.deepEqual(built.value.patch[6].value.合法结束条件, { 已满足: false, 摘要: '', 记录时间: '' });
-    assert.equal(built.value.patch[7].value, 3);
-    assert.equal(built.value.patch[8].value, 1);
+    assert.deepEqual(built.value.patch[9].value.角色UID列表, built.value.npcUids);
+    assert.deepEqual(built.value.patch[9].value.合法结束条件, { 已满足: false, 摘要: '', 记录时间: '' });
+    assert.equal(built.value.patch[10].value, 3);
+    assert.equal(built.value.patch[11].value, 1);
     assert.equal(validateControlledPatchAgainstState(state, built.value.patch).ok, true);
     assert.equal(buildServiceOrderHandoffPatch(state, { candidates: [...candidates, adultCandidate('陆遥')], categoryId: 'girl_shuren' }).code, 'service_order_candidate_invalid');
     assert.equal(buildServiceOrderHandoffPatch(state, { candidates: [adultCandidate('林澈'), adultCandidate('林澈')], categoryId: 'girl_shuren' }).code, 'service_order_candidate_invalid');
@@ -289,6 +294,8 @@ test('multi-person terminal repeat and local rebook preserve the participant set
     state.角色池.npc_service_2 = adultCandidate('顾晴');
     state.正文记忆.npc_service_1 = '';
     state.正文记忆.npc_service_2 = '';
+    state.关系叙事.npc_service_1 = createEmptyRelationshipNarrative();
+    state.关系叙事.npc_service_2 = createEmptyRelationshipNarrative();
     state.服务订单.service_1 = {
         角色UID: 'npc_service_1', 角色UID列表: ['npc_service_1', 'npc_service_2'], 内容模式: 'SFW', 服务分类: 'girl_shuren',
         服务主题: '熟人商品：与林澈、顾晴的文字协商', 状态: '已完成', 发起时间: '昨天 18:00', 开始时间: '昨天 19:00',
@@ -320,6 +327,8 @@ function serviceDeletionState() {
     state.角色池.npc_service_2 = adultCandidate('顾晴');
     state.正文记忆.npc_service_1 = '';
     state.正文记忆.npc_service_2 = '';
+    state.关系叙事.npc_service_1 = createEmptyRelationshipNarrative();
+    state.关系叙事.npc_service_2 = createEmptyRelationshipNarrative();
     return state;
 }
 
@@ -328,8 +337,8 @@ test('history deletion removes every isolated service role in one exact patch an
     const deleted = buildServiceHistoryRolesDeletionPatch(state, { npcUids: ['npc_service_1', 'npc_service_2'] });
     assert.equal(deleted.ok, true);
     assert.deepEqual(deleted.value, [
-        { op: 'remove', path: '/正文记忆/npc_service_1' }, { op: 'remove', path: '/角色池/npc_service_1' },
-        { op: 'remove', path: '/正文记忆/npc_service_2' }, { op: 'remove', path: '/角色池/npc_service_2' },
+        { op: 'remove', path: '/正文记忆/npc_service_1' }, { op: 'remove', path: '/关系叙事/npc_service_1' }, { op: 'remove', path: '/角色池/npc_service_1' },
+        { op: 'remove', path: '/正文记忆/npc_service_2' }, { op: 'remove', path: '/关系叙事/npc_service_2' }, { op: 'remove', path: '/角色池/npc_service_2' },
     ]);
     assert.equal(validateControlledPatchAgainstState(state, deleted.value).ok, true);
     assert.equal(buildServiceHistoryRolesDeletionPatch(state, { npcUids: ['npc_service_1', 'npc_service_1'] }).code, 'service_history_delete_invalid');
@@ -343,7 +352,8 @@ test('repair removes only malformed service orders, including over-three partici
     const handoff = buildServiceOrderHandoffPatch(state, { candidate: adultCandidate(), categoryId: 'girl_shuren' });
     state.角色池.npc_service_1 = handoff.value.patch[0].value;
     state.正文记忆.npc_service_1 = '';
-    state.服务订单.service_1 = structuredClone(handoff.value.patch[2].value);
+    state.关系叙事.npc_service_1 = handoff.value.patch[2].value;
+    state.服务订单.service_1 = structuredClone(handoff.value.patch[3].value);
     state.系统.UID计数器.角色 = 1;
     state.系统.UID计数器.服务订单 = 1;
     assert.equal(buildServiceOrderRepairPatch(state, { orderUid: 'service_1' }).code, 'service_order_repair_not_needed');
@@ -374,7 +384,7 @@ test('new controlled service patches accept every person category in either mode
             state.软件.内容模式 = mode;
             const built = buildServiceOrderHandoffPatch(state, { candidate: adultCandidate(), categoryId });
             assert.equal(built.ok, true, `${mode} must accept ${categoryId}`);
-            assert.equal(built.value.patch[2].value.服务主题, `${category}：与林澈的文字协商`);
+            assert.equal(built.value.patch[3].value.服务主题, `${category}：与林澈的文字协商`);
             assert.equal(validateControlledPatchAgainstState(state, built.value.patch).ok, true);
         }
     }
@@ -388,6 +398,7 @@ test('legacy activity orders remain valid historical records but cannot produce 
     state.系统.UID计数器.服务订单 = 1;
     state.角色池.npc_service_1 = adultCandidate();
     state.正文记忆.npc_service_1 = '';
+    state.关系叙事.npc_service_1 = createEmptyRelationshipNarrative();
     state.服务订单.service_legacy = {
         角色UID: 'npc_service_1', 角色UID列表: ['npc_service_1'], 内容模式: 'NSFW', 服务分类: 'adult_companion',
         服务主题: '成人直白陪伴：与林澈的文字协商', 状态: '已完成',

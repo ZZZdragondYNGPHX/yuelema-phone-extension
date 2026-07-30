@@ -2086,7 +2086,7 @@ test('extension update failure surfaces HTTP status and host text in the dialog 
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'loading');
         assert.match(dialog.textContent, /正在检查扩展更新/u);
-        assert.match(dialog.textContent, /当前版本 v1\.0\.11/u, 'loading 弹窗应展示当前版本');
+        assert.match(dialog.textContent, /当前版本 v1\.0\.12/u, 'loading 弹窗应展示当前版本');
 
         gate.reject(new HostExtensionUpdateError('request_failed_http', {
             status: 500,
@@ -2146,7 +2146,7 @@ test('extension update success states show the current version and non-git insta
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'success');
         assert.match(dialog.textContent, /当前已是最新版本/u);
-        assert.match(dialog.textContent, /v1\.0\.11 已是最新版本/u, '最新结果应展示当前版本号');
+        assert.match(dialog.textContent, /v1\.0\.12 已是最新版本/u, '最新结果应展示当前版本号');
 
         result = Promise.resolve({ outcome: 'updated' });
         click(updateEntry());

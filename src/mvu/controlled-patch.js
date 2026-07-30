@@ -17,6 +17,7 @@ import {
 } from '../chat/conversation-summary.js';
 import { MATCH_ACCEPTANCE_THRESHOLD, scoreFavoritePrivateChatInvitation } from '../recommendation/match-scoring.js';
 import { normalizeSoulMatchDraft } from '../recommendation/soul-text-match-service.js';
+import { createEmptyRelationshipNarrative, validateRelationshipNarrative } from './relationship-narrative.js';
 
 export const LATEST_MESSAGE_SCOPE = Object.freeze({ type: 'message', message_id: 'latest' });
 export const NPC_UID_PATTERN = /^npc_[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -348,6 +349,14 @@ function appendEmptyStoryMemory(state, npcUid, operations) {
     return success(undefined);
 }
 
+function appendEmptyRelationshipNarrative(state, npcUid, operations) {
+    const narratives = ownRecord(state.关系叙事);
+    if (!narratives) return fail('mvu_relationship_narrative_schema_outdated');
+    if (Object.hasOwn(narratives, npcUid)) return fail('relationship_narrative_uid_conflict');
+    operations.push({ op: 'add', path: encodeJsonPointer(['关系叙事', npcUid]), value: createEmptyRelationshipNarrative() });
+    return success(undefined);
+}
+
 /**
  * Reconciles pre-v1.0.8 saves without touching any retained memory text.
  * Missing role slots are created empty and orphan slots are removed; malformed
@@ -376,6 +385,35 @@ export function buildStoryMemoryBackfillPatch(state) {
         if (!Object.hasOwn(roles, uid)) {
             operations.push({ op: 'remove', path: encodeJsonPointer(['正文记忆', uid]) });
         }
+    }
+    return success(operations);
+}
+
+/**
+ * Adds only missing protected narrative slots for existing roles. Non-delete
+ * lifecycle operations must never erase an unrecognized or orphan record, so
+ * malformed and orphan state fails closed with no Patch.
+ */
+export function buildRelationshipNarrativeBackfillPatch(state) {
+    if (!ownRecord(state)) return fail('relationship_narrative_backfill_state_invalid');
+    const roles = ownRecord(state.角色池);
+    const narratives = ownRecord(state.关系叙事);
+    if (!roles || !narratives) return fail('mvu_relationship_narrative_schema_outdated');
+
+    const operations = [];
+    for (const uid of Object.keys(roles).sort()) {
+        if (!isNpcUid(uid) || !ownRecord(roles[uid])) return fail('relationship_narrative_backfill_state_invalid');
+        if (!Object.hasOwn(narratives, uid)) {
+            operations.push({ op: 'add', path: encodeJsonPointer(['关系叙事', uid]), value: createEmptyRelationshipNarrative() });
+            continue;
+        }
+        if (!validateRelationshipNarrative(narratives[uid]).ok) return fail('relationship_narrative_backfill_state_invalid');
+    }
+    for (const uid of Object.keys(narratives).sort()) {
+        if (!isNpcUid(uid) || !validateRelationshipNarrative(narratives[uid]).ok) {
+            return fail('relationship_narrative_backfill_state_invalid');
+        }
+        if (!Object.hasOwn(roles, uid)) return fail('relationship_narrative_backfill_orphan');
     }
     return success(operations);
 }
@@ -622,6 +660,8 @@ export function buildServiceOrderHandoffPatch(state, { candidate, candidates, ca
         patch.push({ op: 'add', path: encodeJsonPointer(['角色池', npcUids[index]]), value: normalizedCandidates[index] });
         const memory = appendEmptyStoryMemory(state, npcUids[index], patch);
         if (!memory.ok) return memory;
+        const narrative = appendEmptyRelationshipNarrative(state, npcUids[index], patch);
+        if (!narrative.ok) return narrative;
     }
     patch.push(
         { op: 'add', path: encodeJsonPointer(['服务订单', orderUid]), value: order },
@@ -725,9 +765,10 @@ export function buildServiceHistoryRolesDeletionPatch(state, { npcUids } = {}) {
     const operations = [];
     for (const npcUid of npcUids) {
         const built = buildDeleteCharacterPatch(state, { npcUid });
-        if (!built.ok || built.value.length !== 2
+        if (!built.ok || built.value.length !== 3
             || built.value[0]?.op !== 'remove' || built.value[0]?.path !== encodeJsonPointer(['正文记忆', npcUid])
-            || built.value[1]?.op !== 'remove' || built.value[1]?.path !== encodeJsonPointer(['角色池', npcUid])) {
+            || built.value[1]?.op !== 'remove' || built.value[1]?.path !== encodeJsonPointer(['关系叙事', npcUid])
+            || built.value[2]?.op !== 'remove' || built.value[2]?.path !== encodeJsonPointer(['角色池', npcUid])) {
             return fail('service_history_delete_not_isolated', '', '服务角色仍被会话、面基或推荐列表引用，无法作为孤立角色删除');
         }
         operations.push(...built.value);
@@ -1151,7 +1192,8 @@ export function buildDeleteCharacterPatch(state, { npcUid } = {}) {
     const meetups = ownRecord(state.面基记录);
     const groups = ownRecord(state.群组);
     const storyMemories = ownRecord(state.正文记忆);
-    if (!rolePool || !recommendation || !candidatePool || !sessions || !meetups || !groups || !storyMemories) {
+    const narratives = ownRecord(state.关系叙事);
+    if (!rolePool || !recommendation || !candidatePool || !sessions || !meetups || !groups || !storyMemories || !narratives) {
         return fail('character_delete_state_invalid');
     }
     if (!Object.hasOwn(rolePool, npcUid) && !Object.hasOwn(candidatePool, npcUid)) {
@@ -1205,7 +1247,11 @@ export function buildDeleteCharacterPatch(state, { npcUid } = {}) {
     }
     if (Object.hasOwn(rolePool, npcUid)) {
         if (!Object.hasOwn(storyMemories, npcUid)) return fail('mvu_story_memory_schema_outdated');
+        if (!Object.hasOwn(narratives, npcUid) || !validateRelationshipNarrative(narratives[npcUid]).ok) {
+            return fail('mvu_relationship_narrative_schema_outdated');
+        }
         operations.push({ op: 'remove', path: encodeJsonPointer(['正文记忆', npcUid]) });
+        operations.push({ op: 'remove', path: encodeJsonPointer(['关系叙事', npcUid]) });
         operations.push({ op: 'remove', path: encodeJsonPointer(['角色池', npcUid]) });
     }
     if (operations.length === 0) return fail('character_delete_not_found');
@@ -1313,6 +1359,8 @@ function promoteCandidateIfNeeded(state, uid, operations) {
     });
     const memory = appendEmptyStoryMemory(state, uid, operations);
     if (!memory.ok) return memory;
+    const narrative = appendEmptyRelationshipNarrative(state, uid, operations);
+    if (!narrative.ok) return narrative;
     return success('candidate');
 }
 
@@ -1370,6 +1418,8 @@ export function buildCandidateMatchOutcomePatch(state, { candidate, accepted } =
     const operations = [{ op: 'add', path: encodeJsonPointer(['角色池', npcUid]), value: materialized }];
     const memory = appendEmptyStoryMemory(state, npcUid, operations);
     if (!memory.ok) return memory;
+    const narrative = appendEmptyRelationshipNarrative(state, npcUid, operations);
+    if (!narrative.ok) return narrative;
     let sessionUid = '';
     if (accepted) {
         sessionUid = 'chat_' + (sessionCounter + 1);
@@ -1412,6 +1462,8 @@ export function buildCustomCandidateMatchPatch(state, { candidateUid, matchScore
     });
     const memory = appendEmptyStoryMemory(state, candidateUid, operations);
     if (!memory.ok) return memory;
+    const narrative = appendEmptyRelationshipNarrative(state, candidateUid, operations);
+    if (!narrative.ok) return narrative;
     operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', candidateUid, '与玩家关系', 'NPC专属匹配度']), value: matchScore });
     operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', candidateUid, '与玩家关系', '状态']), value: '已匹配' });
     operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid]), value: matchedSession(candidateUid) });
@@ -1640,7 +1692,12 @@ export function buildControlledPatch(state, command) {
             } else if (roleAt(state, uid)) {
                 const memories = ownRecord(state.正文记忆);
                 if (!memories || !Object.hasOwn(memories, uid)) return fail('mvu_story_memory_schema_outdated');
+                const narratives = ownRecord(state.关系叙事);
+                if (!narratives || !Object.hasOwn(narratives, uid) || !validateRelationshipNarrative(narratives[uid]).ok) {
+                    return fail('mvu_relationship_narrative_schema_outdated');
+                }
                 operations.push({ op: 'remove', path: encodeJsonPointer(['正文记忆', uid]) });
+                operations.push({ op: 'remove', path: encodeJsonPointer(['关系叙事', uid]) });
                 operations.push({ op: 'remove', path: encodeJsonPointer(['角色池', uid]) });
             }
         }
@@ -1772,6 +1829,10 @@ export function validateControlledPatchWhitelist(patch) {
         const storyMemory = /^\/正文记忆\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(path);
         if (operation.op === 'add' && storyMemory && isNpcUid(storyMemory[1]) && operation.value === '') continue;
         if (operation.op === 'remove' && storyMemory && isNpcUid(storyMemory[1])) continue;
+        const relationshipNarrative = /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(path);
+        if (operation.op === 'add' && relationshipNarrative && isNpcUid(relationshipNarrative[1])
+            && validateRelationshipNarrative(operation.value).ok) continue;
+        if (operation.op === 'remove' && relationshipNarrative && isNpcUid(relationshipNarrative[1])) continue;
         const meetupRecord = /^\/面基记录\/(meetup_[A-Za-z0-9_-]{1,64})$/u.exec(path);
         if (operation.op === 'remove' && meetupRecord && isMeetupUid(meetupRecord[1])) continue;
         if (operation.op === 'add' && meetupRecord && isMeetupUid(meetupRecord[1]) && ownRecord(operation.value)
@@ -1902,8 +1963,17 @@ export function validateControlledPatchAgainstState(state, patch) {
         if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
     }
 
+    if (patch.length >= 1 && patch.every((operation) => {
+        const path = operation?.path ?? '';
+        return (operation?.op === 'add' && validateRelationshipNarrative(operation.value).ok)
+            && /^\/关系叙事\/npc_[A-Za-z0-9_-]{1,64}$/u.test(path);
+    })) {
+        const expected = buildRelationshipNarrativeBackfillPatch(state);
+        if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+    }
+
     const serviceRoleRemovals = patch.filter((operation) => operation?.op === 'remove' && /^\/角色池\/npc_service_\d+$/u.test(operation.path));
-    if (serviceRoleRemovals.length >= 1 && patch.length === serviceRoleRemovals.length * 2) {
+    if (serviceRoleRemovals.length >= 1 && patch.length === serviceRoleRemovals.length * 3) {
         const expected = buildServiceHistoryRolesDeletionPatch(state, { npcUids: serviceRoleRemovals.map((operation) => decodeJsonPointer(operation.path).at(-1)) });
         if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
     }
