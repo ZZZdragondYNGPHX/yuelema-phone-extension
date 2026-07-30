@@ -52,7 +52,7 @@ test('matched adults create one exact pending-send meetup record and a draft wit
 
 test('meetup gate ignores legacy willingness and selects only a route allowed by the active mode', () => {
     const locked = matchedState();
-    locked.角色池.npc_ava.与玩家关系.友情值 = 59;
+    locked.角色池.npc_ava.与玩家关系.友情值 = 49;
     locked.角色池.npc_ava.与玩家关系.心动值 = 0;
     locked.角色池.npc_ava.与玩家关系.欲望值 = 100;
     assert.equal(buildMeetupHandoffPatch(locked, request()).code, 'meetup_relationship_threshold_not_met');

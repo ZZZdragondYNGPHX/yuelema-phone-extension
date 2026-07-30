@@ -504,7 +504,7 @@ export function describeActionFailure(result) {
         mvu_parse_input_clone_failed: 'MVU 的临时解析副本不可用，本次未写入任何数据。',
         mvu_relationship_routes_schema_outdated: '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。',
         mvu_story_memory_schema_outdated: '当前聊天缺少 v1.0.8 正文记忆结构。请导入与小手机相同版本的《约了吗》MVU 角色卡后重试；本次未写入。',
-        mvu_relationship_narrative_schema_outdated: '当前聊天缺少 v1.0.12 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
+        mvu_relationship_narrative_schema_outdated: '当前聊天缺少 v1.0.13 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
         story_memory_backfill_state_invalid: '当前正文记忆状态不可修复，请刷新后重试。',
         story_memory_backfill_role_invalid: '当前角色记录无法建立独立正文记忆，本次未写入。',
         story_memory_backfill_value_invalid: '现有正文记忆格式异常；为避免误删经历，本次未自动修复。',

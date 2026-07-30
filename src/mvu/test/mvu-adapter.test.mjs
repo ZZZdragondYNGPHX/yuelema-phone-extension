@@ -8,6 +8,7 @@ import {
     LATEST_MESSAGE_SCOPE,
     buildClearPrivateChatPatch,
     buildControlledPatch,
+    buildPrivateChatPatch,
     buildRecommendationInitialCandidatePatch,
     buildRelationshipNarrativeBackfillPatch,
     buildServiceOrderHandoffPatch,
@@ -577,6 +578,60 @@ test('stripped relationship routes identify an outdated schema without leaking a
     assert.equal(oldData.stat_data.推荐.临时候选池[uid], undefined);
     assert.deepEqual(oldData.stat_data.推荐.当前队列, []);
     assert.equal(oldData.stat_data.系统.UID计数器.角色, 1);
+});
+
+test('stripped B.1 relationship-progress leaves fail closed as a narrative-schema mismatch', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    const role = completeCandidate();
+    role.与玩家关系 = {
+        ...role.与玩家关系,
+        状态: '已匹配', NPC专属匹配度: 70,
+        好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+    };
+    oldData.stat_data.角色池.npc_alpha = role;
+    oldData.stat_data.推荐.当前队列 = [];
+    oldData.stat_data.推荐.临时候选池 = {};
+    oldData.stat_data.正文记忆.npc_alpha = '';
+    oldData.stat_data.关系叙事.npc_alpha = createEmptyRelationshipNarrative();
+    oldData.stat_data.会话.chat_1 = { 对象UID: 'npc_alpha', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' };
+    const built = buildPrivateChatPatch(oldData.stat_data, {
+        sessionUid: 'chat_1', npcUid: 'npc_alpha', playerMessage: '我会尊重你的节奏。',
+        response: {
+            replies: ['谢谢，这让我很安心。'],
+            relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+            bondAssessment: { kind: 'friendly', intensity: 1, direction: 'increase' },
+        },
+    });
+    assert.equal(built.ok, true);
+
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async (_raw, data) => {
+            calls.push('parse');
+            const next = structuredClone(data);
+            for (const operation of built.value) {
+                const segments = decodeJsonPointer(operation.path);
+                const key = segments.pop();
+                let parent = next.stat_data;
+                for (const segment of segments) parent = parent[segment];
+                if (operation.op === 'add' && Array.isArray(parent) && key === '-') parent.push(structuredClone(operation.value));
+                else parent[key] = structuredClone(operation.value);
+            }
+            delete next.stat_data.关系叙事.npc_alpha.进程.已消费事件ID;
+            return next;
+        },
+        replaceMvuData: async () => calls.push('replace'),
+    };
+
+    const result = await applyControlledPatch({ patch: built.value, mvu, eventEmit: async () => calls.push('event'), diagnosticLogger: { error() {} } });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.code, 'mvu_relationship_narrative_schema_outdated');
+    assert.equal(result.detail.path, '/关系叙事/npc_alpha/进程/已消费事件ID');
+    assert.deepEqual(calls, ['parse']);
+    assert.deepEqual(oldData.stat_data.关系叙事.npc_alpha.进程.已消费事件ID, []);
 });
 
 test('content-mode toggle is persisted only when provider output satisfies the exact replace', async () => {

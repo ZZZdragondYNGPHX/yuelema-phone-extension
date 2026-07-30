@@ -80,7 +80,7 @@ function applyJsonPatch(state, patch) {
     }
 }
 
-function createMvu({ deferredParse = false, initialState = state() } = {}) {
+function createMvu({ deferredParse = false, initialState = state(), persistReplacement = false } = {}) {
     const calls = [];
     let releaseParse;
     const parsePromise = deferredParse ? new Promise(resolve => { releaseParse = resolve; }) : null;
@@ -96,7 +96,10 @@ function createMvu({ deferredParse = false, initialState = state() } = {}) {
             if (encoded) applyJsonPatch(next.stat_data, JSON.parse(encoded));
             return next;
         },
-        async replaceMvuData(nextData, scope) { calls.push(['replace', nextData, scope]); },
+        async replaceMvuData(nextData, scope) {
+            calls.push(['replace', nextData, scope]);
+            if (persistReplacement) data.stat_data = nextData.stat_data;
+        },
     };
     return { mvu, calls, data, releaseParse: () => releaseParse?.() };
 }
@@ -388,7 +391,7 @@ test('private chat backfills only its missing relationship-narrative slot before
     };
     initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } };
     initialState.正文记忆.npc_ava = '';
-    const { mvu, calls } = createMvu({ initialState });
+    const { mvu, calls } = createMvu({ initialState, persistReplacement: true });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); }, settingsStore,
         llmClient: { async chat() { return { text: JSON.stringify({ replies: ['晚上好。'], relationship: { 好感: 1, 信任: 0, 戒备: 0, 面基意愿: 0 } }) }; } },

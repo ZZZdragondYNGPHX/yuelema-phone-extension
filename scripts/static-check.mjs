@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.0.12') fail('manifest.version 必须与扩展版本 1.0.12 统一');
+if (manifest.version !== '1.0.13') fail('manifest.version 必须与扩展版本 1.0.13 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -121,7 +121,7 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.0.12'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.12 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.0.13'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.13 统一（必须位于壳层 app-shell.js）');
 if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
     || !appShellCore.includes("'placement_reset'")
     || !appShellCore.includes("'mvu_read_complete'")
@@ -275,7 +275,10 @@ const relationshipProgress = await readFile(resolve(root, 'src/chat/relationship
 const matchScoring = await readFile(resolve(root, 'src/recommendation/match-scoring.js'), 'utf8');
 if (!privateChatResponse.includes('normalizePrivateChatResponse') || !privateChatResponse.includes('projectPrivateChatResponseError') || !privateChatResponse.includes('MAX_PRIVATE_CHAT_REPLY_COUNT')) fail('缺少私聊多气泡模型回复的严格校验与安全错误投影');
 if (!interactionRhythm.includes('decideInteractionRhythm') || !interactionRhythm.includes('computeInteractionPressure')) fail('缺少已读不回/拉黑互动节奏的本地确定性裁决');
-if (!relationshipProgress.includes('projectBondProgress') || !relationshipProgress.includes('deriveMeetupAccess') || !relationshipProgress.includes('meetupRouteGuidance') || !privateChatResponse.includes('bondAssessment') || !controlledPatch.includes('projectBondProgress') || !uiModel.includes('meetupAccess') || !appShell.includes('meetupUnlocked')) fail('缺少分模式关系成长、面基门禁或路线草稿接线');
+if (!relationshipProgress.includes('settleRelationshipProgress') || !relationshipProgress.includes('relationshipEventIdForTurn')
+    || !relationshipProgress.includes('SFW_MEETUP_ROUTE_THRESHOLD') || !relationshipProgress.includes('deriveMeetupAccess') || !relationshipProgress.includes('meetupRouteGuidance')
+    || !privateChatResponse.includes('bondAssessment') || !controlledPatch.includes('settleRelationshipProgress')
+    || !controlledPatch.includes('SFW细微裂缝已触发') || !uiModel.includes('meetupAccess') || !appShell.includes('meetupUnlocked')) fail('缺少阶段 B.1 三值结算、SFW 面基门禁或路线草稿接线');
 if (!privateChatService.includes('validatePrivateChatRequest') || !privateChatService.includes('buildPrivateChatContext') || !privateChatService.includes('generatePrivateChatReply') || !privateChatService.includes('generatePrivateChatSummary')) fail('缺少私聊上下文隐私投影、请求校验或模型调用接线');
 if (!conversationSummary.includes('listUnsummarizedConversationMessages') || !conversationSummary.includes('summaryRecordSource') || !conversationSummary.includes('normalizeGeneratedConversationSummary')) fail('缺少受限对话总结状态、原始片段或模型输出校验');
 if (!controlledPatch.includes('buildPrivateChatPatch') || !controlledPatch.includes('buildPrivateChatSummaryPatch') || !controlledPatch.includes('buildPrivateChatSummaryFailurePatch') || !controlledPatch.includes('meetup_summary_required') || !controlledPatch.includes('buildClearPrivateChatPatch') || !controlledPatch.includes('buildDeleteCharacterPatch') || !actionBridge.includes('runPrivateChat') || !actionBridge.includes('runPrivateChatSummary') || !actionBridge.includes('runMeetupHandoff') || !actionBridge.includes('clearPrivateChat') || !actionBridge.includes('deleteCharacter')) fail('缺少私聊节奏/总结/面基前整理的受控 Patch 或唯一 MVU 写入桥接');

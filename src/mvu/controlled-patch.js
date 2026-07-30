@@ -3,7 +3,7 @@ import { normalizeGeneratedCandidate } from '../recommendation/candidate.js';
 import { normalizePrivateChatResponse } from '../chat/private-chat-response.js';
 import { validatePrivateChatRequest } from '../chat/private-chat-service.js';
 import { decideInteractionRhythm } from '../chat/interaction-rhythm.js';
-import { allowedAssessmentKinds, deriveMeetupAccess, meetupRouteGuidance, projectBondProgress } from '../chat/relationship-progress.js';
+import { allowedAssessmentKinds, deriveMeetupAccess, meetupRouteGuidance, settleRelationshipProgress } from '../chat/relationship-progress.js';
 import {
     MAX_CHAT_HISTORY_MESSAGES,
     MAX_CHAT_SUMMARY_RECORDS,
@@ -42,6 +42,11 @@ const SERVICE_CATEGORY_BY_MODE = Object.freeze({
 });
 const RELATIONSHIP_VALUE_FIELDS = Object.freeze(['好感', '信任', '戒备', '面基意愿']);
 const BOND_VALUE_FIELDS = Object.freeze(['友情值', '心动值', '欲望值']);
+const RELATIONSHIP_NARRATIVE_PROGRESS_BOOLEAN_FIELDS = new Set([
+    'SFW细微裂缝已触发', 'SFW朋友分享已触发', 'SFW面基已解锁',
+]);
+const RELATIONSHIP_NARRATIVE_TURN_ID_PATTERN = /^msg_chat_[A-Za-z0-9][A-Za-z0-9_-]{0,63}_p_[1-9]\d*$/u;
+const RELATIONSHIP_NARRATIVE_EVENT_ID_PATTERN = /^chat:[A-Za-z0-9][A-Za-z0-9_-]{0,63}:[1-9]\d*$/u;
 const MAX_CHAT_MESSAGE_LENGTH = 600;
 const MAX_SERVICE_ORDER_PARTICIPANTS = 3;
 const EMPTY_SERVICE_COMPLETION_SIGNAL = Object.freeze({ 已满足: false, 摘要: '', 记录时间: '' });
@@ -80,6 +85,29 @@ function success(value) {
 
 function isNpcUid(value) {
     return typeof value === 'string' && NPC_UID_PATTERN.test(value);
+}
+
+function validRelationshipNarrativeTurnId(value) {
+    return typeof value === 'string' && value.length <= 160 && RELATIONSHIP_NARRATIVE_TURN_ID_PATTERN.test(value);
+}
+
+function validRelationshipNarrativeEventIds(value) {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > 64) return false;
+    try {
+        const names = Object.getOwnPropertyNames(value);
+        if (names.length !== value.length + 1 || !names.includes('length') || Object.getOwnPropertySymbols(value).length !== 0) return false;
+        const seen = new Set();
+        for (let index = 0; index < value.length; index += 1) {
+            const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+            const eventId = descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+            if (!descriptor?.enumerable || typeof eventId !== 'string' || eventId.length > 80
+                || !RELATIONSHIP_NARRATIVE_EVENT_ID_PATTERN.test(eventId) || seen.has(eventId)) return false;
+            seen.add(eventId);
+        }
+        return names.every((name) => name === 'length' || /^(0|[1-9]\d*)$/u.test(name) && Number(name) < value.length);
+    } catch {
+        return false;
+    }
 }
 
 function ownRecord(value) {
@@ -612,6 +640,25 @@ function nextChatMessageNumber(sessionUid, recentMessages) {
     }
     return Math.max(maximum + 1, recentMessages.length + 1);
 }
+
+function normalizeRelationshipDedupeText(value) {
+    return typeof value === 'string'
+        ? value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('zh-CN')
+        : '';
+}
+
+function repeatsRecentPlayerMessage(recentMessages, playerMessage) {
+    const normalized = normalizeRelationshipDedupeText(playerMessage);
+    if (!normalized || !Array.isArray(recentMessages)) return false;
+    let inspected = 0;
+    for (let index = recentMessages.length - 1; index >= 0 && inspected < 6; index -= 1) {
+        const message = ownRecord(recentMessages[index]);
+        if (!message || message.发送者 !== '玩家') continue;
+        inspected += 1;
+        if (normalizeRelationshipDedupeText(message.内容) === normalized) return true;
+    }
+    return false;
+}
 /**
  * Commits one player message and then applies the role's hidden interaction
  * rhythm locally. A normal outcome appends 1..6 validated role bubbles; a
@@ -898,6 +945,8 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
     catch { return fail('private_chat_response_invalid'); }
 
     const { session, npc, relationship, playerMessage: normalizedMessage } = request.value;
+    const relationshipNarrative = validateRelationshipNarrative(ownRecord(ownRecord(state.关系叙事)?.[npcUid]));
+    if (!relationshipNarrative.ok) return fail('mvu_relationship_narrative_schema_outdated');
     const recentMessages = Array.isArray(session.最近消息) ? session.最近消息 : null;
     if (!recentMessages || recentMessages.length > MAX_CHAT_HISTORY_MESSAGES) return fail('private_chat_session_messages_invalid');
     for (const field of RELATIONSHIP_VALUE_FIELDS) {
@@ -952,10 +1001,11 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
         return { ...chatMessage(sender, uid, content), 层数: nextLayer };
     };
     const operations = [];
+    const playerMessageUid = 'msg_' + sessionUid + '_p_' + nextMessageNumber;
     for (let index = 0; index < retainedOverflow; index += 1) {
         operations.push({ op: 'remove', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '0']) });
     }
-    operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: messageForLayer('玩家', 'msg_' + sessionUid + '_p_' + nextMessageNumber, normalizedMessage) });
+    operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: messageForLayer('玩家', playerMessageUid, normalizedMessage) });
     if (rhythm.outcome === 'replied') {
         normalizedResponse.replies.forEach((reply, index) => operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']), value: messageForLayer('角色', 'msg_' + sessionUid + '_n_' + (nextMessageNumber + index + 1), reply) }));
     } else {
@@ -972,11 +1022,15 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
         const next = rhythm.projectedRelationship[field];
         if (next !== relationship[field]) operations.push({ op: 'replace', path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', field]), value: next });
     }
-    const bondProgress = projectBondProgress({
+    const bondProgress = settleRelationshipProgress({
         contentMode: ownRecord(state.软件)?.内容模式,
         relationship,
+        progress: relationshipNarrative.value.进程,
         assessment: normalizedResponse.bondAssessment,
-        replied: rhythm.outcome === 'replied',
+        // A reply may still be natural on a repeated message, but a copied or
+        // recently repeated utterance is not a new relationship fact in B.1.
+        replied: rhythm.outcome === 'replied' && !repeatsRecentPlayerMessage(recentMessages, normalizedMessage),
+        turnId: playerMessageUid,
     });
     if (bondProgress.delta !== 0 && BOND_VALUE_FIELDS.includes(bondProgress.field)) {
         operations.push({
@@ -984,6 +1038,13 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
             path: encodeJsonPointer(['角色池', npcUid, '与玩家关系', bondProgress.field]),
             value: bondProgress.nextValue,
         });
+        for (const [field, value] of Object.entries(bondProgress.progressUpdates)) {
+            operations.push({
+                op: 'replace',
+                path: encodeJsonPointer(['关系叙事', npcUid, '进程', field]),
+                value,
+            });
+        }
     }
     operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '对话层数']), value: nextLayer });
     return success(operations);
@@ -1829,6 +1890,13 @@ export function validateControlledPatchWhitelist(patch) {
         const storyMemory = /^\/正文记忆\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(path);
         if (operation.op === 'add' && storyMemory && isNpcUid(storyMemory[1]) && operation.value === '') continue;
         if (operation.op === 'remove' && storyMemory && isNpcUid(storyMemory[1])) continue;
+        const relationshipNarrativeProgress = /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\/(SFW细微裂缝已触发|SFW朋友分享已触发|SFW面基已解锁|最后结算回合UID|已消费事件ID)$/u.exec(path);
+        if (operation.op === 'replace' && relationshipNarrativeProgress && isNpcUid(relationshipNarrativeProgress[1])) {
+            const progressField = relationshipNarrativeProgress[2];
+            if (RELATIONSHIP_NARRATIVE_PROGRESS_BOOLEAN_FIELDS.has(progressField) && operation.value === true) continue;
+            if (progressField === '最后结算回合UID' && validRelationshipNarrativeTurnId(operation.value)) continue;
+            if (progressField === '已消费事件ID' && validRelationshipNarrativeEventIds(operation.value)) continue;
+        }
         const relationshipNarrative = /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(path);
         if (operation.op === 'add' && relationshipNarrative && isNpcUid(relationshipNarrative[1])
             && validateRelationshipNarrative(operation.value).ok) continue;

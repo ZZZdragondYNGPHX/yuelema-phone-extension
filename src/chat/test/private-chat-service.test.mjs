@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { YueLeMaLlmError } from '../../llm/openai-compatible-client.js';
 import { buildPrivateChatContext, consumePrivateChatDiagnostics, generatePrivateChatReply, generatePrivateChatSummary } from '../private-chat-service.js';
 import { buildPrivateChatPatch, validateControlledPatchAgainstState } from '../../mvu/controlled-patch.js';
+import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
 
 function state() {
     return {
@@ -34,6 +35,10 @@ function state() {
         正文记忆: {
             npc_adult: '玩家与小满在线下见过一次，一起喝了咖啡。',
             npc_other: '玩家与周遥一起看过展览，分别时约定分享书单。',
+        },
+        关系叙事: {
+            npc_adult: createEmptyRelationshipNarrative(),
+            npc_other: createEmptyRelationshipNarrative(),
         },
         推荐: { 当前队列: [], 临时候选池: {}, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
         会话: {
@@ -212,6 +217,8 @@ test('private chat requests replies and returns only validated multi-bubble data
     assert.match(request.messages[0].content, /保持简短/);
     assert.match(request.messages[0].content, /"replies"/);
     assert.match(request.messages[0].content, /1-6/);
+    assert.match(request.messages[0].content, /正文记忆只用于自然回复连续性/u);
+    assert.match(request.messages[0].content, /不能作为 bondAssessment 的依据/u);
     assert.doesNotMatch(JSON.stringify(request.messages), /绝不泄露|不得发送|实际年龄/);
     assert.deepEqual(current, before);
 });

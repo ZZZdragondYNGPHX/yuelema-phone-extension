@@ -37,7 +37,7 @@ test('normal private chat appends each validated reply as its own bubble', () =>
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
 });
 
-test('private chat can lower one bond route by at most ten through the controlled patch', () => {
+test('private chat applies the global bounded decline and its turn/event lock in one controlled patch', () => {
     const current = state({
         relationship: {
             状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
@@ -56,7 +56,75 @@ test('private chat can lower one bond route by at most ten through the controlle
         },
     });
     assert.equal(built.ok, true);
-    assert.equal(built.value.some((operation) => operation.path === '/角色池/npc_one/与玩家关系/欲望值' && operation.value === 70), true);
+    assert.equal(built.value.some((operation) => operation.path === '/角色池/npc_one/与玩家关系/欲望值' && operation.value === 76), true);
+    assert.equal(built.value.some((operation) => operation.path === '/关系叙事/npc_one/进程/最后结算回合UID' && operation.value === 'msg_chat_1_p_1'), true);
+    assert.deepEqual(
+        built.value.find((operation) => operation.path === '/关系叙事/npc_one/进程/已消费事件ID')?.value,
+        ['chat:1:1'],
+    );
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
+test('SFW threshold settlement writes only narrow protected progress leaves in the same transaction', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 19, 心动值: 0, 欲望值: 0,
+        },
+    });
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '我会按你的节奏来。',
+        response: { ...response(), bondAssessment: { kind: 'friendly', intensity: 2, direction: 'increase' } },
+    });
+    assert.equal(built.ok, true);
+    const progressOperations = built.value.filter((operation) => operation.path.startsWith('/关系叙事/npc_one/进程/'));
+    assert.deepEqual(progressOperations, [
+        { op: 'replace', path: '/关系叙事/npc_one/进程/最后结算回合UID', value: 'msg_chat_1_p_1' },
+        { op: 'replace', path: '/关系叙事/npc_one/进程/已消费事件ID', value: ['chat:1:1'] },
+        { op: 'replace', path: '/关系叙事/npc_one/进程/SFW细微裂缝已触发', value: true },
+    ]);
+    assert.equal(built.value.some((operation) => operation.path === '/角色池/npc_one/与玩家关系/友情值' && operation.value === 20), true);
+    assert.equal(built.value.some((operation) => operation.path === '/关系叙事/npc_one'), false, 'never serialize protected life/wish records into a chat settlement');
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+
+    const forgedTurn = structuredClone(built.value);
+    forgedTurn.find((operation) => operation.path.endsWith('/最后结算回合UID')).value = 'msg_chat_1_p_999';
+    assert.equal(validateControlledPatchAgainstState(current, forgedTurn).ok, false, 'only the locally generated turn UID may pass exact reconstruction');
+    const forgedFlag = structuredClone(built.value);
+    forgedFlag.find((operation) => operation.path.endsWith('/SFW细微裂缝已触发')).value = false;
+    assert.equal(validateControlledPatchAgainstState(current, forgedFlag).ok, false, 'flags may never be reset by this path');
+    assert.equal(validateControlledPatchAgainstState(current, [{ op: 'replace', path: '/关系叙事/npc_one/人生底色/完整理解', value: '越权' }]).ok, false);
+});
+
+test('private chat fails closed without a complete relationship narrative registry', () => {
+    const current = state();
+    delete current.关系叙事.npc_one;
+    assert.deepEqual(
+        buildPrivateChatPatch(current, { sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '你好', response: response() }),
+        { ok: false, code: 'mvu_relationship_narrative_schema_outdated', detail: '' },
+    );
+});
+
+test('a recently repeated player message may receive a reply but cannot settle another relationship change', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 19, 心动值: 0, 欲望值: 0,
+        },
+    });
+    current.会话.chat_1.最近消息 = [{
+        消息UID: 'msg_chat_1_p_1', 发送者: '玩家', 内容: '我会按你的节奏来。', 时间: '', 层数: 1,
+    }];
+    current.会话.chat_1.对话层数 = 1;
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '我会按你的节奏来。',
+        response: { ...response(), bondAssessment: { kind: 'friendly', intensity: 1, direction: 'increase' } },
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path === '/角色池/npc_one/与玩家关系/友情值'), false);
+    assert.equal(built.value.some((operation) => operation.path.startsWith('/关系叙事/npc_one/进程/')), false);
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
 });
 

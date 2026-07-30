@@ -13,6 +13,7 @@ import { createEmptyState } from '../ui/empty-state.js';
 import { SERVICE_UNLOCK_STORAGE_KEY } from './shared.js';
 
 const RECENT_RELEASE_NOTES = Object.freeze([
+    'v1.0.13：私聊三值结算改为受控的 +1/+2/-2/-3/-4/0；SFW 只累积友情，并以回合锁和事件去重触发 20/40/50 阶段旗标。',
     'v1.0.12：新增按角色 UID 隔离的关系叙事档案与首次私聊安全迁移；人生底色、未竟心愿和阶段旗标不会进入公开资料或普通聊天提示词。',
     'v1.0.11：三种生图接口共用浏览器端/酒馆后端选择；NAI 采样器与噪点表改为固定下拉，NAI 整体预设保存非机密连接、采样、尺寸和提示词。',
     'v1.0.8：正文经历按对象独立回流私聊；当前对象与其他对象记忆分区防串台；清除旧长期摘要平行字段。',
