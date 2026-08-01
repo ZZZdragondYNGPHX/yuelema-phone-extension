@@ -12,11 +12,12 @@ const PENDING_STATE = '待复盘';
 const EMPTY_STATE = '空';
 const ROUTE_CONTRACTS = Object.freeze({
     SFW友情: Object.freeze({ relationshipField: '友情值', meetupRoute: '友情', directionLock: '' }),
+    SFW心动: Object.freeze({ relationshipField: '心动值', meetupRoute: '友情', directionLock: '' }),
     NSFW爱情: Object.freeze({ relationshipField: '心动值', meetupRoute: '恋爱', directionLock: '爱情' }),
     NSFW共识亲密: Object.freeze({ relationshipField: '欲望值', meetupRoute: '欲望', directionLock: '共识亲密' }),
 });
-const EVENT_CATEGORIES = new Set(['兑现承诺', '推进心愿', '尊重拒绝', '共同完成', '明确同意', '边界不匹配', '停止或降级']);
-const POSITIVE_CATEGORIES = new Set(['兑现承诺', '推进心愿', '尊重拒绝', '共同完成', '明确同意']);
+const EVENT_CATEGORIES = new Set(['兑现承诺', '推进心愿', '心愿完成或重定义', '尊重拒绝', '共同完成', '明确同意', '边界不匹配', '停止或降级']);
+const POSITIVE_CATEGORIES = new Set(['兑现承诺', '推进心愿', '心愿完成或重定义', '尊重拒绝', '共同完成', '明确同意']);
 const NEGATIVE_CATEGORIES = new Set(['边界不匹配', '停止或降级']);
 const POSITIVE_SEVERITIES = new Set(['常规', '明显']);
 const NEGATIVE_SEVERITIES = new Set(['常规', '明显', '严重']);

@@ -17,6 +17,10 @@ function progress(overrides = {}) {
         SFW细微裂缝已触发: false,
         SFW朋友分享已触发: false,
         SFW面基已解锁: false,
+        SFW理解已检查: false,
+        SFW主动揭示已触发: false,
+        SFW心动已解锁: false,
+        SFW双轨结局已解锁: false,
         NSFW爱情阶段30已触发: false,
         NSFW爱情阶段40已触发: false,
         NSFW共识亲密阶段30已触发: false,
@@ -25,6 +29,7 @@ function progress(overrides = {}) {
         NSFW路线锁定: '',
         最后结算回合UID: '',
         已消费事件ID: [],
+        最近关系观察: '',
         边界暂停状态: '',
         关系结束状态: '',
         冻结关系值: '',
@@ -92,12 +97,13 @@ test('SFW 20/40/50 flags trigger once when a bounded settlement crosses each thr
     assert.equal(Object.hasOwn(alreadySeen.progressUpdates, 'SFW细微裂缝已触发'), false);
 });
 
-test('turn and event locks, pause, ending and frozen fields all settle to zero', () => {
+test('turn and event locks, pause, terminal ending and frozen fields all settle to zero', () => {
     const turnId = 'msg_chat_1_p_1';
     assert.equal(settle({ progress: progress({ 最后结算回合UID: turnId }), turnId }).delta, 0);
     assert.equal(settle({ progress: progress({ 已消费事件ID: ['chat:1:1'] }), turnId }).delta, 0);
     assert.equal(settle({ progress: progress({ 边界暂停状态: '暂停' }), turnId }).delta, 0);
-    assert.equal(settle({ progress: progress({ 关系结束状态: '深度朋友' }), turnId }).delta, 0);
+    assert.equal(settle({ progress: progress({ 关系结束状态: '结束联系' }), turnId }).delta, 0);
+    assert.equal(settle({ progress: progress({ 关系结束状态: '深度朋友' }), turnId }).delta, 1, 'a settled label is not an archive or deletion');
     assert.equal(settle({ progress: progress({ 冻结关系值: '友情值' }), turnId }).delta, 0);
     assert.equal(settle({ replied: false, turnId }).delta, 0);
 });
@@ -187,7 +193,97 @@ test('only-SFW keeps friendship available while pause/end and NSFW meetup fail c
     }).reason, 'nsfw_direction_unconfirmed');
     assert.equal(deriveMeetupAccess({ contentMode: 'NSFW', relationship: { 友情值: 100 }, progress: progress({ 边界暂停状态: '仅SFW' }) }).reason, 'only_sfw');
     assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 100 }, progress: progress({ 边界暂停状态: '暂停' }) }).reason, 'relationship_paused');
-    assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 100 }, progress: progress({ 关系结束状态: '深度朋友' }) }).reason, 'relationship_ended');
+    assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 100 }, progress: progress({ 关系结束状态: '结束联系' }) }).reason, 'relationship_ended');
+});
+
+test('SFW 60 direct understanding unlocks heart and closes ordinary positive farming', () => {
+    const understood = settle({
+        relationship: { 友情值: 59, 心动值: 0, 欲望值: 0 },
+        sfwInsightAssessment: 'direct_understanding',
+    });
+    assert.equal(understood.nextValue, 60);
+    assert.equal(understood.progressUpdates.SFW理解已检查, true);
+    assert.equal(understood.progressUpdates.SFW心动已解锁, true);
+    assert.equal(understood.progressUpdates.最近关系观察, '理解已确认');
+
+    const ordinary = settle({
+        relationship: { 友情值: 60, 心动值: 0, 欲望值: 0 },
+        progress: progress({ SFW理解已检查: true, SFW心动已解锁: true }),
+        turnId: 'msg_chat_1_p_2',
+    });
+    assert.deepEqual({ field: ordinary.field, delta: ordinary.delta }, { field: '', delta: 0 });
+});
+
+test('failed understanding requires active reveal plus later support before delayed dual routes open', () => {
+    const missed = settle({
+        relationship: { 友情值: 59, 心动值: 0, 欲望值: 0 },
+        sfwInsightAssessment: 'not_yet',
+    });
+    assert.equal(missed.progressUpdates.SFW理解已检查, true);
+    assert.equal(Object.hasOwn(missed.progressUpdates, 'SFW心动已解锁'), false);
+
+    const reveal = settle({
+        relationship: { 友情值: 60, 心动值: 0, 欲望值: 0 },
+        progress: progress({ SFW理解已检查: true }),
+        sfwInsightAssessment: 'active_reveal', turnId: 'msg_chat_1_p_2',
+    });
+    assert.equal(reveal.progressUpdates.SFW主动揭示已触发, true);
+    const support = settle({
+        relationship: { 友情值: 61, 心动值: 0, 欲望值: 0 },
+        progress: progress({ SFW理解已检查: true, SFW主动揭示已触发: true }),
+        sfwInsightAssessment: 'post_reveal_support', turnId: 'msg_chat_1_p_3',
+    });
+    assert.equal(support.progressUpdates.SFW心动已解锁, true);
+});
+
+test('SFW body-only heart reaches 100 only with a resolved wish and then accepts an explicit ending', () => {
+    const heartCandidate = bodyCandidate({
+        事件类别: '心愿完成或重定义',
+        关系路线: 'SFW心动',
+        允许影响关系值: ['心动值'],
+    });
+    const heart = settleBodyRelationshipCandidate({
+        contentMode: 'SFW', relationship: { 友情值: 62, 心动值: 98 },
+        progress: progress({ SFW理解已检查: true, SFW心动已解锁: true }),
+        candidate: heartCandidate, turnId: 'msg_chat_1_p_8',
+    });
+    assert.deepEqual({ field: heart.field, nextValue: heart.nextValue, wish: heart.wishTrajectory }, {
+        field: '心动值', nextValue: 100, wish: '重定义',
+    });
+    assert.equal(heart.progressUpdates.SFW双轨结局已解锁, true);
+
+    const ending = settle({
+        relationship: { 友情值: 62, 心动值: 100, 欲望值: 0 },
+        progress: progress({ SFW理解已检查: true, SFW心动已解锁: true, SFW双轨结局已解锁: true }),
+        assessment: { kind: 'none', intensity: 0, direction: 'none' },
+        sfwResolutionAssessment: 'romance_confirmed', turnId: 'msg_chat_1_p_9',
+    });
+    assert.equal(ending.relationshipEndState, '恋人');
+    assert.equal(ending.progressUpdates.最近关系观察, '结局确认');
+
+    const immutable = settle({
+        relationship: { 友情值: 62, 心动值: 100, 欲望值: 0 },
+        progress: progress({
+            SFW理解已检查: true, SFW心动已解锁: true, SFW双轨结局已解锁: true,
+            关系结束状态: '恋人',
+        }),
+        assessment: { kind: 'none', intensity: 0, direction: 'none' },
+        sfwResolutionAssessment: 'growth_confirmed', turnId: 'msg_chat_1_p_10',
+    });
+    assert.equal(immutable.relationshipEndState, '', 'a confirmed SFW ending cannot be rewritten by a later model reply');
+    assert.equal(Object.hasOwn(immutable.progressUpdates, '最近关系观察'), false);
+});
+
+test('delayed dual friendship winning first settles deep friends and freezes heart', () => {
+    const result = settleBodyRelationshipCandidate({
+        contentMode: 'SFW', relationship: { 友情值: 98, 心动值: 45 },
+        progress: progress({ SFW理解已检查: true, SFW主动揭示已触发: true, SFW心动已解锁: true }),
+        candidate: bodyCandidate(), turnId: 'msg_chat_1_p_30',
+    });
+    assert.equal(result.nextValue, 100);
+    assert.equal(result.progressUpdates.SFW双轨结局已解锁, true);
+    assert.equal(result.progressUpdates.冻结关系值, '心动值');
+    assert.equal(result.relationshipEndState, '深度朋友');
 });
 
 function bodyCandidate(overrides = {}) {

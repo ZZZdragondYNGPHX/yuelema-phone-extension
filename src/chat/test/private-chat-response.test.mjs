@@ -31,6 +31,8 @@ test('accepts replies and returns an independent canonical clone', () => {
         relationship: raw.relationship,
         bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
         bodyEventReview: 'defer',
+        sfwInsightAssessment: 'none',
+        sfwResolutionAssessment: 'none',
         nsfwSafetyAssessment: 'none',
         nsfwConsentAssessment: 'none',
     });
@@ -43,6 +45,17 @@ test('accepts replies and returns an independent canonical clone', () => {
     assert.deepEqual(normalized.replies, ['今晚方便聊聊吗？', '我刚好有空。']);
     assert.equal(normalized.relationship.好感, 2);
     assert.deepEqual(normalizePrivateChatResponse(normalized), normalized);
+});
+
+test('accepts only the narrow SFW insight and ending vocabularies', () => {
+    const normalized = normalizePrivateChatResponse(response({
+        sfwInsightAssessment: 'active_reveal',
+        sfwResolutionAssessment: 'romance_declined',
+    }), { contentMode: 'SFW' });
+    assert.equal(normalized.sfwInsightAssessment, 'active_reveal');
+    assert.equal(normalized.sfwResolutionAssessment, 'romance_declined');
+    expectCode(() => normalizePrivateChatResponse(response({ sfwInsightAssessment: 'score_60' }), { contentMode: 'SFW' }), 'private_chat_response_relationship_invalid');
+    expectCode(() => normalizePrivateChatResponse(response({ sfwResolutionAssessment: 'romance_confirmed' }), { contentMode: 'NSFW' }), 'private_chat_response_relationship_invalid');
 });
 
 test('accepts only the bounded NSFW safety vocabulary and keeps SFW fail-closed', () => {

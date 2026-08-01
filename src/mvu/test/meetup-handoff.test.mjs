@@ -83,7 +83,7 @@ test('meetup handoff fails closed for pause, ending and NSFW only-SFW state', ()
     assert.equal(buildMeetupHandoffPatch(paused, request()).code, 'meetup_relationship_paused');
 
     const ended = matchedState();
-    ended.关系叙事.npc_ava.进程.关系结束状态 = '深度朋友';
+    ended.关系叙事.npc_ava.进程.关系结束状态 = '结束联系';
     assert.equal(buildMeetupHandoffPatch(ended, request()).code, 'meetup_relationship_ended');
 
     const onlySfw = matchedState();

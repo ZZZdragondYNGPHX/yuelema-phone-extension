@@ -183,6 +183,72 @@ function projectStoryMemoryContext(state, currentNpcUid) {
     });
 }
 
+const SFW_MEETUP_EVENT_LIBRARY = Object.freeze([
+    '日常验证', '旧地重返', '技能共作', '社交压力', '心愿试运行',
+]);
+
+function projectSfwNarrativeContext(narrative, relationship) {
+    const progress = narrative.进程;
+    const friendship = Number.isInteger(relationship?.友情值) ? relationship.友情值 : 0;
+    const relationshipResolved = ['深度朋友', '恋人', '各自成长'].includes(progress.关系结束状态);
+    const context = {
+        stage: 'ordinary',
+        eventLibrary: SFW_MEETUP_EVENT_LIBRARY,
+        availableDisclosure: Object.freeze({}),
+        insightRequired: 'none',
+        resolutionAvailable: progress.SFW双轨结局已解锁 === true && !relationshipResolved,
+    };
+    if (relationshipResolved) {
+        context.stage = 'settled';
+        return Object.freeze(context);
+    }
+    if (progress.SFW双轨结局已解锁 === true) {
+        context.stage = 'resolution';
+        context.availableDisclosure = Object.freeze({
+            表层愿望: narrative.未竟心愿.表层愿望,
+            真实需要: narrative.未竟心愿.真实需要,
+            变化轨迹: narrative.未竟心愿.变化轨迹,
+        });
+        return Object.freeze(context);
+    }
+    if (progress.SFW心动已解锁 === true) {
+        context.stage = progress.SFW主动揭示已触发 === true ? 'delayed_dual' : 'direct_heart';
+        context.availableDisclosure = Object.freeze({
+            完整理解: narrative.人生底色.完整理解,
+            表层愿望: narrative.未竟心愿.表层愿望,
+            真实需要: narrative.未竟心愿.真实需要,
+            防御方式: narrative.未竟心愿.防御方式,
+        });
+        return Object.freeze(context);
+    }
+    if (progress.SFW理解已检查 === true) {
+        context.stage = progress.SFW主动揭示已触发 === true ? 'awaiting_support' : 'awaiting_active_reveal';
+        context.insightRequired = progress.SFW主动揭示已触发 === true ? 'post_reveal_support' : 'active_reveal';
+        context.availableDisclosure = Object.freeze({
+            线索节点: narrative.未竟心愿.线索节点.slice(0, 2),
+            关键经历: narrative.人生底色.关键经历,
+            表层愿望: narrative.未竟心愿.表层愿望,
+        });
+        return Object.freeze(context);
+    }
+    if (friendship >= 59) {
+        context.stage = 'understanding_check';
+        context.insightRequired = 'direct_understanding_or_not_yet';
+        context.availableDisclosure = Object.freeze({
+            完整理解: narrative.人生底色.完整理解,
+            表层愿望: narrative.未竟心愿.表层愿望,
+            真实需要: narrative.未竟心愿.真实需要,
+        });
+    } else if (friendship >= 39) {
+        context.stage = 'friend_share';
+        context.availableDisclosure = Object.freeze({ 关键经历: narrative.人生底色.关键经历 });
+    } else if (friendship >= 19) {
+        context.stage = 'subtle_crack';
+        context.availableDisclosure = Object.freeze({ 生活痕迹: narrative.人生底色.生活痕迹.slice(0, 1) });
+    }
+    return Object.freeze(context);
+}
+
 function adultMatchedSession(state, sessionUid, npcUid) {
     if (!ownRecord(state) || typeof sessionUid !== 'string' || !CHAT_SESSION_UID_PATTERN.test(sessionUid)
         || typeof npcUid !== 'string' || !NPC_UID_PATTERN.test(npcUid)) {
@@ -232,7 +298,8 @@ function validateConversationSummaryTarget({ state, sessionUid, npcUid } = {}) {
     return { ok: true, value: Object.freeze({ session, npc }) };
 }
 
-/** Builds the only context disclosed to the private-chat fast model. Hidden profiles are never included. */
+/** Builds the only context disclosed to the private-chat fast model. Raw hidden-profile objects are never included;
+ * the SFW branch may include only the current role's stage-cropped protected narrative. */
 export function buildPrivateChatContext({ state, sessionUid, npcUid, playerMessage, turnConsentConfirmed = false, summaryEnabled = false } = {}) {
     const validated = validatePrivateChatRequest({ state, sessionUid, npcUid, playerMessage });
     if (!validated.ok) return validated;
@@ -240,6 +307,7 @@ export function buildPrivateChatContext({ state, sessionUid, npcUid, playerMessa
     const pendingBodyCandidate = selectPendingBodyRelationshipCandidate(state, npcUid);
     if (!pendingBodyCandidate.ok) return pendingBodyCandidate;
     const contentMode = state.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+    const narrative = state.关系叙事[npcUid];
     const requiresNsfwConsent = contentMode === 'NSFW' && onlySfw !== true;
     let consentReference = null;
     let consentScopes = [];
@@ -276,6 +344,9 @@ export function buildPrivateChatContext({ state, sessionUid, npcUid, playerMessa
         storyMemory: projectStoryMemoryContext(state, npcUid),
         playerMessage: message,
     };
+    if (contentMode === 'SFW' || onlySfw === true) {
+        base.sfwNarrative = projectSfwNarrativeContext(narrative, relationship);
+    }
     if (pendingBodyCandidate.value) {
         base.bodyEventCandidate = projectPendingBodyRelationshipCandidate(pendingBodyCandidate.value);
     }
@@ -311,7 +382,7 @@ function makeMessages(context, promptPreset) {
             : context.onlySfw
                 ? '当前关系已由玩家切换为“仅 SFW”：继续正常日常社交、友情与不露骨的甜蜜调情；不得生成或推进成人话题，不得把暂停成人话题理解为全关系结束。'
             : '当前为 SFW：本模式保持日常社交尺度，以自然亲近、甜蜜调情的线上聊天为主。',
-        '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"bondAssessment":{"kind":"模式允许的分类","intensity":0..3整数,"direction":"none|increase|decrease"},"nsfwConsentAssessment":"none|in_scope|withdrawn|out_of_scope|unclear","nsfwSafetyAssessment":"none|ignored_refusal_or_withdrawal|known_boundary_conflict|coercion_or_nonconsensual|privacy_violation","bodyEventReview":"defer|confirm|decline","imageDirectives":[{"replyIndex":0,"directive":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。nsfwConsentAssessment、nsfwSafetyAssessment、bodyEventReview 与 imageDirectives 均可省略。',
+        '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"bondAssessment":{"kind":"模式允许的分类","intensity":0..3整数,"direction":"none|increase|decrease"},"sfwInsightAssessment":"none|direct_understanding|not_yet|active_reveal|post_reveal_support","sfwResolutionAssessment":"none|romance_confirmed|romance_declined|growth_confirmed","nsfwConsentAssessment":"none|in_scope|withdrawn|out_of_scope|unclear","nsfwSafetyAssessment":"none|ignored_refusal_or_withdrawal|known_boundary_conflict|coercion_or_nonconsensual|privacy_violation","bodyEventReview":"defer|confirm|decline","imageDirectives":[{"replyIndex":0,"directive":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。所有 assessment、bodyEventReview 与 imageDirectives 均可省略。',
         'replies 必须是 1-6 条自然、简短、可分别显示为聊天气泡的字符串；每条内部禁止换行，全部消息用单个空格连接后的总长度不得超过 600 字。优先拆成符合真实即时聊天节奏的多条短消息。',
         '把角色当成有自己生活的真人来回：TA 有正在忙的事、今天的心情、想到一半突然换的话题；可以主动分享此刻的小事（刚点的外卖、窗外的雨、循环的歌），也可以用公开资料里的兴趣自然抛出新话题引子（周末计划、最近看的剧、想去的店），而不是永远被动应答；语气、口头禅和标点习惯要贴合其性格标签与沟通风格标签。',
         'playerPublicProfile 会提供玩家已公开的城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签和沟通风格标签。字段为空字符串或空数组时，表示玩家未提供该项：不得猜测、补全或编造；仅在与本轮聊天自然相关时使用非空公开资料。',
@@ -319,13 +390,16 @@ function makeMessages(context, promptPreset) {
         context.bodyEventCandidate
             ? 'bodyEventCandidate 是本地已校验的、当前角色专属的最小正文候选，不含 UID、事件 ID、分数、阈值或写入路径。仅当玩家本轮明确确认该候选且没有需要继续澄清的边界时，bodyEventReview 才可为 confirm；玩家明确拒绝或撤回时为 decline；其余含糊、转移话题、未回应、信息不足或需要再次确认时一律为 defer。它不等于同意，不得根据正文记忆自行造候选，也不得用它修改 bondAssessment、relationship 或任何分数。'
             : '本轮没有可审核的正文关系候选。bodyEventReview 应省略或使用 defer；不得从正文记忆、聊天内容或任何猜测自行构造候选。',
+        context.sfwNarrative
+            ? 'sfwNarrative 是当前角色专属、由已验证角色资料确定性建档并按阶段裁剪的保护上下文，只能用于当前角色本轮的自然表达。availableDisclosure 以外的秘密一律未知；不得提到阶段名、关系分、阈值、内部字段、UID 或系统。understanding_check 只有在玩家本轮言行确实体现对 availableDisclosure 的准确理解与自愿支持时使用 direct_understanding，否则用 not_yet；awaiting_active_reveal 只有角色在回复中主动讲明所给线索时使用 active_reveal；awaiting_support 只有玩家本轮明确尊重和支持该揭示时使用 post_reveal_support。resolutionAvailable 为 true 时，只有双方在本轮明确达成对应结局，才可使用 romance_confirmed、romance_declined 或 growth_confirmed。其余情况两个 SFW assessment 都必须为 none。eventLibrary 仅是可供正文后续选择的事件类型，不代表事件已经发生。'
+            : '本轮不提供 SFW 保护叙事；sfwInsightAssessment 与 sfwResolutionAssessment 必须省略或为 none。',
         '仅当本次内容确实值得以照片分享，且角色性格有分享欲、当前关系与边界允许时，才输出对应 replyIndex 的 imageDirectives。私照必须更严格判断亲密度、信任与自愿边界；不得机械地为每轮或每条回复生图。不需要时省略该字段。scene 只能是描述画面的英文标签，不得包含角色 UID、URL、JSONPatch、完整正负提示词、core_dna、outfit_dna 或凭据。',
         'relationship 仅用于既有互动节奏建议。bondAssessment 必须同时判断玩家本轮消息与角色实际回复：SFW 只允许 none/friendly/romantic_flirt；NSFW 允许 none/friendly/romantic_flirt/romantic_desire/sexual_desire，其中普通问候或日常友好交流应使用 none 或 friendly，只有实际出现浪漫或性欲望时才使用对应 desire 分类。none 必须使用 intensity=0、direction=none；其余分类使用 intensity=1-3 作为轻微/明显/严重的语义等级，并仅在互动确实促进对应关系时使用 increase、确实伤害对应关系时使用 decrease。数值步长、事件 ID、阶段旗标和是否结算均由本地受控规则决定；普通分歧、没有升温或话题平淡使用 none，不得机械扣分。模型不得给友情值、心动值、欲望值的绝对值或增量，也不得给 UID、状态、阈值、Patch、JSON Pointer 或写入路径。',
         context.contentMode === 'NSFW' && !context.onlySfw
             ? 'nsfwConsentAssessment 必须先对照本轮玩家文本与 nsfwConsent.scopes 分类；只有 in_scope 才可给出可结算的 romantic_desire/sexual_desire，withdrawn/out_of_scope/unclear 时 bondAssessment 必须为 none。nsfwSafetyAssessment 默认且通常为 none；只有明确忽视拒绝/撤回、违反已知边界、胁迫或非自愿、现实隐私侵犯时才选择对应非 none 枚举；对方主动撤回本身不是违规。模型不得输出持久同意状态、剩余轮数、修订号、分数、UID、路径、Patch 或路线。'
             : '本轮不是可推进成人关系的对话，nsfwConsentAssessment 与 nsfwSafetyAssessment 必须省略或为 none。',
         '玩家与角色的公开资料就是本轮唯一已知档案：城市、距离范围、寻找意图、简介及四类标签均可作为自然聊天线索。空字符串或空标签数组只表示该项尚未提供；不得臆测、补全或假称这些缺失资料。',
-        '不得输出、猜测或泄露任何隐藏资料；不要声称已发生线下见面或性行为。',
+        '不得输出、猜测或泄露 sfwNarrative.availableDisclosure 之外的隐藏资料；不要声称已发生线下见面或性行为。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
     ].filter(Boolean).join('\n\n');
     return [

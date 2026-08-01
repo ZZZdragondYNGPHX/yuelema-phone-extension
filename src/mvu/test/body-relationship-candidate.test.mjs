@@ -139,6 +139,20 @@ test('stage C accepts only the selected NSFW route field and its matching ended 
     })).ok, false);
 });
 
+test('stage B accepts the SFW heart route only with its fixed field and wish-resolution category', () => {
+    const heart = pendingCandidate({
+        事件类别: '心愿完成或重定义',
+        关系路线: 'SFW心动',
+        允许影响关系值: ['心动值'],
+    });
+    assert.equal(validateBodyRelationshipCandidate(heart).ok, true);
+    assert.equal(selectPendingBodyRelationshipCandidate(candidateState({ candidate: heart }), 'npc_one').ok, true);
+    assert.equal(validateBodyRelationshipCandidate(pendingCandidate({
+        关系路线: 'SFW心动',
+        允许影响关系值: ['友情值'],
+    })).ok, false);
+});
+
 test('illegal enums, effect arrays, getters, control text, and markup are rejected', () => {
     assert.equal(validateBodyRelationshipCandidate(pendingCandidate({
         事件类别: '停止或降级',

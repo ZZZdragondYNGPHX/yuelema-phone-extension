@@ -15,6 +15,7 @@ const CHAT_TOOL_LONG_PRESS_MS = 460;
 const CHAT_TIME_DIVIDER_GAP_MS = 10 * 60 * 1000;
 // desktop 上下文栏折叠偏好：纯 UI 状态，只进浏览器本地存储，绝不进 MVU/提示词/导出。
 const CHAT_CONTEXT_COLLAPSED_STORAGE_KEY = 'yuelema.chat-context-collapsed/v1';
+const RELATIONSHIP_OBSERVATION_COLLAPSED_STORAGE_KEY = 'yuelema.relationship-observation-collapsed/v1';
 
 function chatContextStorageOrNull() {
     try {
@@ -29,6 +30,14 @@ function readChatContextCollapsed() {
 function persistChatContextCollapsed(collapsed) {
     try { chatContextStorageOrNull()?.setItem(CHAT_CONTEXT_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0'); }
     catch { /* 本地偏好写入失败时静默降级为本次会话内存行为 */ }
+}
+function readRelationshipObservationCollapsed() {
+    try { return chatContextStorageOrNull()?.getItem(RELATIONSHIP_OBSERVATION_COLLAPSED_STORAGE_KEY) === '1'; }
+    catch { return false; }
+}
+function persistRelationshipObservationCollapsed(collapsed) {
+    try { chatContextStorageOrNull()?.setItem(RELATIONSHIP_OBSERVATION_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0'); }
+    catch { /* 浏览器本地偏好不可用时只影响本次渲染 */ }
 }
 
 // 控制台脱敏器会把 ≥32 字符的连续 token 视作疑似凭据并替换为 [已脱敏]；
@@ -679,23 +688,65 @@ export function createChatPage(ctx) {
         const panel = element('section', { className: 'yl-settings-section yl-chat-relationship-panel' });
         panel.appendChild(element('p', {
             className: 'yl-phone-page-description',
-            text: '这些操作保留历史与关系数值，不删除角色资料。降级会切到仅 SFW 并撤回成人共识；结束联系会把会话安全归档为只读。',
+            text: '暂停、归档和结束联系都会保留历史与关系记录，不删除角色资料。删除角色仍需回到会话菜单单独确认。',
         }));
         const pending = Boolean(ctx.actionBridge.isPending?.('private_chat_nsfw_relationship', session.sessionUid));
         const canDegrade = session.nsfwRouteEstablished || ['love', 'consensual_intimacy'].includes(session.nsfwDirection);
         const actions = element('div', { className: 'yl-settings-actions' });
-        const degrade = element('button', {
+        if (ctx.currentView?.mode === 'NSFW') {
+            const degrade = element('button', {
+                className: 'yl-settings-button yl-settings-button-secondary', type: 'button',
+                text: '确认降级为朋友（仅 SFW）', disabled: pending || !canDegrade,
+            });
+            listen(degrade, degrade, 'click', () => { void runNsfwRelationshipAction(session, 'degrade_to_friends'); }, ctx.abortController.signal);
+            actions.appendChild(degrade);
+        }
+        const pause = element('button', {
             className: 'yl-settings-button yl-settings-button-secondary', type: 'button',
-            text: '确认降级为朋友（仅 SFW）', disabled: pending || !canDegrade,
+            text: '确认暂停这段关系', disabled: pending || !session.relationshipObservation?.canPause,
         });
-        listen(degrade, degrade, 'click', () => { void runNsfwRelationshipAction(session, 'degrade_to_friends'); }, ctx.abortController.signal);
+        listen(pause, pause, 'click', () => { void runNsfwRelationshipAction(session, 'pause_contact'); }, ctx.abortController.signal);
+        const archive = element('button', {
+            className: 'yl-settings-button yl-chat-delete-confirm', type: 'button',
+            text: '确认归档为只读', disabled: pending || !session.relationshipObservation?.canArchive,
+        });
+        listen(archive, archive, 'click', () => { void runNsfwRelationshipAction(session, 'archive_contact'); }, ctx.abortController.signal);
         const end = element('button', {
             className: 'yl-settings-button yl-chat-delete-confirm', type: 'button',
-            text: '确认结束联系并安全归档', disabled: pending,
+            text: '确认结束联系', disabled: pending,
         });
         listen(end, end, 'click', () => { void runNsfwRelationshipAction(session, 'end_contact'); }, ctx.abortController.signal);
-        append(actions, [degrade, end]);
+        append(actions, [pause, archive, end]);
         panel.appendChild(actions);
+        return panel;
+    }
+
+    function buildRelationshipObservation(session) {
+        const observation = session.relationshipObservation;
+        if (!observation) return null;
+        const collapsed = readRelationshipObservationCollapsed();
+        const panel = element('section', {
+            className: collapsed ? 'yl-relationship-observation is-collapsed' : 'yl-relationship-observation',
+            ariaLabel: '关系观察',
+        });
+        const head = element('div', { className: 'yl-relationship-observation-head' });
+        head.appendChild(element('strong', { text: '关系观察' }));
+        const toggle = element('button', {
+            className: 'yl-settings-button yl-settings-button-secondary', type: 'button',
+            text: collapsed ? '查看' : '收起', ariaLabel: collapsed ? '展开关系观察' : '收起关系观察',
+        });
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        listen(toggle, toggle, 'click', () => {
+            persistRelationshipObservationCollapsed(!collapsed);
+            ctx.renderPage();
+        }, ctx.abortController.signal);
+        head.appendChild(toggle);
+        panel.appendChild(head);
+        if (!collapsed) {
+            panel.appendChild(element('p', { className: 'yl-phone-page-description', text: observation.summary }));
+            if (observation.latest) panel.appendChild(element('p', { className: 'yl-system-pill', text: observation.latest }));
+            panel.appendChild(element('small', { text: '这里只显示经过收窄的阶段性观察。' }));
+        }
         return panel;
     }
     /** 工具面板内容（§7.2.8）：图标网格，约定面基未达条件置灰并注明。 */
@@ -799,12 +850,11 @@ export function createChatPage(ctx) {
                 tools.push(button);
             }
         }
-        if (ctx.currentView?.mode === 'NSFW'
-            && typeof ctx.actionBridge.runPrivateChatNsfwRelationshipAction === 'function') {
+        if (typeof ctx.actionBridge.runPrivateChatNsfwRelationshipAction === 'function') {
             const relationshipTool = element('button', {
                 className: 'yl-chat-tool-button', type: 'button',
                 disabled: session.paused || session.ended,
-                ariaLabel: '打开成人关系降级或结束操作',
+                ariaLabel: ctx.currentView?.mode === 'NSFW' ? '打开成人关系降级或结束操作' : '打开关系暂停、归档或结束操作',
             });
             relationshipTool.appendChild(createUiIcon(ctx.documentRef, 'privacy', { className: 'yl-chat-tool-svg', size: 22 }));
             relationshipTool.appendChild(element('span', { text: '关系管理' }));
@@ -835,6 +885,8 @@ export function createChatPage(ctx) {
                     : session.nsfwDirection === 'defer' ? '当前选择暂不定义关系方向。' : '';
             if (directionCopy) panel.appendChild(buildSystemPill(directionCopy));
         }
+        const relationshipObservation = buildRelationshipObservation(session);
+        if (relationshipObservation) panel.appendChild(relationshipObservation);
         const transcript = buildMessageTimeline(session);
         // 本地已读水位推进：进入/停留在会话即视为读到当前全部可见消息（纯 UI 状态）。
         ctx.messageReadStore?.markRead?.(session.sessionUid, session.messages.length);
@@ -850,7 +902,13 @@ export function createChatPage(ctx) {
             const composer = element('div', { className: 'yl-chat-composer is-readonly' });
             const input = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 2, placeholder: session.status === '已拉黑' ? '对方已将你拉黑，无法继续发送消息。' : '该会话当前为只读状态。', ariaLabel: '私聊消息输入已禁用', disabled: true });
             const send = element('button', { className: 'yl-chat-send-button', type: 'button', text: '不可发送', ariaLabel: '发送消息已禁用', disabled: true });
-            append(composer, [input, send]); panel.appendChild(composer);
+            append(composer, [input, send]);
+            if (session.relationshipObservation?.canResume && typeof ctx.actionBridge.runPrivateChatNsfwRelationshipAction === 'function') {
+                const resume = element('button', { className: 'yl-settings-button', type: 'button', text: '恢复这段关系' });
+                listen(resume, resume, 'click', () => { void runNsfwRelationshipAction(session, 'resume_contact'); }, ctx.abortController.signal);
+                composer.appendChild(resume);
+            }
+            panel.appendChild(composer);
             return panel;
         }
         if (typeof ctx.actionBridge.runPrivateChat !== 'function') {
@@ -1013,7 +1071,7 @@ export function createChatPage(ctx) {
         if (ctx.activeNsfwRelationshipSessionUid === session.sessionUid) {
             const relationshipSheet = createBottomSheet({
                 documentRef: ctx.documentRef,
-                title: '关系降级与结束',
+                title: '关系管理',
                 content: buildNsfwRelationshipPanel(session),
                 onRequestClose: () => { ctx.activeNsfwRelationshipSessionUid = ''; ctx.renderPage(); },
             });
@@ -1134,7 +1192,14 @@ export function createChatPage(ctx) {
     async function runNsfwRelationshipAction(session, action) {
         if (typeof ctx.actionBridge.runPrivateChatNsfwRelationshipAction !== 'function'
             || ctx.actionBridge.isPending?.('private_chat_nsfw_relationship', session.sessionUid)) return;
-        const operationToken = ctx.setFeedback(action === 'degrade_to_friends' ? '正在降级为朋友关系…' : '正在结束联系并安全归档…');
+        const pendingCopy = {
+            degrade_to_friends: '正在降级为朋友关系…',
+            pause_contact: '正在暂停这段关系…',
+            resume_contact: '正在恢复这段关系…',
+            archive_contact: '正在归档这段关系…',
+            end_contact: '正在结束联系…',
+        };
+        const operationToken = ctx.setFeedback(pendingCopy[action] ?? '正在更新关系…');
         let result;
         try { result = await ctx.actionBridge.runPrivateChatNsfwRelationshipAction({ sessionUid: session.sessionUid, action }); }
         catch { result = { ok: false, code: 'private_chat_nsfw_relationship_invalid_action' }; }
@@ -1142,10 +1207,15 @@ export function createChatPage(ctx) {
             ctx.activeNsfwRelationshipSessionUid = '';
             ctx.nsfwTurnConsentSessions?.delete?.(session.sessionUid);
         }
+        const successCopy = {
+            degrade_to_friends: '已保留历史并降级为朋友关系；成人话题共识已撤回。',
+            pause_contact: '已暂停这段关系；历史与关系记录仍保留。',
+            resume_contact: '已恢复这段关系，可以继续聊天。',
+            archive_contact: '已保留历史并归档为只读。',
+            end_contact: '已保留历史并结束联系；会话现为只读。',
+        };
         ctx.setFeedback(result?.ok
-            ? action === 'degrade_to_friends'
-                ? '已保留历史并降级为朋友关系；成人话题共识已撤回。'
-                : '已保留历史并结束联系；会话现为安全只读归档。'
+            ? successCopy[action] ?? '关系状态已更新。'
             : describeActionFailure(result), operationToken);
         ctx.refreshState();
     }

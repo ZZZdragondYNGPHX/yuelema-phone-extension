@@ -2443,6 +2443,21 @@
     line-height: 1.4;
 }
 .yl-chat-context-note { color: var(--yl-text-2); font-size: var(--yl-type-xs); line-height: 1.5; }
+.yl-relationship-observation {
+    display: grid;
+    gap: var(--yl-space-2);
+    margin: 0 var(--yl-space-3);
+    padding: var(--yl-space-3);
+    border: 1px solid color-mix(in srgb, var(--yl-accent-2) 28%, var(--yl-border));
+    border-radius: var(--yl-radius-card);
+    background: color-mix(in srgb, var(--yl-accent-2-soft) 72%, var(--yl-surface));
+}
+.yl-relationship-observation.is-collapsed { padding-block: var(--yl-space-2); }
+.yl-relationship-observation-head { display: flex; align-items: center; justify-content: space-between; gap: var(--yl-space-2); }
+.yl-relationship-observation-head strong { font-size: var(--yl-type-caption); }
+.yl-relationship-observation-head .yl-settings-button { min-height: 34px; padding: 5px 10px; font-size: var(--yl-type-xs); }
+.yl-relationship-observation > p { margin: 0; }
+.yl-relationship-observation > small { color: var(--yl-text-2); font-size: var(--yl-type-xs); line-height: 1.45; }
 /* 对话生图与绘图 DNA */
 .yl-conversation-image-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--yl-space-2); margin-top: var(--yl-space-2); }
 .yl-conversation-image-settings-button { min-height: var(--yl-icon-hit); padding: 7px 11px; font-size: var(--yl-type-xs); }

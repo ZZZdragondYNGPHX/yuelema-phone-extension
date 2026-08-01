@@ -52,14 +52,17 @@ function emptySettlement(kind = 'none', direction = 'none') {
     return Object.freeze({
         field: '', delta: 0, nextValue: 0, kind, direction,
         eventId: '', progressUpdates: Object.freeze({}), safetyPause: false,
+        relationshipEndState: '', wishTrajectory: '',
     });
 }
 
-function fieldForAssessment(mode, kind, direction) {
-    // Phase B.1 deliberately keeps every SFW private-chat interaction on the
-    // friendship route. The 60-point insight decision is still unconfirmed;
-    // no normal chat can auto-write heart progress before that decision.
-    if (mode === 'SFW') return ['friendly', 'romantic_flirt'].includes(kind) ? '友情值' : '';
+function fieldForAssessment(mode, kind, direction, progress = {}) {
+    if (mode === 'SFW') {
+        if (!['friendly', 'romantic_flirt'].includes(kind)) return '';
+        if (direction === 'increase' && progress.SFW心动已解锁 === true) return '';
+        if (direction === 'decrease' && kind === 'romantic_flirt' && progress.SFW心动已解锁 === true) return '心动值';
+        return '友情值';
+    }
 
     // C.1 uses this mapping only for an explicit, separately classified safety
     // conflict. Positive NSFW progress remains closed until C.2.
@@ -76,7 +79,7 @@ export function deriveRelationshipSafetyState(progress) {
     return Object.freeze({
         onlySfw: boundary === '仅SFW',
         paused: Boolean(boundary && boundary !== '仅SFW'),
-        ended: Boolean(safeProgress.关系结束状态),
+        ended: ['结束联系', '已归档', '已删除'].includes(safeProgress.关系结束状态),
     });
 }
 
@@ -118,6 +121,13 @@ function progressUpdatesForNsfw({ progress, field, currentValue, nextValue, turn
 
 function progressUpdatesForBodyEvent({ contentMode, progress, field, currentValue, nextValue, turnId, eventId, establishRoute = false }) {
     if (normalizeContentMode(contentMode) === 'SFW') {
+        if (field === '心动值') {
+            const consumed = Array.isArray(progress.已消费事件ID) ? progress.已消费事件ID : [];
+            return Object.freeze({
+                最后结算回合UID: turnId,
+                已消费事件ID: Object.freeze([...consumed, eventId].slice(-64)),
+            });
+        }
         return progressUpdatesForSfw({ progress, currentValue, nextValue, turnId, eventId });
     }
     const updates = { ...progressUpdatesForNsfw({ progress, field, currentValue, nextValue, turnId, eventId }) };
@@ -137,6 +147,8 @@ function emptyBodyCandidateSettlement(status = 'none') {
         nextValue: 0,
         eventId: '',
         progressUpdates: Object.freeze({}),
+        relationshipEndState: '',
+        wishTrajectory: '',
     });
 }
 
@@ -188,12 +200,61 @@ export function calculateBondDecline(currentValue, intensity) {
     return -Math.min(current, intensity + 1);
 }
 
+function settleSfwNarrativeDecision({ progress, friendshipValue, insightAssessment, resolutionAssessment }) {
+    const updates = {};
+    let relationshipEndState = '';
+    if (progress.SFW理解已检查 !== true && friendshipValue >= SFW_UNDERSTANDING_THRESHOLD) {
+        if (insightAssessment === 'direct_understanding') {
+            updates.SFW理解已检查 = true;
+            updates.SFW心动已解锁 = true;
+            updates.最近关系观察 = '理解已确认';
+        } else if (insightAssessment === 'not_yet') {
+            updates.SFW理解已检查 = true;
+            updates.最近关系观察 = '保持观望';
+        }
+    } else if (progress.SFW理解已检查 === true && progress.SFW心动已解锁 !== true) {
+        if (progress.SFW主动揭示已触发 !== true && insightAssessment === 'active_reveal') {
+            updates.SFW主动揭示已触发 = true;
+            updates.最近关系观察 = '主动揭示';
+        } else if (progress.SFW主动揭示已触发 === true && insightAssessment === 'post_reveal_support') {
+            updates.SFW心动已解锁 = true;
+            updates.最近关系观察 = '理解已确认';
+        }
+    }
+
+    const alreadyResolved = ['深度朋友', '恋人', '各自成长'].includes(progress.关系结束状态);
+    if (progress.SFW双轨结局已解锁 === true && !alreadyResolved) {
+        if (resolutionAssessment === 'romance_confirmed') {
+            relationshipEndState = '恋人';
+            updates.最近关系观察 = '结局确认';
+        } else if (resolutionAssessment === 'romance_declined') {
+            relationshipEndState = '深度朋友';
+            updates.最近关系观察 = '结局确认';
+        } else if (resolutionAssessment === 'growth_confirmed') {
+            relationshipEndState = '各自成长';
+            updates.最近关系观察 = '结局确认';
+        }
+    }
+    return Object.freeze({ progressUpdates: Object.freeze(updates), relationshipEndState });
+}
+
 /**
  * The deterministic B.1 settlement engine. It accepts only a validated
  * semantic assessment and state supplied by the controlled builder; no model
  * value can choose a score, a JSON Pointer, a UID, or an arbitrary patch.
  */
-export function settleRelationshipProgress({ contentMode, relationship, progress, assessment, nsfwSafetyAssessment = 'none', nsfwConsentAssessment = 'none', replied = true, turnId = '' } = {}) {
+export function settleRelationshipProgress({
+    contentMode,
+    relationship,
+    progress,
+    assessment,
+    sfwInsightAssessment = 'none',
+    sfwResolutionAssessment = 'none',
+    nsfwSafetyAssessment = 'none',
+    nsfwConsentAssessment = 'none',
+    replied = true,
+    turnId = '',
+} = {}) {
     const sourceMode = normalizeContentMode(contentMode);
     const current = relationship && typeof relationship === 'object' ? relationship : {};
     const safeProgress = isProgressRecord(progress) ? progress : {};
@@ -216,7 +277,7 @@ export function settleRelationshipProgress({ contentMode, relationship, progress
         const canDecline = isKnownAssessment('NSFW', kind, intensity, direction)
             && kind !== 'none' && direction === 'decrease'
             && !(eventId && (safeProgress.最后结算回合UID === turnId || alreadyConsumed));
-        const field = canDecline ? fieldForAssessment('NSFW', kind, direction) : '';
+        const field = canDecline ? fieldForAssessment('NSFW', kind, direction, safeProgress) : '';
         const currentValue = field ? integerScore(current[field]) : 0;
         const delta = field && !progressBlocksField(safeProgress, field)
             ? calculateBondDecline(currentValue, intensity) : 0;
@@ -227,10 +288,12 @@ export function settleRelationshipProgress({ contentMode, relationship, progress
         return Object.freeze({
             field, delta, nextValue, kind: kind ?? 'none', direction,
             eventId: delta !== 0 ? eventId : '', progressUpdates, safetyPause: true,
+            relationshipEndState: '', wishTrajectory: '',
         });
     }
 
-    if (!isKnownAssessment(mode, kind, intensity, direction) || kind === 'none') {
+    const assessmentKnown = isKnownAssessment(mode, kind, intensity, direction);
+    if (!assessmentKnown) {
         return emptySettlement(kind ?? 'none', direction);
     }
     // C.2/C.3 only permit ordinary NSFW relationship movement when the
@@ -248,26 +311,44 @@ export function settleRelationshipProgress({ contentMode, relationship, progress
         return emptySettlement(kind, direction);
     }
 
-    const field = fieldForAssessment(mode, kind, direction);
-    if (!field || progressBlocksField(safeProgress, field)) return emptySettlement(kind, direction);
+    const field = kind === 'none' ? '' : fieldForAssessment(mode, kind, direction, safeProgress);
+    const canMove = Boolean(field) && !progressBlocksField(safeProgress, field);
 
     const eventId = relationshipEventIdForTurn(turnId);
     const alreadyConsumed = eventId && Array.isArray(safeProgress.已消费事件ID) && safeProgress.已消费事件ID.includes(eventId);
     if (eventId && (safeProgress.最后结算回合UID === turnId || alreadyConsumed)) return emptySettlement(kind, direction);
 
-    const currentValue = integerScore(current[field]);
-    const delta = direction === 'decrease'
+    const currentValue = canMove ? integerScore(current[field]) : 0;
+    const delta = canMove && direction === 'decrease'
         ? calculateBondDecline(currentValue, intensity)
-        : calculateBondGrowth(currentValue, intensity);
-    if (delta === 0) return emptySettlement(kind, direction);
+        : canMove && direction === 'increase' ? calculateBondGrowth(currentValue, intensity) : 0;
 
     const nextValue = currentValue + delta;
-    const progressUpdates = eventId
+    const scoreUpdates = delta !== 0 && eventId
         ? (mode === 'SFW'
             ? progressUpdatesForSfw({ progress: safeProgress, currentValue, nextValue, turnId, eventId })
             : progressUpdatesForNsfw({ progress: safeProgress, field, currentValue, nextValue, turnId, eventId }))
         : Object.freeze({});
-    return Object.freeze({ field, delta, nextValue, kind, direction, eventId, progressUpdates, safetyPause: false });
+    const sfwDecision = mode === 'SFW'
+        ? settleSfwNarrativeDecision({
+            progress: safeProgress,
+            friendshipValue: field === '友情值' ? nextValue : integerScore(current.友情值),
+            insightAssessment: sfwInsightAssessment,
+            resolutionAssessment: sfwResolutionAssessment,
+        })
+        : Object.freeze({ progressUpdates: Object.freeze({}), relationshipEndState: '' });
+    const progressUpdates = { ...scoreUpdates, ...sfwDecision.progressUpdates };
+    if (!Object.hasOwn(progressUpdates, '最近关系观察') && delta !== 0) {
+        progressUpdates.最近关系观察 = delta > 0 ? '关系靠近' : '关系受损';
+    }
+    return Object.freeze({
+        field, delta, nextValue, kind, direction,
+        eventId: delta !== 0 ? eventId : '',
+        progressUpdates: Object.freeze(progressUpdates),
+        safetyPause: false,
+        relationshipEndState: sfwDecision.relationshipEndState,
+        wishTrajectory: '',
+    });
 }
 
 /**
@@ -275,14 +356,15 @@ export function settleRelationshipProgress({ contentMode, relationship, progress
  * owns candidate/source validation; this pure step only maps its constrained
  * semantics to the global step sizes and the existing per-role event lock.
  *
- * B.2 intentionally supports SFW friendship only.  Other routes remain
- * deferred for their dedicated state-machine phases instead of being guessed
- * from an otherwise valid-looking body record.
+ * Stage B supports the SFW friendship route before understanding, the direct
+ * heart route after understanding, and both body-only rails after a delayed
+ * active reveal. The model still cannot choose a score, field, UID, or path.
  */
 export function settleBodyRelationshipCandidate({
     contentMode,
     relationship,
     progress,
+    wishTrajectory = '未设置',
     candidate,
     review = 'defer',
     turnId = '',
@@ -309,9 +391,16 @@ export function settleBodyRelationshipCandidate({
         });
     }
     const mode = normalizeContentMode(contentMode);
+    const isSfwHeartRoute = candidate.关系路线 === 'SFW心动';
+    const isSfwFriendRoute = candidate.关系路线 === 'SFW友情';
+    const delayedDualRoute = safeProgress.SFW主动揭示已触发 === true && safeProgress.SFW心动已解锁 === true;
     const routeAllowed = routeContract?.directionLock
         ? mode === 'NSFW' && safeProgress.NSFW方向确认可用 === true && safeProgress.NSFW路线锁定 === routeContract.directionLock
-        : mode === 'SFW';
+        : mode === 'SFW' && (
+            isSfwHeartRoute
+                ? safeProgress.SFW心动已解锁 === true
+                : isSfwFriendRoute && (safeProgress.SFW心动已解锁 !== true || delayedDualRoute)
+        );
     if (!routeAllowed || progressBlocksField(safeProgress, field)) {
         return emptyBodyCandidateSettlement('deferred');
     }
@@ -330,6 +419,33 @@ export function settleBodyRelationshipCandidate({
     const declined = normalizedReview === 'decline';
     const delta = declined ? 0 : bodyCandidateDelta(candidate, currentValue);
     const nextValue = currentValue + delta;
+    const progressUpdates = { ...progressUpdatesForBodyEvent({
+        contentMode: mode,
+        progress: safeProgress,
+        field,
+        currentValue,
+        nextValue,
+        turnId,
+        eventId,
+        establishRoute: mode === 'NSFW' && !declined && candidate.建议方向 === '正向',
+    }) };
+    let relationshipEndState = '';
+    let nextWishTrajectory = '';
+    if (mode === 'SFW') {
+        progressUpdates.最近关系观察 = declined ? '无变化'
+            : delta > 0 ? (candidate.事件类别 === '心愿完成或重定义' ? '心愿同行' : '正文约定待兑现')
+                : delta < 0 ? '关系受损' : '无变化';
+        if (!declined && delta > 0 && candidate.事件类别 === '心愿完成或重定义') nextWishTrajectory = '重定义';
+        const resolvedWish = ['重定义', '已和解'].includes(nextWishTrajectory || wishTrajectory);
+        if (field === '心动值' && nextValue >= 100 && resolvedWish) {
+            progressUpdates.SFW双轨结局已解锁 = true;
+        } else if (field === '友情值' && nextValue >= 100 && safeProgress.SFW主动揭示已触发 === true) {
+            progressUpdates.SFW双轨结局已解锁 = true;
+            progressUpdates.冻结关系值 = '心动值';
+            relationshipEndState = '深度朋友';
+            progressUpdates.最近关系观察 = '结局确认';
+        }
+    }
     return Object.freeze({
         handled: true,
         consume: true,
@@ -338,16 +454,9 @@ export function settleBodyRelationshipCandidate({
         delta,
         nextValue,
         eventId,
-        progressUpdates: progressUpdatesForBodyEvent({
-            contentMode: mode,
-            progress: safeProgress,
-            field,
-            currentValue,
-            nextValue,
-            turnId,
-            eventId,
-            establishRoute: mode === 'NSFW' && !declined && candidate.建议方向 === '正向',
-        }),
+        progressUpdates: Object.freeze(progressUpdates),
+        relationshipEndState,
+        wishTrajectory: nextWishTrajectory,
     });
 }
 

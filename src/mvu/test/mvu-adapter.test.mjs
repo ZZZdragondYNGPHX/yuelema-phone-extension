@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
 
 import { decodeJsonPointer, getAtPointer } from '../json-pointer.js';
-import { createEmptyRelationshipNarrative, validateRelationshipNarrative } from '../relationship-narrative.js';
+import { createEmptyRelationshipNarrative, createRelationshipNarrativeFromProfile, validateRelationshipNarrative } from '../relationship-narrative.js';
 import { createEmptyBodyRelationshipCandidate } from '../body-relationship-candidate.js';
 import {
     LATEST_MESSAGE_SCOPE,
@@ -87,14 +87,14 @@ test('JSON Pointer only traverses own safe properties', () => {
     assert.equal(getAtPointer({ a: ['x'] }, '/a/-').found, false);
 });
 
-test('favorite promotes a trusted candidate by move without serializing its hidden data', () => {
+test('favorite promotes a trusted candidate and seeds its protected narrative in the same controlled patch', () => {
     const state = stateFixture();
     const result = buildControlledPatch(state, { kind: 'favorite', npcUid: 'npc_alpha' });
     assert.equal(result.ok, true);
     assert.deepEqual(result.value, [
         { op: 'move', from: '/推荐/临时候选池/npc_alpha', path: '/角色池/npc_alpha' },
         { op: 'add', path: '/正文记忆/npc_alpha', value: '' },
-        { op: 'add', path: '/关系叙事/npc_alpha', value: createEmptyRelationshipNarrative() },
+        { op: 'add', path: '/关系叙事/npc_alpha', value: createRelationshipNarrativeFromProfile(state.推荐.临时候选池.npc_alpha) },
         { op: 'add', path: '/正文关系候选/npc_alpha', value: createEmptyBodyRelationshipCandidate() },
         { op: 'add', path: '/推荐/收藏角色UID/-', value: 'npc_alpha' },
         { op: 'remove', path: '/推荐/当前队列/0' },
@@ -102,7 +102,7 @@ test('favorite promotes a trusted candidate by move without serializing its hidd
     const wrapped = buildUpdateVariable(result.value);
     assert.equal(wrapped.ok, true);
     assert.match(wrapped.value, /^<UpdateVariable><JSONPatch>\[/);
-    assert.doesNotMatch(wrapped.value, /不得进入 UI/);
+    assert.match(wrapped.value, /关系叙事/u);
 });
 
 test('story-memory backfill creates every missing role slot and removes only orphan slots', () => {
@@ -139,7 +139,7 @@ test('relationship narrative records are exact, bounded, and backfill never dele
 
     const built = buildRelationshipNarrativeBackfillPatch(current);
     assert.deepEqual(built, { ok: true, value: [
-        { op: 'add', path: '/关系叙事/npc_alpha', value: createEmptyRelationshipNarrative() },
+        { op: 'add', path: '/关系叙事/npc_alpha', value: createRelationshipNarrativeFromProfile(current.角色池.npc_alpha) },
     ] });
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
     assert.deepEqual(current.关系叙事.npc_beta, retained);

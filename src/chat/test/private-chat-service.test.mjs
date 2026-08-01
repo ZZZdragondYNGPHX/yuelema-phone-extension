@@ -235,14 +235,39 @@ test('player adulthood and protected pause/end gates reject before the model is 
     }
 });
 
-test('only-SFW context exposes one boolean and no protected narrative fields', () => {
+test('only-SFW context exposes a stage-cropped current-object narrative and no internal progress fields', () => {
     const current = state();
     current.关系叙事.npc_adult.进程.边界暂停状态 = '仅SFW';
     const built = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '继续聊电影' });
     assert.equal(built.ok, true);
     assert.equal(built.context.onlySfw, true);
+    assert.equal(built.context.sfwNarrative.stage, 'ordinary');
     const serialized = JSON.stringify(built.context);
     assert.doesNotMatch(serialized, /边界暂停状态|关系结束状态|冻结关系值|关系叙事|仅SFW/u);
+});
+
+test('SFW understanding context projects only the current role protected facts at the eligible stage', () => {
+    const current = state();
+    current.角色池.npc_adult.与玩家关系.友情值 = 59;
+    current.关系叙事.npc_adult.人生底色.完整理解 = '当前对象的受限理解';
+    current.关系叙事.npc_adult.未竟心愿.表层愿望 = '开一家夜间书店';
+    current.关系叙事.npc_adult.未竟心愿.真实需要 = '被尊重地陪伴';
+    current.关系叙事.npc_other.人生底色.完整理解 = '另一对象的绝密理解';
+    const built = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我愿意认真听你说' });
+    assert.equal(built.ok, true);
+    assert.equal(built.context.sfwNarrative.stage, 'understanding_check');
+    assert.equal(built.context.sfwNarrative.insightRequired, 'direct_understanding_or_not_yet');
+    const serialized = JSON.stringify(built.context.sfwNarrative);
+    assert.match(serialized, /当前对象的受限理解/u);
+    assert.doesNotMatch(serialized, /另一对象的绝密理解|SFW理解已检查|友情值/u);
+
+    current.关系叙事.npc_adult.进程.SFW双轨结局已解锁 = true;
+    current.关系叙事.npc_adult.进程.关系结束状态 = '深度朋友';
+    const settled = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '最近过得怎么样？' });
+    assert.equal(settled.ok, true);
+    assert.equal(settled.context.sfwNarrative.stage, 'settled');
+    assert.equal(settled.context.sfwNarrative.resolutionAvailable, false);
+    assert.deepEqual(settled.context.sfwNarrative.availableDisclosure, {});
 });
 
 test('private chat requests replies and returns only validated multi-bubble data in memory', async () => {

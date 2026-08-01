@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createActionBridge } from '../../action-bridge.js';
-import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
+import { createEmptyRelationshipNarrative, createRelationshipNarrativeFromProfile } from '../../mvu/relationship-narrative.js';
 import { createEmptyBodyRelationshipCandidate } from '../../mvu/body-relationship-candidate.js';
 import { createEmptyNsfwConsent, grantNsfwConsent } from '../../mvu/nsfw-consent.js';
 
@@ -72,7 +72,7 @@ function matchedPrivateChatState(contentMode = 'SFW') {
     };
     current.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } };
     current.正文记忆.npc_ava = '';
-    current.关系叙事.npc_ava = createEmptyRelationshipNarrative();
+    current.关系叙事.npc_ava = createRelationshipNarrativeFromProfile(current.角色池.npc_ava);
     current.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
     return current;
 }
@@ -382,7 +382,7 @@ test('private chat runs model validation before one official MVU write transacti
     };
     initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } };
     initialState.正文记忆.npc_ava = '玩家与艾娃此前在线下见过一次。';
-    initialState.关系叙事.npc_ava = createEmptyRelationshipNarrative();
+    initialState.关系叙事.npc_ava = createRelationshipNarrativeFromProfile(initialState.角色池.npc_ava);
     initialState.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
@@ -430,7 +430,7 @@ test('private chat backfills only its missing relationship-narrative slot before
     assert.equal(parsedPatches.length, 2);
     assert.deepEqual(parsedPatches[0].map((operation) => operation.path), ['/关系叙事/npc_ava']);
     assert.equal(parsedPatches[0][0].op, 'add');
-    assert.deepEqual(parsedPatches[0][0].value, createEmptyRelationshipNarrative());
+    assert.deepEqual(parsedPatches[0][0].value, createRelationshipNarrativeFromProfile(initialState.角色池.npc_ava));
     assert.equal(parsedPatches[1].some((operation) => operation.path === '/会话/chat_1/最近消息/-'), true);
 });
 
@@ -538,7 +538,7 @@ test('private chat returns read_without_reply after the local rhythm builder sup
     };
     initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } };
     initialState.正文记忆.npc_ava = '';
-    initialState.关系叙事.npc_ava = createEmptyRelationshipNarrative();
+    initialState.关系叙事.npc_ava = createRelationshipNarrativeFromProfile(initialState.角色池.npc_ava);
     initialState.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
@@ -571,7 +571,7 @@ test('private chat returns blocked only after the controlled patch atomically bl
     // 拉黑只在开局宽限层数之外仍持续恶化/不改善时触发。
     initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } };
     initialState.正文记忆.npc_ava = '';
-    initialState.关系叙事.npc_ava = createEmptyRelationshipNarrative();
+    initialState.关系叙事.npc_ava = createRelationshipNarrativeFromProfile(initialState.角色池.npc_ava);
     initialState.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({

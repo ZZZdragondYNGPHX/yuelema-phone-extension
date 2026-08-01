@@ -290,11 +290,46 @@ export function projectPrivateChatView(state) {
             progress,
             nsfwConsent: consent.ok ? consent.value : null,
         });
+        const observationCopy = {
+            无变化: '这轮没有形成新的关系变化。',
+            关系靠近: '彼此的相处正在自然靠近。',
+            边界被尊重: '这段关系里的边界得到了尊重。',
+            保持观望: '对方仍在观察，适合保持自然交流。',
+            正文约定待兑现: '有一项关系进展需要在正文事件中兑现。',
+            主动揭示: '对方主动分享了更真实的一面。',
+            理解已确认: '一次重要的理解已经得到确认。',
+            心愿同行: '双方正在共同面对一项重要心愿。',
+            关系受损: '这轮互动让关系承受了压力。',
+            安全降级: '关系已按你的选择进入更安全的边界。',
+            结局确认: '双方已经确认了当前关系走向。',
+        };
+        const settledCopy = {
+            深度朋友: '双方已经确认以深度朋友的方式继续相处。',
+            恋人: '双方已经明确确认恋人关系。',
+            各自成长: '双方已经确认保留温暖联系，并把重心放回各自生活。',
+        }[progress?.关系结束状态] ?? '';
+        const stageCopy = safety.ended ? '关系已归档或结束。'
+            : safety.paused ? '关系已暂停，历史仍然保留。'
+                : settledCopy || (
+                    progress?.SFW双轨结局已解锁 === true ? '正在等待双方明确确认关系走向。'
+                    : progress?.SFW心动已解锁 === true ? '普通聊天不再推进关系；重要进展需要在正文事件中发生。'
+                        : progress?.SFW理解已检查 === true ? '需要一次更坦诚、尊重边界的交流。'
+                            : progress?.SFW面基已解锁 === true ? '可以通过正文见面继续了解彼此。'
+                                : progress?.SFW朋友分享已触发 === true ? '关系进入了更深入的分享阶段。'
+                                    : progress?.SFW细微裂缝已触发 === true ? '对方开始显露更真实的生活痕迹。'
+                                        : '关系正在自然相处中。');
         sessions.push(Object.freeze({
             sessionUid, npcUid, status: session.状态, profile, messages: Object.freeze(messages),
             onlySfw: safety.onlySfw,
             paused: safety.paused,
             ended: safety.ended,
+            relationshipObservation: Object.freeze({
+                summary: stageCopy,
+                latest: observationCopy[progress?.最近关系观察] ?? '',
+                canPause: !safety.paused && !safety.onlySfw && !safety.ended,
+                canResume: progress?.边界暂停状态 === '暂停' && !safety.ended,
+                canArchive: !safety.ended,
+            }),
             nsfwConsentActive: consentActive,
             nsfwDirectionAvailable: directionOptions.length > 0,
             nsfwDirectionOptions: Object.freeze(directionOptions),
@@ -533,9 +568,9 @@ export function describeActionFailure(result) {
         mvu_parse_input_clone_failed: 'MVU 的临时解析副本不可用，本次未写入任何数据。',
         mvu_relationship_routes_schema_outdated: '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。',
         mvu_story_memory_schema_outdated: '当前聊天缺少 v1.0.8 正文记忆结构。请导入与小手机相同版本的《约了吗》MVU 角色卡后重试；本次未写入。',
-        mvu_relationship_narrative_schema_outdated: '当前聊天缺少 v1.0.16 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
-        mvu_body_relationship_candidate_schema_outdated: '当前聊天缺少 v1.0.16 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
-        mvu_nsfw_consent_schema_outdated: '当前聊天缺少 v1.0.16 成人话题共识结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
+        mvu_relationship_narrative_schema_outdated: '当前聊天缺少 v1.0.17 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
+        mvu_body_relationship_candidate_schema_outdated: '当前聊天缺少 v1.0.17 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
+        mvu_nsfw_consent_schema_outdated: '当前聊天缺少 v1.0.17 成人话题共识结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
         story_memory_backfill_state_invalid: '当前正文记忆状态不可修复，请刷新后重试。',
         story_memory_backfill_role_invalid: '当前角色记录无法建立独立正文记忆，本次未写入。',
         story_memory_backfill_value_invalid: '现有正文记忆格式异常；为避免误删经历，本次未自动修复。',
@@ -548,7 +583,7 @@ export function describeActionFailure(result) {
         body_relationship_candidate_npc_uid_invalid: '当前私聊对象标识异常，本次未写入。请返回消息列表后重试。',
         body_relationship_candidate_role_pool_invalid: '当前角色资料状态异常，无法安全复核正文关系候选，本次未写入。',
         body_relationship_candidate_npc_missing: '当前私聊对象已不在角色资料中，本次未写入。请返回消息列表刷新。',
-        body_relationship_candidate_root_invalid: '正文关系候选结构异常；为避免误写关系值，本次未写入。请使用 v1.0.16 角色卡新开聊天后重试。',
+        body_relationship_candidate_root_invalid: '正文关系候选结构异常；为避免误写关系值，本次未写入。请使用 v1.0.17 角色卡新开聊天后重试。',
         body_relationship_candidate_slot_missing: '当前对象缺少独立的正文关系候选槽位，本次未写入。请刷新后重试。',
         body_relationship_candidate_invalid: '正文关系候选内容未通过安全复核，本次未写入任何关系变化。',
         body_relationship_candidate_uid_mismatch: '正文关系候选与当前私聊对象不一致，本次未写入。请返回消息列表刷新。',
@@ -567,7 +602,7 @@ export function describeActionFailure(result) {
         private_chat_not_matched: '当前对象尚未建立可发送的私聊。',
         private_chat_player_adult_verification_failed: '玩家资料尚未通过成年人校验，无法发送私聊。',
         private_chat_adult_verification_failed: '该资料未通过成年人校验，无法发送私聊。',
-        private_chat_relationship_narrative_schema_outdated: '当前对象缺少完整的关系安全状态，请导入与小手机相同版本的 v1.0.16 角色卡并新开聊天。',
+        private_chat_relationship_narrative_schema_outdated: '当前对象缺少完整的关系安全状态，请导入与小手机相同版本的 v1.0.17 角色卡并新开聊天。',
         private_chat_relationship_paused: '当前关系已暂停、拉黑或归档，私聊保持只读。',
         private_chat_relationship_ended: '当前关系已经结束，私聊保持只读。',
         private_chat_safety_reference_invalid: '本次私聊的安全状态引用无效，未写入任何消息。',
@@ -577,7 +612,7 @@ export function describeActionFailure(result) {
         private_chat_nsfw_safety_not_matched: '当前会话已变化，无法调整成人话题设置。',
         private_chat_nsfw_safety_already_paused: '当前关系已经是“仅 SFW”。',
         private_chat_nsfw_safety_not_paused: '当前关系没有暂停成人话题。',
-        private_chat_nsfw_consent_schema_outdated: '当前会话缺少 v1.0.16 成人话题共识结构，请刷新；若仍出现，请使用同版本角色卡新开聊天。',
+        private_chat_nsfw_consent_schema_outdated: '当前会话缺少 v1.0.17 成人话题共识结构，请刷新；若仍出现，请使用同版本角色卡新开聊天。',
         private_chat_nsfw_consent_backfill_state_invalid: '当前会话结构异常，无法安全建立成人话题共识槽位。',
         private_chat_nsfw_consent_invalid_action: '成人话题共识操作无效，未写入。',
         private_chat_nsfw_consent_invalid_selection: '请至少选择一个允许范围，并选择 1、3 或 5 轮有效期。',
@@ -593,7 +628,7 @@ export function describeActionFailure(result) {
         private_chat_nsfw_direction_no_change: '当前已经是这个成人关系方向。',
         private_chat_nsfw_direction_meetup_active: '已有进行中的成人面基，结束或取消后才能调整方向。',
         private_chat_nsfw_direction_locked: '该成人关系路线已由正文面基复盘建立；如需改变，请先使用“降级为朋友”。',
-        private_chat_nsfw_relationship_invalid_action: '关系降级或结束操作无效，未写入。',
+        private_chat_nsfw_relationship_invalid_action: '关系暂停、归档、降级或结束操作无效，未写入。',
         private_chat_nsfw_relationship_not_established: '当前尚未建立可降级的成人关系路线。',
         private_chat_nsfw_relationship_no_change: '当前关系已经处于该状态。',
         private_chat_message_invalid: '消息不能为空或格式不正确。',

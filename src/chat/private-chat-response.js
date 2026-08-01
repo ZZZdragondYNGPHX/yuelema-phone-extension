@@ -44,6 +44,14 @@ const NSFW_CONSENT_ASSESSMENTS = new Set(NSFW_CONSENT_ASSESSMENT_KINDS);
 // A body-event review is deliberately tiny: it binds only to the candidate
 // that the local request context supplied, never to a model-provided ID.
 const BODY_EVENT_REVIEWS = new Set(['defer', 'confirm', 'decline']);
+export const SFW_INSIGHT_ASSESSMENT_KINDS = Object.freeze([
+    'none', 'direct_understanding', 'not_yet', 'active_reveal', 'post_reveal_support',
+]);
+export const SFW_RESOLUTION_ASSESSMENT_KINDS = Object.freeze([
+    'none', 'romance_confirmed', 'romance_declined', 'growth_confirmed',
+]);
+const SFW_INSIGHT_ASSESSMENTS = new Set(SFW_INSIGHT_ASSESSMENT_KINDS);
+const SFW_RESOLUTION_ASSESSMENTS = new Set(SFW_RESOLUTION_ASSESSMENT_KINDS);
 const USER_MESSAGES = Object.freeze({
     private_chat_response_required: '私聊回复必须是 JSON 对象。',
     private_chat_response_unsafe_prototype: '私聊回复包含不安全的数据结构。',
@@ -253,6 +261,16 @@ function normalizeBodyEventReview(value) {
     return value;
 }
 
+function normalizeSfwAssessment(value, contentMode, field, allowed, values) {
+    if (typeof value !== 'string' || !allowed.has(value)) {
+        fail('private_chat_response_relationship_invalid', { field, expected: values.join('/') });
+    }
+    if (contentMode === 'NSFW' && value !== 'none') {
+        fail('private_chat_response_relationship_invalid', { field, expected: 'NSFW 对话必须为 none' });
+    }
+    return value;
+}
+
 function normalizeNsfwSafetyAssessment(value, contentMode) {
     if (typeof value !== 'string' || !NSFW_SAFETY_ASSESSMENTS.has(value)) {
         fail('private_chat_response_relationship_invalid', {
@@ -291,7 +309,10 @@ function normalizeNsfwConsentAssessment(value, contentMode) {
  */
 export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
     try {
-        assertExactRecord(raw, ['replies', 'relationship'], ['bondAssessment', 'bodyEventReview', 'nsfwSafetyAssessment', 'nsfwConsentAssessment', 'imageDirectives']);
+        assertExactRecord(raw, ['replies', 'relationship'], [
+            'bondAssessment', 'bodyEventReview', 'sfwInsightAssessment', 'sfwResolutionAssessment',
+            'nsfwSafetyAssessment', 'nsfwConsentAssessment', 'imageDirectives',
+        ]);
         const replies = normalizeReplies(ownEnumerableData(raw, 'replies'));
 
         const normalized = {
@@ -303,6 +324,12 @@ export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
             bodyEventReview: Object.hasOwn(raw, 'bodyEventReview')
                 ? normalizeBodyEventReview(ownEnumerableData(raw, 'bodyEventReview'))
                 : 'defer',
+            sfwInsightAssessment: Object.hasOwn(raw, 'sfwInsightAssessment')
+                ? normalizeSfwAssessment(ownEnumerableData(raw, 'sfwInsightAssessment'), contentMode, 'sfwInsightAssessment', SFW_INSIGHT_ASSESSMENTS, SFW_INSIGHT_ASSESSMENT_KINDS)
+                : 'none',
+            sfwResolutionAssessment: Object.hasOwn(raw, 'sfwResolutionAssessment')
+                ? normalizeSfwAssessment(ownEnumerableData(raw, 'sfwResolutionAssessment'), contentMode, 'sfwResolutionAssessment', SFW_RESOLUTION_ASSESSMENTS, SFW_RESOLUTION_ASSESSMENT_KINDS)
+                : 'none',
             nsfwSafetyAssessment: Object.hasOwn(raw, 'nsfwSafetyAssessment')
                 ? normalizeNsfwSafetyAssessment(ownEnumerableData(raw, 'nsfwSafetyAssessment'), contentMode === 'NSFW' ? 'NSFW' : 'SFW')
                 : 'none',

@@ -248,10 +248,41 @@ test('stage C degrades or ends without deleting history and revokes active conse
     assert.deepEqual(endPatch.value.map((operation) => [operation.path, operation.value?.状态 ?? operation.value]), [
         ['/关系叙事/npc_one/进程/关系结束状态', '结束联系'],
         ['/关系叙事/npc_one/进程/边界暂停状态', '暂停'],
+        ['/关系叙事/npc_one/进程/最近关系观察', '结局确认'],
         ['/会话/chat_1/NSFW同意', '已撤回'],
     ]);
     assert.equal(endPatch.value.some((operation) => operation.op === 'remove'), false);
     assert.equal(validateControlledPatchAgainstState(ended, endPatch.value).ok, true);
+});
+
+test('stage D pauses, resumes, and archives a relationship without deleting history or scores', () => {
+    const current = state();
+    const paused = buildPrivateChatNsfwRelationshipActionPatch(current, { sessionUid: 'chat_1', action: 'pause_contact' });
+    assert.equal(paused.ok, true);
+    assert.deepEqual(paused.value.map((operation) => [operation.path, operation.value]), [
+        ['/关系叙事/npc_one/进程/边界暂停状态', '暂停'],
+        ['/关系叙事/npc_one/进程/最近关系观察', '安全降级'],
+    ]);
+    assert.equal(validateControlledPatchAgainstState(current, paused.value).ok, true);
+    assert.equal(paused.value.some((operation) => operation.op === 'remove' || operation.path.includes('/与玩家关系/')), false);
+
+    const pausedState = state();
+    pausedState.关系叙事.npc_one.进程.边界暂停状态 = '暂停';
+    pausedState.关系叙事.npc_one.进程.最近关系观察 = '安全降级';
+    const resumed = buildPrivateChatNsfwRelationshipActionPatch(pausedState, { sessionUid: 'chat_1', action: 'resume_contact' });
+    assert.equal(resumed.ok, true);
+    assert.equal(validateControlledPatchAgainstState(pausedState, resumed.value).ok, true);
+
+    const archived = buildPrivateChatNsfwRelationshipActionPatch(current, { sessionUid: 'chat_1', action: 'archive_contact' });
+    assert.equal(archived.ok, true);
+    assert.deepEqual(archived.value.map((operation) => operation.value), ['已归档', '已归档', '结局确认']);
+    assert.equal(validateControlledPatchAgainstState(current, archived.value).ok, true);
+
+    const archivedState = state();
+    archivedState.关系叙事.npc_one.进程.关系结束状态 = '已归档';
+    archivedState.关系叙事.npc_one.进程.边界暂停状态 = '已归档';
+    assert.equal(buildPrivateChatNsfwRelationshipActionPatch(archivedState, { sessionUid: 'chat_1', action: 'end_contact' }).ok, false);
+    assert.equal(buildPrivateChatNsfwRelationshipActionPatch(archivedState, { sessionUid: 'chat_1', action: 'archive_contact' }).ok, false);
 });
 
 test('stage C atomically reviews a matching NSFW body candidate, freezes the other rail, and consumes the slot', () => {
@@ -368,6 +399,7 @@ test('SFW threshold settlement writes only narrow protected progress leaves in t
         { op: 'replace', path: '/关系叙事/npc_one/进程/最后结算回合UID', value: 'msg_chat_1_p_1' },
         { op: 'replace', path: '/关系叙事/npc_one/进程/已消费事件ID', value: ['chat:1:1'] },
         { op: 'replace', path: '/关系叙事/npc_one/进程/SFW细微裂缝已触发', value: true },
+        { op: 'replace', path: '/关系叙事/npc_one/进程/最近关系观察', value: '关系靠近' },
     ]);
     assert.equal(built.value.some((operation) => operation.path === '/角色池/npc_one/与玩家关系/友情值' && operation.value === 20), true);
     assert.equal(built.value.some((operation) => operation.path === '/关系叙事/npc_one'), false, 'never serialize protected life/wish records into a chat settlement');
@@ -380,6 +412,32 @@ test('SFW threshold settlement writes only narrow protected progress leaves in t
     forgedFlag.find((operation) => operation.path.endsWith('/SFW细微裂缝已触发')).value = false;
     assert.equal(validateControlledPatchAgainstState(current, forgedFlag).ok, false, 'flags may never be reset by this path');
     assert.equal(validateControlledPatchAgainstState(current, [{ op: 'replace', path: '/关系叙事/npc_one/人生底色/完整理解', value: '越权' }]).ok, false);
+});
+
+test('stage B direct understanding is reconstructed exactly and cannot be forged into a different ending', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 59, 心动值: 0, 欲望值: 0,
+        },
+    });
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '我理解，也愿意尊重你的选择。',
+        response: {
+            ...response(),
+            bondAssessment: { kind: 'friendly', intensity: 2, direction: 'increase' },
+            sfwInsightAssessment: 'direct_understanding',
+        },
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/SFW理解已检查') && operation.value === true), true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/SFW心动已解锁') && operation.value === true), true);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+
+    const forged = structuredClone(built.value);
+    forged.push({ op: 'replace', path: '/关系叙事/npc_one/进程/关系结束状态', value: '恋人' });
+    assert.equal(validateControlledPatchAgainstState(current, forged).ok, false);
 });
 
 test('private chat fails closed without a complete relationship narrative registry', () => {

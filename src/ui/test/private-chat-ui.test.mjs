@@ -628,6 +628,54 @@ test('relationship pause and end states keep private chat read-only before any s
     }
 });
 
+test('stage D relationship observation is closable and pause/archive require explicit confirmation buttons', async () => {
+    const result = readResult();
+    const narrative = createEmptyRelationshipNarrative();
+    narrative.进程.SFW细微裂缝已触发 = true;
+    narrative.进程.最近关系观察 = '关系靠近';
+    result.state.关系叙事 = { npc_lin: narrative };
+    const calls = [];
+    const storage = createMemoryStorage();
+    const previousDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        runPrivateChat() { return Promise.resolve({ ok: true }); },
+        runPrivateChatNsfwRelationshipAction(command) { calls.push(command); return Promise.resolve({ ok: true }); },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-stage-d-relationship', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        const observation = miniDom.document.querySelector('.yl-relationship-observation');
+        assert.match(observation.textContent, /关系观察|自然靠近/u);
+        assert.doesNotMatch(observation.textContent, /100|50|友情值|心动值|隐藏/u);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '收起关系观察'));
+        assert.equal(storage.getItem('yuelema.relationship-observation-collapsed/v1'), '1');
+        assert.ok(miniDom.document.querySelector('.yl-relationship-observation').classList.contains('is-collapsed'));
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开聊天工具'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开关系暂停、归档或结束操作'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确认暂停这段关系'));
+        await flushUi();
+        assert.deepEqual(calls[0], { sessionUid: 'chat_lin', action: 'pause_contact' });
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开聊天工具'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开关系暂停、归档或结束操作'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确认归档为只读'));
+        await flushUi();
+        assert.deepEqual(calls[1], { sessionUid: 'chat_lin', action: 'archive_contact' });
+    } finally {
+        mounted.destroy();
+        if (previousDescriptor) Object.defineProperty(globalThis, 'localStorage', previousDescriptor);
+        else delete globalThis.localStorage;
+    }
+});
+
 test('private chat preserves its draft and projects a safe failure when the state changed before commit', async () => {
     const bridge = {
         emit() {},
