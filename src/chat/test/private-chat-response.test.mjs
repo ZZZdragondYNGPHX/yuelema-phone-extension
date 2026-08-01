@@ -32,6 +32,7 @@ test('accepts replies and returns an independent canonical clone', () => {
         bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
         bodyEventReview: 'defer',
         nsfwSafetyAssessment: 'none',
+        nsfwConsentAssessment: 'none',
     });
     assert.notStrictEqual(normalized, raw);
     assert.notStrictEqual(normalized.replies, raw.replies);
@@ -54,6 +55,22 @@ test('accepts only the bounded NSFW safety vocabulary and keeps SFW fail-closed'
     );
     expectCode(
         () => normalizePrivateChatResponse(response({ nsfwSafetyAssessment: { kind: 'privacy_violation' } }), { contentMode: 'NSFW' }),
+        'private_chat_response_relationship_invalid',
+    );
+});
+
+test('C.2 accepts only the bounded consent assessment vocabulary and fail-closes NSFW omissions', () => {
+    for (const value of ['in_scope', 'withdrawn', 'out_of_scope', 'unclear']) {
+        assert.equal(normalizePrivateChatResponse(response({ nsfwConsentAssessment: value }), { contentMode: 'NSFW' }).nsfwConsentAssessment, value);
+    }
+    assert.equal(normalizePrivateChatResponse(response(), { contentMode: 'NSFW' }).nsfwConsentAssessment, 'unclear');
+    assert.equal(normalizePrivateChatResponse(response(), { contentMode: 'SFW' }).nsfwConsentAssessment, 'none');
+    expectCode(
+        () => normalizePrivateChatResponse(response({ nsfwConsentAssessment: 'in_scope' }), { contentMode: 'SFW' }),
+        'private_chat_response_relationship_invalid',
+    );
+    expectCode(
+        () => normalizePrivateChatResponse(response({ nsfwConsentAssessment: { value: 'in_scope' } }), { contentMode: 'NSFW' }),
         'private_chat_response_relationship_invalid',
     );
 });

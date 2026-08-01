@@ -5,11 +5,12 @@ import { buildPrivateChatContext, consumePrivateChatDiagnostics, generatePrivate
 import { buildPrivateChatPatch, validateControlledPatchAgainstState } from '../../mvu/controlled-patch.js';
 import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
 import { bodyRelationshipEventIdForSource, createEmptyBodyRelationshipCandidate } from '../../mvu/body-relationship-candidate.js';
+import { createEmptyNsfwConsent, grantNsfwConsent } from '../../mvu/nsfw-consent.js';
 
 function state() {
     return {
         系统: { UID计数器: { 角色: 1, 会话: 1, 面基: 0 } },
-        软件: { 内容模式: 'NSFW', 关于软件点击数: 0 },
+        软件: { 内容模式: 'SFW', 关于软件点击数: 0 },
         玩家: {
             成人验证: true,
             公开资料: { 昵称: '玩家', 简介: '公开简介' },
@@ -52,11 +53,18 @@ function state() {
                 最近消息: [{ 消息UID: 'old', 发送者: '角色', 内容: '嗨', 时间: '', 层数: 1 }],
                 对话层数: 1,
                 总结: { 已总结消息UID: '', 总结序号: 0, 记录: [], 状态: '空闲', 失败原因: '', 目标总结UID: '', 尝试次数: 0 },
-                已确认边界: '', 已确认承诺: '',
+                已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent(),
             },
         },
         面基记录: {},
     };
+}
+
+function activeNsfwState({ scopes = ['成人话题'], turns = 3 } = {}) {
+    const current = state();
+    current.软件.内容模式 = 'NSFW';
+    current.会话.chat_1.NSFW同意 = grantNsfwConsent(current.会话.chat_1.NSFW同意, { scopes, turns });
+    return current;
 }
 
 function response() {
@@ -343,15 +351,17 @@ test('B.2 body candidate is safely projected and atomically consumed only after 
 
 test('NSFW core contract permits consensual adult chat without treating explicitness as local block pressure', async () => {
     let request;
+    const current = activeNsfwState({ scopes: ['成人话题', '露骨调情'], turns: 3 });
     const result = await generatePrivateChatReply({
-        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我想和你聊些更亲密的事，可以吗？', settingsStore: settingsStore(),
+        state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我想和你聊些更亲密的事，可以吗？', turnConsentConfirmed: true, settingsStore: settingsStore(),
         llmClient: {
             async chat(input) {
                 request = input;
                 return { text: JSON.stringify({
                     replies: ['可以，我们按彼此舒服的节奏来。'],
                     relationship: { 好感: 1, 信任: 1, 戒备: 0, 面基意愿: 0 },
-                    bondAssessment: { kind: 'sexual_desire', intensity: 1 },
+                    bondAssessment: { kind: 'sexual_desire', intensity: 1, direction: 'increase' },
+                    nsfwConsentAssessment: 'in_scope',
                 }) };
             },
         },
@@ -359,14 +369,15 @@ test('NSFW core contract permits consensual adult chat without treating explicit
     assert.equal(result.ok, true);
     assert.equal(result.response.relationship.戒备, 0);
     assert.equal(result.response.nsfwSafetyAssessment, 'none');
-    assert.match(request.messages[0].content, /尊重边界的成人内容不得被判为安全冲突/u);
-    assert.match(request.messages[0].content, /不开放 NSFW 正向三值成长、30\/40\/50 阶段、路线确认或面基路线/u);
-    assert.match(request.messages[0].content, /已匹配、成人验证、既往回复和高关系都不是持续授权/u);
-    assert.match(request.messages[0].content, /明确拒绝或撤回后仍继续、违反已知边界、胁迫或非自愿、侵犯现实隐私/u);
-    assert.match(request.messages[0].content, /同意不清时必须先用线上文字澄清/u);
-    assert.match(request.messages[0].content, /nsfwSafetyAssessment 默认且通常必须为 none/u);
+    assert.equal(result.response.nsfwConsentAssessment, 'in_scope');
+    assert.deepEqual(result.nsfwConsentReferenceAtRequest, { revision: 1, remainingTurns: 3, scopes: ['成人话题', '露骨调情'] });
+    assert.match(request.messages[0].content, /结构化范围、有限剩余轮数与本轮显式确认/u);
+    assert.match(request.messages[0].content, /模型不得选路、锁线、给阈值或决定面基/u);
+    assert.match(request.messages[0].content, /nsfwConsentAssessment 必须先对照本轮玩家文本与 nsfwConsent\.scopes 分类/u);
+    assert.match(request.messages[0].content, /只有 in_scope 才可给出可结算的 romantic_desire\/sexual_desire/u);
     assert.match(request.messages[0].content, /NSFW 允许 none\/friendly\/romantic_flirt\/romantic_desire\/sexual_desire/u);
     assert.match(request.messages[0].content, /普通问候或日常友好交流应使用 none 或 friendly/u);
+    assert.doesNotMatch(request.messages[1].content, /剩余轮数|修订号|玩家私聊工具/u);
 });
 
 test('private chat summary uses its dedicated preset and returns only validated in-memory text and anchors', async () => {

@@ -10,12 +10,19 @@ import {
     settleBodyRelationshipCandidate,
     settleRelationshipProgress,
 } from '../relationship-progress.js';
+import { createEmptyNsfwConsent, grantNsfwConsent } from '../../mvu/nsfw-consent.js';
 
 function progress(overrides = {}) {
     return {
         SFW细微裂缝已触发: false,
         SFW朋友分享已触发: false,
         SFW面基已解锁: false,
+        NSFW爱情阶段30已触发: false,
+        NSFW爱情阶段40已触发: false,
+        NSFW共识亲密阶段30已触发: false,
+        NSFW共识亲密阶段40已触发: false,
+        NSFW方向确认可用: false,
+        NSFW路线锁定: '',
         最后结算回合UID: '',
         已消费事件ID: [],
         边界暂停状态: '',
@@ -101,7 +108,7 @@ test('event IDs are local, bounded projections of player turn IDs only', () => {
     assert.equal(relationshipEventIdForTurn('untrusted-value'), '');
 });
 
-test('C.1 keeps ordinary NSFW progress closed and allows only classified safety declines', () => {
+test('C.2 keeps ordinary NSFW progress closed without an in-scope assessment and allows classified safety declines', () => {
     const ordinaryDecline = settle({
         contentMode: 'NSFW', relationship: { 友情值: 20, 心动值: 40, 欲望值: 80 },
         assessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
@@ -125,6 +132,36 @@ test('C.1 keeps ordinary NSFW progress closed and allows only classified safety 
     assert.deepEqual({ delta: zeroScoreSafety.delta, safetyPause: zeroScoreSafety.safetyPause }, { delta: 0, safetyPause: true });
 });
 
+test('C.3 advances only the assessed NSFW rail, marks 30/40/50 once, and never selects a direction', () => {
+    const heart30 = settle({
+        contentMode: 'NSFW', relationship: { 友情值: 0, 心动值: 29, 欲望值: 80 },
+        assessment: { kind: 'romantic_desire', intensity: 3, direction: 'increase' },
+        nsfwConsentAssessment: 'in_scope',
+    });
+    assert.deepEqual({ field: heart30.field, delta: heart30.delta, nextValue: heart30.nextValue }, { field: '心动值', delta: 1, nextValue: 30 });
+    assert.equal(heart30.progressUpdates.NSFW爱情阶段30已触发, true);
+    assert.equal(Object.hasOwn(heart30.progressUpdates, 'NSFW共识亲密阶段30已触发'), false);
+    assert.equal(Object.hasOwn(heart30.progressUpdates, 'NSFW路线锁定'), false);
+
+    const desire40 = settle({
+        contentMode: 'NSFW', relationship: { 友情值: 0, 心动值: 30, 欲望值: 39 },
+        progress: progress({ NSFW爱情阶段30已触发: true }),
+        assessment: { kind: 'sexual_desire', intensity: 2, direction: 'increase' },
+        nsfwConsentAssessment: 'in_scope', turnId: 'msg_chat_1_p_2',
+    });
+    assert.equal(desire40.nextValue, 40);
+    assert.equal(desire40.progressUpdates.NSFW共识亲密阶段40已触发, true);
+
+    const directionGate = settle({
+        contentMode: 'NSFW', relationship: { 友情值: 0, 心动值: 49, 欲望值: 40 },
+        assessment: { kind: 'romantic_desire', intensity: 1, direction: 'increase' },
+        nsfwConsentAssessment: 'in_scope', turnId: 'msg_chat_1_p_3',
+    });
+    assert.equal(directionGate.nextValue, 50);
+    assert.equal(directionGate.progressUpdates.NSFW方向确认可用, true);
+    assert.equal(Object.hasOwn(directionGate.progressUpdates, 'NSFW路线锁定'), false);
+});
+
 test('only-SFW keeps friendship available while pause/end and NSFW meetup fail closed', () => {
     const onlySfw = settle({
         contentMode: 'NSFW', relationship: { 友情值: 10, 心动值: 90, 欲望值: 90 },
@@ -137,7 +174,17 @@ test('only-SFW keeps friendship available while pause/end and NSFW meetup fail c
     );
     assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 49, 心动值: 100, 欲望值: 100 } }).unlocked, false);
     assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 50, 心动值: 0, 欲望值: 0 } }).route, '友情');
-    assert.equal(deriveMeetupAccess({ contentMode: 'NSFW', relationship: { 友情值: 100, 心动值: 100, 欲望值: 100 } }).reason, 'nsfw_direction_unconfirmed');
+    const consent = grantNsfwConsent(createEmptyNsfwConsent(), { scopes: ['成人话题'], turns: 3 });
+    assert.equal(deriveMeetupAccess({ contentMode: 'NSFW', relationship: { 友情值: 100, 心动值: 100, 欲望值: 100 } }).reason, 'nsfw_consent_required');
+    assert.equal(deriveMeetupAccess({ contentMode: 'NSFW', relationship: { 友情值: 100, 心动值: 100, 欲望值: 100 }, nsfwConsent: consent }).reason, 'nsfw_direction_unconfirmed');
+    assert.deepEqual(deriveMeetupAccess({
+        contentMode: 'NSFW', relationship: { 心动值: 50, 欲望值: 100 },
+        progress: progress({ NSFW方向确认可用: true, NSFW路线锁定: '爱情' }), nsfwConsent: consent,
+    }), { unlocked: true, route: '恋爱', routes: ['恋爱'], reason: 'eligible' });
+    assert.equal(deriveMeetupAccess({
+        contentMode: 'NSFW', relationship: { 心动值: 100, 欲望值: 100 },
+        progress: progress({ NSFW方向确认可用: true, NSFW路线锁定: '暂不定义' }), nsfwConsent: consent,
+    }).reason, 'nsfw_direction_unconfirmed');
     assert.equal(deriveMeetupAccess({ contentMode: 'NSFW', relationship: { 友情值: 100 }, progress: progress({ 边界暂停状态: '仅SFW' }) }).reason, 'only_sfw');
     assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 100 }, progress: progress({ 边界暂停状态: '暂停' }) }).reason, 'relationship_paused');
     assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 100 }, progress: progress({ 关系结束状态: '深度朋友' }) }).reason, 'relationship_ended');
@@ -188,7 +235,7 @@ test('B.2 body candidates use only the global bounded deltas and atomically cons
     }
 });
 
-test('B.2 candidates defer pending confirmation, consume a decline as zero, and never cross into NSFW', () => {
+test('B.2 SFW candidates defer pending confirmation, consume a decline as zero, and require their route mode', () => {
     const pending = bodyCandidate({ 需再次确认: true });
     assert.equal(settleBodyRelationshipCandidate({
         contentMode: 'SFW', relationship: { 友情值: 40 }, progress: progress(), candidate: pending, turnId: 'msg_chat_1_p_10',
@@ -210,6 +257,35 @@ test('B.2 candidates defer pending confirmation, consume a decline as zero, and 
     assert.equal(settleBodyRelationshipCandidate({
         contentMode: 'NSFW', relationship: { 友情值: 40 }, progress: progress(), candidate: bodyCandidate(), turnId: 'msg_chat_1_p_11',
     }).status, 'deferred');
+});
+
+test('stage C reviews only the selected NSFW body route, freezes the other rail, and closes ordinary farming afterward', () => {
+    const loveCandidate = bodyCandidate({
+        事件类别: '推进心愿', 关系路线: 'NSFW爱情', 允许影响关系值: ['心动值'],
+    });
+    const established = settleBodyRelationshipCandidate({
+        contentMode: 'NSFW', relationship: { 友情值: 40, 心动值: 50, 欲望值: 65 },
+        progress: progress({ NSFW方向确认可用: true, NSFW路线锁定: '爱情' }),
+        candidate: loveCandidate, review: 'confirm', turnId: 'msg_chat_1_p_20',
+    });
+    assert.deepEqual({ field: established.field, delta: established.delta, nextValue: established.nextValue }, { field: '心动值', delta: 2, nextValue: 52 });
+    assert.equal(established.progressUpdates.冻结关系值, '欲望值');
+    assert.equal(established.progressUpdates.最后结算回合UID, 'msg_chat_1_p_20');
+
+    const wrongRoute = settleBodyRelationshipCandidate({
+        contentMode: 'NSFW', relationship: { 心动值: 50, 欲望值: 65 },
+        progress: progress({ NSFW方向确认可用: true, NSFW路线锁定: '共识亲密' }),
+        candidate: loveCandidate, review: 'confirm', turnId: 'msg_chat_1_p_21',
+    });
+    assert.equal(wrongRoute.status, 'deferred');
+
+    const ordinaryAfterEstablishment = settle({
+        contentMode: 'NSFW', relationship: { 友情值: 40, 心动值: 52, 欲望值: 65 },
+        progress: progress({ NSFW方向确认可用: true, NSFW路线锁定: '爱情', 冻结关系值: '欲望值' }),
+        assessment: { kind: 'romantic_desire', intensity: 3, direction: 'increase' },
+        nsfwConsentAssessment: 'in_scope', turnId: 'msg_chat_1_p_22',
+    });
+    assert.equal(ordinaryAfterEstablishment.delta, 0);
 });
 
 test('a stale consumed body candidate is removable without suppressing a new ordinary chat settlement', () => {

@@ -4,6 +4,7 @@ import { normalizePrivateChatResponse, projectPrivateChatResponseDiagnostic, pro
 import { projectPendingBodyRelationshipCandidate, selectPendingBodyRelationshipCandidate } from '../mvu/body-relationship-candidate.js';
 import { validateRelationshipNarrative } from '../mvu/relationship-narrative.js';
 import { deriveRelationshipSafetyState } from './relationship-progress.js';
+import { isActiveNsfwConsent, nsfwConsentReference, validateNsfwConsent } from '../mvu/nsfw-consent.js';
 import {
     DEFAULT_CHAT_SUMMARY_SETTINGS,
     listConversationSummaryRecords,
@@ -232,16 +233,33 @@ function validateConversationSummaryTarget({ state, sessionUid, npcUid } = {}) {
 }
 
 /** Builds the only context disclosed to the private-chat fast model. Hidden profiles are never included. */
-export function buildPrivateChatContext({ state, sessionUid, npcUid, playerMessage, summaryEnabled = false } = {}) {
+export function buildPrivateChatContext({ state, sessionUid, npcUid, playerMessage, turnConsentConfirmed = false, summaryEnabled = false } = {}) {
     const validated = validatePrivateChatRequest({ state, sessionUid, npcUid, playerMessage });
     if (!validated.ok) return validated;
     const { session, npc, relationship, onlySfw, playerMessage: message } = validated.value;
     const pendingBodyCandidate = selectPendingBodyRelationshipCandidate(state, npcUid);
     if (!pendingBodyCandidate.ok) return pendingBodyCandidate;
+    const contentMode = state.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+    const requiresNsfwConsent = contentMode === 'NSFW' && onlySfw !== true;
+    let consentReference = null;
+    let consentScopes = [];
+    if (requiresNsfwConsent) {
+        const consent = validateNsfwConsent(session.NSFW同意);
+        if (!consent.ok) return { ok: false, code: 'private_chat_nsfw_consent_schema_outdated' };
+        if (!isActiveNsfwConsent(consent.value)) return { ok: false, code: 'private_chat_nsfw_consent_required' };
+        if (turnConsentConfirmed !== true) return { ok: false, code: 'private_chat_nsfw_turn_consent_required' };
+        consentReference = nsfwConsentReference(consent.value);
+        consentScopes = [...consent.value.允许范围];
+    }
     const player = ownRecord(state.玩家) ? state.玩家 : {};
     const base = {
-        contentMode: state.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW',
+        contentMode,
         onlySfw: onlySfw === true,
+        nsfwConsent: Object.freeze({
+            active: requiresNsfwConsent,
+            currentTurnConfirmed: requiresNsfwConsent,
+            scopes: Object.freeze(consentScopes),
+        }),
         playerPublicProfile: projectPublicProfile(player.公开资料),
         playerFriendProfile: projectFriendProfile(player.仅好友资料),
         npcPublicProfile: projectPublicProfile(npc.公开资料),
@@ -279,6 +297,7 @@ export function buildPrivateChatContext({ state, sessionUid, npcUid, playerMessa
         // This correlation handle never enters the prompt or model response.
         // It only lets the later latest-state build reject a stale candidate.
         bodyCandidateEventId: pendingBodyCandidate.value?.事件ID ?? '',
+        nsfwConsentReferenceAtRequest: consentReference,
     };
 }
 
@@ -288,11 +307,11 @@ function makeMessages(context, promptPreset) {
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件中一名已匹配的明确成年角色。软件层只能进行短文字聊天，不叙述线下行为或自动推进现实事件。',
         context.contentMode === 'NSFW' && !context.onlySfw
-            ? '当前为 NSFW，但 C.1 安全阶段不记录永久同意，也不开放 NSFW 正向三值成长、30/40/50 阶段、路线确认或面基路线。允许明确成年角色在自愿、边界清楚的前提下直白调情、讨论欲望并进行露骨线上文爱；这仍不能伪造成现实线下身体行为已经发生，也不能替代本轮或现实行动的明确同意。已匹配、成人验证、既往回复和高关系都不是持续授权。尊重边界的成人内容不得被判为安全冲突；同意不清时必须先用线上文字澄清，三值变化保持为零。只有玩家在明确拒绝或撤回后仍继续、违反已知边界、胁迫或非自愿、侵犯现实隐私等具体安全问题，才能选择受限安全分类与负向关系语义。'
+            ? '当前为 C.2/C.3 NSFW：程序已在模型请求前校验当前对象的结构化范围、有限剩余轮数与本轮显式确认；nsfwConsent.scopes 是本轮唯一允许的成人话题范围，不在其中的内容必须澄清或拒绝。可在范围内进行明确成年、自愿的直白调情或线上文字互动，但不得伪造线下身体行为已发生。玩家当轮撤回、表示停止或改为只聊天时，nsfwConsentAssessment 必须为 withdrawn；超出范围为 out_of_scope，意图不清为 unclear，只有范围与当轮意图都明确为 in_scope。数值、既往同意、匹配、订单与一次恢复操作都不是永久授权。C.3 只允许本地规则对范围内的心动/欲望语义做小步结算和 30/40/50 一次阶段旗标；模型不得选路、锁线、给阈值或决定面基。'
             : context.onlySfw
                 ? '当前关系已由玩家切换为“仅 SFW”：继续正常日常社交、友情与不露骨的甜蜜调情；不得生成或推进成人话题，不得把暂停成人话题理解为全关系结束。'
             : '当前为 SFW：本模式保持日常社交尺度，以自然亲近、甜蜜调情的线上聊天为主。',
-        '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"bondAssessment":{"kind":"模式允许的分类","intensity":0..3整数,"direction":"none|increase|decrease"},"nsfwSafetyAssessment":"none|ignored_refusal_or_withdrawal|known_boundary_conflict|coercion_or_nonconsensual|privacy_violation","bodyEventReview":"defer|confirm|decline","imageDirectives":[{"replyIndex":0,"directive":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。nsfwSafetyAssessment、bodyEventReview 与 imageDirectives 均可省略。',
+        '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"bondAssessment":{"kind":"模式允许的分类","intensity":0..3整数,"direction":"none|increase|decrease"},"nsfwConsentAssessment":"none|in_scope|withdrawn|out_of_scope|unclear","nsfwSafetyAssessment":"none|ignored_refusal_or_withdrawal|known_boundary_conflict|coercion_or_nonconsensual|privacy_violation","bodyEventReview":"defer|confirm|decline","imageDirectives":[{"replyIndex":0,"directive":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。nsfwConsentAssessment、nsfwSafetyAssessment、bodyEventReview 与 imageDirectives 均可省略。',
         'replies 必须是 1-6 条自然、简短、可分别显示为聊天气泡的字符串；每条内部禁止换行，全部消息用单个空格连接后的总长度不得超过 600 字。优先拆成符合真实即时聊天节奏的多条短消息。',
         '把角色当成有自己生活的真人来回：TA 有正在忙的事、今天的心情、想到一半突然换的话题；可以主动分享此刻的小事（刚点的外卖、窗外的雨、循环的歌），也可以用公开资料里的兴趣自然抛出新话题引子（周末计划、最近看的剧、想去的店），而不是永远被动应答；语气、口头禅和标点习惯要贴合其性格标签与沟通风格标签。',
         'playerPublicProfile 会提供玩家已公开的城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签和沟通风格标签。字段为空字符串或空数组时，表示玩家未提供该项：不得猜测、补全或编造；仅在与本轮聊天自然相关时使用非空公开资料。',
@@ -303,8 +322,8 @@ function makeMessages(context, promptPreset) {
         '仅当本次内容确实值得以照片分享，且角色性格有分享欲、当前关系与边界允许时，才输出对应 replyIndex 的 imageDirectives。私照必须更严格判断亲密度、信任与自愿边界；不得机械地为每轮或每条回复生图。不需要时省略该字段。scene 只能是描述画面的英文标签，不得包含角色 UID、URL、JSONPatch、完整正负提示词、core_dna、outfit_dna 或凭据。',
         'relationship 仅用于既有互动节奏建议。bondAssessment 必须同时判断玩家本轮消息与角色实际回复：SFW 只允许 none/friendly/romantic_flirt；NSFW 允许 none/friendly/romantic_flirt/romantic_desire/sexual_desire，其中普通问候或日常友好交流应使用 none 或 friendly，只有实际出现浪漫或性欲望时才使用对应 desire 分类。none 必须使用 intensity=0、direction=none；其余分类使用 intensity=1-3 作为轻微/明显/严重的语义等级，并仅在互动确实促进对应关系时使用 increase、确实伤害对应关系时使用 decrease。数值步长、事件 ID、阶段旗标和是否结算均由本地受控规则决定；普通分歧、没有升温或话题平淡使用 none，不得机械扣分。模型不得给友情值、心动值、欲望值的绝对值或增量，也不得给 UID、状态、阈值、Patch、JSON Pointer 或写入路径。',
         context.contentMode === 'NSFW' && !context.onlySfw
-            ? 'nsfwSafetyAssessment 默认且通常必须为 none。只有明确忽视拒绝/撤回、违反已知边界、胁迫或非自愿、现实隐私侵犯时才选择对应非 none 枚举；单纯成人化、互相同意的露骨表达、普通分歧、边界不清或对方主动撤回本身都不是违规。非 none 只是一项受限语义分类，本地代码才决定是否负向结算并切换为“仅 SFW”；不得输出暂停状态、数值、路径或路线。'
-            : '本轮不是可推进成人关系的对话，nsfwSafetyAssessment 必须省略或为 none。',
+            ? 'nsfwConsentAssessment 必须先对照本轮玩家文本与 nsfwConsent.scopes 分类；只有 in_scope 才可给出可结算的 romantic_desire/sexual_desire，withdrawn/out_of_scope/unclear 时 bondAssessment 必须为 none。nsfwSafetyAssessment 默认且通常为 none；只有明确忽视拒绝/撤回、违反已知边界、胁迫或非自愿、现实隐私侵犯时才选择对应非 none 枚举；对方主动撤回本身不是违规。模型不得输出持久同意状态、剩余轮数、修订号、分数、UID、路径、Patch 或路线。'
+            : '本轮不是可推进成人关系的对话，nsfwConsentAssessment 与 nsfwSafetyAssessment 必须省略或为 none。',
         '玩家与角色的公开资料就是本轮唯一已知档案：城市、距离范围、寻找意图、简介及四类标签均可作为自然聊天线索。空字符串或空标签数组只表示该项尚未提供；不得臆测、补全或假称这些缺失资料。',
         '不得输出、猜测或泄露任何隐藏资料；不要声称已发生线下见面或性行为。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
@@ -382,9 +401,9 @@ function parseResponseJson(raw) {
 }
 
 /** Calls the chat-bound model and returns a fully validated reply in memory; it never writes MVU. */
-export async function generatePrivateChatReply({ state, sessionUid, npcUid, playerMessage, settingsStore, llmClient, signal } = {}) {
+export async function generatePrivateChatReply({ state, sessionUid, npcUid, playerMessage, turnConsentConfirmed = false, settingsStore, llmClient, signal } = {}) {
     const summarySettings = readSummarySettings(settingsStore);
-    const builtContext = buildPrivateChatContext({ state, sessionUid, npcUid, playerMessage, summaryEnabled: summarySettings.enabled });
+    const builtContext = buildPrivateChatContext({ state, sessionUid, npcUid, playerMessage, turnConsentConfirmed, summaryEnabled: summarySettings.enabled });
     if (!builtContext.ok) {
         recordDiagnostic('private_chat', sessionUid, { stage: '请求校验', code: builtContext.code, hint: '会话/角色状态或玩家消息未通过发送前校验' });
         return { ok: false, code: builtContext.code, message: '当前会话不可继续发送消息。' };
@@ -422,6 +441,8 @@ export async function generatePrivateChatReply({ state, sessionUid, npcUid, play
             playerMessage: builtContext.context.playerMessage,
             bodyCandidateEventId: builtContext.bodyCandidateEventId,
             onlySfwAtRequest: builtContext.context.onlySfw,
+            turnConsentConfirmed: builtContext.context.nsfwConsent.currentTurnConfirmed,
+            nsfwConsentReferenceAtRequest: builtContext.nsfwConsentReferenceAtRequest,
         };
     } catch (error) {
         const codecDiagnostic = projectPrivateChatResponseDiagnostic(error);

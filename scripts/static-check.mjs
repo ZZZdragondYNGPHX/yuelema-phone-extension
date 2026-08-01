@@ -8,7 +8,7 @@ const requiredFiles = [
     'manifest.json', 'index.js', 'style.css', 'README.md', 'AGENTS.md', 'RELEASE_REVIEW.md', 'test/extension-lifecycle.test.mjs',
     'src/app-shell.js', 'src/host-extension-update.js', 'src/service-order-history-store.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
     'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
-    'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/body-relationship-candidate.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/body-relationship-candidate.test.mjs', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
+    'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/nsfw-consent.js', 'src/mvu/body-relationship-candidate.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/nsfw-consent.test.mjs', 'src/mvu/test/body-relationship-candidate.test.mjs', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.0.15') fail('manifest.version 必须与扩展版本 1.0.15 统一');
+if (manifest.version !== '1.0.16') fail('manifest.version 必须与扩展版本 1.0.16 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -59,7 +59,7 @@ const sourceRelativeFiles = [
     'index.js', 'test/extension-lifecycle.test.mjs',
     'src/app-shell.js', 'src/host-extension-update.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js',
     'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
-    'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/body-relationship-candidate.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/body-relationship-candidate.test.mjs', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
+    'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/nsfw-consent.js', 'src/mvu/body-relationship-candidate.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/nsfw-consent.test.mjs', 'src/mvu/test/body-relationship-candidate.test.mjs', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
@@ -121,7 +121,7 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.0.15'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.15 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.0.16'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.16 统一（必须位于壳层 app-shell.js）');
 if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
     || !appShellCore.includes("'placement_reset'")
     || !appShellCore.includes("'mvu_read_complete'")
@@ -272,6 +272,7 @@ console.log('✓ 正文记忆按对象隔离、旧状态受控补齐，当前/�
 const conversationSummary = await readFile(resolve(root, 'src/chat/conversation-summary.js'), 'utf8');
 const interactionRhythm = await readFile(resolve(root, 'src/chat/interaction-rhythm.js'), 'utf8');
 const relationshipProgress = await readFile(resolve(root, 'src/chat/relationship-progress.js'), 'utf8');
+const nsfwConsent = await readFile(resolve(root, 'src/mvu/nsfw-consent.js'), 'utf8');
 const bodyRelationshipCandidate = await readFile(resolve(root, 'src/mvu/body-relationship-candidate.js'), 'utf8');
 const matchScoring = await readFile(resolve(root, 'src/recommendation/match-scoring.js'), 'utf8');
 if (!privateChatResponse.includes('normalizePrivateChatResponse') || !privateChatResponse.includes('projectPrivateChatResponseError') || !privateChatResponse.includes('MAX_PRIVATE_CHAT_REPLY_COUNT')) fail('缺少私聊多气泡模型回复的严格校验与安全错误投影');
@@ -286,6 +287,16 @@ if (!bodyRelationshipCandidate.includes('selectPendingBodyRelationshipCandidate'
     || !privateChatService.includes('bodyCandidateEventId') || !controlledPatch.includes('buildBodyRelationshipCandidateBackfillPatch')
     || !controlledPatch.includes('正文关系候选') || !actionBridge.includes('buildBodyRelationshipCandidateBackfillPatch')
     || !uiModel.includes('mvu_body_relationship_candidate_schema_outdated')) fail('缺少阶段 B.2 正文候选、同对象私聊复盘、原子消费或过期卡失败关闭接线');
+if (!nsfwConsent.includes('validateNsfwConsent') || !nsfwConsent.includes('grantNsfwConsent') || !nsfwConsent.includes('consumeNsfwConsent')
+    || !nsfwConsent.includes('matchesNsfwConsentReference') || !controlledPatch.includes('buildPrivateChatNsfwConsentPatch')
+    || !controlledPatch.includes('buildPrivateChatNsfwDirectionPatch') || !controlledPatch.includes('buildPrivateChatNsfwRelationshipActionPatch')
+    || !privateChatResponse.includes('nsfwConsentAssessment') || !privateChatService.includes('nsfwConsentReference')
+    || !actionBridge.includes('runPrivateChatNsfwConsent') || !actionBridge.includes('runPrivateChatNsfwDirection')
+    || !appShell.includes('本轮继续') || !appShell.includes('降级为朋友') || !appShell.includes('结束联系')) fail('缺少阶段 C 持续同意、显式路线、正文复盘冻结或关系收束接线');
+if (!relationshipProgress.includes('NSFW_DIRECTION_THRESHOLD') || !relationshipProgress.includes('NSFW爱情阶段30已触发')
+    || !relationshipProgress.includes('NSFW共识亲密阶段40已触发') || !relationshipProgress.includes('safeProgress.冻结关系值')
+    || !bodyRelationshipCandidate.includes('NSFW爱情') || !bodyRelationshipCandidate.includes('NSFW共识亲密')
+    || !controlledPatch.includes('冻结关系值')) fail('缺少阶段 C 双轨 30/40/50、正文候选路线或冻结合同');
 if (!privateChatService.includes('validatePrivateChatRequest') || !privateChatService.includes('buildPrivateChatContext') || !privateChatService.includes('generatePrivateChatReply') || !privateChatService.includes('generatePrivateChatSummary')) fail('缺少私聊上下文隐私投影、请求校验或模型调用接线');
 if (!conversationSummary.includes('listUnsummarizedConversationMessages') || !conversationSummary.includes('summaryRecordSource') || !conversationSummary.includes('normalizeGeneratedConversationSummary')) fail('缺少受限对话总结状态、原始片段或模型输出校验');
 if (!controlledPatch.includes('buildPrivateChatPatch') || !controlledPatch.includes('buildPrivateChatSummaryPatch') || !controlledPatch.includes('buildPrivateChatSummaryFailurePatch') || !controlledPatch.includes('meetup_summary_required') || !controlledPatch.includes('buildClearPrivateChatPatch') || !controlledPatch.includes('buildDeleteCharacterPatch') || !actionBridge.includes('runPrivateChat') || !actionBridge.includes('runPrivateChatSummary') || !actionBridge.includes('runMeetupHandoff') || !actionBridge.includes('clearPrivateChat') || !actionBridge.includes('deleteCharacter')) fail('缺少私聊节奏/总结/面基前整理的受控 Patch 或唯一 MVU 写入桥接');

@@ -10,6 +10,7 @@ import {
     buildClearPrivateChatPatch,
     buildBodyRelationshipCandidateBackfillPatch,
     buildControlledPatch,
+    buildPrivateChatNsfwConsentBackfillPatch,
     buildPrivateChatPatch,
     buildRecommendationInitialCandidatePatch,
     buildRelationshipNarrativeBackfillPatch,
@@ -20,6 +21,7 @@ import {
     validateControlledPatchWhitelist,
 } from '../controlled-patch.js';
 import { applyControlledPatch, readLatestState } from '../adapter.js';
+import { createEmptyNsfwConsent, grantNsfwConsent } from '../nsfw-consent.js';
 
 function npc({ status = '陌生', age = 28 } = {}) {
     return {
@@ -224,8 +226,12 @@ test('five-click gate only unlocks the slider and explicit toggle changes SFW/NS
 
     const nsfw = stateFixture();
     nsfw.软件.内容模式 = 'NSFW';
+    nsfw.会话.chat_1 = { NSFW同意: grantNsfwConsent(createEmptyNsfwConsent(), { scopes: ['成人话题'], turns: 3 }) };
     const toggledBack = buildControlledPatch(nsfw, { kind: 'toggle_content_mode' });
-    assert.deepEqual(toggledBack.value.at(-1), { op: 'replace', path: '/软件/内容模式', value: 'SFW' });
+    assert.equal(toggledBack.value[0].path, '/软件/内容模式');
+    assert.equal(toggledBack.value[0].value, 'SFW');
+    assert.equal(toggledBack.value[1].path, '/会话/chat_1/NSFW同意');
+    assert.equal(toggledBack.value[1].value.状态, '已撤回');
     assert.equal(validateControlledPatchAgainstState(nsfw, toggledBack.value).ok, true);
 
     const state = stateFixture();
@@ -672,6 +678,43 @@ test('stripped B.2 body-candidate slot identifies an outdated schema without com
     assert.equal(result.code, 'mvu_body_relationship_candidate_schema_outdated');
     assert.deepEqual(calls, ['parse']);
     assert.equal(Object.hasOwn(oldData.stat_data.正文关系候选, 'npc_alpha'), false);
+});
+
+test('stripped C.2 consent envelope identifies an outdated schema without committing a partial parse', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    oldData.stat_data.角色池.npc_alpha = npc({ status: '已匹配' });
+    oldData.stat_data.会话.chat_1 = { 对象UID: 'npc_alpha', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' };
+    const built = buildPrivateChatNsfwConsentBackfillPatch(oldData.stat_data);
+    assert.deepEqual(built, {
+        ok: true,
+        value: [{ op: 'add', path: '/会话/chat_1/NSFW同意', value: createEmptyNsfwConsent() }],
+    });
+    const diagnostics = [];
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async (_raw, data) => {
+            calls.push('parse');
+            const next = structuredClone(data);
+            next.stat_data.面基记录 = {};
+            return next;
+        },
+        replaceMvuData: async () => calls.push('replace'),
+    };
+    const result = await applyControlledPatch({
+        patch: built.value,
+        mvu,
+        eventEmit: async () => calls.push('event'),
+        diagnosticLogger: { error(...args) { diagnostics.push(args); } },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.code, 'mvu_nsfw_consent_schema_outdated');
+    assert.equal(result.detail.path, '/会话/chat_1/NSFW同意');
+    assert.deepEqual(calls, ['parse']);
+    assert.equal(Object.hasOwn(oldData.stat_data.会话.chat_1, 'NSFW同意'), false);
+    assert.equal(diagnostics[0][1].code, 'mvu_nsfw_consent_schema_outdated');
 });
 
 test('content-mode toggle is persisted only when provider output satisfies the exact replace', async () => {

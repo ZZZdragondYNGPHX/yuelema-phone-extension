@@ -1,6 +1,6 @@
 import { decodeJsonPointer, encodeJsonPointer, getAtPointer, isPlainRecord } from './json-pointer.js';
 import { normalizeGeneratedCandidate } from '../recommendation/candidate.js';
-import { NSFW_SAFETY_ASSESSMENT_KINDS, normalizePrivateChatResponse } from '../chat/private-chat-response.js';
+import { NSFW_CONSENT_ASSESSMENT_KINDS, NSFW_SAFETY_ASSESSMENT_KINDS, normalizePrivateChatResponse } from '../chat/private-chat-response.js';
 import { validatePrivateChatRequest } from '../chat/private-chat-service.js';
 import { decideInteractionRhythm } from '../chat/interaction-rhythm.js';
 import { BODY_EVENT_REVIEW_STATES, allowedAssessmentKinds, deriveMeetupAccess, deriveRelationshipSafetyState, meetupRouteGuidance, settleBodyRelationshipCandidate, settleRelationshipProgress } from '../chat/relationship-progress.js';
@@ -23,6 +23,16 @@ import {
     selectPendingBodyRelationshipCandidate,
     validateBodyRelationshipCandidate,
 } from './body-relationship-candidate.js';
+import {
+    closeNsfwConsent,
+    consumeNsfwConsent,
+    createEmptyNsfwConsent,
+    grantNsfwConsent,
+    isActiveNsfwConsent,
+    matchesNsfwConsentReference,
+    nsfwConsentReference,
+    validateNsfwConsent,
+} from './nsfw-consent.js';
 
 export const LATEST_MESSAGE_SCOPE = Object.freeze({ type: 'message', message_id: 'latest' });
 export const NPC_UID_PATTERN = /^npc_[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -49,6 +59,9 @@ const RELATIONSHIP_VALUE_FIELDS = Object.freeze(['好感', '信任', '戒备', '
 const BOND_VALUE_FIELDS = Object.freeze(['友情值', '心动值', '欲望值']);
 const RELATIONSHIP_NARRATIVE_PROGRESS_BOOLEAN_FIELDS = new Set([
     'SFW细微裂缝已触发', 'SFW朋友分享已触发', 'SFW面基已解锁',
+    'NSFW爱情阶段30已触发', 'NSFW爱情阶段40已触发',
+    'NSFW共识亲密阶段30已触发', 'NSFW共识亲密阶段40已触发',
+    'NSFW方向确认可用',
 ]);
 const RELATIONSHIP_NARRATIVE_TURN_ID_PATTERN = /^msg_chat_[A-Za-z0-9][A-Za-z0-9_-]{0,63}_p_[1-9]\d*$/u;
 const RELATIONSHIP_NARRATIVE_EVENT_ID_PATTERN = /^(?:chat:[A-Za-z0-9][A-Za-z0-9_-]{0,63}:[1-9]\d*|body:meetup_[A-Za-z0-9][A-Za-z0-9_-]{0,63}:1)$/u;
@@ -123,6 +136,13 @@ function isEmptyBodyRelationshipCandidate(value) {
     } catch {
         return false;
     }
+}
+
+function isEmptyNsfwConsent(value) {
+    const validated = validateNsfwConsent(value);
+    if (!validated.ok) return false;
+    try { return JSON.stringify(value) === JSON.stringify(createEmptyNsfwConsent()); }
+    catch { return false; }
 }
 
 function isEmptyBodyRelationshipCandidateRegistry(value) {
@@ -523,6 +543,25 @@ export function buildBodyRelationshipCandidateBackfillPatch(state) {
     return success(Object.entries(emptyByUid).map(([uid, value]) => ({
         op: 'add', path: encodeJsonPointer(['正文关系候选', uid]), value,
     })));
+}
+
+/** Adds the C.2 consent envelope to legacy sessions without inferring consent. */
+export function buildPrivateChatNsfwConsentBackfillPatch(state) {
+    if (!ownRecord(state)) return fail('private_chat_nsfw_consent_backfill_state_invalid');
+    const sessions = ownRecord(state.会话);
+    if (!sessions) return fail('private_chat_nsfw_consent_backfill_state_invalid');
+    const operations = [];
+    for (const [sessionUid, session] of Object.entries(sessions).sort(([left], [right]) => left.localeCompare(right))) {
+        if (!isChatSessionUid(sessionUid) || !ownRecord(session) || !isNpcUid(session.对象UID)) {
+            return fail('private_chat_nsfw_consent_backfill_state_invalid');
+        }
+        if (!Object.hasOwn(session, 'NSFW同意')) {
+            operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, 'NSFW同意']), value: createEmptyNsfwConsent() });
+            continue;
+        }
+        if (!validateNsfwConsent(session.NSFW同意).ok) return fail('private_chat_nsfw_consent_schema_outdated');
+    }
+    return success(operations);
 }
 
 function isMeetupUid(value) {
@@ -1017,10 +1056,8 @@ export function buildServiceOrderFinalizePatch(state, { orderUid } = {}) {
     }
     return success([{ op: 'remove', path: encodeJsonPointer(['服务订单', orderUid]) }]);
 }
-export function buildPrivateChatNsfwSafetyPatch(state, { sessionUid, action } = {}) {
-    if (!ownRecord(state) || !isChatSessionUid(sessionUid) || !['pause', 'resume'].includes(action)) {
-        return fail('private_chat_nsfw_safety_invalid_action');
-    }
+function privateChatNsfwTarget(state, sessionUid) {
+    if (!ownRecord(state) || !isChatSessionUid(sessionUid)) return fail('private_chat_invalid_target');
     if (currentContentMode(state) !== 'NSFW') return fail('private_chat_nsfw_safety_mode_changed');
     const session = ownRecord(ownRecord(state.会话)?.[sessionUid]);
     const npcUid = session?.对象UID;
@@ -1039,16 +1076,138 @@ export function buildPrivateChatNsfwSafetyPatch(state, { sessionUid, action } = 
     const safety = deriveRelationshipSafetyState(progress);
     if (safety.ended) return fail('private_chat_relationship_ended');
     if (safety.paused) return fail('private_chat_relationship_paused');
-    if (action === 'pause' && safety.onlySfw) return fail('private_chat_nsfw_safety_already_paused');
-    if (action === 'resume' && !safety.onlySfw) return fail('private_chat_nsfw_safety_not_paused');
+    const consent = validateNsfwConsent(session.NSFW同意);
+    if (!consent.ok) return fail('private_chat_nsfw_consent_schema_outdated');
+    return success({ session, npcUid, profile, relationship, narrative: narrative.value, safety, consent: consent.value });
+}
+
+export function buildPrivateChatNsfwConsentPatch(state, { sessionUid, action, scopes = [], turns = 0 } = {}) {
+    if (!['grant', 'revoke'].includes(action)) return fail('private_chat_nsfw_consent_invalid_action');
+    const target = privateChatNsfwTarget(state, sessionUid);
+    if (!target.ok) return target;
+    if (target.value.safety.onlySfw) return fail('private_chat_nsfw_consent_only_sfw');
+    const current = target.value.consent;
+    const next = action === 'grant'
+        ? grantNsfwConsent(current, { scopes, turns })
+        : isActiveNsfwConsent(current) ? closeNsfwConsent(current, '已撤回') : null;
+    if (!next) return fail(action === 'grant' ? 'private_chat_nsfw_consent_invalid_selection' : 'private_chat_nsfw_consent_not_active');
     return success([{
         op: 'replace',
-        path: encodeJsonPointer(['关系叙事', npcUid, '进程', '边界暂停状态']),
-        value: action === 'pause' ? '仅SFW' : '',
+        path: encodeJsonPointer(['会话', sessionUid, 'NSFW同意']),
+        value: next,
     }]);
 }
 
-export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage, response, bodyCandidateEventId = '', onlySfwAtRequest = null } = {}) {
+export function buildPrivateChatNsfwDirectionPatch(state, { sessionUid, direction } = {}) {
+    const directionValues = Object.freeze({ love: '爱情', consensual_intimacy: '共识亲密', defer: '暂不定义' });
+    if (!Object.hasOwn(directionValues, direction)) return fail('private_chat_nsfw_direction_invalid_action');
+    const target = privateChatNsfwTarget(state, sessionUid);
+    if (!target.ok) return target;
+    if (target.value.safety.onlySfw) return fail('private_chat_nsfw_consent_only_sfw');
+    if (!isActiveNsfwConsent(target.value.consent)) return fail('private_chat_nsfw_consent_required');
+    const progress = target.value.narrative.进程;
+    if (progress.冻结关系值) return fail('private_chat_nsfw_direction_locked');
+    if (progress.NSFW方向确认可用 !== true) return fail('private_chat_nsfw_direction_unavailable');
+    const selected = directionValues[direction];
+    if (selected === '爱情' && (!Number.isInteger(target.value.relationship.心动值) || target.value.relationship.心动值 < 50)) {
+        return fail('private_chat_nsfw_direction_unavailable');
+    }
+    if (selected === '共识亲密' && (!Number.isInteger(target.value.relationship.欲望值) || target.value.relationship.欲望值 < 50)) {
+        return fail('private_chat_nsfw_direction_unavailable');
+    }
+    if (progress.NSFW路线锁定 === selected) return fail('private_chat_nsfw_direction_no_change');
+    const activeMeetup = Object.values(ownRecord(state.面基记录) ?? {}).some((record) => ownRecord(record)
+        && record.对象UID === target.value.npcUid && ['恋爱', '欲望'].includes(record.关系路线)
+        && !['已结束', '已取消'].includes(record.状态));
+    if (activeMeetup) return fail('private_chat_nsfw_direction_meetup_active');
+    return success([{
+        op: 'replace',
+        path: encodeJsonPointer(['关系叙事', target.value.npcUid, '进程', 'NSFW路线锁定']),
+        value: selected,
+    }]);
+}
+
+/** Explicit, non-destructive C relationship exits. Scores/history are retained. */
+export function buildPrivateChatNsfwRelationshipActionPatch(state, { sessionUid, action } = {}) {
+    if (!['degrade_to_friends', 'end_contact'].includes(action)) return fail('private_chat_nsfw_relationship_invalid_action');
+    const target = privateChatNsfwTarget(state, sessionUid);
+    if (!target.ok) return target;
+    const { npcUid, narrative, consent } = target.value;
+    const progress = narrative.进程;
+    const operations = [];
+    if (action === 'degrade_to_friends') {
+        if (!['爱情', '共识亲密'].includes(progress.NSFW路线锁定) && !progress.冻结关系值) {
+            return fail('private_chat_nsfw_relationship_not_established');
+        }
+        if (progress.NSFW路线锁定 !== '暂不定义') {
+            operations.push({
+                op: 'replace', path: encodeJsonPointer(['关系叙事', npcUid, '进程', 'NSFW路线锁定']), value: '暂不定义',
+            });
+        }
+        if (progress.冻结关系值 !== '') {
+            operations.push({
+                op: 'replace', path: encodeJsonPointer(['关系叙事', npcUid, '进程', '冻结关系值']), value: '',
+            });
+        }
+        if (progress.边界暂停状态 !== '仅SFW') {
+            operations.push({
+                op: 'replace', path: encodeJsonPointer(['关系叙事', npcUid, '进程', '边界暂停状态']), value: '仅SFW',
+            });
+        }
+    } else {
+        operations.push({
+            op: 'replace', path: encodeJsonPointer(['关系叙事', npcUid, '进程', '关系结束状态']), value: '结束联系',
+        });
+        if (progress.边界暂停状态 !== '暂停') {
+            operations.push({
+                op: 'replace', path: encodeJsonPointer(['关系叙事', npcUid, '进程', '边界暂停状态']), value: '暂停',
+            });
+        }
+    }
+    if (isActiveNsfwConsent(consent)) {
+        const revoked = closeNsfwConsent(consent, '已撤回');
+        if (!revoked) return fail('private_chat_nsfw_consent_revision_exhausted');
+        operations.push({
+            op: 'replace', path: encodeJsonPointer(['会话', sessionUid, 'NSFW同意']), value: revoked,
+        });
+    }
+    return operations.length ? success(operations) : fail('private_chat_nsfw_relationship_no_change');
+}
+
+export function buildPrivateChatNsfwSafetyPatch(state, { sessionUid, action } = {}) {
+    if (!['pause', 'resume'].includes(action)) return fail('private_chat_nsfw_safety_invalid_action');
+    const target = privateChatNsfwTarget(state, sessionUid);
+    if (!target.ok) return target;
+    const { npcUid, safety, consent } = target.value;
+    if (action === 'pause' && safety.onlySfw) return fail('private_chat_nsfw_safety_already_paused');
+    if (action === 'resume' && !safety.onlySfw) return fail('private_chat_nsfw_safety_not_paused');
+    const operations = [{
+        op: 'replace',
+        path: encodeJsonPointer(['关系叙事', npcUid, '进程', '边界暂停状态']),
+        value: action === 'pause' ? '仅SFW' : '',
+    }];
+    if (action === 'pause' && isActiveNsfwConsent(consent)) {
+        const revoked = closeNsfwConsent(consent, '已撤回');
+        if (!revoked) return fail('private_chat_nsfw_consent_revision_exhausted');
+        operations.push({
+            op: 'replace',
+            path: encodeJsonPointer(['会话', sessionUid, 'NSFW同意']),
+            value: revoked,
+        });
+    }
+    return success(operations);
+}
+
+export function buildPrivateChatPatch(state, {
+    sessionUid,
+    npcUid,
+    playerMessage,
+    response,
+    bodyCandidateEventId = '',
+    onlySfwAtRequest = null,
+    turnConsentConfirmed = false,
+    nsfwConsentReferenceAtRequest = null,
+} = {}) {
     const request = validatePrivateChatRequest({ state, sessionUid, npcUid, playerMessage });
     if (!request.ok) return fail(request.code === 'private_chat_relationship_narrative_schema_outdated'
         ? 'mvu_relationship_narrative_schema_outdated' : request.code);
@@ -1059,6 +1218,18 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
     const onlySfwNow = deriveRelationshipSafetyState(relationshipNarrative.value.进程).onlySfw;
     if (onlySfwAtRequest !== null && typeof onlySfwAtRequest !== 'boolean') return fail('private_chat_safety_reference_invalid');
     if (typeof onlySfwAtRequest === 'boolean' && onlySfwAtRequest !== onlySfwNow) return fail('private_chat_safety_state_changed');
+    if (typeof turnConsentConfirmed !== 'boolean') return fail('private_chat_nsfw_turn_consent_invalid');
+    const sourceMode = currentContentMode(state);
+    const requiresNsfwConsent = sourceMode === 'NSFW' && !onlySfwNow;
+    const sessionConsent = requiresNsfwConsent
+        ? validateNsfwConsent(request.value.session.NSFW同意)
+        : success(createEmptyNsfwConsent());
+    if (!sessionConsent.ok) return fail('private_chat_nsfw_consent_schema_outdated');
+    if (requiresNsfwConsent && turnConsentConfirmed !== true) return fail('private_chat_nsfw_turn_consent_required');
+    if (requiresNsfwConsent && !matchesNsfwConsentReference(sessionConsent.value, nsfwConsentReferenceAtRequest)) {
+        return fail(isActiveNsfwConsent(sessionConsent.value)
+            ? 'private_chat_nsfw_consent_state_changed' : 'private_chat_nsfw_consent_required');
+    }
     let normalizedResponse;
     try { normalizedResponse = normalizePrivateChatResponse(response, { contentMode: onlySfwNow ? 'SFW' : ownRecord(state.软件)?.内容模式 }); }
     catch { return fail('private_chat_response_invalid'); }
@@ -1184,13 +1355,14 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
         const repeatedPlayerMessage = repeatsRecentPlayerMessage(recentMessages, normalizedMessage);
         const safetyAssessment = normalizedResponse.nsfwSafetyAssessment;
         const bondProgress = settleRelationshipProgress({
-            contentMode: ownRecord(state.软件)?.内容模式,
+            contentMode: sourceMode,
             relationship,
             progress: relationshipNarrative.value.进程,
             assessment: repeatedPlayerMessage && safetyAssessment === 'none'
                 ? { kind: 'none', intensity: 0, direction: 'none' }
                 : normalizedResponse.bondAssessment,
             nsfwSafetyAssessment: safetyAssessment,
+            nsfwConsentAssessment: normalizedResponse.nsfwConsentAssessment,
             // A reply may still be natural on a repeated message, but a copied or
             // recently repeated ordinary utterance is not a new positive fact.
             // Repeating a classified safety violation must still be able to set
@@ -1219,6 +1391,20 @@ export function buildPrivateChatPatch(state, { sessionUid, npcUid, playerMessage
                 value: '仅SFW',
             });
         }
+    }
+    if (requiresNsfwConsent) {
+        const mustRevokeConsent = normalizedResponse.nsfwConsentAssessment === 'withdrawn'
+            || normalizedResponse.nsfwSafetyAssessment !== 'none'
+            || rhythm.outcome === 'blocked';
+        const nextConsent = mustRevokeConsent
+            ? closeNsfwConsent(sessionConsent.value, '已撤回')
+            : consumeNsfwConsent(sessionConsent.value);
+        if (!nextConsent) return fail('private_chat_nsfw_consent_revision_exhausted');
+        operations.push({
+            op: 'replace',
+            path: encodeJsonPointer(['会话', sessionUid, 'NSFW同意']),
+            value: nextConsent,
+        });
     }
     operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '对话层数']), value: nextLayer });
     return success(operations);
@@ -1557,16 +1743,21 @@ export function buildMeetupHandoffPatch(state, request = {}) {
         || !Number.isInteger(meetupCounter) || meetupCounter < 0 || meetupCounter >= 999999) {
         return fail('meetup_preconditions_not_met');
     }
+    const mode = currentContentMode(state);
+    const consent = mode === 'NSFW' ? validateNsfwConsent(session.NSFW同意) : success(createEmptyNsfwConsent());
+    if (!consent.ok) return fail('private_chat_nsfw_consent_schema_outdated');
     const meetupAccess = deriveMeetupAccess({
-        contentMode: ownRecord(state.软件)?.内容模式,
+        contentMode: mode,
         relationship,
         progress: narrative.value.进程,
+        nsfwConsent: consent.value,
     });
     if (!meetupAccess.unlocked) {
         const codes = {
             relationship_ended: 'meetup_relationship_ended',
             relationship_paused: 'meetup_relationship_paused',
             only_sfw: 'meetup_nsfw_only_sfw',
+            nsfw_consent_required: 'meetup_nsfw_consent_required',
             nsfw_direction_unconfirmed: 'meetup_nsfw_direction_unconfirmed',
         };
         return fail(codes[meetupAccess.reason] ?? 'meetup_relationship_threshold_not_met');
@@ -1646,6 +1837,7 @@ function matchedSession(npcUid) {
         },
         已确认边界: '',
         已确认承诺: '',
+        NSFW同意: createEmptyNsfwConsent(),
     };
 }
 
@@ -1883,9 +2075,25 @@ export function buildControlledPatch(state, command) {
         if (!['SFW', 'NSFW'].includes(mode)) {
             return fail('content_mode_gate_state_invalid');
         }
-        return success([
+        const operations = [
             { op: 'replace', path: '/软件/内容模式', value: mode === 'SFW' ? 'NSFW' : 'SFW' },
-        ]);
+        ];
+        // Leaving NSFW is itself an explicit global safety action. Any active
+        // per-session consent is revoked in the same transaction; toggling back
+        // can never resurrect a previous grant.
+        if (mode === 'NSFW') {
+            for (const [sessionUid, session] of Object.entries(ownRecord(state.会话) ?? {}).sort(([left], [right]) => left.localeCompare(right))) {
+                if (!isChatSessionUid(sessionUid) || !ownRecord(session) || !Object.hasOwn(session, 'NSFW同意')) continue;
+                const consent = validateNsfwConsent(session.NSFW同意);
+                const next = consent.ok && isActiveNsfwConsent(consent.value)
+                    ? closeNsfwConsent(consent.value, '已撤回')
+                    : consent.ok ? null : createEmptyNsfwConsent();
+                if (next) operations.push({
+                    op: 'replace', path: encodeJsonPointer(['会话', sessionUid, 'NSFW同意']), value: next,
+                });
+            }
+        }
+        return success(operations);
     }
 
     const uid = command.npcUid;
@@ -2075,7 +2283,12 @@ export function validateControlledPatchWhitelist(patch) {
             && operation.value.对象UID && isNpcUid(operation.value.对象UID) && operation.value.状态 === '已匹配'
             && Array.isArray(operation.value.最近消息) && operation.value.最近消息.length === 0
             && operation.value.对话层数 === 0 && isControlledConversationSummary(operation.value.总结)
-            && operation.value.已确认边界 === '' && operation.value.已确认承诺 === '') continue;
+            && operation.value.已确认边界 === '' && operation.value.已确认承诺 === ''
+            && isEmptyNsfwConsent(operation.value.NSFW同意)) continue;
+
+        const chatNsfwConsent = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/NSFW同意$/u.exec(path);
+        if ((operation.op === 'add' || operation.op === 'replace') && chatNsfwConsent
+            && isChatSessionUid(chatNsfwConsent[1]) && validateNsfwConsent(operation.value).ok) continue;
 
         const chatMessagePath = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/最近消息\/-$/u.exec(path);
         if (operation.op === 'add' && chatMessagePath && isChatSessionUid(chatMessagePath[1]) && ownRecord(operation.value)
@@ -2103,14 +2316,19 @@ export function validateControlledPatchWhitelist(patch) {
         if ((operation.op === 'add' || operation.op === 'replace') && bodyRelationshipCandidate && isNpcUid(bodyRelationshipCandidate[1])
             && isEmptyBodyRelationshipCandidate(operation.value)) continue;
         if (operation.op === 'remove' && bodyRelationshipCandidate && isNpcUid(bodyRelationshipCandidate[1])) continue;
-        const relationshipNarrativeProgress = /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\/(SFW细微裂缝已触发|SFW朋友分享已触发|SFW面基已解锁|最后结算回合UID|已消费事件ID|边界暂停状态)$/u.exec(path);
+        const relationshipNarrativeProgress = /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\/(SFW细微裂缝已触发|SFW朋友分享已触发|SFW面基已解锁|NSFW爱情阶段30已触发|NSFW爱情阶段40已触发|NSFW共识亲密阶段30已触发|NSFW共识亲密阶段40已触发|NSFW方向确认可用|最后结算回合UID|已消费事件ID|边界暂停状态|关系结束状态|冻结关系值)$/u.exec(path);
         if (operation.op === 'replace' && relationshipNarrativeProgress && isNpcUid(relationshipNarrativeProgress[1])) {
             const progressField = relationshipNarrativeProgress[2];
             if (RELATIONSHIP_NARRATIVE_PROGRESS_BOOLEAN_FIELDS.has(progressField) && operation.value === true) continue;
             if (progressField === '最后结算回合UID' && validRelationshipNarrativeTurnId(operation.value)) continue;
             if (progressField === '已消费事件ID' && validRelationshipNarrativeEventIds(operation.value)) continue;
-            if (progressField === '边界暂停状态' && ['', '仅SFW'].includes(operation.value)) continue;
+            if (progressField === '边界暂停状态' && ['', '仅SFW', '暂停'].includes(operation.value)) continue;
+            if (progressField === '关系结束状态' && operation.value === '结束联系') continue;
+            if (progressField === '冻结关系值' && ['', '心动值', '欲望值'].includes(operation.value)) continue;
         }
+        const nsfwRouteSelection = /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\/NSFW路线锁定$/u.exec(path);
+        if (operation.op === 'replace' && nsfwRouteSelection && isNpcUid(nsfwRouteSelection[1])
+            && ['爱情', '共识亲密', '暂不定义'].includes(operation.value)) continue;
         const relationshipNarrative = /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})$/u.exec(path);
         if (operation.op === 'add' && relationshipNarrative && isNpcUid(relationshipNarrative[1])
             && validateRelationshipNarrative(operation.value).ok) continue;
@@ -2245,9 +2463,29 @@ export function validateControlledPatchAgainstState(state, patch) {
         if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
     }
 
-    const nsfwSafetyOperation = patch.length === 1
-        ? /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\/边界暂停状态$/u.exec(patch[0]?.path ?? '')
-        : null;
+    const endRelationshipOperation = patch.find((operation) => operation?.op === 'replace'
+        && /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\/关系结束状态$/u.test(operation.path ?? '')
+        && operation.value === '结束联系');
+    const degradeRouteOperation = patch.find((operation) => operation?.op === 'replace'
+        && /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\/NSFW路线锁定$/u.test(operation.path ?? '')
+        && operation.value === '暂不定义');
+    const degradeFreezeOperation = patch.find((operation) => operation?.op === 'replace'
+        && /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\/冻结关系值$/u.test(operation.path ?? '')
+        && operation.value === '');
+    const relationshipActionOperation = endRelationshipOperation ?? degradeRouteOperation ?? degradeFreezeOperation;
+    if (relationshipActionOperation) {
+        const match = /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\//u.exec(relationshipActionOperation.path);
+        const action = endRelationshipOperation ? 'end_contact' : 'degrade_to_friends';
+        const matchingSessions = Object.entries(ownRecord(state.会话) ?? {})
+            .filter(([sessionUid, session]) => isChatSessionUid(sessionUid) && ownRecord(session)
+                && session.对象UID === match?.[1] && session.状态 === '已匹配');
+        for (const [sessionUid] of matchingSessions) {
+            const expected = buildPrivateChatNsfwRelationshipActionPatch(state, { sessionUid, action });
+            if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+        }
+    }
+
+    const nsfwSafetyOperation = /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\/边界暂停状态$/u.exec(patch[0]?.path ?? '');
     if (nsfwSafetyOperation && patch[0]?.op === 'replace' && ['', '仅SFW'].includes(patch[0].value)) {
         const action = patch[0].value === '仅SFW' ? 'pause' : 'resume';
         const matchingSessions = Object.entries(ownRecord(state.会话) ?? {})
@@ -2255,6 +2493,46 @@ export function validateControlledPatchAgainstState(state, patch) {
                 && session.对象UID === nsfwSafetyOperation[1] && session.状态 === '已匹配');
         for (const [sessionUid] of matchingSessions) {
             const expected = buildPrivateChatNsfwSafetyPatch(state, { sessionUid, action });
+            if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+        }
+    }
+
+    if (patch.length >= 1 && patch.every((operation) => operation?.op === 'add'
+        && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}\/NSFW同意$/u.test(operation.path)
+        && isEmptyNsfwConsent(operation.value))) {
+        const expected = buildPrivateChatNsfwConsentBackfillPatch(state);
+        if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+    }
+
+    const nsfwConsentOperation = patch.length === 1
+        ? /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/NSFW同意$/u.exec(patch[0]?.path ?? '')
+        : null;
+    if (nsfwConsentOperation && patch[0]?.op === 'replace' && validateNsfwConsent(patch[0].value).ok) {
+        const sessionUid = nsfwConsentOperation[1];
+        const next = patch[0].value;
+        if (next.状态 === '有效') {
+            const expected = buildPrivateChatNsfwConsentPatch(state, {
+                sessionUid, action: 'grant', scopes: next.允许范围, turns: next.剩余轮数,
+            });
+            if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+        } else if (next.状态 === '已撤回') {
+            const expected = buildPrivateChatNsfwConsentPatch(state, { sessionUid, action: 'revoke' });
+            if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+        }
+    }
+
+    const nsfwDirectionOperation = patch.length === 1
+        ? /^\/关系叙事\/(npc_[A-Za-z0-9_-]{1,64})\/进程\/NSFW路线锁定$/u.exec(patch[0]?.path ?? '')
+        : null;
+    if (nsfwDirectionOperation && patch[0]?.op === 'replace') {
+        const direction = patch[0].value === '爱情' ? 'love'
+            : patch[0].value === '共识亲密' ? 'consensual_intimacy'
+                : patch[0].value === '暂不定义' ? 'defer' : '';
+        const matchingSessions = Object.entries(ownRecord(state.会话) ?? {})
+            .filter(([sessionUid, session]) => isChatSessionUid(sessionUid) && ownRecord(session)
+                && session.对象UID === nsfwDirectionOperation[1] && session.状态 === '已匹配');
+        for (const [sessionUid] of matchingSessions) {
+            const expected = buildPrivateChatNsfwDirectionPatch(state, { sessionUid, direction });
             if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
         }
     }
@@ -2396,16 +2674,23 @@ export function validateControlledPatchAgainstState(state, patch) {
                     for (const bodyEventReview of BODY_EVENT_REVIEW_STATES) {
                         const safetyAssessments = mode === 'NSFW' ? NSFW_SAFETY_ASSESSMENT_KINDS : ['none'];
                         for (const nsfwSafetyAssessment of safetyAssessments) {
-                            for (const bodyCandidateEventId of bodyCandidateEventIds) {
+                            const consentAssessments = mode === 'NSFW' ? NSFW_CONSENT_ASSESSMENT_KINDS : ['none'];
+                            for (const nsfwConsentAssessment of consentAssessments) {
+                              for (const bodyCandidateEventId of bodyCandidateEventIds) {
+                                const onlySfwAtRequest = deriveRelationshipSafetyState(ownRecord(ownRecord(state.关系叙事)?.[npcUid])?.进程).onlySfw;
+                                const requiresConsent = mode === 'NSFW' && !onlySfwAtRequest;
                                 const expected = buildPrivateChatPatch(state, {
                                     sessionUid,
                                     npcUid,
                                     playerMessage: playerOperation.value?.内容,
-                                    response: { ...response, bondAssessment, bodyEventReview, nsfwSafetyAssessment },
+                                    response: { ...response, bondAssessment, bodyEventReview, nsfwSafetyAssessment, nsfwConsentAssessment },
                                     bodyCandidateEventId,
-                                    onlySfwAtRequest: deriveRelationshipSafetyState(ownRecord(ownRecord(state.关系叙事)?.[npcUid])?.进程).onlySfw,
+                                    onlySfwAtRequest,
+                                    turnConsentConfirmed: requiresConsent,
+                                    nsfwConsentReferenceAtRequest: requiresConsent ? nsfwConsentReference(session?.NSFW同意) : null,
                                 });
                                 if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+                              }
                             }
                         }
                     }

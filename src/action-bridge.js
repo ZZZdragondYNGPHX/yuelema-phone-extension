@@ -1,5 +1,5 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildBodyRelationshipCandidateBackfillPatch, buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatNsfwSafetyPatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildRelationshipNarrativeBackfillPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch } from './mvu/controlled-patch.js';
+import { buildBodyRelationshipCandidateBackfillPatch, buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatNsfwConsentBackfillPatch, buildPrivateChatNsfwConsentPatch, buildPrivateChatNsfwDirectionPatch, buildPrivateChatNsfwRelationshipActionPatch, buildPrivateChatNsfwSafetyPatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildRelationshipNarrativeBackfillPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply, generatePrivateChatSummary } from './chat/private-chat-service.js';
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
@@ -311,7 +311,7 @@ export function createActionBridge({
      * No state is written until the reply and all relationship deltas validate;
      * the state is deliberately re-read after the asynchronous model request.
      */
-    async function runPrivateChat({ sessionUid, npcUid, playerMessage, signal } = {}) {
+    async function runPrivateChat({ sessionUid, npcUid, playerMessage, turnConsentConfirmed = false, signal } = {}) {
         const key = actionKey('private_chat', sessionUid);
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
         pending.add(key);
@@ -343,8 +343,16 @@ export function createActionBridge({
                 firstRead = readLatestState({ mvu: currentMvu });
                 if (!firstRead.ok) return firstRead;
             }
+            const consentBackfill = buildPrivateChatNsfwConsentBackfillPatch(firstRead.state);
+            if (!consentBackfill.ok) return rejectedFromBuild(consentBackfill);
+            if (consentBackfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: consentBackfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                firstRead = readLatestState({ mvu: currentMvu });
+                if (!firstRead.ok) return firstRead;
+            }
             const generated = await generatePrivateChatReply({
-                state: firstRead.state, sessionUid, npcUid, playerMessage, settingsStore, llmClient, signal,
+                state: firstRead.state, sessionUid, npcUid, playerMessage, turnConsentConfirmed, settingsStore, llmClient, signal,
             });
             if (!generated.ok) return { ok: false, status: 'rejected', code: generated.code, message: generated.message };
 
@@ -357,6 +365,8 @@ export function createActionBridge({
                 response: generated.response,
                 bodyCandidateEventId: generated.bodyCandidateEventId,
                 onlySfwAtRequest: generated.onlySfwAtRequest,
+                turnConsentConfirmed: generated.turnConsentConfirmed,
+                nsfwConsentReferenceAtRequest: generated.nsfwConsentReferenceAtRequest,
             });
             if (!built.ok) return rejectedFromBuild(built);
             const interactionOutcome = built.value.some((operation) => operation?.op === 'replace'
@@ -394,9 +404,75 @@ export function createActionBridge({
         pending.add(key);
         try {
             const currentMvu = resolveMvu(mvu);
+            let read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const backfill = buildPrivateChatNsfwConsentBackfillPatch(read.state);
+            if (!backfill.ok) return rejectedFromBuild(backfill);
+            if (backfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: backfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                read = readLatestState({ mvu: currentMvu });
+                if (!read.ok) return read;
+            }
+            const built = buildPrivateChatNsfwSafetyPatch(read.state, { sessionUid, action });
+            if (!built.ok) return rejectedFromBuild(built);
+            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Establishes or revokes only the current matched session's scoped C.2 envelope. */
+    async function runPrivateChatNsfwConsent({ sessionUid, action, scopes = [], turns = 0 } = {}) {
+        const key = actionKey('private_chat_nsfw_consent', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            let read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const backfill = buildPrivateChatNsfwConsentBackfillPatch(read.state);
+            if (!backfill.ok) return rejectedFromBuild(backfill);
+            if (backfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: backfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                read = readLatestState({ mvu: currentMvu });
+                if (!read.ok) return read;
+            }
+            const built = buildPrivateChatNsfwConsentPatch(read.state, { sessionUid, action, scopes, turns });
+            if (!built.ok) return rejectedFromBuild(built);
+            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Records an explicit C.3 direction choice; it never chooses from scores. */
+    async function runPrivateChatNsfwDirection({ sessionUid, direction } = {}) {
+        const key = actionKey('private_chat_nsfw_direction', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
             const read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
-            const built = buildPrivateChatNsfwSafetyPatch(read.state, { sessionUid, action });
+            const built = buildPrivateChatNsfwDirectionPatch(read.state, { sessionUid, direction });
+            if (!built.ok) return rejectedFromBuild(built);
+            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    async function runPrivateChatNsfwRelationshipAction({ sessionUid, action } = {}) {
+        const key = actionKey('private_chat_nsfw_relationship', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const built = buildPrivateChatNsfwRelationshipActionPatch(read.state, { sessionUid, action });
             if (!built.ok) return rejectedFromBuild(built);
             return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         } finally {
@@ -705,6 +781,14 @@ export function createActionBridge({
             const currentMvu = resolveMvu(mvu);
             let read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
+            const consentBackfill = buildPrivateChatNsfwConsentBackfillPatch(read.state);
+            if (!consentBackfill.ok) return rejectedFromBuild(consentBackfill);
+            if (consentBackfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: consentBackfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                read = readLatestState({ mvu: currentMvu });
+                if (!read.ok) return read;
+            }
             let forcedSummaryCount = 0;
             while (listUnsummarizedConversationMessages(read.state?.会话?.[request?.sessionUid]).length > 0) {
                 if (forcedSummaryCount >= 4) {
@@ -1379,5 +1463,5 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatNsfwSafety, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, generateLibraryImage, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatNsfwSafety, runPrivateChatNsfwConsent, runPrivateChatNsfwDirection, runPrivateChatNsfwRelationshipAction, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, generateLibraryImage, isPending, appendMeetupDraft });
 }

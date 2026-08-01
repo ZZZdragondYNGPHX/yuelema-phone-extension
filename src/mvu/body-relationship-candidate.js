@@ -10,10 +10,13 @@ const SLOT_FIELDS = Object.freeze([
 
 const PENDING_STATE = '待复盘';
 const EMPTY_STATE = '空';
-const B2_ROUTE = 'SFW友情';
-const B2_RELATIONSHIP_VALUE = '友情值';
-const EVENT_CATEGORIES = new Set(['兑现承诺', '推进心愿', '尊重拒绝', '共同完成', '边界不匹配', '停止或降级']);
-const POSITIVE_CATEGORIES = new Set(['兑现承诺', '推进心愿', '尊重拒绝', '共同完成']);
+const ROUTE_CONTRACTS = Object.freeze({
+    SFW友情: Object.freeze({ relationshipField: '友情值', meetupRoute: '友情', directionLock: '' }),
+    NSFW爱情: Object.freeze({ relationshipField: '心动值', meetupRoute: '恋爱', directionLock: '爱情' }),
+    NSFW共识亲密: Object.freeze({ relationshipField: '欲望值', meetupRoute: '欲望', directionLock: '共识亲密' }),
+});
+const EVENT_CATEGORIES = new Set(['兑现承诺', '推进心愿', '尊重拒绝', '共同完成', '明确同意', '边界不匹配', '停止或降级']);
+const POSITIVE_CATEGORIES = new Set(['兑现承诺', '推进心愿', '尊重拒绝', '共同完成', '明确同意']);
 const NEGATIVE_CATEGORIES = new Set(['边界不匹配', '停止或降级']);
 const POSITIVE_SEVERITIES = new Set(['常规', '明显']);
 const NEGATIVE_SEVERITIES = new Set(['常规', '明显', '严重']);
@@ -148,7 +151,9 @@ function readCandidateFields(value) {
     if (!exactOwnDataRecord(value, SLOT_FIELDS)) return null;
     const fields = {};
     for (const field of SLOT_FIELDS) fields[field] = ownDataValue(value, field);
-    const allowedValues = exactStringArray(fields.允许影响关系值, fields.状态 === EMPTY_STATE ? [] : [B2_RELATIONSHIP_VALUE]);
+    const route = ROUTE_CONTRACTS[fields.关系路线];
+    const allowedValues = exactStringArray(fields.允许影响关系值,
+        fields.状态 === EMPTY_STATE ? [] : route ? [route.relationshipField] : ['__invalid__']);
     return allowedValues === null ? null : { fields, allowedValues };
 }
 
@@ -175,6 +180,11 @@ export function createEmptyBodyRelationshipCandidate() {
 export function bodyRelationshipEventIdForSource(sourceMeetupUid, sourceSummaryVersion) {
     if (!isMeetupUid(sourceMeetupUid) || sourceSummaryVersion !== BODY_RELATIONSHIP_CANDIDATE_VERSION) return '';
     return `body:${sourceMeetupUid}:${sourceSummaryVersion}`;
+}
+
+export function bodyRelationshipCandidateRouteContract(route) {
+    const contract = typeof route === 'string' ? ROUTE_CONTRACTS[route] : null;
+    return contract ? Object.freeze({ ...contract }) : null;
 }
 
 /**
@@ -206,9 +216,9 @@ export function validateBodyRelationshipCandidate(value) {
         || fields.来源摘要版本 !== BODY_RELATIONSHIP_CANDIDATE_VERSION
         || fields.事件ID !== bodyRelationshipEventIdForSource(fields.来源面基UID, fields.来源摘要版本)
         || !EVENT_CATEGORIES.has(fields.事件类别)
-        || fields.关系路线 !== B2_ROUTE
+        || !Object.hasOwn(ROUTE_CONTRACTS, fields.关系路线)
         || allowedValues.length !== 1
-        || allowedValues[0] !== B2_RELATIONSHIP_VALUE
+        || allowedValues[0] !== ROUTE_CONTRACTS[fields.关系路线].relationshipField
         || !isValidPendingCombination(fields.事件类别, fields.建议方向, fields.严重度)
         || !safePlainText(fields.证据摘要, 320, { required: true })
         || typeof fields.需再次确认 !== 'boolean') {
@@ -270,7 +280,9 @@ export function selectPendingBodyRelationshipCandidate(state, npcUid) {
     const sourceNpcUid = ownDataValue(source.value, '对象UID');
     if (sourceNpcUid !== npcUid) return fail('body_relationship_candidate_source_uid_mismatch');
     if (ownDataValue(source.value, '状态') !== '已结束') return fail('body_relationship_candidate_source_not_completed');
-    if (ownDataValue(source.value, '关系路线') !== '友情') return fail('body_relationship_candidate_source_route_invalid');
+    if (ownDataValue(source.value, '关系路线') !== ROUTE_CONTRACTS[candidate.value.关系路线].meetupRoute) {
+        return fail('body_relationship_candidate_source_route_invalid');
+    }
     if (!safePlainText(ownDataValue(source.value, '正文结果摘要'), 1600, { required: true })) {
         return fail('body_relationship_candidate_source_summary_invalid');
     }

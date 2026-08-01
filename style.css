@@ -2170,6 +2170,31 @@
 .yl-chat-send-icon { width: 21px; height: 21px; transform: rotate(-6deg); }
 .yl-chat-send-icon::before { content: none; }
 .yl-chat-send-pending { font-size: var(--yl-type-body-lg); font-weight: 800; letter-spacing: .08em; }
+.yl-chat-turn-consent {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: var(--yl-space-2);
+    align-items: flex-start;
+    padding: 7px 9px;
+    border-radius: var(--yl-radius-ctrl);
+    color: var(--yl-text-2);
+    background: var(--yl-surface-2);
+    font-size: var(--yl-type-xs);
+    line-height: 1.45;
+}
+.yl-chat-turn-consent input,
+.yl-chat-consent-panel .yl-settings-check-row input { margin: 2px 0 0; accent-color: var(--yl-accent); }
+.yl-chat-consent-panel .yl-settings-check-row {
+    display: flex;
+    gap: var(--yl-space-2);
+    align-items: flex-start;
+    min-height: 38px;
+    padding: 9px 10px;
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-ctrl);
+    background: var(--yl-surface-2);
+    font-size: var(--yl-type-body);
+}
 /* 提示行首次出现，3 秒后 CSS 淡出（不常驻，§7.2.7；reduced-motion 时保持可见） */
 .yl-chat-composer-hint {
     grid-column: 1 / -1;

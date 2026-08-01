@@ -27,7 +27,7 @@ import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
 
-const UI_VERSION = '1.0.15';
+const UI_VERSION = '1.0.16';
 
 function downloadImagePackJson(json) {
     if (typeof json !== 'string' || typeof globalThis.Blob !== 'function'
@@ -216,6 +216,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let destructiveChatSessionUid = '';
     let destructiveChatKind = '';
     let activeMeetupSessionUid = '';
+    let activeNsfwConsentSessionUid = '';
+    let activeNsfwRelationshipSessionUid = '';
     let summaryHistorySessionUid = '';
     let activeChatToolsSessionUid = '';
     let chatToolLongPressTimer = null;
@@ -253,6 +255,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let scheduledServiceCompletionOrderId = '';
     let playerProfileDraft = null;
     const chatDrafts = new Map();
+    const nsfwTurnConsentSessions = new Set();
     const meetupDrafts = new Map();
     const groupMessageDrafts = new Map();
     const forumCommentDrafts = new Map();
@@ -1612,6 +1615,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             privateChatRequestGeneration += 1;
             activeChatToolsSessionUid = '';
             activeMeetupSessionUid = '';
+            activeNsfwConsentSessionUid = '';
+            activeNsfwRelationshipSessionUid = '';
+            nsfwTurnConsentSessions.clear();
             ctx.clearSummaryToast();
             hideOperationDialog();
             releaseNotesClickStreak = 0;
@@ -1628,6 +1634,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
             privateChatRequestGeneration += 1;
             activeChatToolsSessionUid = '';
             activeMeetupSessionUid = '';
+            activeNsfwConsentSessionUid = '';
+            activeNsfwRelationshipSessionUid = '';
+            nsfwTurnConsentSessions.clear();
             chatMoreMenuSessionUid = '';
             chatConfirmationSessionUid = '';
             chatConfirmationKind = '';
@@ -2564,6 +2573,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         activeForumPostId: { get: () => activeForumPostId, set: (value) => { activeForumPostId = value; }, enumerable: true },
         activeGroupCacheKey: { get: () => activeGroupCacheKey, set: (value) => { activeGroupCacheKey = value; }, enumerable: true },
         activeMeetupSessionUid: { get: () => activeMeetupSessionUid, set: (value) => { activeMeetupSessionUid = value; }, enumerable: true },
+        activeNsfwConsentSessionUid: { get: () => activeNsfwConsentSessionUid, set: (value) => { activeNsfwConsentSessionUid = value; }, enumerable: true },
+        activeNsfwRelationshipSessionUid: { get: () => activeNsfwRelationshipSessionUid, set: (value) => { activeNsfwRelationshipSessionUid = value; }, enumerable: true },
         activeMessageSessionUid: { get: () => activeMessageSessionUid, set: (value) => { activeMessageSessionUid = value; }, enumerable: true },
         activePage: { get: () => activePage, set: (value) => { activePage = value; }, enumerable: true },
         activeServiceCategoryId: { get: () => activeServiceCategoryId, set: (value) => { activeServiceCategoryId = value; }, enumerable: true },
@@ -2634,7 +2645,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     Object.assign(ctx, {
         UI_VERSION, abortController, actionBridge, appendImagePreview, applyCloseIcon, beginOperationDialog, buildConversationImageControls, buildEmptyPlaceholder,
         extensionUpdater, runExtensionUpdate,
-        buildImageDirectiveCard, canAppendServiceExperienceDraft, candidateImageState, characterLibrary, chatDrafts, clearMatchedImageState, closeManagedDialog, content,
+        buildImageDirectiveCard, canAppendServiceExperienceDraft, candidateImageState, characterLibrary, chatDrafts, nsfwTurnConsentSessions, clearMatchedImageState, closeManagedDialog, content,
         dialogController, disableServiceHub, openManagedDialog, documentRef, formatDirectiveForDisplay, forumCommentDrafts, forumSettingsContent, forumSettingsDialog, forumSettingsTitle,
         groupAutoContent, groupAutoDialog, groupAutoTitle, groupForumStore, groupMemberPickerContent, groupMemberPickerDialog, groupMessageDrafts, imageAssetFailures,
         conversationImageStore, characterAvatarStore,

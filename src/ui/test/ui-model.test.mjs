@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PAGE_COPY, createPhoneView, describeActionFailure, parseChatMessageTime, projectMatchView, projectPlayerPublicProfile, projectPublicProfile, projectServiceOrderView, projectServiceOrderIssues } from '../../ui-model.js';
 import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
+import { createEmptyNsfwConsent, grantNsfwConsent } from '../../mvu/nsfw-consent.js';
 
 function profile() {
     return {
@@ -75,9 +76,11 @@ test('saved-card source failures stay user-facing and do not expose internal que
     assert.equal(describeActionFailure({ code: 'like_match_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
     assert.equal(describeActionFailure({ code: 'recommendation_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
     assert.equal(describeActionFailure({ code: 'mvu_relationship_routes_schema_outdated' }), '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。');
-    assert.equal(describeActionFailure({ code: 'mvu_relationship_narrative_schema_outdated' }), '当前聊天缺少 v1.0.15 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
-    assert.equal(describeActionFailure({ code: 'mvu_body_relationship_candidate_schema_outdated' }), '当前聊天缺少 v1.0.15 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
-    assert.equal(describeActionFailure({ code: 'body_relationship_candidate_source_route_invalid' }), '当前阶段只允许复核 SFW 友情面基，本次未写入。');
+    assert.equal(describeActionFailure({ code: 'mvu_relationship_narrative_schema_outdated' }), '当前聊天缺少 v1.0.16 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
+    assert.equal(describeActionFailure({ code: 'mvu_body_relationship_candidate_schema_outdated' }), '当前聊天缺少 v1.0.16 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
+    assert.match(describeActionFailure({ code: 'mvu_nsfw_consent_schema_outdated' }), /v1\.0\.16 成人话题共识结构/u);
+    assert.match(describeActionFailure({ code: 'private_chat_nsfw_turn_consent_required' }), /本轮继续/u);
+    assert.equal(describeActionFailure({ code: 'body_relationship_candidate_source_route_invalid' }), '正文关系候选与来源面基或已确认路线不一致，本次未写入。');
     assert.equal(describeActionFailure({ code: 'body_relationship_candidate_invalid' }), '正文关系候选内容未通过安全复核，本次未写入任何关系变化。');
     assert.equal(describeActionFailure({ code: 'relationship_narrative_backfill_orphan' }), '发现无法对应当前角色的关系叙事记录；为避免删除资料，本次未自动修复。请保留当前聊天并附上脱敏诊断反馈。');
 });
@@ -112,7 +115,7 @@ test('private chat view projects only boolean relationship-safety flags and clos
                     与玩家关系: { 状态: '已匹配', 友情值: 100, 心动值: 100, 欲望值: 100 },
                 },
             },
-            会话: { chat_a: { 对象UID: 'npc_a', 状态: '已匹配', 最近消息: [] } },
+            会话: { chat_a: { 对象UID: 'npc_a', 状态: '已匹配', 最近消息: [], NSFW同意: createEmptyNsfwConsent() } },
             关系叙事: { npc_a: narrative },
         },
     };
@@ -121,6 +124,23 @@ test('private chat view projects only boolean relationship-safety flags and clos
     assert.equal(session.canSend, true, '仅 SFW 仍允许普通友情私聊');
     assert.deepEqual(session.meetupAccess, { unlocked: false, route: '', routes: [], reason: 'only_sfw' });
     assert.doesNotMatch(JSON.stringify(session), /边界暂停状态|关系结束状态|冻结关系值/u, '原始保护字段不得进入 UI 投影');
+
+    narrative.进程.边界暂停状态 = '';
+    narrative.进程.NSFW方向确认可用 = true;
+    read.state.会话.chat_a.NSFW同意 = grantNsfwConsent(read.state.会话.chat_a.NSFW同意, { scopes: ['成人话题', '线上文爱'], turns: 5 });
+    session = createPhoneView(read).messageSessions[0];
+    assert.equal(session.nsfwConsentActive, true);
+    assert.deepEqual(session.nsfwDirectionOptions, ['love', 'consensual_intimacy', 'defer'], '同轮双 50 只显示全部可选方向，绝不自动决胜');
+    assert.equal(session.nsfwDirection, '');
+    assert.equal(session.nsfwRouteEstablished, false);
+    assert.doesNotMatch(JSON.stringify(session), /成人话题|线上文爱|剩余轮数|修订号|玩家私聊工具/u, '共识范围、轮数、来源和修订不得进入普通 UI 投影');
+
+    narrative.进程.NSFW路线锁定 = '爱情';
+    narrative.进程.冻结关系值 = '欲望值';
+    session = createPhoneView(read).messageSessions[0];
+    assert.equal(session.nsfwRouteEstablished, true);
+    assert.deepEqual(session.nsfwDirectionOptions, [], '正文复盘建立路线后不得继续提供改线按钮');
+    assert.deepEqual(session.meetupAccess, { unlocked: true, route: '恋爱', routes: ['恋爱'], reason: 'eligible' });
 
     narrative.进程.边界暂停状态 = '暂停';
     session = createPhoneView(read).messageSessions[0];

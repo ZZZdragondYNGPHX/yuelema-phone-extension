@@ -2,8 +2,9 @@ import { LATEST_MESSAGE_SCOPE, buildUpdateVariable, validateControlledPatchAgain
 import { decodeJsonPointer, getAtPointer, isPlainRecord } from './json-pointer.js';
 
 const RELATIONSHIP_ROUTE_FIELDS = Object.freeze(['友情值', '心动值', '欲望值']);
-const RELATIONSHIP_NARRATIVE_PROGRESS_PATH = /^\/关系叙事\/npc_[A-Za-z0-9_-]{1,64}\/进程\/(?:SFW细微裂缝已触发|SFW朋友分享已触发|SFW面基已解锁|最后结算回合UID|已消费事件ID)$/u;
+const RELATIONSHIP_NARRATIVE_PROGRESS_PATH = /^\/关系叙事\/npc_[A-Za-z0-9_-]{1,64}\/进程\/(?:SFW细微裂缝已触发|SFW朋友分享已触发|SFW面基已解锁|NSFW爱情阶段30已触发|NSFW爱情阶段40已触发|NSFW共识亲密阶段30已触发|NSFW共识亲密阶段40已触发|NSFW方向确认可用|NSFW路线锁定|最后结算回合UID|已消费事件ID|边界暂停状态|关系结束状态|冻结关系值)$/u;
 const BODY_RELATIONSHIP_CANDIDATE_PATH = /^\/正文关系候选(?:\/npc_[A-Za-z0-9_-]{1,64})?$/u;
+const NSFW_CONSENT_PATH = /^\/会话\/chat_[A-Za-z0-9_-]{1,64}\/NSFW同意(?:\/.*)?$/u;
 
 function unavailable(code) {
     return { ok: false, status: 'unavailable', code };
@@ -307,6 +308,18 @@ function findStrippedBodyRelationshipCandidate(state, patch) {
     return null;
 }
 
+function findStrippedNsfwConsent(state, patch) {
+    for (const [operationIndex, operation] of patch.entries()) {
+        if (!['add', 'replace'].includes(operation?.op) || typeof operation.path !== 'string'
+            || !NSFW_CONSENT_PATH.test(operation.path)) continue;
+        const actual = getAtPointer(state, operation.path);
+        if (!actual.found || !sameJsonValue(actual.value, operation.value)) {
+            return { operationIndex, path: operation.path };
+        }
+    }
+    return null;
+}
+
 function resolveEventEmitter({ eventEmit, getContext }) {
     if (typeof eventEmit === 'function') return eventEmit;
     if (typeof getContext === 'function') {
@@ -412,10 +425,13 @@ export async function applyControlledPatch({
     // allowing replaceMvuData; this is postcondition checking, not a second write.
     const postconditions = validateProviderPostconditions(oldStateSnapshot, newData.stat_data, patch);
     if (!postconditions.ok) {
+        const nsfwConsent = findStrippedNsfwConsent(newData.stat_data, patch);
         const bodyRelationshipCandidate = findStrippedBodyRelationshipCandidate(newData.stat_data, patch);
         const relationshipNarrativeProgress = findStrippedRelationshipNarrativeProgress(newData.stat_data, patch);
         const relationshipRoutes = findStrippedRelationshipRoutes(newData.stat_data, patch);
-        const code = bodyRelationshipCandidate
+        const code = nsfwConsent
+            ? 'mvu_nsfw_consent_schema_outdated'
+            : bodyRelationshipCandidate
             ? 'mvu_body_relationship_candidate_schema_outdated'
             : relationshipNarrativeProgress
             ? 'mvu_relationship_narrative_schema_outdated'

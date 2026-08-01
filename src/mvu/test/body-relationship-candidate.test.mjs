@@ -121,6 +121,24 @@ test('selection requires an ended friendship-route source meetup for the same ro
     assert.deepEqual(wrongObject, { ok: false, code: 'body_relationship_candidate_source_uid_mismatch' });
 });
 
+test('stage C accepts only the selected NSFW route field and its matching ended meetup route', () => {
+    const love = pendingCandidate({
+        事件类别: '推进心愿', 关系路线: 'NSFW爱情', 允许影响关系值: ['心动值'],
+    });
+    assert.equal(validateBodyRelationshipCandidate(love).ok, true);
+    assert.equal(selectPendingBodyRelationshipCandidate(candidateState({ candidate: love, source: { 关系路线: '恋爱' } }), 'npc_one').ok, true);
+    assert.equal(selectPendingBodyRelationshipCandidate(candidateState({ candidate: love, source: { 关系路线: '欲望' } }), 'npc_one').code, 'body_relationship_candidate_source_route_invalid');
+
+    const intimacy = pendingCandidate({
+        事件类别: '明确同意', 关系路线: 'NSFW共识亲密', 允许影响关系值: ['欲望值'],
+    });
+    assert.equal(validateBodyRelationshipCandidate(intimacy).ok, true);
+    assert.equal(selectPendingBodyRelationshipCandidate(candidateState({ candidate: intimacy, source: { 关系路线: '欲望' } }), 'npc_one').ok, true);
+    assert.equal(validateBodyRelationshipCandidate(pendingCandidate({
+        关系路线: 'NSFW爱情', 允许影响关系值: ['欲望值'],
+    })).ok, false);
+});
+
 test('illegal enums, effect arrays, getters, control text, and markup are rejected', () => {
     assert.equal(validateBodyRelationshipCandidate(pendingCandidate({
         事件类别: '停止或降级',

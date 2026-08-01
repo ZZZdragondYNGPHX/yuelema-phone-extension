@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { buildMeetupHandoffPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
 import { createActionBridge } from '../../action-bridge.js';
 import { createEmptyRelationshipNarrative } from '../relationship-narrative.js';
+import { createEmptyNsfwConsent, grantNsfwConsent } from '../nsfw-consent.js';
 
 function matchedState() {
     return {
@@ -20,7 +21,7 @@ function matchedState() {
             },
         },
         推荐: { 当前队列: [], 临时候选池: {}, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
-        会话: { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } },
+        会话: { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } },
         关系叙事: { npc_ava: createEmptyRelationshipNarrative() },
         面基记录: {},
     };
@@ -64,9 +65,16 @@ test('meetup gate ignores legacy willingness and selects only a route allowed by
     nsfw.角色池.npc_ava.与玩家关系.友情值 = 0;
     nsfw.角色池.npc_ava.与玩家关系.心动值 = 0;
     nsfw.角色池.npc_ava.与玩家关系.欲望值 = 60;
+    nsfw.会话.chat_1.NSFW同意 = grantNsfwConsent(nsfw.会话.chat_1.NSFW同意, { scopes: ['成人话题'], turns: 3 });
     const built = buildMeetupHandoffPatch(nsfw, request());
     assert.equal(built.ok, false);
     assert.equal(built.code, 'meetup_nsfw_direction_unconfirmed');
+
+    nsfw.关系叙事.npc_ava.进程.NSFW方向确认可用 = true;
+    nsfw.关系叙事.npc_ava.进程.NSFW路线锁定 = '共识亲密';
+    const unlocked = buildMeetupHandoffPatch(nsfw, request());
+    assert.equal(unlocked.ok, true);
+    assert.equal(unlocked.value.patch[0].value.关系路线, '欲望');
 });
 
 test('meetup handoff fails closed for pause, ending and NSFW only-SFW state', () => {
