@@ -1166,27 +1166,41 @@ export function createActionBridge({
         }
     }
 
-    /** Generates an AI completion from the editor's public projection only; this remains an in-memory draft. */
-    async function generateCharacterCompletionDraft({ publicProfile, instruction, contentMode, signal } = {}) {
+    /** Generates a selectively scoped AI completion from the editor draft; this remains in memory. */
+    async function generateCharacterCompletionDraft({ candidateDraft, completionScopes, instruction, expectedContentMode = '', signal } = {}) {
         const key = actionKey('character_completion_draft', '');
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        if (expectedContentMode && !CONTENT_MODES.has(expectedContentMode)) return { ok: false, status: 'rejected', code: 'character_completion_mode_invalid' };
         pending.add(key);
         try {
-            return await generateCharacterCompletionCandidate({
-                publicProfile,
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const currentMode = read.state?.软件?.内容模式;
+            if (expectedContentMode && currentMode !== expectedContentMode) return { ok: false, status: 'rejected', code: 'character_completion_mode_changed', message: '内容模式已改变，请重新补全角色。' };
+            const generated = await generateCharacterCompletionCandidate({
+                candidateDraft,
+                completionScopes,
                 instruction,
-                contentMode,
+                contentMode: currentMode,
                 settingsStore,
                 llmClient,
                 signal,
             });
+            if (!expectedContentMode || !generated?.ok) return generated;
+            const latest = readLatestState({ mvu: currentMvu });
+            if (!latest.ok) return latest;
+            if (latest.state?.软件?.内容模式 !== expectedContentMode) {
+                return { ok: false, status: 'rejected', code: 'character_completion_mode_changed', message: '内容模式已改变，请重新补全角色。' };
+            }
+            return generated;
         } finally {
             pending.delete(key);
         }
     }
 
     /** Generates a full AI candidate from a safe brief and the latest public player context; no MVU write occurs. */
-    async function generateCharacterAuthoringDraft({ creativeBrief, expectedContentMode = '', signal } = {}) {
+    async function generateCharacterAuthoringDraft({ creativeBrief, characterBlueprint = {}, expectedContentMode = '', signal } = {}) {
         const key = actionKey('character_authoring_draft', '');
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
         if (expectedContentMode && !CONTENT_MODES.has(expectedContentMode)) return { ok: false, status: 'rejected', code: 'character_authoring_mode_invalid' };
@@ -1201,6 +1215,7 @@ export function createActionBridge({
                 creativeBrief,
                 contentMode: currentMode,
                 playerPublicProfile: read.state?.玩家?.公开资料,
+                characterBlueprint,
                 settingsStore,
                 llmClient,
                 signal,

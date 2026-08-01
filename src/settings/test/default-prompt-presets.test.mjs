@@ -200,7 +200,7 @@ test('候选生成类内置预设带阈值人设映射与三层资料互相印�
         BUILTIN_PROMPT_PRESET_IDS.characterAuthoringNsfw,
         BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw,
     ]) {
-        assert.match(byId.get(id).content, /对等.{0,8}(?:热度|直白)[^。；]*回应|相同边界内的回应必须有同级容忍/u, `${id} 缺少对等回应容忍条款`);
+        assert.match(byId.get(id).content, /对等.{0,8}(?:热度|直白)[^。；]*回应|相同边界内的回应必须有同级容忍|接得住边界内对等热度/u, `${id} 缺少对等回应容忍条款`);
         assert.match(byId.get(id).content, /秒拉黑|因顾客回应自己主动挑起的话题而拉黑/u, `${id} 缺少禁止秒拉黑条款`);
     }
     // 阈值-初值联动（代码级校验：初始戒备 ≤ 40、已读不回阈值 ≥ 开局压力 + 15）
@@ -213,8 +213,8 @@ test('候选生成类内置预设带阈值人设映射与三层资料互相印�
         BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw,
         BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw,
     ]) {
-        assert.match(byId.get(id).content, /初始戒备不要超过 40/u, `${id} 缺少初始戒备上限提示`);
-        assert.match(byId.get(id).content, /开局互动压力之上留出足够安全边际/u, `${id} 缺少已读不回阈值安全边际提示`);
+        assert.match(byId.get(id).content, /初始戒备(?:不要超过|不超过) 40/u, `${id} 缺少初始戒备上限提示`);
+        assert.match(byId.get(id).content, /开局互动压力之上留出足够安全边际|开局互动压力应留在已读不回阈值之下/u, `${id} 缺少已读不回阈值安全边际提示`);
     }
 });
 

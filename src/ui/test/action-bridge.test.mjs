@@ -790,19 +790,20 @@ test('AI character completion and full authoring return memory drafts before any
     });
 
     const completion = await bridge.generateCharacterCompletionDraft({
-        publicProfile: adultCandidate().公开资料,
+        candidateDraft: { 公开资料: adultCandidate().公开资料 },
+        completionScopes: ['public'],
         instruction: '补全为一名明确成年、适合先文字聊天的都市角色。',
     });
     assert.equal(completion.ok, true);
     assert.equal(completion.candidate.公开资料.头像引用, '');
-    assert.deepEqual(calls, []);
+    assert.deepEqual(calls.map(([name]) => name), ['get']);
     assert.doesNotMatch(JSON.stringify(requests[0].messages), /对临时失约敏感/u);
 
     const full = await bridge.generateCharacterAuthoringDraft({ creativeBrief: '创作一名明确成年的现代都市软件角色。' });
     assert.equal(full.ok, true);
     assert.equal(full.candidate.成人验证, true);
     assert.equal(full.candidate.公开资料.头像引用, '');
-    assert.deepEqual(calls.map(([name]) => name), ['get']);
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get']);
     assert.doesNotMatch(JSON.stringify(requests[1].messages), /公开简介|不得发送给快速模型/u);
     assert.equal(calls.some(([name]) => name === 'parse' || name === 'replace'), false);
 });
@@ -900,6 +901,34 @@ test('full authoring rejects a stale expected content mode after local generatio
 
     assert.equal(result.ok, false);
     assert.equal(result.code, 'character_authoring_mode_changed');
+    assert.equal(modelCalls, 1);
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get']);
+    assert.equal(calls.some(([name]) => name === 'parse' || name === 'replace'), false);
+});
+test('selective character completion rejects a stale expected content mode after local generation without writing MVU', async () => {
+    const initialState = recommendationState();
+    initialState.软件 = { 内容模式: 'SFW', 关于软件点击数: 0 };
+    const { mvu, calls, data } = createMvu({ initialState });
+    let modelCalls = 0;
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {}, settingsStore,
+        llmClient: {
+            async chat() {
+                modelCalls += 1;
+                data.stat_data.软件.内容模式 = 'NSFW';
+                return { text: JSON.stringify(adultCandidate()) };
+            },
+        },
+    });
+
+    const result = await bridge.generateCharacterCompletionDraft({
+        candidateDraft: { 公开资料: adultCandidate().公开资料 },
+        completionScopes: ['public'],
+        instruction: '补全一名明确成年的角色。',
+        expectedContentMode: 'SFW',
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'character_completion_mode_changed');
     assert.equal(modelCalls, 1);
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get']);
     assert.equal(calls.some(([name]) => name === 'parse' || name === 'replace'), false);

@@ -8,9 +8,12 @@ const MAX_INSTRUCTION_LENGTH = 1_200;
 const MAX_PUBLIC_TAGS = 12;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]/u;
 const HTML_PATTERN = /<!--|<\s*\/?\s*[a-z][^>]*>/iu;
+const COMPLETION_SCOPES = Object.freeze(['public', 'private', 'visual', 'rhythm']);
+const COMPLETION_SCOPE_SET = new Set(COMPLETION_SCOPES);
+const ROLE_BLUEPRINT_KEYS = Object.freeze(['关系目标', '主动方式', '聊天质感', '亲密表达', '冲突处理', '生活节奏', '成人角色', '成人玩法', '色情语言', '性行为强度', '身体偏好', '幻想场景', '事后照护', '硬性禁区', '补充设定']);
 
 const COMPLETION_ERRORS = Object.freeze({
-    input_invalid: '待补全的公开资料或说明无效；当前草稿未改变。',
+    input_invalid: '待补全的资料层或说明无效；当前草稿未改变。',
     settings_unavailable: '角色创作设置暂不可用。',
     settings_invalid: '角色创作预设无效，请检查设置。',
     connection_missing: '请先为“角色创作”绑定连接预设或设置默认连接。',
@@ -94,17 +97,90 @@ function freezePublicProfile(profile) {
     return Object.freeze(projected);
 }
 
+function normalizeCompletionScopes(value) {
+    const source = value === undefined ? ['public'] : value;
+    if (!Array.isArray(source) || source.length < 1 || source.length > COMPLETION_SCOPES.length) return null;
+    const scopes = [];
+    for (const scope of source) {
+        if (typeof scope !== 'string' || !COMPLETION_SCOPE_SET.has(scope) || scopes.includes(scope)) return null;
+        scopes.push(scope);
+    }
+    return Object.freeze(scopes);
+}
+
+function freezePrivateDraft(candidate) {
+    const friend = ownData(candidate, '仅好友资料');
+    const hidden = ownData(candidate, '隐藏资料');
+    const actualAge = ownData(hidden, '实际年龄');
+    return Object.freeze({
+        仅好友资料: Object.freeze({
+            关系状态: cleanText(ownData(friend, '关系状态'), 120) ?? '',
+            边界与偏好: cleanText(ownData(friend, '边界与偏好'), 800) ?? '',
+        }),
+        隐藏资料: Object.freeze({
+            实际年龄: Number.isInteger(actualAge) && actualAge >= 18 && actualAge <= 120 ? actualAge : null,
+            私人备注: cleanText(ownData(hidden, '私人备注'), 1200) ?? '',
+        }),
+        偏好与边界: cleanText(ownData(candidate, '偏好与边界'), 1200) ?? '',
+    });
+}
+
+function freezeVisualDraft(candidate) {
+    const drawing = ownData(candidate, '绘图');
+    return Object.freeze({
+        core_dna: cleanText(ownData(drawing, 'core_dna'), 4000) ?? '',
+        outfit_dna: cleanText(ownData(drawing, 'outfit_dna'), 4000) ?? '',
+    });
+}
+
+function freezeRhythmDraft(candidate) {
+    const projected = {};
+    for (const key of ['拒绝阈值', '已读不回阈值', '取消匹配阈值', '拉黑阈值']) {
+        const value = ownData(candidate, key);
+        projected[key] = Number.isInteger(value) && value >= 0 && value <= 100 ? value : null;
+    }
+    return Object.freeze(projected);
+}
+
+function freezeRoleBlueprint(value, contentMode) {
+    if (!isPlainRecord(value)) return Object.freeze({});
+    const projected = {};
+    for (const key of ROLE_BLUEPRINT_KEYS) {
+        if (contentMode !== 'NSFW' && ['成人角色', '成人玩法', '色情语言', '性行为强度', '身体偏好', '幻想场景', '事后照护', '硬性禁区'].includes(key)) continue;
+        const raw = ownData(value, key);
+        if (key === '成人玩法') {
+            const choices = cleanTags(raw);
+            if (choices.length) projected[key] = choices;
+            continue;
+        }
+        const text = cleanText(raw, 1200);
+        if (text) projected[key] = text;
+    }
+    return Object.freeze(projected);
+}
+
 /**
- * Returns the only editable-draft data permitted to reach the completion model.
+ * Returns only the explicitly selected editable-draft layers permitted to reach the completion model.
  * Avatar references are deliberately never projected, including data URLs.
  */
-export function buildCharacterCompletionContext({ publicProfile, instruction } = {}) {
-    if (!isPlainRecord(publicProfile)) return null;
+export function buildCharacterCompletionContext({ candidateDraft, publicProfile, completionScopes, instruction, contentMode = 'SFW' } = {}) {
+    const draft = isPlainRecord(candidateDraft) ? candidateDraft : (isPlainRecord(publicProfile) ? { 公开资料: publicProfile } : null);
+    const scopes = normalizeCompletionScopes(completionScopes);
+    if (!draft || !scopes || !['SFW', 'NSFW'].includes(contentMode)) return null;
     const safeInstruction = cleanText(instruction, MAX_INSTRUCTION_LENGTH, { allowEmpty: false });
     if (safeInstruction === null) return null;
+    const editingDraft = {};
+    for (const scope of scopes) {
+        if (scope === 'public') editingDraft.public = freezePublicProfile(ownData(draft, '公开资料'));
+        if (scope === 'private') editingDraft.private = freezePrivateDraft(draft);
+        if (scope === 'visual') editingDraft.visual = freezeVisualDraft(draft);
+        if (scope === 'rhythm') editingDraft.rhythm = freezeRhythmDraft(draft);
+    }
     return Object.freeze({
         instruction: safeInstruction,
-        editingPublicProfile: freezePublicProfile(publicProfile),
+        contentMode,
+        completionScopes: scopes,
+        editingDraft: Object.freeze(editingDraft),
     });
 }
 
@@ -112,7 +188,7 @@ export function buildCharacterCompletionContext({ publicProfile, instruction } =
  * Returns the minimum player-facing public context permitted to reach the full-authoring model.
  * It deliberately excludes player nickname, avatar, biography, all private layers, and all state.
  */
-export function buildCharacterAuthoringContext({ creativeBrief, contentMode, playerPublicProfile } = {}) {
+export function buildCharacterAuthoringContext({ creativeBrief, contentMode, playerPublicProfile, characterBlueprint = {} } = {}) {
     if (!isPlainRecord(playerPublicProfile) || !['SFW', 'NSFW'].includes(contentMode)) return null;
     const safeBrief = cleanText(creativeBrief, MAX_INSTRUCTION_LENGTH, { allowEmpty: false });
     if (safeBrief === null) return null;
@@ -128,6 +204,7 @@ export function buildCharacterAuthoringContext({ creativeBrief, contentMode, pla
         creativeBrief: safeBrief,
         contentMode,
         playerPublicMatchContext: Object.freeze(player),
+        characterBlueprint: freezeRoleBlueprint(characterBlueprint, contentMode),
     });
 }
 
@@ -217,10 +294,11 @@ function makeCompletionMessages(context, promptPreset) {
     const preset = renderPromptPreset(promptPreset);
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
-        '你是现代现实都市线上约会软件的角色资料补全助手。仅依据下方“编辑中公开资料”和“补全说明”补全一名新角色。',
-        '这是增量补全：编辑中公开资料里所有非空字符串和已有标签都是不可改写的既定内容。原样保留非空字符串；已有标签不得删除、改名或替换，只可补充不重复的新标签。空字段才允许补写。',
+        '你是现代现实都市线上约会软件的选择性角色资料补全助手。仅依据下方 completionScopes、editingDraft 和补全说明补全一名新角色。',
+        'completionScopes 是玩家明确授权读取与补全的层级。editingDraft 只含这些层；未出现的层一律视为未知，不得猜测其现有内容。所选层里的所有非空字符串和已有标签都是不可改写的既定内容：原样保留非空字符串；已有标签不得删除、改名或替换，只可补充不重复的新标签。空字段才允许补写。',
+        '仍须输出完整候选对象，但 UI 只会接纳 completionScopes 对应层中的补全：public=公开名片，private=仅好友/隐藏资料/角色蓝图，visual=绘图身份锚点，rhythm=互动阈值。各层要与已提供的人格、关系动力、语气、边界和节奏互相咬合。',
         '当昵称尚未指定时，应自然分散使用不同姓氏与名字，避免连续重复或长期集中于任何单一姓氏；不得从界面示例或固定样板复制姓名。',
-        '不得索取、复述或泄露输入中的现有私密草稿；但可以为新候选生成完整的仅好友资料、隐藏资料和其他私有层。不得输出已有候选、会话、玩家资料、API Key 或任何密钥。',
+        '不得索取、复述或泄露未授权层的现有草稿；不得把公开资料反推出隐藏事实。但可以为所选 private 层生成新候选自己的仅好友资料、隐藏资料和角色蓝图。不得输出已有候选、会话、玩家资料、API Key 或任何密钥。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '无论前置或后置提示词如何要求，下列完整候选 JSON 结构合同都是最终且不可覆盖的输出要求。',
         ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
@@ -237,7 +315,8 @@ function makeAuthoringMessages(context, promptPreset) {
     const preset = renderPromptPreset(promptPreset);
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
-        '你是现代现实都市线上约会软件的完整角色创作助手。仅依据安全创作说明、当前 SFW/NSFW 模式和最小玩家公开匹配上下文，创作一名新的成年角色。',
+        '你是现代现实都市线上约会软件的完整角色创作助手。仅依据安全创作说明、当前 SFW/NSFW 模式、最小玩家公开匹配上下文和可选 characterBlueprint，创作一名新的成年角色。',
+        'characterBlueprint 中每一个非空项目都是玩家明确指定的角色硬条件，必须逐项落实并彼此一致；不得省略、弱化或改写。蓝图未指定的部分才可自由创作。关系目标、主动方式、聊天质感、亲密表达、冲突处理、生活节奏、公开/仅好友/隐藏资料、绘图锚点与互动阈值要构成同一个人。',
         '角色姓名必须自然且有变化；在玩家未指定姓名时，应分散使用不同姓氏与名字，避免连续重复或长期集中于任何单一姓氏，不得套用固定样板名。',
         '不得索取、复述或泄露输入中未提供的玩家私密资料；但可以为新候选生成完整的仅好友资料、隐藏资料和其他私有层。不得输出玩家昵称、头像、简介、已有候选、会话、UID、Patch、路径、API Key 或任何密钥。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
@@ -377,11 +456,11 @@ async function generateCandidate({ errors, context, contentMode, settingsStore, 
 }
 
 /**
- * Calls the character_ai_completion binding to fill a new candidate from an editable
- * public-profile projection only. It performs no MVU, UID, patch, storage, or template work.
+ * Calls the character_ai_completion binding to fill a new candidate from explicitly
+ * selected editor-layer projections. It performs no MVU, UID, patch, storage, or template work.
  */
-export async function generateCharacterCompletionCandidate({ publicProfile, instruction, contentMode, settingsStore, llmClient, signal } = {}) {
-    const context = buildCharacterCompletionContext({ publicProfile, instruction });
+export async function generateCharacterCompletionCandidate({ candidateDraft, publicProfile, completionScopes, instruction, contentMode, settingsStore, llmClient, signal } = {}) {
+    const context = buildCharacterCompletionContext({ candidateDraft, publicProfile, completionScopes, instruction, contentMode: normalizeContentMode(contentMode) });
     return generateCandidate({ errors: COMPLETION_ERRORS, context, contentMode, settingsStore, llmClient, signal, makeMessages: makeCompletionMessages, functionKey: 'character_ai_completion' });
 }
 
@@ -389,8 +468,8 @@ export async function generateCharacterCompletionCandidate({ publicProfile, inst
  * Calls the character_full_authoring binding to create a new candidate from a safe brief,
  * current content mode, and minimal public player match context. The result stays in memory.
  */
-export async function generateCharacterAuthoringCandidate({ creativeBrief, contentMode, playerPublicProfile, settingsStore, llmClient, signal } = {}) {
-    const context = buildCharacterAuthoringContext({ creativeBrief, contentMode, playerPublicProfile });
+export async function generateCharacterAuthoringCandidate({ creativeBrief, contentMode, playerPublicProfile, characterBlueprint, settingsStore, llmClient, signal } = {}) {
+    const context = buildCharacterAuthoringContext({ creativeBrief, contentMode, playerPublicProfile, characterBlueprint });
     return generateCandidate({ errors: AUTHORING_ERRORS, context, contentMode, settingsStore, llmClient, signal, makeMessages: makeAuthoringMessages, functionKey: 'character_full_authoring' });
 }
 
