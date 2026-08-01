@@ -1,5 +1,5 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildBodyRelationshipCandidateBackfillPatch, buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildRelationshipNarrativeBackfillPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch } from './mvu/controlled-patch.js';
+import { buildBodyRelationshipCandidateBackfillPatch, buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatNsfwSafetyPatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildRelationshipNarrativeBackfillPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply, generatePrivateChatSummary } from './chat/private-chat-service.js';
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
@@ -356,6 +356,7 @@ export function createActionBridge({
                 playerMessage: generated.playerMessage,
                 response: generated.response,
                 bodyCandidateEventId: generated.bodyCandidateEventId,
+                onlySfwAtRequest: generated.onlySfwAtRequest,
             });
             if (!built.ok) return rejectedFromBuild(built);
             const interactionOutcome = built.value.some((operation) => operation?.op === 'replace'
@@ -381,6 +382,23 @@ export function createActionBridge({
                 summaryCheckRequested: interactionOutcome === 'replied' && summarySettings.enabled,
                 imageDirectives,
             } : applied;
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Toggles only the current matched session's NSFW safety pause leaf. */
+    async function runPrivateChatNsfwSafety({ sessionUid, action } = {}) {
+        const key = actionKey('private_chat_nsfw_safety', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const built = buildPrivateChatNsfwSafetyPatch(read.state, { sessionUid, action });
+            if (!built.ok) return rejectedFromBuild(built);
+            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         } finally {
             pending.delete(key);
         }
@@ -1361,5 +1379,5 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, generateLibraryImage, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatNsfwSafety, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, generateLibraryImage, isPending, appendMeetupDraft });
 }

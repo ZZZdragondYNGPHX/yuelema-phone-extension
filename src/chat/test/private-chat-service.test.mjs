@@ -209,6 +209,34 @@ test('private chat rejects unmatched, forged, underage and malformed messages be
     assert.equal(buildPrivateChatContext({ state: state(), sessionUid: 'chat_1', npcUid: 'npc_other', playerMessage: '你好' }).ok, false);
 });
 
+test('player adulthood and protected pause/end gates reject before the model is called', async () => {
+    for (const mutate of [
+        (current) => { current.玩家.成人验证 = false; },
+        (current) => { current.关系叙事.npc_adult.进程.边界暂停状态 = '暂停'; },
+        (current) => { current.关系叙事.npc_adult.进程.关系结束状态 = '结束联系'; },
+    ]) {
+        const current = state();
+        mutate(current);
+        let modelCalls = 0;
+        const result = await generatePrivateChatReply({
+            state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '你好', settingsStore: settingsStore(),
+            llmClient: { async chat() { modelCalls += 1; return { text: JSON.stringify(response()) }; } },
+        });
+        assert.equal(result.ok, false);
+        assert.equal(modelCalls, 0);
+    }
+});
+
+test('only-SFW context exposes one boolean and no protected narrative fields', () => {
+    const current = state();
+    current.关系叙事.npc_adult.进程.边界暂停状态 = '仅SFW';
+    const built = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '继续聊电影' });
+    assert.equal(built.ok, true);
+    assert.equal(built.context.onlySfw, true);
+    const serialized = JSON.stringify(built.context);
+    assert.doesNotMatch(serialized, /边界暂停状态|关系结束状态|冻结关系值|关系叙事|仅SFW/u);
+});
+
 test('private chat requests replies and returns only validated multi-bubble data in memory', async () => {
     let request;
     const current = state();
@@ -286,6 +314,23 @@ test('B.2 body candidate is safely projected and atomically consumed only after 
     const cleared = committed.value.find((operation) => operation.path === '/正文关系候选/npc_adult');
     assert.deepEqual(cleared?.value, createEmptyBodyRelationshipCandidate());
 
+    const onlySfw = structuredClone(current);
+    onlySfw.软件.内容模式 = 'NSFW';
+    onlySfw.关系叙事.npc_adult.进程.边界暂停状态 = '仅SFW';
+    const onlySfwCommitted = buildPrivateChatPatch(onlySfw, {
+        sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '只聊友情，也确认那次散步。',
+        bodyCandidateEventId: 'body:meetup_1:1', onlySfwAtRequest: true,
+        response: {
+            replies: ['好，我们按舒服的友情节奏来。'],
+            relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+            bodyEventReview: 'confirm',
+            bondAssessment: { kind: 'friendly', intensity: 1, direction: 'increase' },
+        },
+    });
+    assert.equal(onlySfwCommitted.ok, true);
+    assert.equal(onlySfwCommitted.value.some((operation) => operation.path === '/角色池/npc_adult/与玩家关系/友情值' && operation.value === 40), true, '仅 SFW 仍可复盘既有 SFW 友情候选');
+    assert.equal(validateControlledPatchAgainstState(onlySfw, onlySfwCommitted.value).ok, true);
+
     const staleReference = buildPrivateChatPatch(current, {
         sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我也很珍惜那天，一起慢慢来。',
         bodyCandidateEventId: 'body:meetup_other:1',
@@ -313,11 +358,13 @@ test('NSFW core contract permits consensual adult chat without treating explicit
     });
     assert.equal(result.ok, true);
     assert.equal(result.response.relationship.戒备, 0);
-    assert.match(request.messages[0].content, /成人话题尊重已知边界/u);
-    assert.match(request.messages[0].content, /直白或露骨本身不是冒犯/u);
-    assert.match(request.messages[0].content, /不得仅因内容成人化降低好感或信任、提高戒备/u);
-    assert.match(request.messages[0].content, /明确的拒绝或撤回同意、已知边界冲突、胁迫、非自愿、隐私侵犯/u);
-    assert.match(request.messages[0].content, /同意或边界不清时应先用线上文字澄清/u);
+    assert.equal(result.response.nsfwSafetyAssessment, 'none');
+    assert.match(request.messages[0].content, /尊重边界的成人内容不得被判为安全冲突/u);
+    assert.match(request.messages[0].content, /不开放 NSFW 正向三值成长、30\/40\/50 阶段、路线确认或面基路线/u);
+    assert.match(request.messages[0].content, /已匹配、成人验证、既往回复和高关系都不是持续授权/u);
+    assert.match(request.messages[0].content, /明确拒绝或撤回后仍继续、违反已知边界、胁迫或非自愿、侵犯现实隐私/u);
+    assert.match(request.messages[0].content, /同意不清时必须先用线上文字澄清/u);
+    assert.match(request.messages[0].content, /nsfwSafetyAssessment 默认且通常必须为 none/u);
     assert.match(request.messages[0].content, /NSFW 允许 none\/friendly\/romantic_flirt\/romantic_desire\/sexual_desire/u);
     assert.match(request.messages[0].content, /普通问候或日常友好交流应使用 none 或 friendly/u);
 });

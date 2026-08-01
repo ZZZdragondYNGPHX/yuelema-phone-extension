@@ -1,8 +1,7 @@
+import { NSFW_SAFETY_ASSESSMENT_KINDS } from './private-chat-response.js';
+
 export const CONTENT_MODES = Object.freeze(['SFW', 'NSFW']);
 export const SFW_MEETUP_ROUTE_THRESHOLD = 50;
-// NSFW route confirmation is a later phase. Preserve its existing gate until
-// that phase has its own consent and route-lock implementation.
-export const NSFW_MEETUP_ROUTE_THRESHOLD = 60;
 export const MEETUP_ROUTE_THRESHOLD = SFW_MEETUP_ROUTE_THRESHOLD;
 export const SFW_UNDERSTANDING_THRESHOLD = 60;
 // Body-event confirmation is a semantic review only.  It never carries a
@@ -13,11 +12,7 @@ const MODE_KINDS = Object.freeze({
     SFW: Object.freeze(['none', 'friendly', 'romantic_flirt']),
     NSFW: Object.freeze(['none', 'friendly', 'romantic_flirt', 'romantic_desire', 'sexual_desire']),
 });
-const ROUTES = Object.freeze([
-    Object.freeze({ route: '友情', field: '友情值' }),
-    Object.freeze({ route: '恋爱', field: '心动值' }),
-    Object.freeze({ route: '欲望', field: '欲望值' }),
-]);
+const NSFW_SAFETY_ASSESSMENTS = new Set(NSFW_SAFETY_ASSESSMENT_KINDS);
 const SFW_PROGRESS_THRESHOLDS = Object.freeze([
     Object.freeze({ threshold: 20, field: 'SFW细微裂缝已触发' }),
     Object.freeze({ threshold: 40, field: 'SFW朋友分享已触发' }),
@@ -43,7 +38,7 @@ function isKnownAssessment(mode, kind, intensity, direction) {
 function emptySettlement(kind = 'none', direction = 'none') {
     return Object.freeze({
         field: '', delta: 0, nextValue: 0, kind, direction,
-        eventId: '', progressUpdates: Object.freeze({}),
+        eventId: '', progressUpdates: Object.freeze({}), safetyPause: false,
     });
 }
 
@@ -53,9 +48,8 @@ function fieldForAssessment(mode, kind, direction) {
     // no normal chat can auto-write heart progress before that decision.
     if (mode === 'SFW') return ['friendly', 'romantic_flirt'].includes(kind) ? '友情值' : '';
 
-    // Phase C will define NSFW's consent gates and dual-route milestones. Until
-    // then, preserve the existing desire classifications, but apply the new
-    // global bounded deltas to any allowed change.
+    // C.1 uses this mapping only for an explicit, separately classified safety
+    // conflict. Positive NSFW progress remains closed until C.2.
     if (kind === 'romantic_desire') return '心动值';
     if (kind === 'sexual_desire') return '欲望值';
     if (direction === 'decrease' && kind === 'friendly') return '友情值';
@@ -63,10 +57,19 @@ function fieldForAssessment(mode, kind, direction) {
     return '';
 }
 
+export function deriveRelationshipSafetyState(progress) {
+    const safeProgress = isProgressRecord(progress) ? progress : {};
+    const boundary = typeof safeProgress.边界暂停状态 === 'string' ? safeProgress.边界暂停状态 : '';
+    return Object.freeze({
+        onlySfw: boundary === '仅SFW',
+        paused: Boolean(boundary && boundary !== '仅SFW'),
+        ended: Boolean(safeProgress.关系结束状态),
+    });
+}
+
 function progressBlocksField(progress, field) {
-    return Boolean(progress?.边界暂停状态)
-        || Boolean(progress?.关系结束状态)
-        || progress?.冻结关系值 === field;
+    const safety = deriveRelationshipSafetyState(progress);
+    return safety.paused || safety.ended || progress?.冻结关系值 === field;
 }
 
 function progressUpdatesForSfw({ progress, currentValue, nextValue, turnId, eventId }) {
@@ -162,16 +165,50 @@ export function calculateBondDecline(currentValue, intensity) {
  * semantic assessment and state supplied by the controlled builder; no model
  * value can choose a score, a JSON Pointer, a UID, or an arbitrary patch.
  */
-export function settleRelationshipProgress({ contentMode, relationship, progress, assessment, replied = true, turnId = '' } = {}) {
-    const mode = normalizeContentMode(contentMode);
+export function settleRelationshipProgress({ contentMode, relationship, progress, assessment, nsfwSafetyAssessment = 'none', replied = true, turnId = '' } = {}) {
+    const sourceMode = normalizeContentMode(contentMode);
     const current = relationship && typeof relationship === 'object' ? relationship : {};
     const safeProgress = isProgressRecord(progress) ? progress : {};
+    const safetyState = deriveRelationshipSafetyState(safeProgress);
+    const mode = sourceMode === 'NSFW' && safetyState.onlySfw ? 'SFW' : sourceMode;
     const kind = assessment?.kind;
     const intensity = assessment?.intensity;
     const direction = assessment?.direction ?? (kind === 'none' ? 'none' : 'increase');
-    if (!replied || !isKnownAssessment(mode, kind, intensity, direction) || kind === 'none') {
+    if (!replied || safetyState.paused || safetyState.ended) {
         return emptySettlement(kind ?? 'none', direction);
     }
+
+    const safetyPause = sourceMode === 'NSFW'
+        && !safetyState.onlySfw
+        && NSFW_SAFETY_ASSESSMENTS.has(nsfwSafetyAssessment)
+        && nsfwSafetyAssessment !== 'none';
+    if (safetyPause) {
+        const eventId = relationshipEventIdForTurn(turnId);
+        const alreadyConsumed = eventId && Array.isArray(safeProgress.已消费事件ID) && safeProgress.已消费事件ID.includes(eventId);
+        const canDecline = isKnownAssessment('NSFW', kind, intensity, direction)
+            && kind !== 'none' && direction === 'decrease'
+            && !(eventId && (safeProgress.最后结算回合UID === turnId || alreadyConsumed));
+        const field = canDecline ? fieldForAssessment('NSFW', kind, direction) : '';
+        const currentValue = field ? integerScore(current[field]) : 0;
+        const delta = field && !progressBlocksField(safeProgress, field)
+            ? calculateBondDecline(currentValue, intensity) : 0;
+        const nextValue = currentValue + delta;
+        const progressUpdates = delta !== 0 && eventId
+            ? progressUpdatesForNsfw({ progress: safeProgress, turnId, eventId })
+            : Object.freeze({});
+        return Object.freeze({
+            field, delta, nextValue, kind: kind ?? 'none', direction,
+            eventId: delta !== 0 ? eventId : '', progressUpdates, safetyPause: true,
+        });
+    }
+
+    if (!isKnownAssessment(mode, kind, intensity, direction) || kind === 'none') {
+        return emptySettlement(kind ?? 'none', direction);
+    }
+    // C.1 is fail-closed: an ordinary NSFW assessment, positive or negative,
+    // cannot move any of the three relationship values without a validated
+    // safety classification. “仅 SFW” uses the existing SFW friendship path.
+    if (sourceMode === 'NSFW' && mode === 'NSFW') return emptySettlement(kind, direction);
 
     const field = fieldForAssessment(mode, kind, direction);
     if (!field || progressBlocksField(safeProgress, field)) return emptySettlement(kind, direction);
@@ -192,7 +229,7 @@ export function settleRelationshipProgress({ contentMode, relationship, progress
             ? progressUpdatesForSfw({ progress: safeProgress, currentValue, nextValue, turnId, eventId })
             : progressUpdatesForNsfw({ progress: safeProgress, turnId, eventId }))
         : Object.freeze({});
-    return Object.freeze({ field, delta, nextValue, kind, direction, eventId, progressUpdates });
+    return Object.freeze({ field, delta, nextValue, kind, direction, eventId, progressUpdates, safetyPause: false });
 }
 
 /**
@@ -274,16 +311,17 @@ export function projectBondProgress(options = {}) {
 }
 
 /** Returns a DOM-safe derived meetup gate without exposing scores or thresholds. */
-export function deriveMeetupAccess({ contentMode, relationship } = {}) {
+export function deriveMeetupAccess({ contentMode, relationship, progress } = {}) {
     const mode = normalizeContentMode(contentMode);
     const current = relationship && typeof relationship === 'object' ? relationship : {};
-    const threshold = mode === 'SFW' ? SFW_MEETUP_ROUTE_THRESHOLD : NSFW_MEETUP_ROUTE_THRESHOLD;
-    const candidates = ROUTES
-        .filter(({ route }) => mode === 'NSFW' || route === '友情')
-        .map((item, index) => ({ ...item, score: integerScore(current[item.field]), index }))
-        .filter((item) => item.score >= threshold)
-        .sort((left, right) => right.score - left.score || left.index - right.index);
-    const routes = candidates.map((item) => item.route);
+    const safety = deriveRelationshipSafetyState(progress);
+    if (safety.ended) return Object.freeze({ unlocked: false, route: '', routes: Object.freeze([]), reason: 'relationship_ended' });
+    if (safety.paused) return Object.freeze({ unlocked: false, route: '', routes: Object.freeze([]), reason: 'relationship_paused' });
+    if (mode === 'NSFW') {
+        const reason = safety.onlySfw ? 'only_sfw' : 'nsfw_direction_unconfirmed';
+        return Object.freeze({ unlocked: false, route: '', routes: Object.freeze([]), reason });
+    }
+    const routes = integerScore(current.友情值) >= SFW_MEETUP_ROUTE_THRESHOLD ? ['友情'] : [];
     return Object.freeze({
         unlocked: routes.length > 0,
         route: routes[0] ?? '',

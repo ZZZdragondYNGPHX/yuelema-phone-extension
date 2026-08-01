@@ -101,20 +101,46 @@ test('event IDs are local, bounded projections of player turn IDs only', () => {
     assert.equal(relationshipEventIdForTurn('untrusted-value'), '');
 });
 
-test('NSFW keeps its existing route gate for phase C but adopts the global bounded decline', () => {
-    const result = settle({
+test('C.1 keeps ordinary NSFW progress closed and allows only classified safety declines', () => {
+    const ordinaryDecline = settle({
         contentMode: 'NSFW', relationship: { 友情值: 20, 心动值: 40, 欲望值: 80 },
         assessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
     });
+    assert.equal(ordinaryDecline.delta, 0);
+    assert.equal(settle({ contentMode: 'NSFW', assessment: { kind: 'sexual_desire', intensity: 2, direction: 'increase' } }).delta, 0);
+    const safetyDecline = settle({
+        contentMode: 'NSFW', relationship: { 友情值: 20, 心动值: 40, 欲望值: 80 },
+        assessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
+        nsfwSafetyAssessment: 'known_boundary_conflict',
+    });
     assert.deepEqual(
-        { field: result.field, delta: result.delta, nextValue: result.nextValue },
-        { field: '欲望值', delta: -4, nextValue: 76 },
+        { field: safetyDecline.field, delta: safetyDecline.delta, nextValue: safetyDecline.nextValue, safetyPause: safetyDecline.safetyPause },
+        { field: '欲望值', delta: -4, nextValue: 76, safetyPause: true },
     );
-    assert.equal(settle({ contentMode: 'NSFW', assessment: { kind: 'friendly', intensity: 2, direction: 'increase' } }).delta, 0);
+    const zeroScoreSafety = settle({
+        contentMode: 'NSFW', relationship: { 友情值: 0, 心动值: 0, 欲望值: 0 },
+        assessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
+        nsfwSafetyAssessment: 'privacy_violation',
+    });
+    assert.deepEqual({ delta: zeroScoreSafety.delta, safetyPause: zeroScoreSafety.safetyPause }, { delta: 0, safetyPause: true });
+});
+
+test('only-SFW keeps friendship available while pause/end and NSFW meetup fail closed', () => {
+    const onlySfw = settle({
+        contentMode: 'NSFW', relationship: { 友情值: 10, 心动值: 90, 欲望值: 90 },
+        progress: progress({ 边界暂停状态: '仅SFW' }),
+        assessment: { kind: 'friendly', intensity: 2, direction: 'increase' },
+    });
+    assert.deepEqual(
+        { field: onlySfw.field, delta: onlySfw.delta, nextValue: onlySfw.nextValue },
+        { field: '友情值', delta: 1, nextValue: 11 },
+    );
     assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 49, 心动值: 100, 欲望值: 100 } }).unlocked, false);
     assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 50, 心动值: 0, 欲望值: 0 } }).route, '友情');
-    assert.equal(deriveMeetupAccess({ contentMode: 'NSFW', relationship: { 友情值: 50, 心动值: 50, 欲望值: 59 } }).unlocked, false);
-    assert.equal(deriveMeetupAccess({ contentMode: 'NSFW', relationship: { 友情值: 60, 心动值: 70, 欲望值: 80 } }).route, '欲望');
+    assert.equal(deriveMeetupAccess({ contentMode: 'NSFW', relationship: { 友情值: 100, 心动值: 100, 欲望值: 100 } }).reason, 'nsfw_direction_unconfirmed');
+    assert.equal(deriveMeetupAccess({ contentMode: 'NSFW', relationship: { 友情值: 100 }, progress: progress({ 边界暂停状态: '仅SFW' }) }).reason, 'only_sfw');
+    assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 100 }, progress: progress({ 边界暂停状态: '暂停' }) }).reason, 'relationship_paused');
+    assert.equal(deriveMeetupAccess({ contentMode: 'SFW', relationship: { 友情值: 100 }, progress: progress({ 关系结束状态: '深度朋友' }) }).reason, 'relationship_ended');
 });
 
 function bodyCandidate(overrides = {}) {

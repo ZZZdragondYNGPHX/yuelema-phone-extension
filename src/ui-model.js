@@ -1,6 +1,7 @@
 import { buildGroupBrowseModel } from './groups/group-discovery-service.js';
 import { listConversationSummaryRecords, listUnsummarizedConversationMessages, normalizeConversationSummaryState } from './chat/conversation-summary.js';
-import { deriveMeetupAccess } from './chat/relationship-progress.js';
+import { deriveMeetupAccess, deriveRelationshipSafetyState } from './chat/relationship-progress.js';
+import { validateRelationshipNarrative } from './mvu/relationship-narrative.js';
 
 export const NAV_ITEMS = Object.freeze([
     { id: 'home', label: '发现', iconName: 'home' },
@@ -267,12 +268,20 @@ export function projectPrivateChatView(state) {
         }));
         const totalLayers = Number.isInteger(session.对话层数) && session.对话层数 >= messages.length
             ? session.对话层数 : messages.length;
+        const narratives = ownRecord(state.关系叙事) ? state.关系叙事 : null;
+        const narrative = validateRelationshipNarrative(narratives?.[npcUid]);
+        const progress = narrative.ok ? narrative.value.进程 : null;
+        const safety = deriveRelationshipSafetyState(progress);
         const meetupAccess = deriveMeetupAccess({
             contentMode: state.软件?.内容模式,
             relationship: state.角色池[npcUid]?.与玩家关系,
+            progress,
         });
         sessions.push(Object.freeze({
             sessionUid, npcUid, status: session.状态, profile, messages: Object.freeze(messages),
+            onlySfw: safety.onlySfw,
+            paused: safety.paused,
+            ended: safety.ended,
             meetupAccess,
             meetups: projectSessionMeetups(state, npcUid, contentMode),
             summaryInfo: Object.freeze({
@@ -284,7 +293,7 @@ export function projectPrivateChatView(state) {
                 targetSummaryUid: summaryState.targetSummaryUid,
                 attempts: summaryState.attempts,
             }),
-            canSend: session.状态 === '已匹配',
+            canSend: session.状态 === '已匹配' && !safety.paused && !safety.ended,
         }));
     }
     // §7.1.1：按最后一条消息时间倒序；无可解析时间的会话垫底；同刻/同为无时间时
@@ -504,8 +513,8 @@ export function describeActionFailure(result) {
         mvu_parse_input_clone_failed: 'MVU 的临时解析副本不可用，本次未写入任何数据。',
         mvu_relationship_routes_schema_outdated: '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。',
         mvu_story_memory_schema_outdated: '当前聊天缺少 v1.0.8 正文记忆结构。请导入与小手机相同版本的《约了吗》MVU 角色卡后重试；本次未写入。',
-        mvu_relationship_narrative_schema_outdated: '当前聊天缺少 v1.0.14 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
-        mvu_body_relationship_candidate_schema_outdated: '当前聊天缺少 v1.0.14 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
+        mvu_relationship_narrative_schema_outdated: '当前聊天缺少 v1.0.15 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
+        mvu_body_relationship_candidate_schema_outdated: '当前聊天缺少 v1.0.15 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
         story_memory_backfill_state_invalid: '当前正文记忆状态不可修复，请刷新后重试。',
         story_memory_backfill_role_invalid: '当前角色记录无法建立独立正文记忆，本次未写入。',
         story_memory_backfill_value_invalid: '现有正文记忆格式异常；为避免误删经历，本次未自动修复。',
@@ -518,7 +527,7 @@ export function describeActionFailure(result) {
         body_relationship_candidate_npc_uid_invalid: '当前私聊对象标识异常，本次未写入。请返回消息列表后重试。',
         body_relationship_candidate_role_pool_invalid: '当前角色资料状态异常，无法安全复核正文关系候选，本次未写入。',
         body_relationship_candidate_npc_missing: '当前私聊对象已不在角色资料中，本次未写入。请返回消息列表刷新。',
-        body_relationship_candidate_root_invalid: '正文关系候选结构异常；为避免误写关系值，本次未写入。请使用 v1.0.14 角色卡新开聊天后重试。',
+        body_relationship_candidate_root_invalid: '正文关系候选结构异常；为避免误写关系值，本次未写入。请使用 v1.0.15 角色卡新开聊天后重试。',
         body_relationship_candidate_slot_missing: '当前对象缺少独立的正文关系候选槽位，本次未写入。请刷新后重试。',
         body_relationship_candidate_invalid: '正文关系候选内容未通过安全复核，本次未写入任何关系变化。',
         body_relationship_candidate_uid_mismatch: '正文关系候选与当前私聊对象不一致，本次未写入。请返回消息列表刷新。',
@@ -535,7 +544,18 @@ export function describeActionFailure(result) {
         private_chat_session_not_found: '当前私聊会话已不可用，请返回消息列表后重试。',
         private_chat_story_memory_schema_outdated: '当前对象尚无独立正文记忆槽位，请刷新后重试。',
         private_chat_not_matched: '当前对象尚未建立可发送的私聊。',
+        private_chat_player_adult_verification_failed: '玩家资料尚未通过成年人校验，无法发送私聊。',
         private_chat_adult_verification_failed: '该资料未通过成年人校验，无法发送私聊。',
+        private_chat_relationship_narrative_schema_outdated: '当前对象缺少完整的关系安全状态，请导入与小手机相同版本的 v1.0.15 角色卡并新开聊天。',
+        private_chat_relationship_paused: '当前关系已暂停、拉黑或归档，私聊保持只读。',
+        private_chat_relationship_ended: '当前关系已经结束，私聊保持只读。',
+        private_chat_safety_reference_invalid: '本次私聊的安全状态引用无效，未写入任何消息。',
+        private_chat_safety_state_changed: '生成回复期间成人话题安全状态已变化；为避免使用过期授权，本条消息未写入，请重新发送。',
+        private_chat_nsfw_safety_invalid_action: '成人话题安全操作无效，未写入。',
+        private_chat_nsfw_safety_mode_changed: '内容模式已变化，请刷新后重试成人话题设置。',
+        private_chat_nsfw_safety_not_matched: '当前会话已变化，无法调整成人话题设置。',
+        private_chat_nsfw_safety_already_paused: '当前关系已经是“仅 SFW”。',
+        private_chat_nsfw_safety_not_paused: '当前关系没有暂停成人话题。',
         private_chat_message_invalid: '消息不能为空或格式不正确。',
         private_chat_settings_unavailable: '私聊设置暂不可用。',
         private_chat_settings_invalid: '私聊预设无效，请检查设置。',
@@ -548,6 +568,10 @@ export function describeActionFailure(result) {
         private_chat_history_requires_summary: '聊天记录已达到保留上限；请先完成未整理的聊天总结后再发送。',
         private_chat_rhythm_state_invalid: '当前角色的互动节奏设置异常，本条消息未写入。',
         private_chat_body_candidate_reference_invalid: '正文关系候选已变化，请刷新后重试；本条消息未写入。',
+        meetup_relationship_paused: '当前关系已暂停、拉黑或归档，不能发起面基。',
+        meetup_relationship_ended: '当前关系已经结束，不能发起面基。',
+        meetup_nsfw_only_sfw: '当前关系仅允许 SFW 互动，不能发起 NSFW 面基。',
+        meetup_nsfw_direction_unconfirmed: 'NSFW 路线尚未由双方明确确认；当前阶段不会按关系分自动选择面基路线。',
         private_chat_delete_invalid_target: '该会话标识无效，未执行删除。',
         private_chat_delete_not_found: '该会话已不存在，请返回消息列表刷新。',
         private_chat_delete_state_invalid: '该会话状态异常，未执行删除。',

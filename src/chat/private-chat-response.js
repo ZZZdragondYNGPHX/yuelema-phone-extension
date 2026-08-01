@@ -25,6 +25,14 @@ const BOND_ASSESSMENT_KINDS = Object.freeze({
     NSFW: new Set(['none', 'friendly', 'romantic_flirt', 'romantic_desire', 'sexual_desire']),
 });
 const BOND_DIRECTIONS = new Set(['increase', 'decrease', 'none']);
+export const NSFW_SAFETY_ASSESSMENT_KINDS = Object.freeze([
+    'none',
+    'ignored_refusal_or_withdrawal',
+    'known_boundary_conflict',
+    'coercion_or_nonconsensual',
+    'privacy_violation',
+]);
+const NSFW_SAFETY_ASSESSMENTS = new Set(NSFW_SAFETY_ASSESSMENT_KINDS);
 // A body-event review is deliberately tiny: it binds only to the candidate
 // that the local request context supplied, never to a model-provided ID.
 const BODY_EVENT_REVIEWS = new Set(['defer', 'confirm', 'decline']);
@@ -237,13 +245,29 @@ function normalizeBodyEventReview(value) {
     return value;
 }
 
+function normalizeNsfwSafetyAssessment(value, contentMode) {
+    if (typeof value !== 'string' || !NSFW_SAFETY_ASSESSMENTS.has(value)) {
+        fail('private_chat_response_relationship_invalid', {
+            field: 'nsfwSafetyAssessment',
+            expected: NSFW_SAFETY_ASSESSMENT_KINDS.join('/'),
+        });
+    }
+    if (contentMode !== 'NSFW' && value !== 'none') {
+        fail('private_chat_response_relationship_invalid', {
+            field: 'nsfwSafetyAssessment',
+            expected: 'SFW 或“仅 SFW”对话必须为 none',
+        });
+    }
+    return value;
+}
+
 /**
  * Validates the current parsed model response shape and returns a fresh,
  * safe data-only clone.
  */
 export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
     try {
-        assertExactRecord(raw, ['replies', 'relationship'], ['bondAssessment', 'bodyEventReview', 'imageDirectives']);
+        assertExactRecord(raw, ['replies', 'relationship'], ['bondAssessment', 'bodyEventReview', 'nsfwSafetyAssessment', 'imageDirectives']);
         const replies = normalizeReplies(ownEnumerableData(raw, 'replies'));
 
         const normalized = {
@@ -255,6 +279,9 @@ export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
             bodyEventReview: Object.hasOwn(raw, 'bodyEventReview')
                 ? normalizeBodyEventReview(ownEnumerableData(raw, 'bodyEventReview'))
                 : 'defer',
+            nsfwSafetyAssessment: Object.hasOwn(raw, 'nsfwSafetyAssessment')
+                ? normalizeNsfwSafetyAssessment(ownEnumerableData(raw, 'nsfwSafetyAssessment'), contentMode === 'NSFW' ? 'NSFW' : 'SFW')
+                : 'none',
         };
         if (Object.hasOwn(raw, 'imageDirectives')) normalized.imageDirectives = normalizeImageDirectives(ownEnumerableData(raw, 'imageDirectives'), replies.length);
         return normalized;

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PAGE_COPY, createPhoneView, describeActionFailure, parseChatMessageTime, projectMatchView, projectPlayerPublicProfile, projectPublicProfile, projectServiceOrderView, projectServiceOrderIssues } from '../../ui-model.js';
+import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
 
 function profile() {
     return {
@@ -74,8 +75,8 @@ test('saved-card source failures stay user-facing and do not expose internal que
     assert.equal(describeActionFailure({ code: 'like_match_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
     assert.equal(describeActionFailure({ code: 'recommendation_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
     assert.equal(describeActionFailure({ code: 'mvu_relationship_routes_schema_outdated' }), '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。');
-    assert.equal(describeActionFailure({ code: 'mvu_relationship_narrative_schema_outdated' }), '当前聊天缺少 v1.0.14 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
-    assert.equal(describeActionFailure({ code: 'mvu_body_relationship_candidate_schema_outdated' }), '当前聊天缺少 v1.0.14 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
+    assert.equal(describeActionFailure({ code: 'mvu_relationship_narrative_schema_outdated' }), '当前聊天缺少 v1.0.15 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
+    assert.equal(describeActionFailure({ code: 'mvu_body_relationship_candidate_schema_outdated' }), '当前聊天缺少 v1.0.15 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
     assert.equal(describeActionFailure({ code: 'body_relationship_candidate_source_route_invalid' }), '当前阶段只允许复核 SFW 友情面基，本次未写入。');
     assert.equal(describeActionFailure({ code: 'body_relationship_candidate_invalid' }), '正文关系候选内容未通过安全复核，本次未写入任何关系变化。');
     assert.equal(describeActionFailure({ code: 'relationship_narrative_backfill_orphan' }), '发现无法对应当前角色的关系叙事记录；为避免删除资料，本次未自动修复。请保留当前聊天并附上脱敏诊断反馈。');
@@ -95,6 +96,44 @@ test('private chat view exposes only public profile and session-visible transcri
     assert.equal(view.messageSessions[0].profile.昵称, '公开名');
     const serialized = JSON.stringify(view.messageSessions);
     assert.doesNotMatch(serialized, /秘密|实际年龄|关系状态/);
+});
+
+test('private chat view projects only boolean relationship-safety flags and closes unsafe actions', () => {
+    const narrative = createEmptyRelationshipNarrative();
+    narrative.进程.边界暂停状态 = '仅SFW';
+    const read = {
+        ok: true,
+        state: {
+            软件: { 内容模式: 'NSFW' }, 推荐: { 当前队列: [], 临时候选池: {} },
+            角色池: {
+                npc_a: {
+                    成人验证: true,
+                    公开资料: { 昵称: '公开名' },
+                    与玩家关系: { 状态: '已匹配', 友情值: 100, 心动值: 100, 欲望值: 100 },
+                },
+            },
+            会话: { chat_a: { 对象UID: 'npc_a', 状态: '已匹配', 最近消息: [] } },
+            关系叙事: { npc_a: narrative },
+        },
+    };
+    let session = createPhoneView(read).messageSessions[0];
+    assert.deepEqual({ onlySfw: session.onlySfw, paused: session.paused, ended: session.ended }, { onlySfw: true, paused: false, ended: false });
+    assert.equal(session.canSend, true, '仅 SFW 仍允许普通友情私聊');
+    assert.deepEqual(session.meetupAccess, { unlocked: false, route: '', routes: [], reason: 'only_sfw' });
+    assert.doesNotMatch(JSON.stringify(session), /边界暂停状态|关系结束状态|冻结关系值/u, '原始保护字段不得进入 UI 投影');
+
+    narrative.进程.边界暂停状态 = '暂停';
+    session = createPhoneView(read).messageSessions[0];
+    assert.deepEqual({ onlySfw: session.onlySfw, paused: session.paused, ended: session.ended }, { onlySfw: false, paused: true, ended: false });
+    assert.equal(session.canSend, false);
+    assert.equal(session.meetupAccess.reason, 'relationship_paused');
+
+    narrative.进程.边界暂停状态 = '';
+    narrative.进程.关系结束状态 = '深度朋友';
+    session = createPhoneView(read).messageSessions[0];
+    assert.deepEqual({ onlySfw: session.onlySfw, paused: session.paused, ended: session.ended }, { onlySfw: false, paused: false, ended: true });
+    assert.equal(session.canSend, false);
+    assert.equal(session.meetupAccess.reason, 'relationship_ended');
 });
 
 test('private chat view projects per-npc meetup progress without boundary text or malformed records', () => {

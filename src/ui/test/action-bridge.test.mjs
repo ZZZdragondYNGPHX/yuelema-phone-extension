@@ -45,6 +45,7 @@ function recommendationState() {
     const current = state();
     current.系统 = { UID计数器: { 角色: 12 } };
     current.玩家 = {
+        成人验证: true,
         公开资料: { 昵称: '玩家', 年龄段: '成年人', 性别: '男', 性取向: '异性恋', 城市: '上海', 距离范围: '不限', 寻找意图: '聊天', 简介: '公开简介', 兴趣标签: ['电影'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [] },
         隐藏资料: { 私人备注: '不得发送给快速模型' },
         仅好友资料: { 关系状态: '不得发送给快速模型' },
@@ -55,6 +56,25 @@ function recommendationState() {
 
 const connectionPreset = { id: 'fast', name: 'Fast', url: 'https://example.invalid/v1', model: 'quick', temperature: 0.7, maxTokens: 800, timeoutMs: 30_000 };
 const settingsStore = { resolveFunction: () => ({ connectionPreset, promptPreset: { enabled: true, content: '保持轻快、真实的都市语气。' } }) };
+
+function matchedPrivateChatState(contentMode = 'SFW') {
+    const current = recommendationState();
+    current.软件.内容模式 = contentMode;
+    current.角色池 = {
+        npc_ava: {
+            成人验证: true,
+            公开资料: { 昵称: '艾娃' },
+            仅好友资料: {}, 隐藏资料: { 实际年龄: 24, 私人备注: '' },
+            偏好与边界: '', 拒绝阈值: 0, 已读不回阈值: 80, 取消匹配阈值: 80, 拉黑阈值: 90,
+            与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0, 友情值: 10, 心动值: 20, 欲望值: 30 },
+        },
+    };
+    current.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } };
+    current.正文记忆.npc_ava = '';
+    current.关系叙事.npc_ava = createEmptyRelationshipNarrative();
+    current.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
+    return current;
+}
 
 function resolvePatchParent(root, pointer) {
     const segments = pointer.split('/').slice(1).map((segment) => segment.replaceAll('~1', '/').replaceAll('~0', '~'));
@@ -411,6 +431,42 @@ test('private chat backfills only its missing relationship-narrative slot before
     assert.equal(parsedPatches[0][0].op, 'add');
     assert.deepEqual(parsedPatches[0][0].value, createEmptyRelationshipNarrative());
     assert.equal(parsedPatches[1].some((operation) => operation.path === '/会话/chat_1/最近消息/-'), true);
+});
+
+test('dedicated NSFW safety action derives the role from the latest session and commits only one protected leaf', async () => {
+    const initialState = matchedPrivateChatState('NSFW');
+    const { mvu, calls } = createMvu({ initialState, persistReplacement: true });
+    const bridge = createActionBridge({ documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {} });
+
+    const paused = await bridge.runPrivateChatNsfwSafety({ sessionUid: 'chat_1', action: 'pause', npcUid: 'npc_forged' });
+    assert.equal(paused.ok, true, JSON.stringify(paused));
+    let patches = calls.filter(([name]) => name === 'parse')
+        .map(([, raw]) => JSON.parse(raw.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)[1]));
+    assert.deepEqual(patches[0], [{ op: 'replace', path: '/关系叙事/npc_ava/进程/边界暂停状态', value: '仅SFW' }]);
+
+    const resumed = await bridge.runPrivateChatNsfwSafety({ sessionUid: 'chat_1', action: 'resume' });
+    assert.equal(resumed.ok, true);
+    patches = calls.filter(([name]) => name === 'parse')
+        .map(([, raw]) => JSON.parse(raw.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)[1]));
+    assert.deepEqual(patches[1], [{ op: 'replace', path: '/关系叙事/npc_ava/进程/边界暂停状态', value: '' }]);
+});
+
+test('private chat fails closed when only-SFW changes during the async model request', async () => {
+    const initialState = matchedPrivateChatState('NSFW');
+    const { mvu, calls, data } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {}, settingsStore,
+        llmClient: {
+            async chat() {
+                data.stat_data.关系叙事.npc_ava.进程.边界暂停状态 = '仅SFW';
+                return { text: JSON.stringify({ replies: ['收到。'], relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 } }) };
+            },
+        },
+    });
+    const result = await bridge.runPrivateChat({ sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '继续聊' });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'private_chat_safety_state_changed');
+    assert.equal(calls.some(([name]) => name === 'parse'), false);
 });
 
 

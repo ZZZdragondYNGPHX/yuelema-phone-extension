@@ -638,7 +638,15 @@ export function createChatPage(ctx) {
     /** 工具面板内容（§7.2.8）：图标网格，约定面基未达条件置灰并注明。 */
     function buildChatToolMenu(session, { meetupSupported, meetupUnlocked }) {
         const menu = element('div', { className: 'yl-chat-tool-menu', ariaLabel: '私聊发送工具栏' });
-        const meetupLabel = !meetupSupported ? '面基功能未就绪' : meetupUnlocked ? `约定面基 · ${session.meetupAccess.route}路线` : '关系未达面基条件';
+        const meetupReasonLabels = {
+            relationship_paused: '关系已暂停，不能面基',
+            relationship_ended: '关系已结束，不能面基',
+            only_sfw: '仅 SFW，不可成人面基',
+            nsfw_direction_unconfirmed: '等待双方确认成人路线',
+        };
+        const meetupLabel = !meetupSupported ? '面基功能未就绪'
+            : meetupUnlocked ? `约定面基 · ${session.meetupAccess.route}路线`
+                : meetupReasonLabels[session.meetupAccess?.reason] || '关系未达面基条件';
         const meetupTool = element('button', {
             className: 'yl-chat-tool-button', type: 'button', disabled: !meetupUnlocked,
             ariaLabel: meetupUnlocked ? `打开约定面基，${session.meetupAccess.route}路线` : meetupLabel,
@@ -671,7 +679,25 @@ export function createChatPage(ctx) {
             ctx.activeChatToolsSessionUid = '';
             ctx.setActivePage('settings_image_generation');
         }, ctx.abortController.signal);
-        append(menu, [meetupTool, summaryTool, imageTool]);
+        const tools = [meetupTool, summaryTool, imageTool];
+        if (ctx.currentView?.mode === 'NSFW' && typeof ctx.actionBridge.runPrivateChatNsfwSafety === 'function') {
+            const safetyPending = Boolean(ctx.actionBridge.isPending?.('private_chat_nsfw_safety', session.sessionUid));
+            const action = session.onlySfw ? 'resume' : 'pause';
+            const safetyLabel = session.onlySfw ? '恢复成人话题' : '仅 SFW · 暂停成人话题';
+            const safetyTool = element('button', {
+                className: 'yl-chat-tool-button', type: 'button',
+                disabled: safetyPending || session.paused || session.ended,
+                ariaLabel: safetyPending ? '正在更新成人话题安全状态' : safetyLabel,
+            });
+            safetyTool.appendChild(createUiIcon(ctx.documentRef, 'privacy', { className: 'yl-chat-tool-svg', size: 22 }));
+            safetyTool.appendChild(element('span', { text: safetyPending ? '正在更新…' : safetyLabel }));
+            listen(safetyTool, safetyTool, 'click', () => {
+                if (safetyPending || session.paused || session.ended) return;
+                void runNsfwSafetyAction(session, action);
+            }, ctx.abortController.signal);
+            tools.push(safetyTool);
+        }
+        append(menu, tools);
         return menu;
     }
     function buildConversationPanel(session) {
@@ -680,6 +706,7 @@ export function createChatPage(ctx) {
         if (ctx.chatConfirmationSessionUid === session.sessionUid) panel.appendChild(buildPrivateChatConfirmation(session));
         const summaryToastElement = buildSummaryToast(session);
         if (summaryToastElement) panel.appendChild(summaryToastElement);
+        if (session.onlySfw) panel.appendChild(buildSystemPill('当前关系仅进行 SFW 互动；正常友情聊天不受影响，成人话题与 NSFW 面基已暂停。'));
         const transcript = buildMessageTimeline(session);
         // 本地已读水位推进：进入/停留在会话即视为读到当前全部可见消息（纯 UI 状态）。
         ctx.messageReadStore?.markRead?.(session.sessionUid, session.messages.length);
@@ -688,7 +715,10 @@ export function createChatPage(ctx) {
         panel.appendChild(buildMessageTimelineShell(session, transcript));
         if (!session.canSend) {
             // §7.2.11 只读态：禁用输入条 + 状态说明 pill。
-            panel.appendChild(buildSystemPill(session.status === '已拉黑' ? '对方已将你拉黑，无法继续发送消息。' : '该会话当前为只读状态。'));
+            const readonlyText = session.ended ? '当前关系已经结束，私聊仅供查看。'
+                : session.paused ? '当前关系已暂停、拉黑或归档，私聊仅供查看。'
+                    : session.status === '已拉黑' ? '对方已将你拉黑，无法继续发送消息。' : '该会话当前为只读状态。';
+            panel.appendChild(buildSystemPill(readonlyText));
             const composer = element('div', { className: 'yl-chat-composer is-readonly' });
             const input = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 2, placeholder: session.status === '已拉黑' ? '对方已将你拉黑，无法继续发送消息。' : '该会话当前为只读状态。', ariaLabel: '私聊消息输入已禁用', disabled: true });
             const send = element('button', { className: 'yl-chat-send-button', type: 'button', text: '不可发送', ariaLabel: '发送消息已禁用', disabled: true });
@@ -881,6 +911,19 @@ export function createChatPage(ctx) {
         if (result?.ok && result.summaryCheckRequested) {
             void runChatSummaryForSession(session, { automatic: true });
         }
+    }
+    async function runNsfwSafetyAction(session, action) {
+        if (typeof ctx.actionBridge.runPrivateChatNsfwSafety !== 'function'
+            || ctx.actionBridge.isPending?.('private_chat_nsfw_safety', session.sessionUid)) return;
+        const operationToken = ctx.setFeedback(action === 'pause' ? '正在暂停成人话题…' : '正在恢复成人话题…');
+        ctx.activeChatToolsSessionUid = '';
+        let result;
+        try { result = await ctx.actionBridge.runPrivateChatNsfwSafety({ sessionUid: session.sessionUid, action }); }
+        catch { result = { ok: false, code: 'private_chat_nsfw_safety_invalid_action' }; }
+        ctx.setFeedback(result?.ok
+            ? action === 'pause' ? '已切换为仅 SFW；正常友情聊天仍可继续。' : '已恢复成人话题；每轮仍需明确同意与边界。'
+            : describeActionFailure(result), operationToken);
+        ctx.refreshState();
     }
     function meetupFieldsFor(sessionUid) {
         if (!ctx.meetupDrafts.has(sessionUid)) ctx.meetupDrafts.set(sessionUid, { time: '', place: '', mutualIntent: '', confirmedBoundaries: '', pendingItems: '', riskNotice: '' });

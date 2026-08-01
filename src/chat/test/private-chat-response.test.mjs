@@ -31,6 +31,7 @@ test('accepts replies and returns an independent canonical clone', () => {
         relationship: raw.relationship,
         bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
         bodyEventReview: 'defer',
+        nsfwSafetyAssessment: 'none',
     });
     assert.notStrictEqual(normalized, raw);
     assert.notStrictEqual(normalized.replies, raw.replies);
@@ -41,6 +42,20 @@ test('accepts replies and returns an independent canonical clone', () => {
     assert.deepEqual(normalized.replies, ['今晚方便聊聊吗？', '我刚好有空。']);
     assert.equal(normalized.relationship.好感, 2);
     assert.deepEqual(normalizePrivateChatResponse(normalized), normalized);
+});
+
+test('accepts only the bounded NSFW safety vocabulary and keeps SFW fail-closed', () => {
+    assert.equal(normalizePrivateChatResponse(response({
+        nsfwSafetyAssessment: 'known_boundary_conflict',
+    }), { contentMode: 'NSFW' }).nsfwSafetyAssessment, 'known_boundary_conflict');
+    expectCode(
+        () => normalizePrivateChatResponse(response({ nsfwSafetyAssessment: 'known_boundary_conflict' }), { contentMode: 'SFW' }),
+        'private_chat_response_relationship_invalid',
+    );
+    expectCode(
+        () => normalizePrivateChatResponse(response({ nsfwSafetyAssessment: { kind: 'privacy_violation' } }), { contentMode: 'NSFW' }),
+        'private_chat_response_relationship_invalid',
+    );
 });
 
 test('allows only the local B.2 body-event review vocabulary', () => {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildPrivateChatPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import { buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildPrivateChatNsfwSafetyPatch, buildPrivateChatPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
 import { createEmptyBodyRelationshipCandidate } from '../body-relationship-candidate.js';
 import { createEmptyRelationshipNarrative } from '../relationship-narrative.js';
 
@@ -55,6 +55,7 @@ test('private chat applies the global bounded decline and its turn/event lock in
         response: {
             ...response(),
             bondAssessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
+            nsfwSafetyAssessment: 'known_boundary_conflict',
         },
     });
     assert.equal(built.ok, true);
@@ -64,7 +65,103 @@ test('private chat applies the global bounded decline and its turn/event lock in
         built.value.find((operation) => operation.path === '/关系叙事/npc_one/进程/已消费事件ID')?.value,
         ['chat:1:1'],
     );
+    assert.equal(built.value.some((operation) => operation.path === '/关系叙事/npc_one/进程/边界暂停状态' && operation.value === '仅SFW'), true);
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
+test('ordinary NSFW assessments cannot move three-value progress without a safety classification', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 30, 心动值: 40, 欲望值: 80,
+        },
+    });
+    current.软件.内容模式 = 'NSFW';
+    for (const direction of ['increase', 'decrease']) {
+        const built = buildPrivateChatPatch(current, {
+            sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: `普通成人互动${direction}`,
+            response: { ...response(), bondAssessment: { kind: 'sexual_desire', intensity: 3, direction } },
+        });
+        assert.equal(built.ok, true);
+        assert.equal(built.value.some((operation) => operation.path.endsWith('/欲望值')), false);
+        assert.equal(built.value.some((operation) => operation.path.endsWith('/边界暂停状态')), false);
+        assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+    }
+});
+
+test('dedicated NSFW pause/resume patch derives the NPC from the matched session and exactly rebuilds', () => {
+    const current = state();
+    current.软件.内容模式 = 'NSFW';
+    const paused = buildPrivateChatNsfwSafetyPatch(current, { sessionUid: 'chat_1', action: 'pause', npcUid: 'npc_forged' });
+    assert.deepEqual(paused, {
+        ok: true,
+        value: [{ op: 'replace', path: '/关系叙事/npc_one/进程/边界暂停状态', value: '仅SFW' }],
+    });
+    assert.equal(validateControlledPatchAgainstState(current, paused.value).ok, true);
+    assert.equal(validateControlledPatchAgainstState(current, [{ ...paused.value[0], path: '/关系叙事/npc_forged/进程/边界暂停状态' }]).ok, false);
+    assert.equal(validateControlledPatchAgainstState(current, [{ ...paused.value[0], value: '暂停' }]).ok, false);
+
+    current.关系叙事.npc_one.进程.边界暂停状态 = '仅SFW';
+    const resumed = buildPrivateChatNsfwSafetyPatch(current, { sessionUid: 'chat_1', action: 'resume' });
+    assert.deepEqual(resumed.value, [{ op: 'replace', path: '/关系叙事/npc_one/进程/边界暂停状态', value: '' }]);
+    assert.equal(validateControlledPatchAgainstState(current, resumed.value).ok, true);
+});
+
+test('a classified safety conflict pauses NSFW atomically even when the selected score is already zero', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 0, 心动值: 0, 欲望值: 0,
+        },
+    });
+    current.软件.内容模式 = 'NSFW';
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '继续索取已经拒绝的现实隐私',
+        response: {
+            ...response(),
+            bondAssessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
+            nsfwSafetyAssessment: 'privacy_violation',
+        },
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/欲望值')), false);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/边界暂停状态') && operation.value === '仅SFW'), true);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
+test('repeating an explicitly classified safety violation still sets the only-SFW gate', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 0, 心动值: 0, 欲望值: 0,
+        },
+    });
+    current.软件.内容模式 = 'NSFW';
+    current.会话.chat_1.最近消息 = [{ 消息UID: 'old', 发送者: '玩家', 内容: '把已经拒绝的现实隐私告诉我', 时间: '', 层数: 1 }];
+    current.会话.chat_1.对话层数 = 1;
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '把已经拒绝的现实隐私告诉我',
+        response: {
+            ...response(),
+            bondAssessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
+            nsfwSafetyAssessment: 'privacy_violation',
+        },
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/边界暂停状态') && operation.value === '仅SFW'), true);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
+test('private chat rejects a reply built under a different only-SFW state', () => {
+    const current = state();
+    current.软件.内容模式 = 'NSFW';
+    current.关系叙事.npc_one.进程.边界暂停状态 = '仅SFW';
+    assert.equal(buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '继续聊', response: response(), onlySfwAtRequest: false,
+    }).code, 'private_chat_safety_state_changed');
 });
 
 test('SFW threshold settlement writes only narrow protected progress leaves in the same transaction', () => {
