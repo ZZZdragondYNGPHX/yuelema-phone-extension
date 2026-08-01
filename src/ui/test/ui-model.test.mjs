@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { PAGE_COPY, createPhoneView, describeActionFailure, parseChatMessageTime, projectMatchView, projectPlayerPublicProfile, projectPublicProfile, projectServiceOrderView, projectServiceOrderIssues } from '../../ui-model.js';
 import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
 import { createEmptyNsfwConsent, grantNsfwConsent } from '../../mvu/nsfw-consent.js';
+import { createDefaultRealisticChatState } from '../../mvu/realistic-chat.js';
 
 function profile() {
     return {
@@ -76,9 +77,9 @@ test('saved-card source failures stay user-facing and do not expose internal que
     assert.equal(describeActionFailure({ code: 'like_match_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
     assert.equal(describeActionFailure({ code: 'recommendation_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
     assert.equal(describeActionFailure({ code: 'mvu_relationship_routes_schema_outdated' }), '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。');
-    assert.equal(describeActionFailure({ code: 'mvu_relationship_narrative_schema_outdated' }), '当前聊天缺少 v1.0.17 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
-    assert.equal(describeActionFailure({ code: 'mvu_body_relationship_candidate_schema_outdated' }), '当前聊天缺少 v1.0.17 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
-    assert.match(describeActionFailure({ code: 'mvu_nsfw_consent_schema_outdated' }), /v1\.0\.17 成人话题共识结构/u);
+    assert.equal(describeActionFailure({ code: 'mvu_relationship_narrative_schema_outdated' }), '当前聊天缺少 v1.0.18 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
+    assert.equal(describeActionFailure({ code: 'mvu_body_relationship_candidate_schema_outdated' }), '当前聊天缺少 v1.0.18 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
+    assert.match(describeActionFailure({ code: 'mvu_nsfw_consent_schema_outdated' }), /v1\.0\.18 成人话题共识结构/u);
     assert.match(describeActionFailure({ code: 'private_chat_nsfw_turn_consent_required' }), /本轮继续/u);
     assert.equal(describeActionFailure({ code: 'body_relationship_candidate_source_route_invalid' }), '正文关系候选与来源面基或已确认路线不一致，本次未写入。');
     assert.equal(describeActionFailure({ code: 'body_relationship_candidate_invalid' }), '正文关系候选内容未通过安全复核，本次未写入任何关系变化。');
@@ -94,11 +95,30 @@ test('private chat view exposes only public profile and session-visible transcri
             会话: { chat_a: { 对象UID: 'npc_a', 状态: '已匹配', 最近消息: [{ 消息UID: 'm1', 发送者: '角色', 内容: '你好', 时间: '' }], 总结: { 记录: [{ 内容: '公开会话摘要' }] } } },
         },
     };
+    read.state.会话.chat_a.拟真聊天 = createDefaultRealisticChatState({
+        enabled: true,
+        proactiveAt: '2026-08-02 13:00',
+    });
+    read.state.会话.chat_a.拟真聊天.待投递消息.push({
+        消息UID: 'msg_chat_a_n_2',
+        发送者: '角色',
+        内容: 'future-message-must-not-render',
+        时间: '2026-08-02 12:10',
+        批次UID: 'batch_chat_a_proactive_202608021200',
+    });
     const view = createPhoneView(read);
     assert.equal(view.messageSessions.length, 1);
     assert.equal(view.messageSessions[0].profile.昵称, '公开名');
+    assert.deepEqual(view.messageSessions[0].realisticChat, {
+        supported: true,
+        enabled: true,
+        pendingCount: 1,
+        nextDeliveryAt: '2026-08-02 12:10',
+        replyDueAt: '',
+        proactiveDueAt: '2026-08-02 13:00',
+    });
     const serialized = JSON.stringify(view.messageSessions);
-    assert.doesNotMatch(serialized, /秘密|实际年龄|关系状态/);
+    assert.doesNotMatch(serialized, /秘密|实际年龄|关系状态|future-message-must-not-render|batch_chat_a_proactive_202608021200|待回复同意修订号/);
 });
 
 test('private chat view projects coarse relationship safety/observation without scores and closes unsafe actions', () => {

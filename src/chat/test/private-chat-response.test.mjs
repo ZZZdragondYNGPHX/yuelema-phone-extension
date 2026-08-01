@@ -6,9 +6,45 @@ import {
     MAX_PRIVATE_CHAT_REPLY_LENGTH,
     MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH,
     normalizePrivateChatResponse,
+    normalizeRealisticPrivateChatResponse,
     projectPrivateChatResponseDiagnostic,
     projectPrivateChatResponseError,
 } from '../private-chat-response.js';
+
+const realisticTiming = Object.freeze({
+    firstDelayMinutes: 10,
+    betweenReplyMinutes: [5],
+    nextProactiveMinutes: 120,
+});
+
+test('拟真回复接受 0-6 条并严格校验五分钟时间计划', () => {
+    const reply = normalizeRealisticPrivateChatResponse({
+        replies: ['刚忙完', '你刚才说到哪了？'],
+        relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+        timing: realisticTiming,
+    }, { contentMode: 'SFW' });
+    assert.deepEqual(reply.timing, realisticTiming);
+    assert.equal(reply.replies.length, 2);
+
+    const silent = normalizeRealisticPrivateChatResponse({
+        replies: [],
+        relationship: {},
+        timing: { firstDelayMinutes: 5, betweenReplyMinutes: [], nextProactiveMinutes: 180 },
+    }, { contentMode: 'SFW' });
+    assert.deepEqual(silent.replies, []);
+
+    assert.throws(() => normalizeRealisticPrivateChatResponse({
+        replies: ['稍后'], relationship: {},
+        timing: { firstDelayMinutes: 7, betweenReplyMinutes: [], nextProactiveMinutes: 120 },
+    }), /private_chat_response_invalid/u);
+});
+
+test('拟真自然沉默不得偷偷推动关系、SFW 阶段或生图', () => {
+    assert.throws(() => normalizeRealisticPrivateChatResponse({
+        replies: [], relationship: { 好感: 1 }, bondAssessment: { kind: 'friendly', intensity: 1, direction: 'increase' },
+        timing: { firstDelayMinutes: 5, betweenReplyMinutes: [], nextProactiveMinutes: 120 },
+    }, { contentMode: 'SFW' }), /private_chat_response_invalid/u);
+});
 
 function response(overrides = {}) {
     return {

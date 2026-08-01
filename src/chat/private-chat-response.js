@@ -138,11 +138,11 @@ function normalizeShortText(value, maxLength, code, field = '') {
     return value;
 }
 
-function normalizeReplies(value) {
+function normalizeReplies(value, { minimum = 1 } = {}) {
     if (!Array.isArray(value)) fail('private_chat_response_reply_invalid', { field: 'replies', expected: '字符串数组' });
     if (Object.getPrototypeOf(value) !== Array.prototype) fail('private_chat_response_unsafe_prototype', { field: 'replies' });
-    if (value.length < 1 || value.length > MAX_PRIVATE_CHAT_REPLY_COUNT) {
-        fail('private_chat_response_reply_invalid', { field: 'replies', expected: `1-${MAX_PRIVATE_CHAT_REPLY_COUNT} 条`, actual: `${value.length} 条` });
+    if (value.length < minimum || value.length > MAX_PRIVATE_CHAT_REPLY_COUNT) {
+        fail('private_chat_response_reply_invalid', { field: 'replies', expected: `${minimum}-${MAX_PRIVATE_CHAT_REPLY_COUNT} 条`, actual: `${value.length} 条` });
     }
 
     for (const key of Reflect.ownKeys(value)) {
@@ -169,6 +169,30 @@ function normalizeReplies(value) {
         fail('private_chat_response_reply_invalid', { field: 'replies', expected: `合并总长 ≤ ${MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH} 字`, actual: `${joinedLength} 字` });
     }
     return replies;
+}
+
+function normalizeRealisticTiming(value, replyCount) {
+    assertExactRecord(value, ['firstDelayMinutes', 'betweenReplyMinutes', 'nextProactiveMinutes']);
+    const firstDelayMinutes = ownEnumerableData(value, 'firstDelayMinutes');
+    const betweenReplyMinutes = ownEnumerableData(value, 'betweenReplyMinutes');
+    const nextProactiveMinutes = ownEnumerableData(value, 'nextProactiveMinutes');
+    if (!Number.isInteger(firstDelayMinutes) || firstDelayMinutes < 5 || firstDelayMinutes > 30 || firstDelayMinutes % 5 !== 0) {
+        fail('private_chat_response_invalid', { field: 'timing.firstDelayMinutes', expected: '5-30 的 5 分钟倍数' });
+    }
+    if (!Number.isInteger(nextProactiveMinutes) || nextProactiveMinutes < 60 || nextProactiveMinutes > 360 || nextProactiveMinutes % 5 !== 0) {
+        fail('private_chat_response_invalid', { field: 'timing.nextProactiveMinutes', expected: '60-360 的 5 分钟倍数' });
+    }
+    if (!Array.isArray(betweenReplyMinutes) || Object.getPrototypeOf(betweenReplyMinutes) !== Array.prototype
+        || betweenReplyMinutes.length !== Math.max(0, replyCount - 1)) {
+        fail('private_chat_response_invalid', { field: 'timing.betweenReplyMinutes', expected: `恰好 ${Math.max(0, replyCount - 1)} 个间隔` });
+    }
+    const intervals = betweenReplyMinutes.map((minutes, index) => {
+        if (!Number.isInteger(minutes) || minutes < 5 || minutes > 20 || minutes % 5 !== 0) {
+            fail('private_chat_response_invalid', { field: `timing.betweenReplyMinutes[${index}]`, expected: '5-20 的 5 分钟倍数' });
+        }
+        return minutes;
+    });
+    return { firstDelayMinutes, betweenReplyMinutes: intervals, nextProactiveMinutes };
 }
 
 function normalizeImageDirectives(value, replyCount) {
@@ -338,6 +362,59 @@ export function normalizePrivateChatResponse(raw, { contentMode = '' } = {}) {
                 : contentMode === 'NSFW' ? 'unclear' : 'none',
         };
         if (Object.hasOwn(raw, 'imageDirectives')) normalized.imageDirectives = normalizeImageDirectives(ownEnumerableData(raw, 'imageDirectives'), replies.length);
+        return normalized;
+    } catch (error) {
+        if (isCodecError(error)) throw error;
+        fail('private_chat_response_invalid');
+    }
+}
+
+/**
+ * The realistic scheduler extends the legacy reply contract only with a
+ * bounded timing plan and permits an empty reply list for natural silence.
+ */
+export function normalizeRealisticPrivateChatResponse(raw, { contentMode = '' } = {}) {
+    try {
+        assertExactRecord(raw, ['replies', 'relationship', 'timing'], [
+            'bondAssessment', 'bodyEventReview', 'sfwInsightAssessment', 'sfwResolutionAssessment',
+            'nsfwSafetyAssessment', 'nsfwConsentAssessment', 'imageDirectives',
+        ]);
+        const replies = normalizeReplies(ownEnumerableData(raw, 'replies'), { minimum: 0 });
+        const normalized = {
+            replies,
+            relationship: normalizeRelationship(ownEnumerableData(raw, 'relationship')),
+            timing: normalizeRealisticTiming(ownEnumerableData(raw, 'timing'), replies.length),
+            bondAssessment: Object.hasOwn(raw, 'bondAssessment')
+                ? normalizeBondAssessment(ownEnumerableData(raw, 'bondAssessment'), contentMode)
+                : { kind: 'none', intensity: 0, direction: 'none' },
+            bodyEventReview: Object.hasOwn(raw, 'bodyEventReview')
+                ? normalizeBodyEventReview(ownEnumerableData(raw, 'bodyEventReview'))
+                : 'defer',
+            sfwInsightAssessment: Object.hasOwn(raw, 'sfwInsightAssessment')
+                ? normalizeSfwAssessment(ownEnumerableData(raw, 'sfwInsightAssessment'), contentMode, 'sfwInsightAssessment', SFW_INSIGHT_ASSESSMENTS, SFW_INSIGHT_ASSESSMENT_KINDS)
+                : 'none',
+            sfwResolutionAssessment: Object.hasOwn(raw, 'sfwResolutionAssessment')
+                ? normalizeSfwAssessment(ownEnumerableData(raw, 'sfwResolutionAssessment'), contentMode, 'sfwResolutionAssessment', SFW_RESOLUTION_ASSESSMENTS, SFW_RESOLUTION_ASSESSMENT_KINDS)
+                : 'none',
+            nsfwSafetyAssessment: Object.hasOwn(raw, 'nsfwSafetyAssessment')
+                ? normalizeNsfwSafetyAssessment(ownEnumerableData(raw, 'nsfwSafetyAssessment'), contentMode === 'NSFW' ? 'NSFW' : 'SFW')
+                : 'none',
+            nsfwConsentAssessment: Object.hasOwn(raw, 'nsfwConsentAssessment')
+                ? normalizeNsfwConsentAssessment(ownEnumerableData(raw, 'nsfwConsentAssessment'), contentMode === 'NSFW' ? 'NSFW' : 'SFW')
+                : contentMode === 'NSFW' ? 'unclear' : 'none',
+        };
+        if (Object.hasOwn(raw, 'imageDirectives')) normalized.imageDirectives = normalizeImageDirectives(ownEnumerableData(raw, 'imageDirectives'), replies.length);
+        if (replies.length === 0) {
+            const relationshipNeutral = RELATIONSHIP_FIELDS.every((field) => normalized.relationship[field] === 0);
+            if (!relationshipNeutral || normalized.bondAssessment.kind !== 'none'
+                || normalized.sfwInsightAssessment !== 'none' || normalized.sfwResolutionAssessment !== 'none'
+                || normalized.bodyEventReview !== 'defer' || (normalized.imageDirectives?.length ?? 0) > 0) {
+                fail('private_chat_response_invalid', {
+                    field: 'replies',
+                    expected: '自然沉默时关系建议、SFW 判断、正文复盘和生图指令必须保持中性',
+                });
+            }
+        }
         return normalized;
     } catch (error) {
         if (isCodecError(error)) throw error;

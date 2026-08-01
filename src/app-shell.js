@@ -26,8 +26,9 @@ import { createChatPage } from './pages/chat.js';
 import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
+import { createPhoneClock } from './chat/phone-clock.js';
 
-const UI_VERSION = '1.0.17';
+const UI_VERSION = '1.0.18';
 
 function downloadImagePackJson(json) {
     if (typeof json !== 'string' || typeof globalThis.Blob !== 'function'
@@ -182,7 +183,7 @@ function clearStoredLayoutPosition(storage, key) {
 }
 
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
-export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore, llmClient, characterLibrary, playerAvatarStore = null, characterAvatarStore = null, imageLibrary = null, conversationImageStore = null, imageMatchCoordinator = null, imageGenerationClient = null, remoteImageImporter = null, extensionUpdater = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
+export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = createPhoneClock(), settingsStore, llmClient, characterLibrary, playerAvatarStore = null, characterAvatarStore = null, imageLibrary = null, conversationImageStore = null, imageMatchCoordinator = null, imageGenerationClient = null, remoteImageImporter = null, extensionUpdater = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
     const abortController = new AbortController();
     // 弹窗焦点统一由控制器管理：打开聚焦、Tab 焦点环、Escape 关栈顶、关闭礼貌回 opener。
     const dialogController = createDialogController({ documentRef });
@@ -205,6 +206,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     let activePage = 'home';
     let refreshing = false;
     let extensionUpdatePending = false;
+    let phoneClockTimer = null;
+    let realisticChatTickRunning = false;
     let activeMessageSessionUid = '';
     let renderedPrivateChatSessionUid = '';
     let privateChatScrollRestoreGeneration = 0;
@@ -392,12 +395,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     append(brand, [element('strong', { text: '约了吗' }), statusDot, statusLine]);
     const closeButton = applyCloseIcon(element('button', { className: 'yl-phone-close', type: 'button', ariaLabel: '关闭约了吗小手机' }));
     const headerActions = element('div', { className: 'yl-phone-header-actions' });
+    const phoneClockDisplay = element('time', { className: 'yl-phone-clock', text: '--:--' });
+    phoneClockDisplay.setAttribute('title', '小手机时间：现实 1 分钟推进 5 分钟');
     /** 拖动柄：grip SVG 替代盲文字符「⠿」。 */
     const dragHint = element('span', { className: 'yl-phone-drag-hint' });
     dragHint.appendChild(createUiIcon(documentRef, 'grip', { className: 'yl-drag-grip-svg', size: 14 }));
     dragHint.appendChild(element('span', { text: '拖动' }));
     dragHint.setAttribute('aria-hidden', 'true');
-    append(headerActions, [dragHint, closeButton]);
+    append(headerActions, [phoneClockDisplay, dragHint, closeButton]);
     append(header, [brand, headerActions]);
     const content = element('main', { className: 'yl-phone-content' });
     const uiLayoutStatus = element('p', { className: 'yl-ui-layout-status' });
@@ -1726,6 +1731,68 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         }
         return currentView;
     }
+
+    function updatePhoneClockDisplay() {
+        let display = '--:--';
+        let timestamp = '';
+        try {
+            display = phoneClock?.displayText?.() || display;
+            timestamp = phoneClock?.nowText?.() || '';
+        } catch {
+            // A blocked browser cache still leaves a safe, non-interactive clock placeholder.
+        }
+        phoneClockDisplay.textContent = display;
+        phoneClockDisplay.setAttribute('aria-label', timestamp ? `小手机时间 ${display}` : '小手机时间暂不可用');
+        if (timestamp) phoneClockDisplay.setAttribute('datetime', timestamp.replace(' ', 'T'));
+        else phoneClockDisplay.removeAttribute('datetime');
+    }
+
+    function scheduleRealisticChatTick() {
+        if (isDestroyed || typeof actionBridge?.runRealisticPrivateChatTick !== 'function'
+            || typeof globalThis.setTimeout !== 'function') return;
+        if (phoneClockTimer !== null) globalThis.clearTimeout?.(phoneClockTimer);
+        let delay = 60_000;
+        try { delay = Math.max(250, Number(phoneClock?.delayUntilNextTick?.()) || delay); } catch { /* default interval */ }
+        phoneClockTimer = globalThis.setTimeout(() => {
+            phoneClockTimer = null;
+            void runRealisticChatTick();
+        }, delay);
+        phoneClockTimer?.unref?.();
+    }
+
+    async function runRealisticChatTick() {
+        updatePhoneClockDisplay();
+        if (isDestroyed || realisticChatTickRunning || typeof actionBridge?.runRealisticPrivateChatTick !== 'function') {
+            scheduleRealisticChatTick();
+            return;
+        }
+        realisticChatTickRunning = true;
+        let result = null;
+        try {
+            result = await actionBridge.runRealisticPrivateChatTick({ signal: abortController.signal });
+            if (isDestroyed) return;
+            if (result?.stateChanged) refreshState();
+            if (result?.ok && result.sessionUid) {
+                for (const item of Array.isArray(result.imageDirectives) ? result.imageDirectives : []) {
+                    if (typeof item?.messageUid === 'string' && item.messageUid && formatDirectiveForDisplay(item.directive)) {
+                        privateImageDirectives.set(`${result.sessionUid}:${item.messageUid}`, item.directive);
+                    }
+                }
+            }
+            if (result?.summaryCheckRequested) {
+                for (const sessionUid of Array.isArray(result.summarySessionUids) ? result.summarySessionUids : []) {
+                    const session = currentView?.messageSessions?.find((item) => item.sessionUid === sessionUid);
+                    if (session) void ctx.runChatSummaryForSession(session, { automatic: true });
+                }
+            }
+        } catch {
+            // Scheduler failures remain in the existing sanitized private-chat
+            // diagnostic ledger and are retried on the next projected tick.
+        } finally {
+            realisticChatTickRunning = false;
+            scheduleRealisticChatTick();
+        }
+    }
     async function runExtensionUpdate() {
         if (extensionUpdatePending) return;
         if (!extensionUpdater || typeof extensionUpdater.checkAndUpdate !== 'function') {
@@ -2643,7 +2710,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
         voiceMatchText: { get: () => voiceMatchText, set: (value) => { voiceMatchText = value; }, enumerable: true },
     });
     Object.assign(ctx, {
-        UI_VERSION, abortController, actionBridge, appendImagePreview, applyCloseIcon, beginOperationDialog, buildConversationImageControls, buildEmptyPlaceholder,
+        UI_VERSION, abortController, actionBridge, phoneClock, appendImagePreview, applyCloseIcon, beginOperationDialog, buildConversationImageControls, buildEmptyPlaceholder,
         extensionUpdater, runExtensionUpdate,
         buildImageDirectiveCard, canAppendServiceExperienceDraft, candidateImageState, characterLibrary, chatDrafts, nsfwTurnConsentSessions, clearMatchedImageState, closeManagedDialog, content,
         dialogController, disableServiceHub, openManagedDialog, documentRef, formatDirectiveForDisplay, forumCommentDrafts, forumSettingsContent, forumSettingsDialog, forumSettingsTitle,
@@ -2799,11 +2866,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, settingsStore
     unsubscribeOperationActivity = operationActivity.subscribe(() => {
         if (open && activePage === 'settings_console') renderPage();
     });
+    updatePhoneClockDisplay();
     renderPage();
+    queueMicrotask(() => { if (!isDestroyed) void runRealisticChatTick(); });
     return Object.freeze({
         refreshState,
         // 诊断接缝：安全控制台的内存台账（不持久化）。宿主与测试可注入条目，detail 已在台账层脱敏。
         operationActivity,
-        destroy() { cancelLauncherToolsHold(); closeLauncherTools(); cancelPhoneNavHold(); clearPhoneNavClickSuppression(); ctx.cancelChatToolLongPress(); ctx.clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; invalidateServiceProfileGeneration(); invalidateServiceOrderOperations(); ctx.stopGroupAutoTimer(); ctx.stopForumAutoTimer(); ctx.cancelForumPullInteractions(); ctx.clearSummaryToast(); hideOperationDialog(); ctx.closeGroupMemberPicker(); ctx.closeGroupAutoDialog(); ctx.closeForumSettingsDialog(); ctx.resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); dialogController.dispose(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
+        destroy() { cancelLauncherToolsHold(); closeLauncherTools(); cancelPhoneNavHold(); clearPhoneNavClickSuppression(); ctx.cancelChatToolLongPress(); ctx.clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; if (phoneClockTimer !== null) globalThis.clearTimeout?.(phoneClockTimer); phoneClockTimer = null; invalidateServiceProfileGeneration(); invalidateServiceOrderOperations(); ctx.stopGroupAutoTimer(); ctx.stopForumAutoTimer(); ctx.cancelForumPullInteractions(); ctx.clearSummaryToast(); hideOperationDialog(); ctx.closeGroupMemberPicker(); ctx.closeGroupAutoDialog(); ctx.closeForumSettingsDialog(); ctx.resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); dialogController.dispose(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },
     });
 }

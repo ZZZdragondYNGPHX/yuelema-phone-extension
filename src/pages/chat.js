@@ -179,6 +179,54 @@ export function createChatPage(ctx) {
         ctx.renderPage();
         return true;
     }
+    function buildRealisticChatSetting(session) {
+        const realistic = session.realisticChat ?? { supported: false, enabled: false };
+        const pending = Boolean(ctx.actionBridge.isPending?.('private_chat_realistic_toggle', session.sessionUid));
+        const supported = realistic.supported === true && typeof ctx.actionBridge.setRealisticPrivateChatMode === 'function';
+        const wrapper = element('section', { className: 'yl-private-chat-realistic-setting', ariaLabel: '拟真聊天设置' });
+        const label = element('label', { className: 'yl-private-chat-realistic-label' });
+        const copy = element('span', { className: 'yl-private-chat-realistic-copy' });
+        append(copy, [
+            element('strong', { text: '拟真聊天' }),
+            element('small', { text: '允许双方连发、错开话题与主动来信；AI 消息到小手机时间后才出现。' }),
+        ]);
+        const toggle = element('input', { type: 'checkbox', checked: realistic.enabled === true, disabled: pending || !supported });
+        toggle.setAttribute('role', 'switch');
+        toggle.setAttribute('aria-label', realistic.enabled ? '关闭拟真聊天' : '开启拟真聊天');
+        listen(toggle, toggle, 'change', () => { void setRealisticChatMode(session, toggle.checked); }, ctx.abortController.signal);
+        append(label, [copy, toggle]);
+        wrapper.appendChild(label);
+        const status = realistic.enabled
+            ? realistic.pendingCount > 0 ? `已开启 · ${realistic.pendingCount} 条消息等待按时送达`
+                : realistic.replyDueAt ? '已开启 · 正在等待你是否继续补充'
+                    : '已开启 · 对方可能在合适的时候主动来信'
+            : supported ? '已关闭 · 使用原来的一问一答即时逻辑' : '当前聊天数据需完成安全迁移后才能开启';
+        wrapper.appendChild(element('p', { className: 'yl-private-chat-realistic-status', text: status }));
+        return wrapper;
+    }
+    async function setRealisticChatMode(session, enabled) {
+        if (typeof ctx.actionBridge.setRealisticPrivateChatMode !== 'function'
+            || ctx.actionBridge.isPending?.('private_chat_realistic_toggle', session.sessionUid)) return;
+        const activity = ctx.operationActivity.start('拟真聊天设置', enabled ? '正在开启拟真聊天。' : '正在恢复原聊天逻辑。');
+        let result;
+        try {
+            result = await ctx.actionBridge.setRealisticPrivateChatMode({
+                sessionUid: session.sessionUid, npcUid: session.npcUid, enabled,
+            });
+        } catch { result = { ok: false, code: 'private_chat_realistic_toggle_failed' }; }
+        if (result?.ok) {
+            ctx.operationActivity.succeed(activity, enabled ? '拟真聊天已开启。' : '已恢复原聊天逻辑。');
+            ctx.setFeedback(enabled
+                ? '拟真聊天已开启：你可以连续发送，对方消息会按小手机时间送达。'
+                : '已恢复原来的一问一答即时逻辑；未送达的拟真消息已取消。');
+        } else {
+            ctx.operationActivity.fail(activity, '拟真聊天设置未保存。', {
+                detail: buildChatFailureDetail({ operation: '拟真聊天设置', kind: 'private_chat', sessionUid: session.sessionUid, result }),
+            });
+            ctx.setFeedback(describeActionFailure(result) || '拟真聊天设置未保存。');
+        }
+        ctx.refreshState();
+    }
     /**
      * 头部（§7.2.6）：返回键在壳层页头；这里是 头像40 + 昵称 + presence 副行 + 「…」菜单。
      * 生图设置 / 自动生图开关 / 聊天总结 / 清空记录 / 删除角色 全部收进菜单。
@@ -213,6 +261,7 @@ export function createChatPage(ctx) {
         }, ctx.abortController.signal);
         actions.appendChild(more);
         const menu = element('div', { className: 'yl-private-chat-more-menu', ariaLabel: '私聊更多操作', hidden: !moreOpen });
+        menu.appendChild(buildRealisticChatSetting(session));
         // 生图设置钮 + 自动生图开关沿用壳层受控控件（aria 与持久化行为不变），仅改挂载位置。
         menu.appendChild(ctx.buildConversationImageControls({ kind: 'private', conversationId: session.sessionUid }));
         const summary = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '聊天总结', ariaLabel: '查看聊天总结', disabled: !ctx.chatSummaryEnabled() });
@@ -335,7 +384,12 @@ export function createChatPage(ctx) {
         const text = String(raw ?? '').trim();
         const full = /^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?(?:[ T](\d{1,2}):(\d{2}))?/u.exec(text);
         if (full) {
-            const nowDate = new Date();
+            let nowDate = new Date();
+            try {
+                const phoneNow = ctx.phoneClock?.nowText?.();
+                const phoneMatch = /^(\d{4})-(\d{2})-(\d{2}) /u.exec(phoneNow ?? '');
+                if (phoneMatch) nowDate = new Date(Number(phoneMatch[1]), Number(phoneMatch[2]) - 1, Number(phoneMatch[3]));
+            } catch { /* fall back to real local date for legacy/no-clock hosts */ }
             const sameDay = nowDate.getFullYear() === Number(full[1]) && nowDate.getMonth() + 1 === Number(full[2]) && nowDate.getDate() === Number(full[3]);
             const clock = full[4] ? `${full[4].padStart(2, '0')}:${full[5]}` : '';
             if (sameDay) return clock ? `今天 ${clock}` : '今天';
@@ -890,8 +944,10 @@ export function createChatPage(ctx) {
         const transcript = buildMessageTimeline(session);
         // 本地已读水位推进：进入/停留在会话即视为读到当前全部可见消息（纯 UI 状态）。
         ctx.messageReadStore?.markRead?.(session.sessionUid, session.messages.length);
-        const pending = Boolean(ctx.actionBridge.isPending?.('private_chat', session.sessionUid));
-        if (pending) transcript.appendChild(buildTypingIndicator(session));
+        const realisticEnabled = session.realisticChat?.enabled === true;
+        const pendingKind = realisticEnabled ? 'private_chat_realistic_send' : 'private_chat';
+        const pending = Boolean(ctx.actionBridge.isPending?.(pendingKind, session.sessionUid));
+        if (pending && !realisticEnabled) transcript.appendChild(buildTypingIndicator(session));
         panel.appendChild(buildMessageTimelineShell(session, transcript));
         if (!session.canSend) {
             // §7.2.11 只读态：禁用输入条 + 状态说明 pill。
@@ -911,19 +967,22 @@ export function createChatPage(ctx) {
             panel.appendChild(composer);
             return panel;
         }
-        if (typeof ctx.actionBridge.runPrivateChat !== 'function') {
+        const sendSupported = realisticEnabled
+            ? typeof ctx.actionBridge.sendRealisticPrivateChatMessage === 'function'
+            : typeof ctx.actionBridge.runPrivateChat === 'function';
+        if (!sendSupported) {
             panel.appendChild(element('div', { className: 'yl-phone-placeholder', text: '私聊发送尚未就绪。' }));
             return panel;
         }
         const composer = element('div', { className: pending ? 'yl-chat-composer is-pending' : 'yl-chat-composer' });
         const input = element('textarea', {
             className: 'yl-settings-control yl-settings-textarea', rows: 2, maxLength: 600,
-            placeholder: '输入消息…', value: ctx.chatDrafts.get(session.sessionUid) ?? '', disabled: pending,
+            placeholder: realisticEnabled ? '输入消息…（可以连续发送）' : '输入消息…', value: ctx.chatDrafts.get(session.sessionUid) ?? '', disabled: pending,
             ariaLabel: '输入私聊消息',
         });
         const send = element('button', {
             className: 'yl-chat-send-button', type: 'button', disabled: pending,
-            ariaLabel: pending ? '正在生成私聊回复' : '发送消息',
+            ariaLabel: pending ? '正在发送私聊消息' : '发送消息',
         });
         const sendGlyph = pending
             ? element('span', { className: 'yl-chat-send-pending', text: '···' })
@@ -1096,20 +1155,23 @@ export function createChatPage(ctx) {
             ctx.setFeedback('本轮未确认继续成人话题；请先勾选输入框下方的本轮确认。');
             return;
         }
-        if (typeof ctx.actionBridge.runPrivateChat !== 'function' || ctx.actionBridge.isPending?.('private_chat', session.sessionUid)) return;
+        const realisticEnabled = session.realisticChat?.enabled === true;
+        const pendingKind = realisticEnabled ? 'private_chat_realistic_send' : 'private_chat';
+        const runner = realisticEnabled ? ctx.actionBridge.sendRealisticPrivateChatMessage : ctx.actionBridge.runPrivateChat;
+        if (typeof runner !== 'function' || ctx.actionBridge.isPending?.(pendingKind, session.sessionUid)) return;
         const requestGeneration = ++ctx.privateChatRequestGeneration;
         const isStillVisible = () => ctx.open
             && ctx.activePage === 'private_chat'
             && ctx.activeMessageSessionUid === session.sessionUid
             && ctx.privateChatRequestGeneration === requestGeneration;
-        const activityHandle = ctx.operationActivity.start('私聊回复', '正在生成私聊回复……');
+        const activityHandle = ctx.operationActivity.start(realisticEnabled ? '私聊发送' : '私聊回复', realisticEnabled ? '正在发送消息……' : '正在生成私聊回复……');
         // 发送与回复完成都是明确的“跟随最新消息”意图，不依赖旧容器恰好在
         // 布局采样时仍报告接近底部；真实 WebView 即使先塌缩到 0 也会被拉回末尾。
         ctx.requestPrivateChatScrollToBottom?.(session.sessionUid);
         if (requiresTurnConsent) ctx.nsfwTurnConsentSessions?.delete?.(session.sessionUid);
         let bridgeError = null;
         let request;
-        try { request = ctx.actionBridge.runPrivateChat({ sessionUid: session.sessionUid, npcUid: session.npcUid, playerMessage, turnConsentConfirmed }); }
+        try { request = runner({ sessionUid: session.sessionUid, npcUid: session.npcUid, playerMessage, turnConsentConfirmed }); }
         catch (error) { bridgeError = error; request = Promise.resolve({ ok: false }); }
         // The bridge marks the exact session pending synchronously before its first await.
         // Re-rendering now gives the composer an inline, non-blocking reply state.
@@ -1118,17 +1180,17 @@ export function createChatPage(ctx) {
         try { result = await request; }
         catch (error) { bridgeError = error; result = { ok: false }; }
         if (result?.ok) {
-            consumePrivateChatDiagnostics('private_chat', session.sessionUid);
-            ctx.operationActivity.succeed(activityHandle, '私聊回复已完成。');
+            if (!realisticEnabled) consumePrivateChatDiagnostics('private_chat', session.sessionUid);
+            ctx.operationActivity.succeed(activityHandle, realisticEnabled ? '消息已发出。' : '私聊回复已完成。');
         } else if (result?.code === 'ui_action_pending') {
             ctx.operationActivity.dismiss(activityHandle, '相同会话的发送正在进行，本次请求已忽略。');
         } else {
-            let detail = buildChatFailureDetail({ operation: '私聊回复', kind: 'private_chat', sessionUid: session.sessionUid, result });
+            let detail = buildChatFailureDetail({ operation: realisticEnabled ? '私聊发送' : '私聊回复', kind: 'private_chat', sessionUid: session.sessionUid, result });
             if (bridgeError) {
                 const bridgeDetail = buildErrorDetail(bridgeError, { operation: '私聊回复', stage: '桥接调用' });
                 if (bridgeDetail) detail = detail ? `${detail}\n\n${bridgeDetail}` : bridgeDetail;
             }
-            ctx.operationActivity.fail(activityHandle, '私聊回复未完成。', { detail });
+            ctx.operationActivity.fail(activityHandle, realisticEnabled ? '私聊消息未发出。' : '私聊回复未完成。', { detail });
         }
         if (result?.ok) {
             ctx.chatDrafts.delete(session.sessionUid);
@@ -1139,7 +1201,7 @@ export function createChatPage(ctx) {
             }
         } else if (isStillVisible()) {
             const message = result?.message || describeActionFailure(result);
-            ctx.setFeedback(message || '私聊回复未生成，请稍后重试。');
+            ctx.setFeedback(message || (realisticEnabled ? '消息未发出，请稍后重试。' : '私聊回复未生成，请稍后重试。'));
         }
         if (result?.ok) ctx.requestPrivateChatScrollToBottom?.(session.sessionUid);
         ctx.refreshState();

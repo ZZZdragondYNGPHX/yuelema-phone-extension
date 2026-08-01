@@ -21,7 +21,7 @@ import {
     validateControlledPatchWhitelist,
 } from '../controlled-patch.js';
 import { applyControlledPatch, readLatestState } from '../adapter.js';
-import { createEmptyNsfwConsent, grantNsfwConsent } from '../nsfw-consent.js';
+import { consumeNsfwConsent, createEmptyNsfwConsent, grantNsfwConsent } from '../nsfw-consent.js';
 
 function npc({ status = '陌生', age = 28 } = {}) {
     return {
@@ -227,11 +227,15 @@ test('five-click gate only unlocks the slider and explicit toggle changes SFW/NS
     const nsfw = stateFixture();
     nsfw.软件.内容模式 = 'NSFW';
     nsfw.会话.chat_1 = { NSFW同意: grantNsfwConsent(createEmptyNsfwConsent(), { scopes: ['成人话题'], turns: 3 }) };
+    nsfw.会话.chat_2 = { NSFW同意: consumeNsfwConsent(grantNsfwConsent(createEmptyNsfwConsent(), { scopes: ['成人话题'], turns: 1 })) };
     const toggledBack = buildControlledPatch(nsfw, { kind: 'toggle_content_mode' });
     assert.equal(toggledBack.value[0].path, '/软件/内容模式');
     assert.equal(toggledBack.value[0].value, 'SFW');
     assert.equal(toggledBack.value[1].path, '/会话/chat_1/NSFW同意');
     assert.equal(toggledBack.value[1].value.状态, '已撤回');
+    assert.equal(toggledBack.value[2].path, '/会话/chat_2/NSFW同意');
+    assert.equal(toggledBack.value[2].value.状态, '已撤回');
+    assert.equal(toggledBack.value[2].value.修订号, 3, '离开 NSFW 也要推进已过期记录的修订号，使待投递消息失效');
     assert.equal(validateControlledPatchAgainstState(nsfw, toggledBack.value).ok, true);
 
     const state = stateFixture();

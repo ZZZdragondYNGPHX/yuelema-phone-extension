@@ -4,6 +4,7 @@ import { installMiniDom } from '../../test-support/minidom.mjs';
 import { createMemoryStorage, createSettingsStore } from '../../settings/settings-store.js';
 import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
 import { createEmptyNsfwConsent, grantNsfwConsent } from '../../mvu/nsfw-consent.js';
+import { createDefaultRealisticChatState } from '../../mvu/realistic-chat.js';
 
 const miniDom = installMiniDom();
 const { mountPhoneApp } = await import('../../app-shell.js');
@@ -81,6 +82,63 @@ async function flushUi() {
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 }
+
+test('手机头部显示五分钟时钟，消息选项可切换拟真聊天并改走即时落玩家消息的桥', async () => {
+    const result = readResult();
+    result.state.会话.chat_lin.拟真聊天 = createDefaultRealisticChatState();
+    const calls = [];
+    let pending = false;
+    const bridge = {
+        emit() {},
+        isPending(kind, sessionUid) { return kind === 'private_chat_realistic_send' && sessionUid === 'chat_lin' && pending; },
+        async setRealisticPrivateChatMode(request) {
+            calls.push({ kind: 'toggle', ...request });
+            result.state.会话.chat_lin.拟真聊天 = createDefaultRealisticChatState({ enabled: request.enabled, proactiveAt: '2026-08-02 15:35' });
+            return { ok: true };
+        },
+        async sendRealisticPrivateChatMessage(request) {
+            calls.push({ kind: 'send', ...request });
+            pending = true;
+            pending = false;
+            return { ok: true, messageUid: 'msg_chat_lin_p_3' };
+        },
+        runPrivateChat() { throw new Error('拟真聊天不得回到原一问一答桥'); },
+    };
+    const phoneClock = {
+        displayText: () => '14:35', nowText: () => '2026-08-02 14:35', delayUntilNextTick: () => 60_000,
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-realistic-chat-ui', actionBridge: bridge, phoneClock,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result,
+    });
+    try {
+        assert.equal(miniDom.document.querySelector('.yl-phone-clock').textContent, '14:35');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的更多操作'));
+        const toggle = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('role') === 'switch');
+        assert.equal(toggle.getAttribute('role'), 'switch');
+        assert.equal(toggle.checked, false);
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change'));
+        await flushUi();
+        assert.deepEqual(calls[0], { kind: 'toggle', sessionUid: 'chat_lin', npcUid: 'npc_lin', enabled: true });
+
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
+        input.value = '我先发第一条。';
+        input.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息'));
+        await flushUi();
+        assert.deepEqual(calls[1], {
+            kind: 'send', sessionUid: 'chat_lin', npcUid: 'npc_lin', playerMessage: '我先发第一条。', turnConsentConfirmed: false,
+        });
+        assert.equal(miniDom.document.querySelector('.yl-chat-replying'), null, '拟真发送后不伪装成对方正在实时输入');
+        assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息').disabled, false);
+    } finally {
+        mounted.destroy();
+    }
+});
 
 test('private chat uses a distinct mobile conversation surface and only calls the controlled chat bridge', async () => {
     const events = [];

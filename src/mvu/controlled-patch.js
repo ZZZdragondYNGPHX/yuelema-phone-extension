@@ -6,6 +6,7 @@ import {
     SFW_INSIGHT_ASSESSMENT_KINDS,
     SFW_RESOLUTION_ASSESSMENT_KINDS,
     normalizePrivateChatResponse,
+    normalizeRealisticPrivateChatResponse,
 } from '../chat/private-chat-response.js';
 import { validatePrivateChatRequest } from '../chat/private-chat-service.js';
 import { decideInteractionRhythm } from '../chat/interaction-rhythm.js';
@@ -43,6 +44,18 @@ import {
     nsfwConsentReference,
     validateNsfwConsent,
 } from './nsfw-consent.js';
+import {
+    MAX_REALISTIC_PENDING_MESSAGES,
+    MAX_REALISTIC_PLAYER_BURST_COUNT,
+    MAX_REALISTIC_PLAYER_BURST_LENGTH,
+    REALISTIC_REPLY_QUIET_MINUTES,
+    createDefaultRealisticChatState,
+    latestPlayerMessageUid,
+    listPendingRealisticPlayerMessages,
+    validatePendingRealisticMessage,
+    validateRealisticChatState,
+} from './realistic-chat.js';
+import { addPhoneMinutes, isPhoneTimestampDue, parsePhoneTimestamp } from '../chat/phone-clock.js';
 
 export const LATEST_MESSAGE_SCOPE = Object.freeze({ type: 'message', message_id: 'latest' });
 export const NPC_UID_PATTERN = /^npc_[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -591,6 +604,29 @@ export function buildPrivateChatNsfwConsentBackfillPatch(state) {
     return success(operations);
 }
 
+/** Adds the v1.0.18 realistic-chat envelope without enabling it or replaying history. */
+export function buildRealisticPrivateChatBackfillPatch(state) {
+    if (!ownRecord(state)) return fail('private_chat_realistic_backfill_state_invalid');
+    const sessions = ownRecord(state.会话);
+    if (!sessions) return fail('private_chat_realistic_backfill_state_invalid');
+    const operations = [];
+    for (const [sessionUid, session] of Object.entries(sessions).sort(([left], [right]) => left.localeCompare(right))) {
+        if (!isChatSessionUid(sessionUid) || !ownRecord(session) || !isNpcUid(session.对象UID)) {
+            return fail('private_chat_realistic_backfill_state_invalid');
+        }
+        if (!Object.hasOwn(session, '拟真聊天')) {
+            operations.push({
+                op: 'add',
+                path: encodeJsonPointer(['会话', sessionUid, '拟真聊天']),
+                value: createDefaultRealisticChatState({ latestPlayerMessageUid: latestPlayerMessageUid(session) }),
+            });
+            continue;
+        }
+        if (!validateRealisticChatState(session.拟真聊天).ok) return fail('private_chat_realistic_schema_outdated');
+    }
+    return success(operations);
+}
+
 function isMeetupUid(value) {
     return typeof value === 'string' && MEETUP_UID_PATTERN.test(value);
 }
@@ -772,14 +808,14 @@ function clamp(value, lower, upper) {
     return Math.min(Math.max(value, lower), upper);
 }
 
-function chatMessage(sender, uid, content) {
-    return Object.freeze({ 消息UID: uid, 发送者: sender, 内容: content, 时间: '', 层数: 0 });
+function chatMessage(sender, uid, content, time = '') {
+    return Object.freeze({ 消息UID: uid, 发送者: sender, 内容: content, 时间: time, 层数: 0 });
 }
 
-function nextChatMessageNumber(sessionUid, recentMessages) {
+function nextChatMessageNumber(sessionUid, recentMessages, pendingMessages = []) {
     const pattern = new RegExp('^msg_' + sessionUid + '_[pns]_(\\d+)$');
     let maximum = 0;
-    for (const message of recentMessages) {
+    for (const message of [...recentMessages, ...pendingMessages]) {
         const match = pattern.exec(ownRecord(message) ? message.消息UID : '');
         if (match) maximum = Math.max(maximum, Number(match[1]));
     }
@@ -1519,6 +1555,422 @@ export function buildPrivateChatPatch(state, {
     return success(operations);
 }
 
+function realisticTarget(state, sessionUid, npcUid) {
+    const checked = validatePrivateChatRequest({ state, sessionUid, npcUid, playerMessage: '拟真聊天状态校验' });
+    if (!checked.ok) return fail(checked.code === 'private_chat_relationship_narrative_schema_outdated'
+        ? 'mvu_relationship_narrative_schema_outdated' : checked.code);
+    const realistic = validateRealisticChatState(checked.value.session.拟真聊天);
+    if (!realistic.ok) return fail('private_chat_realistic_schema_outdated');
+    return success({ ...checked.value, realistic: realistic.value });
+}
+
+function knownConversationLayer(session, recentMessages) {
+    const maxStoredLayer = recentMessages.reduce((maximum, message) => {
+        const layer = ownRecord(message) && Number.isInteger(message.层数) && message.层数 >= 0 ? message.层数 : 0;
+        return Math.max(maximum, layer);
+    }, 0);
+    const hasStoredLayers = recentMessages.some((message) => ownRecord(message) && Number.isInteger(message.层数) && message.层数 >= 0);
+    const legacyFallback = hasStoredLayers ? maxStoredLayer : recentMessages.length;
+    return Number.isInteger(session.对话层数) && session.对话层数 >= maxStoredLayer && session.对话层数 <= 999999
+        ? session.对话层数 : legacyFallback;
+}
+
+function appendSummarySafeTrimOperations(sessionUid, session, recentMessages, appendedCount, operations) {
+    const overflow = Math.max(0, recentMessages.length + appendedCount - MAX_CHAT_HISTORY_MESSAGES);
+    if (!overflow) return success({ overflow: 0 });
+    const marker = normalizeConversationSummaryState(session).lastMessageUid;
+    const markerIndex = marker ? recentMessages.map((message) => ownRecord(message)?.消息UID).lastIndexOf(marker) : -1;
+    if (markerIndex + 1 < overflow) return fail('private_chat_history_requires_summary');
+    for (let index = 0; index < overflow; index += 1) {
+        operations.push({ op: 'remove', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '0']) });
+    }
+    return success({ overflow });
+}
+
+function appendRealisticMarkerRepairAfterTrim(sessionUid, recentMessages, realistic, overflow, operations) {
+    const marker = realistic?.最近处理玩家消息UID;
+    if (!marker || !Number.isInteger(overflow) || overflow < 1) return;
+    const markerIndex = recentMessages.findIndex((message) => ownRecord(message) && message.消息UID === marker);
+    if (markerIndex >= 0 && markerIndex < overflow) operations.push({
+        op: 'replace', path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '最近处理玩家消息UID']), value: '',
+    });
+}
+
+export function buildToggleRealisticPrivateChatPatch(state, { sessionUid, npcUid, enabled, phoneTime } = {}) {
+    if (typeof enabled !== 'boolean' || parsePhoneTimestamp(phoneTime) === null) return fail('private_chat_realistic_toggle_invalid');
+    let target = realisticTarget(state, sessionUid, npcUid);
+    // Paused/archived/ended chats must still be able to turn the scheduler off
+    // and discard unseen messages. Enabling remains subject to every ordinary
+    // private-chat safety gate.
+    if (!enabled && !target.ok && ['private_chat_relationship_paused', 'private_chat_relationship_ended'].includes(target.code)) {
+        const inactive = privateChatRelationshipTarget(state, sessionUid);
+        if (!inactive.ok) return inactive;
+        if (inactive.value.npcUid !== npcUid) return fail('private_chat_session_not_found');
+        const realistic = validateRealisticChatState(inactive.value.session.拟真聊天);
+        if (!realistic.ok) return fail('private_chat_realistic_schema_outdated');
+        target = success({ session: inactive.value.session, realistic: realistic.value });
+    }
+    if (!target.ok) return target;
+    const { session, realistic } = target.value;
+    if (realistic.启用 === enabled) return fail('private_chat_realistic_toggle_no_change');
+    const next = enabled
+        ? createDefaultRealisticChatState({
+            enabled: true,
+            latestPlayerMessageUid: latestPlayerMessageUid(session),
+            proactiveAt: addPhoneMinutes(phoneTime, 60),
+        })
+        : createDefaultRealisticChatState({ latestPlayerMessageUid: realistic.最近处理玩家消息UID || latestPlayerMessageUid(session) });
+    return success([{
+        op: 'replace',
+        path: encodeJsonPointer(['会话', sessionUid, '拟真聊天']),
+        value: next,
+    }]);
+}
+
+export function buildAppendRealisticPrivateChatPlayerMessagePatch(state, {
+    sessionUid,
+    npcUid,
+    playerMessage,
+    phoneTime,
+    turnConsentConfirmed = false,
+    nsfwConsentReferenceAtSend = null,
+} = {}) {
+    if (parsePhoneTimestamp(phoneTime) === null) return fail('private_chat_realistic_time_invalid');
+    const request = validatePrivateChatRequest({ state, sessionUid, npcUid, playerMessage });
+    if (!request.ok) return fail(request.code === 'private_chat_relationship_narrative_schema_outdated'
+        ? 'mvu_relationship_narrative_schema_outdated' : request.code);
+    const { session, playerMessage: normalizedMessage, onlySfw } = request.value;
+    const realistic = validateRealisticChatState(session.拟真聊天);
+    if (!realistic.ok) return fail('private_chat_realistic_schema_outdated');
+    if (!realistic.value.启用) return fail('private_chat_realistic_disabled');
+    const pendingPlayers = listPendingRealisticPlayerMessages(session);
+    if (!pendingPlayers.ok) return fail(pendingPlayers.code);
+    const nextCount = pendingPlayers.value.length + 1;
+    const nextLength = pendingPlayers.value.reduce((sum, item) => sum + item.content.length, 0)
+        + normalizedMessage.length + Math.max(0, nextCount - 1);
+    if (nextCount > MAX_REALISTIC_PLAYER_BURST_COUNT) return fail('private_chat_realistic_player_burst_full');
+    if (nextLength > MAX_REALISTIC_PLAYER_BURST_LENGTH) return fail('private_chat_realistic_player_burst_too_long');
+    const sourceMode = currentContentMode(state);
+    const requiresConsent = sourceMode === 'NSFW' && onlySfw !== true;
+    if (requiresConsent) {
+        const consent = validateNsfwConsent(session.NSFW同意);
+        if (!consent.ok) return fail('private_chat_nsfw_consent_schema_outdated');
+        if (!isActiveNsfwConsent(consent.value) || turnConsentConfirmed !== true) return fail('private_chat_nsfw_turn_consent_required');
+        if (!matchesNsfwConsentReference(consent.value, nsfwConsentReferenceAtSend)) return fail('private_chat_nsfw_consent_state_changed');
+    }
+    const recentMessages = Array.isArray(session.最近消息) ? session.最近消息 : null;
+    if (!recentMessages || recentMessages.length > MAX_CHAT_HISTORY_MESSAGES) return fail('private_chat_session_messages_invalid');
+    const operations = [];
+    const trimmed = appendSummarySafeTrimOperations(sessionUid, session, recentMessages, 1, operations);
+    if (!trimmed.ok) return trimmed;
+    appendRealisticMarkerRepairAfterTrim(sessionUid, recentMessages, realistic.value, trimmed.value.overflow, operations);
+    const nextLayer = knownConversationLayer(session, recentMessages) + 1;
+    if (nextLayer > 999999) return fail('private_chat_dialogue_layer_exhausted');
+    const number = nextChatMessageNumber(sessionUid, recentMessages, realistic.value.待投递消息);
+    const messageUid = `msg_${sessionUid}_p_${number}`;
+    operations.push({
+        op: 'add',
+        path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']),
+        value: { ...chatMessage('玩家', messageUid, normalizedMessage, phoneTime), 层数: nextLayer },
+    });
+    operations.push({
+        op: 'replace',
+        path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '回复触发时间']),
+        value: addPhoneMinutes(phoneTime, REALISTIC_REPLY_QUIET_MINUTES),
+    });
+    if (requiresConsent && realistic.value.待回复同意修订号 !== nsfwConsentReferenceAtSend.revision) operations.push({
+        op: 'replace',
+        path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '待回复同意修订号']),
+        value: nsfwConsentReferenceAtSend.revision,
+    });
+    if (realistic.value.主动触发时间) {
+        operations.push({
+            op: 'replace',
+            path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '主动触发时间']),
+            value: '',
+        });
+    }
+    operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '对话层数']), value: nextLayer });
+    return success({ patch: operations, messageUid, nsfwConsentReferenceAtSend: requiresConsent ? nsfwConsentReferenceAtSend : null });
+}
+
+function responseWithoutTiming(response, fallbackReply) {
+    const result = {
+        replies: response.replies.length ? response.replies : [fallbackReply],
+        relationship: response.relationship,
+        bondAssessment: response.bondAssessment,
+        bodyEventReview: response.bodyEventReview,
+        sfwInsightAssessment: response.sfwInsightAssessment,
+        sfwResolutionAssessment: response.sfwResolutionAssessment,
+        nsfwSafetyAssessment: response.nsfwSafetyAssessment,
+        nsfwConsentAssessment: response.nsfwConsentAssessment,
+    };
+    if (response.replies.length && Array.isArray(response.imageDirectives)) result.imageDirectives = response.imageDirectives;
+    return result;
+}
+
+function queuedDeliveryPlan({
+    sessionUid,
+    trigger,
+    triggerId,
+    generationTime,
+    response,
+    messageOperations,
+    contentMode = 'SFW',
+    consentRevision = 0,
+}) {
+    if (!['SFW', 'NSFW'].includes(contentMode) || !Number.isInteger(consentRevision)
+        || consentRevision < 0 || consentRevision > 999999 || (contentMode === 'SFW' && consentRevision !== 0)) {
+        return { pending: [], roleMessageUids: [], lastDeliveryTime: '', invalid: true };
+    }
+    const batchUid = `batch_${sessionUid}_${trigger}_${triggerId}_mode_${contentMode.toLowerCase()}_r${consentRevision}`;
+    let deliveryTime = addPhoneMinutes(generationTime, response.timing.firstDelayMinutes);
+    const pending = [];
+    const roleMessageUids = [];
+    let roleIndex = 0;
+    for (const operation of messageOperations) {
+        const value = operation.value;
+        if (value?.发送者 === '角色' && response.replies.length === 0) continue;
+        pending.push({
+            消息UID: value.消息UID,
+            发送者: value.发送者,
+            内容: value.内容,
+            时间: deliveryTime,
+            批次UID: batchUid,
+        });
+        if (value.发送者 === '角色') {
+            roleMessageUids.push(value.消息UID);
+            const interval = response.timing.betweenReplyMinutes[roleIndex];
+            roleIndex += 1;
+            if (interval) deliveryTime = addPhoneMinutes(deliveryTime, interval);
+        }
+    }
+    return { pending, roleMessageUids, lastDeliveryTime: pending.at(-1)?.时间 ?? generationTime };
+}
+
+export function buildRealisticPrivateChatResponsePatch(state, {
+    sessionUid,
+    npcUid,
+    response,
+    generationTime,
+    playerMessageUids,
+    bodyCandidateEventId = '',
+    onlySfwAtRequest = null,
+    turnConsentConfirmed = false,
+    nsfwConsentReferenceAtRequest = null,
+} = {}) {
+    if (parsePhoneTimestamp(generationTime) === null || !Array.isArray(playerMessageUids)) return fail('private_chat_realistic_generation_invalid');
+    const target = realisticTarget(state, sessionUid, npcUid);
+    if (!target.ok) return target;
+    const { session, realistic } = target.value;
+    if (!realistic.启用) return fail('private_chat_realistic_disabled');
+    if (!realistic.回复触发时间 || !isPhoneTimestampDue(realistic.回复触发时间, generationTime)) return fail('private_chat_realistic_reply_not_due');
+    if (realistic.待投递消息.length) return fail('private_chat_realistic_delivery_pending');
+    const pendingPlayers = listPendingRealisticPlayerMessages(session);
+    if (!pendingPlayers.ok || !pendingPlayers.value.length) return fail(pendingPlayers.code ?? 'private_chat_realistic_no_pending_player_messages');
+    const expectedUids = pendingPlayers.value.map((item) => item.messageUid);
+    if (JSON.stringify(expectedUids) !== JSON.stringify(playerMessageUids)) return fail('private_chat_realistic_player_batch_changed');
+    const sourceMode = currentContentMode(state);
+    const requiresConsent = sourceMode === 'NSFW' && onlySfwAtRequest !== true;
+    if (requiresConsent && (!nsfwConsentReferenceAtRequest
+        || realistic.待回复同意修订号 !== nsfwConsentReferenceAtRequest.revision)) {
+        return fail('private_chat_nsfw_consent_state_changed');
+    }
+    let normalized;
+    try { normalized = normalizeRealisticPrivateChatResponse(response, { contentMode: onlySfwAtRequest ? 'SFW' : currentContentMode(state) }); }
+    catch { return fail('private_chat_response_invalid'); }
+    const lastPlayer = pendingPlayers.value.at(-1);
+    const recent = session.最近消息;
+    const lastIndex = recent.findIndex((message) => ownRecord(message) && message.消息UID === lastPlayer.messageUid);
+    if (lastIndex < 0) return fail('private_chat_realistic_player_batch_changed');
+    const currentLayer = knownConversationLayer(session, recent);
+    if (currentLayer < 1) return fail('private_chat_dialogue_layer_invalid');
+    const syntheticMessages = recent.filter((_, index) => index !== lastIndex).map((message) => ownRecord(message)
+        ? { ...message, 层数: Number.isInteger(message.层数) ? Math.min(message.层数, currentLayer - 1) : message.层数 }
+        : message);
+    const syntheticState = {
+        ...state,
+        会话: {
+            ...state.会话,
+            [sessionUid]: { ...session, 最近消息: syntheticMessages, 对话层数: currentLayer - 1 },
+        },
+    };
+    const combinedPlayerMessage = pendingPlayers.value.map((item) => item.content).join(' ');
+    const legacy = buildPrivateChatPatch(syntheticState, {
+        sessionUid,
+        npcUid,
+        playerMessage: combinedPlayerMessage,
+        response: responseWithoutTiming(normalized, '拟真调度占位'),
+        bodyCandidateEventId,
+        onlySfwAtRequest,
+        turnConsentConfirmed,
+        nsfwConsentReferenceAtRequest,
+    });
+    if (!legacy.ok) return legacy;
+    let deliveryConsentRevision = 0;
+    if (requiresConsent) {
+        const nextConsentOperation = legacy.value.find((operation) => operation?.op === 'replace'
+            && operation.path === encodeJsonPointer(['会话', sessionUid, 'NSFW同意']));
+        const nextConsent = validateNsfwConsent(nextConsentOperation?.value);
+        if (!nextConsent.ok) return fail('private_chat_nsfw_consent_state_changed');
+        deliveryConsentRevision = nextConsent.value.修订号;
+    }
+    const recentAddPattern = new RegExp(`^/会话/${sessionUid}/最近消息/-$`, 'u');
+    const messageOperations = legacy.value.filter((operation) => operation?.op === 'add'
+        && recentAddPattern.test(operation.path) && ['角色', '系统'].includes(operation.value?.发送者));
+    const transformed = legacy.value.filter((operation) => {
+        if (/^\/会话\/chat_[A-Za-z0-9_-]{1,64}\/最近消息\/(?:-|0)$/u.test(operation?.path ?? '')) return false;
+        return operation?.path !== encodeJsonPointer(['会话', sessionUid, '对话层数']);
+    });
+    const blocked = transformed.some((operation) => operation?.path === encodeJsonPointer(['会话', sessionUid, '状态']) && operation.value === '已拉黑');
+    const plan = queuedDeliveryPlan({
+        sessionUid,
+        trigger: 'reply',
+        triggerId: lastPlayer.messageUid.split('_').at(-1),
+        generationTime,
+        response: normalized,
+        messageOperations,
+        contentMode: requiresConsent ? 'NSFW' : 'SFW',
+        consentRevision: deliveryConsentRevision,
+    });
+    if (plan.invalid || plan.pending.length > MAX_REALISTIC_PENDING_MESSAGES) return fail('private_chat_realistic_delivery_overflow');
+    transformed.push({
+        op: 'replace', path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '最近处理玩家消息UID']), value: lastPlayer.messageUid,
+    });
+    transformed.push({
+        op: 'replace', path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '回复触发时间']), value: '',
+    });
+    if (realistic.待回复同意修订号 !== 0) transformed.push({
+        op: 'replace', path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '待回复同意修订号']), value: 0,
+    });
+    transformed.push({
+        op: 'replace',
+        path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '主动触发时间']),
+        value: blocked ? '' : addPhoneMinutes(plan.lastDeliveryTime, normalized.timing.nextProactiveMinutes),
+    });
+    // A local safety block is not an AI reply and makes the session terminal.
+    // Record its fixed system notice immediately; queuing it would make the
+    // later delivery target permanently ineligible after the same transaction.
+    if (blocked) {
+        const systemNotice = messageOperations.find((operation) => operation.value?.发送者 === '系统')?.value;
+        if (!systemNotice) return fail('private_chat_realistic_block_notice_missing');
+        transformed.push({
+            op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']),
+            value: { ...systemNotice, 时间: generationTime },
+        });
+    }
+    for (const pending of blocked ? [] : plan.pending) transformed.push({
+        op: 'add', path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '待投递消息', '-']), value: pending,
+    });
+    const imageDirectives = (normalized.imageDirectives ?? []).flatMap((item) => {
+        const messageUid = plan.roleMessageUids[item.replyIndex];
+        return messageUid ? [{ messageUid, directive: item.directive }] : [];
+    });
+    const interactionOutcome = blocked ? 'blocked'
+        : plan.pending.some((item) => item.发送者 === '系统') ? 'read_without_reply'
+            : plan.roleMessageUids.length ? 'queued' : 'silent';
+    return success({ patch: transformed, interactionOutcome, imageDirectives, queuedMessageUids: plan.pending.map((item) => item.消息UID) });
+}
+
+export function buildRealisticPrivateChatProactivePatch(state, {
+    sessionUid,
+    npcUid,
+    response,
+    generationTime,
+    triggerTime,
+} = {}) {
+    if (parsePhoneTimestamp(generationTime) === null || parsePhoneTimestamp(triggerTime) === null) return fail('private_chat_realistic_generation_invalid');
+    const target = realisticTarget(state, sessionUid, npcUid);
+    if (!target.ok) return target;
+    const { session, realistic } = target.value;
+    if (!realistic.启用 || realistic.主动触发时间 !== triggerTime || !isPhoneTimestampDue(triggerTime, generationTime)) {
+        return fail('private_chat_realistic_proactive_not_due');
+    }
+    if (realistic.最近主动触发时间 === triggerTime) return fail('private_chat_realistic_proactive_duplicate');
+    if (realistic.待投递消息.length || realistic.回复触发时间) return fail('private_chat_realistic_delivery_pending');
+    const pendingPlayers = listPendingRealisticPlayerMessages(session);
+    if (!pendingPlayers.ok || pendingPlayers.value.length) return fail('private_chat_realistic_player_messages_pending');
+    let normalized;
+    try { normalized = normalizeRealisticPrivateChatResponse(response, { contentMode: 'SFW' }); }
+    catch { return fail('private_chat_response_invalid'); }
+    if (normalized.replies.length > 3
+        || RELATIONSHIP_VALUE_FIELDS.some((field) => normalized.relationship[field] !== 0)
+        || normalized.bondAssessment.kind !== 'none' || normalized.sfwInsightAssessment !== 'none'
+        || normalized.sfwResolutionAssessment !== 'none' || normalized.nsfwSafetyAssessment !== 'none'
+        || normalized.nsfwConsentAssessment !== 'none' || normalized.bodyEventReview !== 'defer') {
+        return fail('private_chat_realistic_proactive_not_neutral');
+    }
+    const number = nextChatMessageNumber(sessionUid, session.最近消息, realistic.待投递消息);
+    const messageOperations = normalized.replies.map((reply, index) => ({
+        value: chatMessage('角色', `msg_${sessionUid}_n_${number + index}`, reply),
+    }));
+    const triggerId = triggerTime.replace(/[^0-9]/gu, '');
+    const plan = queuedDeliveryPlan({ sessionUid, trigger: 'proactive', triggerId, generationTime, response: normalized, messageOperations });
+    if (plan.invalid) return fail('private_chat_realistic_delivery_overflow');
+    const operations = [{
+        op: 'replace', path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '最近主动触发时间']), value: triggerTime,
+    }, {
+        op: 'replace',
+        path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '主动触发时间']),
+        value: addPhoneMinutes(plan.lastDeliveryTime, normalized.timing.nextProactiveMinutes),
+    }];
+    for (const pending of plan.pending) operations.push({
+        op: 'add', path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '待投递消息', '-']), value: pending,
+    });
+    const imageDirectives = (normalized.imageDirectives ?? []).flatMap((item) => {
+        const messageUid = plan.roleMessageUids[item.replyIndex];
+        return messageUid ? [{ messageUid, directive: item.directive }] : [];
+    });
+    return success({ patch: operations, interactionOutcome: plan.pending.length ? 'queued' : 'silent', imageDirectives, queuedMessageUids: plan.pending.map((item) => item.消息UID) });
+}
+
+export function buildDeliverRealisticPrivateChatMessagesPatch(state, { sessionUid, npcUid, phoneTime } = {}) {
+    if (parsePhoneTimestamp(phoneTime) === null) return fail('private_chat_realistic_time_invalid');
+    const target = realisticTarget(state, sessionUid, npcUid);
+    if (!target.ok) return target;
+    const { session, realistic, onlySfw } = target.value;
+    if (!realistic.启用) return fail('private_chat_realistic_disabled');
+    const batchSafety = realistic.待投递消息.map((message) => /_mode_(sfw|nsfw)_r(0|[1-9]\d{0,5})$/u.exec(message.批次UID));
+    if (batchSafety.some((match) => !match)
+        || batchSafety.some((match) => match[1] !== batchSafety[0][1] || match[2] !== batchSafety[0][2])) {
+        return fail('private_chat_realistic_delivery_context_invalid');
+    }
+    if (batchSafety[0]?.[1] === 'nsfw') {
+        const consent = validateNsfwConsent(session.NSFW同意);
+        if (currentContentMode(state) !== 'NSFW' || onlySfw === true) return fail('private_chat_realistic_delivery_mode_changed');
+        if (!consent.ok || consent.value.修订号 !== Number(batchSafety[0][2])) {
+            return fail('private_chat_realistic_delivery_consent_changed');
+        }
+    }
+    const due = realistic.待投递消息.filter((message) => isPhoneTimestampDue(message.时间, phoneTime));
+    if (!due.length) return fail('private_chat_realistic_no_due_messages');
+    const recent = session.最近消息;
+    const operations = [];
+    const trimmed = appendSummarySafeTrimOperations(sessionUid, session, recent, due.length, operations);
+    if (!trimmed.ok) return trimmed;
+    appendRealisticMarkerRepairAfterTrim(sessionUid, recent, realistic, trimmed.value.overflow, operations);
+    for (let index = realistic.待投递消息.length - 1; index >= 0; index -= 1) {
+        if (isPhoneTimestampDue(realistic.待投递消息[index].时间, phoneTime)) operations.push({
+            op: 'remove', path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '待投递消息', String(index)]),
+        });
+    }
+    let nextLayer = knownConversationLayer(session, recent);
+    for (const message of due) {
+        if (message.发送者 !== '系统') nextLayer += 1;
+        if (nextLayer > 999999) return fail('private_chat_dialogue_layer_exhausted');
+        operations.push({
+            op: 'add', path: encodeJsonPointer(['会话', sessionUid, '最近消息', '-']),
+            value: { ...chatMessage(message.发送者, message.消息UID, message.内容, message.时间), 层数: nextLayer },
+        });
+    }
+    operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid, '对话层数']), value: nextLayer });
+    return success({
+        patch: operations,
+        deliveredMessageUids: due.map((message) => message.消息UID),
+        summaryCheckRequested: due.some((message) => message.发送者 === '角色'),
+    });
+}
+
 function summarySessionTarget(state, sessionUid, npcUid) {
     if (!ownRecord(state) || !isChatSessionUid(sessionUid) || !isNpcUid(npcUid)) return fail('chat_summary_invalid_target');
     const session = ownRecord(ownRecord(state.会话)?.[sessionUid]);
@@ -1948,6 +2400,7 @@ function matchedSession(npcUid) {
         已确认边界: '',
         已确认承诺: '',
         NSFW同意: createEmptyNsfwConsent(),
+        拟真聊天: createDefaultRealisticChatState(),
     };
 }
 
@@ -2188,15 +2641,16 @@ export function buildControlledPatch(state, command) {
         const operations = [
             { op: 'replace', path: '/软件/内容模式', value: mode === 'SFW' ? 'NSFW' : 'SFW' },
         ];
-        // Leaving NSFW is itself an explicit global safety action. Any active
-        // per-session consent is revoked in the same transaction; toggling back
-        // can never resurrect a previous grant.
+        // Leaving NSFW is itself an explicit global safety action. Every prior
+        // non-empty consent epoch is advanced, including an already expired or
+        // withdrawn record, so an unseen timed reply can never survive a quick
+        // SFW -> NSFW round trip on the same revision.
         if (mode === 'NSFW') {
             for (const [sessionUid, session] of Object.entries(ownRecord(state.会话) ?? {}).sort(([left], [right]) => left.localeCompare(right))) {
                 if (!isChatSessionUid(sessionUid) || !ownRecord(session) || !Object.hasOwn(session, 'NSFW同意')) continue;
                 const consent = validateNsfwConsent(session.NSFW同意);
-                const next = consent.ok && isActiveNsfwConsent(consent.value)
-                    ? closeNsfwConsent(consent.value, '已撤回')
+                const next = consent.ok && consent.value.状态 !== '未确认'
+                    ? closeNsfwConsent(consent.value, '已撤回') ?? createEmptyNsfwConsent()
                     : consent.ok ? null : createEmptyNsfwConsent();
                 if (next) operations.push({
                     op: 'replace', path: encodeJsonPointer(['会话', sessionUid, 'NSFW同意']), value: next,
@@ -2394,17 +2848,37 @@ export function validateControlledPatchWhitelist(patch) {
             && Array.isArray(operation.value.最近消息) && operation.value.最近消息.length === 0
             && operation.value.对话层数 === 0 && isControlledConversationSummary(operation.value.总结)
             && operation.value.已确认边界 === '' && operation.value.已确认承诺 === ''
-            && isEmptyNsfwConsent(operation.value.NSFW同意)) continue;
+            && isEmptyNsfwConsent(operation.value.NSFW同意)
+            && validateRealisticChatState(operation.value.拟真聊天).ok) continue;
 
         const chatNsfwConsent = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/NSFW同意$/u.exec(path);
         if ((operation.op === 'add' || operation.op === 'replace') && chatNsfwConsent
             && isChatSessionUid(chatNsfwConsent[1]) && validateNsfwConsent(operation.value).ok) continue;
 
+        const realisticChat = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/拟真聊天$/u.exec(path);
+        if ((operation.op === 'add' || operation.op === 'replace') && realisticChat
+            && isChatSessionUid(realisticChat[1]) && validateRealisticChatState(operation.value).ok) continue;
+        const realisticSchedule = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/拟真聊天\/(回复触发时间|主动触发时间|最近主动触发时间)$/u.exec(path);
+        if (operation.op === 'replace' && realisticSchedule && isChatSessionUid(realisticSchedule[1])
+            && (operation.value === '' || parsePhoneTimestamp(operation.value) !== null)) continue;
+        const realisticMarker = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/拟真聊天\/最近处理玩家消息UID$/u.exec(path);
+        if (operation.op === 'replace' && realisticMarker && isChatSessionUid(realisticMarker[1])
+            && (operation.value === '' || /^msg_chat_[A-Za-z0-9_-]{1,64}_p_[1-9]\d{0,8}$/u.test(operation.value))) continue;
+        const realisticConsentRevision = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/拟真聊天\/待回复同意修订号$/u.exec(path);
+        if (operation.op === 'replace' && realisticConsentRevision && isChatSessionUid(realisticConsentRevision[1])
+            && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 999999) continue;
+        const realisticPendingAdd = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/拟真聊天\/待投递消息\/-$/u.exec(path);
+        if (operation.op === 'add' && realisticPendingAdd && isChatSessionUid(realisticPendingAdd[1])
+            && validatePendingRealisticMessage(operation.value).ok) continue;
+        const realisticPendingRemove = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/拟真聊天\/待投递消息\/(0|[1-9]\d*)$/u.exec(path);
+        if (operation.op === 'remove' && realisticPendingRemove && isChatSessionUid(realisticPendingRemove[1])) continue;
+
         const chatMessagePath = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/最近消息\/-$/u.exec(path);
         if (operation.op === 'add' && chatMessagePath && isChatSessionUid(chatMessagePath[1]) && ownRecord(operation.value)
             && ['玩家', '角色', '系统'].includes(operation.value.发送者) && typeof operation.value.消息UID === 'string'
             && typeof operation.value.内容 === 'string' && operation.value.内容.length > 0 && operation.value.内容.length <= MAX_CHAT_MESSAGE_LENGTH
-            && operation.value.时间 === '' && Number.isInteger(operation.value.层数) && operation.value.层数 >= 1 && operation.value.层数 <= 999999) continue;
+            && (operation.value.时间 === '' || parsePhoneTimestamp(operation.value.时间) !== null)
+            && Number.isInteger(operation.value.层数) && operation.value.层数 >= 1 && operation.value.层数 <= 999999) continue;
         const chatMessageTrim = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/最近消息\/0$/u.exec(path);
         if (operation.op === 'remove' && chatMessageTrim && isChatSessionUid(chatMessageTrim[1])) continue;
         const chatLayerCount = /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/对话层数$/u.exec(path);
@@ -2473,6 +2947,249 @@ function isKnownAdultInState(state, uid) {
     return assertKnownAdult(state, uid).ok;
 }
 
+function exactPatchMatch(expected, patch) {
+    return expected?.ok === true && JSON.stringify(expected.value?.patch ?? expected.value) === JSON.stringify(patch);
+}
+
+function phoneMinuteDifference(later, earlier) {
+    const laterMs = parsePhoneTimestamp(later);
+    const earlierMs = parsePhoneTimestamp(earlier);
+    if (laterMs === null || earlierMs === null) return null;
+    const difference = (laterMs - earlierMs) / 60_000;
+    return Number.isInteger(difference) ? difference : null;
+}
+
+function realisticTimingCandidates(pendingOperations, nextProactiveAt, triggerDueAt, replyCount) {
+    const pending = pendingOperations.map((operation) => operation.value);
+    const betweenReplyMinutes = [];
+    if (replyCount > 1) {
+        const roleMessages = pending.filter((message) => message?.发送者 === '角色');
+        if (roleMessages.length !== replyCount) return [];
+        for (let index = 1; index < roleMessages.length; index += 1) {
+            const difference = phoneMinuteDifference(roleMessages[index].时间, roleMessages[index - 1].时间);
+            if (!Number.isInteger(difference) || difference < 5 || difference > 20 || difference % 5 !== 0) return [];
+            betweenReplyMinutes.push(difference);
+        }
+    }
+    const candidates = [];
+    if (pending.length) {
+        const lastDeliveryAt = pending.at(-1)?.时间;
+        const nextProactiveMinutes = phoneMinuteDifference(nextProactiveAt, lastDeliveryAt);
+        if (!Number.isInteger(nextProactiveMinutes) || nextProactiveMinutes < 60 || nextProactiveMinutes > 360 || nextProactiveMinutes % 5 !== 0) return [];
+        for (let firstDelayMinutes = 5; firstDelayMinutes <= 30; firstDelayMinutes += 5) {
+            const generationTime = addPhoneMinutes(pending[0].时间, -firstDelayMinutes);
+            if (generationTime && isPhoneTimestampDue(triggerDueAt, generationTime)) candidates.push({
+                generationTime,
+                timing: { firstDelayMinutes, betweenReplyMinutes, nextProactiveMinutes },
+            });
+        }
+        return candidates;
+    }
+    for (let nextProactiveMinutes = 60; nextProactiveMinutes <= 360; nextProactiveMinutes += 5) {
+        const generationTime = addPhoneMinutes(nextProactiveAt, -nextProactiveMinutes);
+        if (generationTime && isPhoneTimestampDue(triggerDueAt, generationTime)) candidates.push({
+            generationTime,
+            timing: { firstDelayMinutes: 5, betweenReplyMinutes: [], nextProactiveMinutes },
+        });
+    }
+    return candidates;
+}
+
+function relationshipDeltaFromPatch(state, patch, npcUid) {
+    const relationship = ownRecord(roleAt(state, npcUid)?.与玩家关系);
+    const delta = {};
+    for (const field of RELATIONSHIP_VALUE_FIELDS) {
+        const change = patch.find((operation) => operation?.op === 'replace'
+            && operation.path === encodeJsonPointer(['角色池', npcUid, '与玩家关系', field]));
+        if (change) {
+            if (!Number.isInteger(relationship?.[field])) return null;
+            delta[field] = change.value - relationship[field];
+        } else delta[field] = 0;
+    }
+    return delta;
+}
+
+function realisticResponseAssessmentCandidates(state, patch, npcUid, mode) {
+    const assessments = [{ kind: 'none', intensity: 0, direction: 'none' }];
+    for (const kind of allowedAssessmentKinds(mode)) {
+        if (kind === 'none') continue;
+        for (const direction of ['increase', 'decrease']) {
+            for (let intensity = 1; intensity <= 3; intensity += 1) assessments.push({ kind, intensity, direction });
+        }
+    }
+    const pendingCandidate = selectPendingBodyRelationshipCandidate(state, npcUid);
+    const bodyCandidateEventIds = pendingCandidate.ok && pendingCandidate.value?.事件ID
+        ? ['', pendingCandidate.value.事件ID] : [''];
+    const hasSfwDecisionWrite = patch.some((operation) => /^\/关系叙事\/[^/]+\/进程\/(?:SFW理解已检查|SFW主动揭示已触发|SFW心动已解锁|SFW双轨结局已解锁)$/u.test(operation?.path ?? ''));
+    const hasSfwResolutionWrite = patch.some((operation) => /^\/关系叙事\/[^/]+\/进程\/关系结束状态$/u.test(operation?.path ?? '')
+        && ['深度朋友', '恋人', '各自成长'].includes(operation.value));
+    const insightAssessments = mode === 'SFW' && hasSfwDecisionWrite ? SFW_INSIGHT_ASSESSMENT_KINDS : ['none'];
+    const resolutionAssessments = mode === 'SFW' && hasSfwResolutionWrite ? SFW_RESOLUTION_ASSESSMENT_KINDS : ['none'];
+    const safetyAssessments = mode === 'NSFW' ? NSFW_SAFETY_ASSESSMENT_KINDS : ['none'];
+    const consentAssessments = mode === 'NSFW' ? NSFW_CONSENT_ASSESSMENT_KINDS : ['none'];
+    const candidates = [];
+    for (const bondAssessment of assessments) for (const bodyEventReview of BODY_EVENT_REVIEW_STATES) {
+        for (const nsfwSafetyAssessment of safetyAssessments) for (const nsfwConsentAssessment of consentAssessments) {
+            for (const bodyCandidateEventId of bodyCandidateEventIds) for (const sfwInsightAssessment of insightAssessments) {
+                for (const sfwResolutionAssessment of resolutionAssessments) candidates.push({
+                    bondAssessment, bodyEventReview, nsfwSafetyAssessment, nsfwConsentAssessment,
+                    bodyCandidateEventId, sfwInsightAssessment, sfwResolutionAssessment,
+                });
+            }
+        }
+    }
+    return candidates;
+}
+
+function validateExactRealisticPrivateChatTransition(state, patch) {
+    const backfill = buildRealisticPrivateChatBackfillPatch(state);
+    if (exactPatchMatch(backfill, patch)) return true;
+
+    const wholeState = patch.length === 1
+        ? /^\/会话\/(chat_[A-Za-z0-9_-]{1,64})\/拟真聊天$/u.exec(patch[0]?.path ?? '') : null;
+    if (wholeState && patch[0].op === 'replace') {
+        const sessionUid = wholeState[1];
+        const session = ownRecord(state.会话)?.[sessionUid];
+        const npcUid = ownRecord(session)?.对象UID;
+        const next = validateRealisticChatState(patch[0].value);
+        if (isNpcUid(npcUid) && next.ok) {
+            const phoneTime = next.value.启用 ? addPhoneMinutes(next.value.主动触发时间, -60) : '2000-01-01 00:00';
+            if (exactPatchMatch(buildToggleRealisticPrivateChatPatch(state, {
+                sessionUid, npcUid, enabled: next.value.启用, phoneTime,
+            }), patch)) return true;
+        }
+    }
+
+    const playerOperation = patch.find((operation) => operation?.op === 'add'
+        && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}\/最近消息\/-$/u.test(operation.path)
+        && operation.value?.发送者 === '玩家' && parsePhoneTimestamp(operation.value?.时间) !== null);
+    if (playerOperation) {
+        const sessionUid = playerOperation.path.split('/')[2];
+        const session = ownRecord(state.会话)?.[sessionUid];
+        const npcUid = ownRecord(session)?.对象UID;
+        const onlySfw = deriveRelationshipSafetyState(ownRecord(ownRecord(state.关系叙事)?.[npcUid])?.进程).onlySfw;
+        const requiresConsent = currentContentMode(state) === 'NSFW' && !onlySfw;
+        const expected = buildAppendRealisticPrivateChatPlayerMessagePatch(state, {
+            sessionUid,
+            npcUid,
+            playerMessage: playerOperation.value.内容,
+            phoneTime: playerOperation.value.时间,
+            turnConsentConfirmed: requiresConsent,
+            nsfwConsentReferenceAtSend: requiresConsent ? nsfwConsentReference(session?.NSFW同意) : null,
+        });
+        if (exactPatchMatch(expected, patch)) return true;
+    }
+
+    const pendingRemovals = patch.filter((operation) => operation?.op === 'remove'
+        && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}\/拟真聊天\/待投递消息\/(?:0|[1-9]\d*)$/u.test(operation.path));
+    if (pendingRemovals.length) {
+        const sessionUid = pendingRemovals[0].path.split('/')[2];
+        const session = ownRecord(state.会话)?.[sessionUid];
+        const npcUid = ownRecord(session)?.对象UID;
+        const delivered = patch.filter((operation) => operation?.op === 'add'
+            && operation.path === encodeJsonPointer(['会话', sessionUid, '最近消息', '-']));
+        const phoneTime = delivered.at(-1)?.value?.时间;
+        if (exactPatchMatch(buildDeliverRealisticPrivateChatMessagesPatch(state, { sessionUid, npcUid, phoneTime }), patch)) return true;
+    }
+
+    const processedMarker = patch.find((operation) => operation?.op === 'replace'
+        && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}\/拟真聊天\/最近处理玩家消息UID$/u.test(operation.path));
+    if (processedMarker) {
+        const sessionUid = processedMarker.path.split('/')[2];
+        const session = ownRecord(state.会话)?.[sessionUid];
+        const npcUid = ownRecord(session)?.对象UID;
+        const pendingPlayers = listPendingRealisticPlayerMessages(session);
+        const pendingOperations = patch.filter((operation) => operation?.op === 'add'
+            && operation.path === encodeJsonPointer(['会话', sessionUid, '拟真聊天', '待投递消息', '-']));
+        const roleMessages = pendingOperations.filter((operation) => operation.value?.发送者 === '角色');
+        const systemMessages = pendingOperations.filter((operation) => operation.value?.发送者 === '系统');
+        const visibleBlockedNotice = patch.find((operation) => operation?.op === 'add'
+            && operation.path === encodeJsonPointer(['会话', sessionUid, '最近消息', '-'])
+            && operation.value?.发送者 === '系统' && operation.value?.内容 === BLOCKED_CHAT_NOTICE
+            && parsePhoneTimestamp(operation.value?.时间) !== null);
+        const replies = roleMessages.length ? roleMessages.map((operation) => operation.value.内容)
+            : systemMessages.length || visibleBlockedNotice ? ['拟真调度占位'] : [];
+        const relationship = relationshipDeltaFromPatch(state, patch, npcUid);
+        const proactiveOperation = patch.find((operation) => operation?.op === 'replace'
+            && operation.path === encodeJsonPointer(['会话', sessionUid, '拟真聊天', '主动触发时间']));
+        const blocked = patch.some((operation) => operation?.op === 'replace'
+            && operation.path === encodeJsonPointer(['会话', sessionUid, '状态']) && operation.value === '已拉黑');
+        const onlySfwAtRequest = deriveRelationshipSafetyState(ownRecord(ownRecord(state.关系叙事)?.[npcUid])?.进程).onlySfw;
+        const mode = onlySfwAtRequest ? 'SFW' : currentContentMode(state);
+        const timingProactiveAt = proactiveOperation?.value || (blocked && visibleBlockedNotice
+            ? addPhoneMinutes(visibleBlockedNotice.value.时间, 60) : '');
+        if (isNpcUid(npcUid) && pendingPlayers.ok && relationship && proactiveOperation && timingProactiveAt) {
+            const timingCandidates = realisticTimingCandidates(
+                pendingOperations, timingProactiveAt, session.拟真聊天.回复触发时间, replies.length,
+            );
+            const assessmentCandidates = realisticResponseAssessmentCandidates(state, patch, npcUid, mode);
+            const requiresConsent = currentContentMode(state) === 'NSFW' && !onlySfwAtRequest;
+            for (const timingCandidate of timingCandidates) for (const assessment of assessmentCandidates) {
+                const expected = buildRealisticPrivateChatResponsePatch(state, {
+                    sessionUid,
+                    npcUid,
+                    response: {
+                        replies,
+                        relationship,
+                        timing: timingCandidate.timing,
+                        bondAssessment: assessment.bondAssessment,
+                        bodyEventReview: assessment.bodyEventReview,
+                        sfwInsightAssessment: assessment.sfwInsightAssessment,
+                        sfwResolutionAssessment: assessment.sfwResolutionAssessment,
+                        nsfwSafetyAssessment: assessment.nsfwSafetyAssessment,
+                        nsfwConsentAssessment: assessment.nsfwConsentAssessment,
+                    },
+                    generationTime: timingCandidate.generationTime,
+                    playerMessageUids: pendingPlayers.value.map((item) => item.messageUid),
+                    bodyCandidateEventId: assessment.bodyCandidateEventId,
+                    onlySfwAtRequest,
+                    turnConsentConfirmed: requiresConsent,
+                    nsfwConsentReferenceAtRequest: requiresConsent ? nsfwConsentReference(session?.NSFW同意) : null,
+                });
+                if (exactPatchMatch(expected, patch)) return true;
+            }
+        }
+    }
+
+    const proactiveMarker = patch.find((operation) => operation?.op === 'replace'
+        && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}\/拟真聊天\/最近主动触发时间$/u.test(operation.path));
+    if (proactiveMarker) {
+        const sessionUid = proactiveMarker.path.split('/')[2];
+        const session = ownRecord(state.会话)?.[sessionUid];
+        const npcUid = ownRecord(session)?.对象UID;
+        const pendingOperations = patch.filter((operation) => operation?.op === 'add'
+            && operation.path === encodeJsonPointer(['会话', sessionUid, '拟真聊天', '待投递消息', '-']));
+        const replies = pendingOperations.map((operation) => operation.value?.内容);
+        const proactiveOperation = patch.find((operation) => operation?.op === 'replace'
+            && operation.path === encodeJsonPointer(['会话', sessionUid, '拟真聊天', '主动触发时间']));
+        if (isNpcUid(npcUid) && replies.length <= 3 && replies.every((reply) => typeof reply === 'string') && proactiveOperation?.value) {
+            for (const timingCandidate of realisticTimingCandidates(
+                pendingOperations, proactiveOperation.value, proactiveMarker.value, replies.length,
+            )) {
+                const expected = buildRealisticPrivateChatProactivePatch(state, {
+                    sessionUid,
+                    npcUid,
+                    response: {
+                        replies,
+                        relationship: Object.fromEntries(RELATIONSHIP_VALUE_FIELDS.map((field) => [field, 0])),
+                        timing: timingCandidate.timing,
+                        bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
+                        bodyEventReview: 'defer',
+                        sfwInsightAssessment: 'none',
+                        sfwResolutionAssessment: 'none',
+                        nsfwSafetyAssessment: 'none',
+                        nsfwConsentAssessment: 'none',
+                    },
+                    generationTime: timingCandidate.generationTime,
+                    triggerTime: proactiveMarker.value,
+                });
+                if (exactPatchMatch(expected, patch)) return true;
+            }
+        }
+    }
+    return false;
+}
+
 /**
  * Checks that a whitelisted patch still matches the exact, current state object.
  * This prevents stale buttons or forged commands from creating references to an
@@ -2482,6 +3199,10 @@ export function validateControlledPatchAgainstState(state, patch) {
     if (!ownRecord(state)) return fail('state_invalid');
     const allowed = validateControlledPatchWhitelist(patch);
     if (!allowed.ok) return allowed;
+    if (patch.some((operation) => /\/拟真聊天(?:\/|$)/u.test(operation?.path ?? ''))) {
+        return validateExactRealisticPrivateChatTransition(state, patch)
+            ? success(undefined) : fail('patch_not_exact_ui_transition');
+    }
 
     const moved = new Set();
     for (const operation of patch) {

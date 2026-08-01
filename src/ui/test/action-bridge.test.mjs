@@ -402,6 +402,111 @@ test('private chat runs model validation before one official MVU write transacti
     assert.doesNotMatch(wrappedPatch, /不得发送/u);
 });
 
+test('拟真私聊桥先落玩家消息，再由时钟调度生成并到点投递 AI 消息', async () => {
+    const initialState = matchedPrivateChatState();
+    const { mvu, data } = createMvu({ initialState, persistReplacement: true });
+    let phoneTime = '2026-08-02 12:00';
+    const modelCalls = [];
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null },
+        mvu,
+        eventEmit: async () => {},
+        phoneClock: { nowText: () => phoneTime },
+        settingsStore,
+        llmClient: {
+            async chat(request) {
+                modelCalls.push(request);
+                return {
+                    text: JSON.stringify({
+                        replies: ['我刚忙完，看到你前面两条了。', '伞后来找到了吗？'],
+                        relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+                        timing: { firstDelayMinutes: 5, betweenReplyMinutes: [5], nextProactiveMinutes: 120 },
+                        bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
+                        bodyEventReview: 'defer', sfwInsightAssessment: 'none', sfwResolutionAssessment: 'none',
+                        nsfwSafetyAssessment: 'none', nsfwConsentAssessment: 'none',
+                    }),
+                };
+            },
+        },
+    });
+
+    const enabled = await bridge.setRealisticPrivateChatMode({ sessionUid: 'chat_1', npcUid: 'npc_ava', enabled: true });
+    assert.equal(enabled.ok, true);
+    const first = await bridge.sendRealisticPrivateChatMessage({ sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '我出门了。' });
+    assert.equal(first.ok, true);
+    phoneTime = '2026-08-02 12:05';
+    const second = await bridge.sendRealisticPrivateChatMessage({ sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '结果忘带伞。' });
+    assert.equal(second.ok, true);
+    assert.equal(data.stat_data.会话.chat_1.最近消息.length, 2);
+    assert.equal(modelCalls.length, 0, '玩家发送不得同步等待模型');
+
+    phoneTime = '2026-08-02 12:15';
+    const planned = await bridge.runRealisticPrivateChatTick();
+    assert.equal(planned.ok, true);
+    assert.equal(planned.interactionOutcome, 'queued');
+    assert.equal(modelCalls.length, 1);
+    assert.equal(data.stat_data.会话.chat_1.最近消息.length, 2, '生成完成仍不得提前显示 AI 消息');
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.待投递消息.length, 2);
+
+    phoneTime = '2026-08-02 12:20';
+    const delivered = await bridge.runRealisticPrivateChatTick();
+    assert.equal(delivered.ok, true);
+    assert.deepEqual(data.stat_data.会话.chat_1.最近消息.map((message) => message.内容), [
+        '我出门了。', '结果忘带伞。', '我刚忙完，看到你前面两条了。',
+    ]);
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.待投递消息.length, 1);
+});
+
+test('拟真 NSFW 消息簇在重载后只凭发送时绑定的同意修订继续，并在计划提交后清零', async () => {
+    const initialState = matchedPrivateChatState('NSFW');
+    initialState.会话.chat_1.NSFW同意 = grantNsfwConsent(initialState.会话.chat_1.NSFW同意, { scopes: ['成人话题'], turns: 3 });
+    const { mvu, data } = createMvu({ initialState, persistReplacement: true });
+    let phoneTime = '2026-08-02 12:00';
+    const phoneClock = { nowText: () => phoneTime };
+    const firstBridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {}, phoneClock, settingsStore,
+    });
+    assert.equal((await firstBridge.setRealisticPrivateChatMode({ sessionUid: 'chat_1', npcUid: 'npc_ava', enabled: true })).ok, true);
+    assert.equal((await firstBridge.sendRealisticPrivateChatMessage({
+        sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '继续我们确认过的成人话题。', turnConsentConfirmed: true,
+    })).ok, true);
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.待回复同意修订号, 1);
+
+    // Recreate the bridge to prove the checkbox itself is not retained in memory;
+    // only the exact controlled consent revision bound at send time survives.
+    phoneTime = '2026-08-02 12:10';
+    const reloadedBridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {}, phoneClock, settingsStore,
+        llmClient: {
+            async chat() {
+                return { text: JSON.stringify({
+                    replies: ['我记得我们确认的范围，先慢一点聊。'],
+                    relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+                    timing: { firstDelayMinutes: 5, betweenReplyMinutes: [], nextProactiveMinutes: 120 },
+                    bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
+                    nsfwConsentAssessment: 'in_scope', nsfwSafetyAssessment: 'none', bodyEventReview: 'defer',
+                }) };
+            },
+        },
+    });
+    const planned = await reloadedBridge.runRealisticPrivateChatTick();
+    assert.equal(planned.ok, true);
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.待回复同意修订号, 0);
+    assert.equal(data.stat_data.会话.chat_1.NSFW同意.修订号, 2);
+    assert.equal(data.stat_data.会话.chat_1.NSFW同意.剩余轮数, 2);
+
+    // A safety-state change before delivery cancels the invisible queue and
+    // turns realistic mode off instead of revealing a stale NSFW reply.
+    data.stat_data.软件.内容模式 = 'SFW';
+    phoneTime = '2026-08-02 12:15';
+    const cancelled = await reloadedBridge.runRealisticPrivateChatTick();
+    assert.equal(cancelled.ok, true);
+    assert.equal(cancelled.stateChanged, true);
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.启用, false);
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.待投递消息.length, 0);
+    assert.equal(data.stat_data.会话.chat_1.最近消息.length, 1, '安全状态改变后不得显示排队中的 NSFW 回复');
+});
+
 test('private chat backfills only its missing relationship-narrative slot before generating a reply', async () => {
     const initialState = recommendationState();
     initialState.角色池 = {

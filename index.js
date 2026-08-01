@@ -17,12 +17,14 @@ import { createImageMatchCoordinator } from './src/images/image-match-coordinato
 import { createRemoteImageImporter } from './src/images/remote-image-import.js';
 import { createGroupForumStore } from './src/groups/group-forum-store.js';
 import { createHostExtensionUpdater } from './src/host-extension-update.js';
+import { createPhoneClock } from './src/chat/phone-clock.js';
 
 const EXTENSION_ROOT_ID = 'yuelema-phone-extension-root';
 const browserStorage = createBrowserSettingsStorage();
 const settingsStore = createSettingsStore({ storage: browserStorage });
 const characterLibrary = createCharacterTemplateLibraryStore({ storage: browserStorage });
 const playerAvatarStore = createPlayerAvatarStore({ storage: browserStorage });
+const phoneClock = createPhoneClock({ storage: browserStorage });
 
 /** @type {{ destroy: () => void } | null} */
 let appInstance = null;
@@ -184,6 +186,7 @@ export async function onActivate() {
         getContext,
         settingsStore,
         llmClient,
+        phoneClock,
         imageGenerationClient,
         imageMatchCoordinator,
         diagnosticLogger: globalThis.console,
@@ -192,6 +195,7 @@ export async function onActivate() {
         documentRef,
         rootId: EXTENSION_ROOT_ID,
         actionBridge,
+        phoneClock,
         settingsStore,
         llmClient,
         characterLibrary,

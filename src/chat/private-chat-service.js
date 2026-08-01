@@ -1,10 +1,11 @@
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
-import { normalizePrivateChatResponse, projectPrivateChatResponseDiagnostic, projectPrivateChatResponseError } from './private-chat-response.js';
+import { normalizePrivateChatResponse, normalizeRealisticPrivateChatResponse, projectPrivateChatResponseDiagnostic, projectPrivateChatResponseError } from './private-chat-response.js';
 import { projectPendingBodyRelationshipCandidate, selectPendingBodyRelationshipCandidate } from '../mvu/body-relationship-candidate.js';
 import { validateRelationshipNarrative } from '../mvu/relationship-narrative.js';
 import { deriveRelationshipSafetyState } from './relationship-progress.js';
 import { isActiveNsfwConsent, nsfwConsentReference, validateNsfwConsent } from '../mvu/nsfw-consent.js';
+import { listPendingRealisticPlayerMessages, validateRealisticChatState } from '../mvu/realistic-chat.js';
 import {
     DEFAULT_CHAT_SUMMARY_SETTINGS,
     listConversationSummaryRecords,
@@ -300,13 +301,48 @@ function validateConversationSummaryTarget({ state, sessionUid, npcUid } = {}) {
 
 /** Builds the only context disclosed to the private-chat fast model. Raw hidden-profile objects are never included;
  * the SFW branch may include only the current role's stage-cropped protected narrative. */
-export function buildPrivateChatContext({ state, sessionUid, npcUid, playerMessage, turnConsentConfirmed = false, summaryEnabled = false } = {}) {
-    const validated = validatePrivateChatRequest({ state, sessionUid, npcUid, playerMessage });
+function buildPrivateChatContextInternal({
+    state,
+    sessionUid,
+    npcUid,
+    playerMessage,
+    turnConsentConfirmed = false,
+    summaryEnabled = false,
+    realisticTrigger = '',
+    phoneTime = '',
+} = {}) {
+    const realistic = realisticTrigger === 'reply' || realisticTrigger === 'proactive';
+    const target = realistic ? adultMatchedSession(state, sessionUid, npcUid) : null;
+    if (target && !target.ok) return target;
+    let realisticPlayerMessages = [];
+    let combinedPlayerMessage = playerMessage;
+    if (realistic) {
+        const realisticState = validateRealisticChatState(target.session.拟真聊天);
+        if (!realisticState.ok) return realisticState;
+        if (!realisticState.value.启用) return { ok: false, code: 'private_chat_realistic_disabled' };
+        if (realisticTrigger === 'reply') {
+            const pending = listPendingRealisticPlayerMessages(target.session);
+            if (!pending.ok) return pending;
+            if (!pending.value.length) return { ok: false, code: 'private_chat_realistic_no_pending_player_messages' };
+            realisticPlayerMessages = [...pending.value];
+            combinedPlayerMessage = realisticPlayerMessages.map((message) => message.content).join(' ');
+        } else {
+            realisticPlayerMessages = [];
+            combinedPlayerMessage = '';
+        }
+    }
+    const validated = realistic
+        ? { ok: true, value: Object.freeze({ ...target, playerMessage: combinedPlayerMessage }) }
+        : validatePrivateChatRequest({ state, sessionUid, npcUid, playerMessage });
     if (!validated.ok) return validated;
     const { session, npc, relationship, onlySfw, playerMessage: message } = validated.value;
     const pendingBodyCandidate = selectPendingBodyRelationshipCandidate(state, npcUid);
     if (!pendingBodyCandidate.ok) return pendingBodyCandidate;
-    const contentMode = state.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+    // Proactive messages never inherit NSFW permission: there is no current
+    // player turn confirmation to authorize explicit adult content.
+    const contentMode = realisticTrigger === 'proactive'
+        ? 'SFW'
+        : state.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
     const narrative = state.关系叙事[npcUid];
     const requiresNsfwConsent = contentMode === 'NSFW' && onlySfw !== true;
     let consentReference = null;
@@ -344,6 +380,33 @@ export function buildPrivateChatContext({ state, sessionUid, npcUid, playerMessa
         storyMemory: projectStoryMemoryContext(state, npcUid),
         playerMessage: message,
     };
+    if (realistic) {
+        const cueSeed = `${sessionUid}|${phoneTime}|${realisticTrigger}|${realisticPlayerMessages.map((item) => item.content).join('|')}`;
+        let cueHash = 2166136261;
+        for (const character of cueSeed) cueHash = Math.imul(cueHash ^ character.codePointAt(0), 16777619) >>> 0;
+        const replyCues = [
+            '偏向 1-2 条：先接住最值得回应的一点，再自然带出角色此刻自己的小事。',
+            '偏向 2-4 条：允许玩家话题与角色的新话题并行，不必逐条回答。',
+            '偏向 3-6 条短连发：像想到一半又补一句，但不要重复同一意思。',
+            '偏向 1 条稍完整的消息；若当前确实不适合回应，也可自然沉默。',
+            '偏向 0-2 条：可以只回应消息簇的一部分，把未回应部分留到以后。',
+        ];
+        const proactiveCues = [
+            '偏向 1 条随手分享的生活切片，不要求玩家立刻回应。',
+            '偏向 2-3 条短连发，用一个新鲜话题自然开场。',
+            '偏向续起一条较早的话题，同时补充角色自己的近况。',
+            '这次可以保持沉默；若发信，只发一条真正有由头的消息。',
+        ];
+        base.realisticChat = Object.freeze({
+            trigger: realisticTrigger,
+            phoneTime: cleanText(phoneTime, 32),
+            rhythmCue: (realisticTrigger === 'proactive' ? proactiveCues : replyCues)[cueHash % (realisticTrigger === 'proactive' ? proactiveCues.length : replyCues.length)],
+            playerMessages: Object.freeze(realisticPlayerMessages.map((item) => Object.freeze({
+                content: item.content,
+                time: item.time,
+            }))),
+        });
+    }
     if (contentMode === 'SFW' || onlySfw === true) {
         base.sfwNarrative = projectSfwNarrativeContext(narrative, relationship);
     }
@@ -369,10 +432,19 @@ export function buildPrivateChatContext({ state, sessionUid, npcUid, playerMessa
         // It only lets the later latest-state build reject a stale candidate.
         bodyCandidateEventId: pendingBodyCandidate.value?.事件ID ?? '',
         nsfwConsentReferenceAtRequest: consentReference,
+        realisticPlayerMessages: Object.freeze(realisticPlayerMessages),
     };
 }
 
-function makeMessages(context, promptPreset) {
+export function buildPrivateChatContext(options = {}) {
+    return buildPrivateChatContextInternal(options);
+}
+
+export function buildRealisticPrivateChatContext(options = {}) {
+    return buildPrivateChatContextInternal(options);
+}
+
+function makeMessages(context, promptPreset, { realistic = false } = {}) {
     const preset = renderPromptPreset(promptPreset);
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
@@ -382,8 +454,18 @@ function makeMessages(context, promptPreset) {
             : context.onlySfw
                 ? '当前关系已由玩家切换为“仅 SFW”：继续正常日常社交、友情与不露骨的甜蜜调情；不得生成或推进成人话题，不得把暂停成人话题理解为全关系结束。'
             : '当前为 SFW：本模式保持日常社交尺度，以自然亲近、甜蜜调情的线上聊天为主。',
-        '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"bondAssessment":{"kind":"模式允许的分类","intensity":0..3整数,"direction":"none|increase|decrease"},"sfwInsightAssessment":"none|direct_understanding|not_yet|active_reveal|post_reveal_support","sfwResolutionAssessment":"none|romance_confirmed|romance_declined|growth_confirmed","nsfwConsentAssessment":"none|in_scope|withdrawn|out_of_scope|unclear","nsfwSafetyAssessment":"none|ignored_refusal_or_withdrawal|known_boundary_conflict|coercion_or_nonconsensual|privacy_violation","bodyEventReview":"defer|confirm|decline","imageDirectives":[{"replyIndex":0,"directive":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。所有 assessment、bodyEventReview 与 imageDirectives 均可省略。',
-        'replies 必须是 1-6 条自然、简短、可分别显示为聊天气泡的字符串；每条内部禁止换行，全部消息用单个空格连接后的总长度不得超过 600 字。优先拆成符合真实即时聊天节奏的多条短消息。',
+        realistic
+            ? '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"timing":{"firstDelayMinutes":5到30的5分钟倍数,"betweenReplyMinutes":[每条后续消息5到20的5分钟倍数],"nextProactiveMinutes":60到360的5分钟倍数},"bondAssessment":{"kind":"模式允许的分类","intensity":0..3整数,"direction":"none|increase|decrease"},"sfwInsightAssessment":"none|direct_understanding|not_yet|active_reveal|post_reveal_support","sfwResolutionAssessment":"none|romance_confirmed|romance_declined|growth_confirmed","nsfwConsentAssessment":"none|in_scope|withdrawn|out_of_scope|unclear","nsfwSafetyAssessment":"none|ignored_refusal_or_withdrawal|known_boundary_conflict|coercion_or_nonconsensual|privacy_violation","bodyEventReview":"defer|confirm|decline","imageDirectives":[{"replyIndex":0,"directive":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。所有 assessment、bodyEventReview 与 imageDirectives 均可省略。'
+            : '只输出合法 JSON 对象，不得用 Markdown、代码块或解释。严格形状为：{"replies":["短消息1","短消息2"],"relationship":{"好感":-10..10整数,"信任":-10..10整数,"戒备":-10..10整数,"面基意愿":-10..10整数},"bondAssessment":{"kind":"模式允许的分类","intensity":0..3整数,"direction":"none|increase|decrease"},"sfwInsightAssessment":"none|direct_understanding|not_yet|active_reveal|post_reveal_support","sfwResolutionAssessment":"none|romance_confirmed|romance_declined|growth_confirmed","nsfwConsentAssessment":"none|in_scope|withdrawn|out_of_scope|unclear","nsfwSafetyAssessment":"none|ignored_refusal_or_withdrawal|known_boundary_conflict|coercion_or_nonconsensual|privacy_violation","bodyEventReview":"defer|confirm|decline","imageDirectives":[{"replyIndex":0,"directive":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。所有 assessment、bodyEventReview 与 imageDirectives 均可省略。',
+        realistic
+            ? 'replies 可为 0-6 条自然短消息；0 条表示这次自然沉默。每条内部禁止换行，全部消息合计不得超过 600 字。betweenReplyMinutes 数量必须恰好比 replies 少一；不要让每轮气泡数固定。'
+            : 'replies 必须是 1-6 条自然、简短、可分别显示为聊天气泡的字符串；每条内部禁止换行，全部消息用单个空格连接后的总长度不得超过 600 字。优先拆成符合真实即时聊天节奏的多条短消息。',
+        realistic && context.realisticChat?.trigger === 'reply'
+            ? '这是拟真消息簇回复。realisticChat.playerMessages 是玩家在你回复前连续发来的若干条；realisticChat.rhythmCue 是本轮由本地节奏器给出的表达偏向，应在不违背人设、安全和事实的前提下采用。可回应其中一部分，也可同时分享自己的事、顺势换题或让两个话题短暂并行，不要逐条机械问答。只有确实自然时才沉默；沉默时 relationship、bondAssessment、SFW 判断、bodyEventReview 和 imageDirectives 必须保持中性。'
+            : '',
+        realistic && context.realisticChat?.trigger === 'proactive'
+            ? '这是没有玩家新消息的主动发信机会。结合当前小手机时刻、公开人设、realisticChat.rhythmCue 和已发生聊天，决定发 0-3 条自然消息：可分享眼前小事、续起旧话题或抛出新话题，但不得假装玩家刚刚说过什么。主动消息不得改变任何关系建议、阶段判断、正文候选、同意或安全状态：relationship 全为 0，bondAssessment 为 none，所有 assessment 为 none，bodyEventReview 为 defer。当前机会始终按 SFW 尺度，不得主动推进露骨成人内容。'
+            : '',
         '把角色当成有自己生活的真人来回：TA 有正在忙的事、今天的心情、想到一半突然换的话题；可以主动分享此刻的小事（刚点的外卖、窗外的雨、循环的歌），也可以用公开资料里的兴趣自然抛出新话题引子（周末计划、最近看的剧、想去的店），而不是永远被动应答；语气、口头禅和标点习惯要贴合其性格标签与沟通风格标签。',
         'playerPublicProfile 会提供玩家已公开的城市、距离范围、寻找意图、简介、兴趣标签、生活方式标签、性格标签和沟通风格标签。字段为空字符串或空数组时，表示玩家未提供该项：不得猜测、补全或编造；仅在与本轮聊天自然相关时使用非空公开资料。',
         'storyMemory.currentObjectMemory 是当前角色与玩家在线下正文中的亲历记忆；storyMemory.otherObjectMemories 是玩家与其他对象发生之事的第三人称分区，每项 objectLabel 与 nickname 只用于防止对象混淆。可以据此知道玩家和别人发生过什么，但绝不能声称当前角色当时在场、把其他对象的台词/同意/拒绝/身体经历当成自己的共同回忆，或混淆对象身份。空记忆表示尚无已确认的正文经历，不得补写。正文记忆只用于自然回复连续性，不能作为 bondAssessment 的依据，也不能作为关系三值的依据；不得从自由文本反推、补写或伪造正文关系候选。',
@@ -404,7 +486,7 @@ function makeMessages(context, promptPreset) {
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },
-        { role: 'user', content: `请基于受限的已匹配聊天上下文，仅回复本轮消息：\n${JSON.stringify(context)}` },
+        { role: 'user', content: `${realistic ? '请基于受限的拟真聊天上下文生成本次消息计划' : '请基于受限的已匹配聊天上下文，仅回复本轮消息'}：\n${JSON.stringify(context)}` },
     ];
 }
 
@@ -522,6 +604,109 @@ export async function generatePrivateChatReply({ state, sessionUid, npcUid, play
         const codecDiagnostic = projectPrivateChatResponseDiagnostic(error);
         if (codecDiagnostic) recordDiagnostic('private_chat', sessionUid, { stage: '响应校验', ...codecDiagnostic });
         else recordDiagnostic('private_chat', sessionUid, { stage: '模型请求', code: toPublicLlmError(error).code, error: describeDiagnosticError(error), actual: llmErrorActual(error) });
+        try {
+            const projected = projectPrivateChatResponseError(error);
+            if (projected.code !== 'private_chat_response_invalid') return { ok: false, ...projected };
+        } catch { /* use public LLM error below */ }
+        const publicError = toPublicLlmError(error);
+        return { ok: false, code: publicError.code, message: publicError.message };
+    }
+}
+
+/**
+ * Generates a validated realistic-chat plan without writing MVU. The caller
+ * must re-read state and atomically queue the plan through the controlled
+ * patch builder. `trigger` is exactly reply or proactive.
+ */
+export async function generateRealisticPrivateChatReply({
+    state,
+    sessionUid,
+    npcUid,
+    trigger,
+    phoneTime,
+    turnConsentConfirmed = false,
+    settingsStore,
+    llmClient,
+    signal,
+} = {}) {
+    if (!['reply', 'proactive'].includes(trigger)) {
+        return { ok: false, code: 'private_chat_realistic_trigger_invalid', message: '拟真聊天触发类型无效。' };
+    }
+    const summarySettings = readSummarySettings(settingsStore);
+    const builtContext = buildRealisticPrivateChatContext({
+        state,
+        sessionUid,
+        npcUid,
+        realisticTrigger: trigger,
+        phoneTime,
+        turnConsentConfirmed: trigger === 'reply' && turnConsentConfirmed,
+        summaryEnabled: summarySettings.enabled,
+    });
+    if (!builtContext.ok) {
+        recordDiagnostic('private_chat', sessionUid, { stage: '拟真请求校验', code: builtContext.code, hint: '会话、消息簇、调度或同意状态未通过生成前校验' });
+        return { ok: false, code: builtContext.code, message: '当前拟真聊天任务暂时不能继续。' };
+    }
+    if (!settingsStore || typeof settingsStore.resolveFunction !== 'function') {
+        recordDiagnostic('private_chat', sessionUid, { stage: '设置读取', code: 'private_chat_settings_unavailable', hint: '设置存储不可用，无法解析“聊天”功能绑定' });
+        return { ok: false, code: 'private_chat_settings_unavailable', message: '私聊设置暂不可用。' };
+    }
+    if (!llmClient || typeof llmClient.chat !== 'function') {
+        recordDiagnostic('private_chat', sessionUid, { stage: '连接检查', code: 'private_chat_llm_unavailable', hint: '浏览器侧未注入可用的模型客户端' });
+        return { ok: false, code: 'private_chat_llm_unavailable', message: '当前浏览器未提供私聊模型连接。' };
+    }
+
+    let resolved;
+    try { resolved = settingsStore.resolveFunction('chat', { contentMode: builtContext.context.contentMode }); }
+    catch (error) {
+        recordDiagnostic('private_chat', sessionUid, { stage: '设置解析', code: 'private_chat_settings_invalid', error: describeDiagnosticError(error), hint: '“聊天”功能绑定解析抛出异常' });
+        return { ok: false, code: 'private_chat_settings_invalid', message: '私聊预设无效，请检查设置。' };
+    }
+    if (!resolved.connectionPreset) {
+        recordDiagnostic('private_chat', sessionUid, { stage: '连接检查', code: 'private_chat_connection_missing', field: 'chat', hint: '“聊天”功能未绑定连接预设，也没有默认连接' });
+        return { ok: false, code: 'private_chat_connection_missing', message: '请先为“聊天”绑定连接预设或设置默认连接。' };
+    }
+
+    try {
+        const completion = await llmClient.chat({
+            preset: resolved.connectionPreset,
+            messages: makeMessages(builtContext.context, resolved.promptPreset, { realistic: true }),
+            signal,
+        });
+        const parsed = parseResponseJson(completion?.text);
+        if (!parsed) {
+            recordDiagnostic('private_chat', sessionUid, { stage: '拟真响应解析', code: 'private_chat_invalid_json', expected: '合法 JSON 对象', actual: describeUnparsableResponse(completion?.text) });
+            return { ok: false, code: 'private_chat_invalid_json', message: '快速模型没有返回可用的拟真聊天计划。' };
+        }
+        const normalized = normalizeRealisticPrivateChatResponse(parsed, {
+            contentMode: builtContext.context.onlySfw ? 'SFW' : builtContext.context.contentMode,
+        });
+        if (trigger === 'proactive') {
+            const neutralRelationship = ['好感', '信任', '戒备', '面基意愿'].every((field) => normalized.relationship[field] === 0);
+            if (normalized.replies.length > 3 || !neutralRelationship || normalized.bondAssessment.kind !== 'none'
+                || normalized.sfwInsightAssessment !== 'none' || normalized.sfwResolutionAssessment !== 'none'
+                || normalized.nsfwSafetyAssessment !== 'none' || normalized.nsfwConsentAssessment !== 'none'
+                || normalized.bodyEventReview !== 'defer') {
+                recordDiagnostic('private_chat', sessionUid, { stage: '拟真响应校验', code: 'private_chat_realistic_proactive_not_neutral', hint: '主动消息不得携带关系、同意、安全或正文结算建议' });
+                return { ok: false, code: 'private_chat_realistic_proactive_not_neutral', message: '主动消息计划包含不允许的状态建议，已拒绝。' };
+            }
+        }
+        const lastPlayer = builtContext.realisticPlayerMessages.at(-1) ?? null;
+        return {
+            ok: true,
+            trigger,
+            response: normalized,
+            playerMessage: builtContext.context.playerMessage,
+            playerMessageUids: Object.freeze(builtContext.realisticPlayerMessages.map((message) => message.messageUid)),
+            lastPlayerMessageUid: lastPlayer?.messageUid ?? '',
+            bodyCandidateEventId: trigger === 'reply' ? builtContext.bodyCandidateEventId : '',
+            onlySfwAtRequest: builtContext.context.onlySfw,
+            turnConsentConfirmed: trigger === 'reply' && builtContext.context.nsfwConsent.currentTurnConfirmed,
+            nsfwConsentReferenceAtRequest: trigger === 'reply' ? builtContext.nsfwConsentReferenceAtRequest : null,
+        };
+    } catch (error) {
+        const codecDiagnostic = projectPrivateChatResponseDiagnostic(error);
+        if (codecDiagnostic) recordDiagnostic('private_chat', sessionUid, { stage: '拟真响应校验', ...codecDiagnostic });
+        else recordDiagnostic('private_chat', sessionUid, { stage: '拟真模型请求', code: toPublicLlmError(error).code, error: describeDiagnosticError(error), actual: llmErrorActual(error) });
         try {
             const projected = projectPrivateChatResponseError(error);
             if (projected.code !== 'private_chat_response_invalid') return { ok: false, ...projected };

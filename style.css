@@ -993,6 +993,16 @@
     user-select: none;
 }
 .yl-phone-header-actions { display: flex; align-items: center; gap: var(--yl-space-2); flex: 0 0 auto; }
+.yl-phone-clock {
+    min-width: 3.4em;
+    color: var(--yl-text);
+    font-family: var(--yl-font-data);
+    font-size: var(--yl-type-caption);
+    font-variant-numeric: tabular-nums;
+    font-weight: 760;
+    letter-spacing: .04em;
+    text-align: center;
+}
 .yl-phone-drag-hint {
     display: inline-flex;
     align-items: center;
@@ -2290,6 +2300,27 @@
 }
 /* 「…」菜单收纳生图控件（§7.2.6）：设置钮 + 自动生图开关排成菜单分组 */
 .yl-private-chat-more-menu { min-width: 216px; }
+.yl-private-chat-realistic-setting {
+    display: grid;
+    gap: 5px;
+    margin-bottom: var(--yl-space-1);
+    padding: 9px 10px var(--yl-space-2);
+    border-bottom: 1px solid var(--yl-border);
+}
+.yl-private-chat-realistic-label { display: flex; align-items: center; justify-content: space-between; gap: var(--yl-space-3); cursor: pointer; }
+.yl-private-chat-realistic-copy { display: grid; min-width: 0; gap: 2px; }
+.yl-private-chat-realistic-copy strong { color: var(--yl-text); font-size: var(--yl-type-caption); }
+.yl-private-chat-realistic-copy small,
+.yl-private-chat-realistic-status { color: var(--yl-text-2); font-size: var(--yl-type-xs); line-height: 1.45; }
+.yl-private-chat-realistic-label input[role="switch"] {
+    width: 38px;
+    height: 22px;
+    flex: 0 0 auto;
+    accent-color: var(--yl-accent);
+    cursor: pointer;
+}
+.yl-private-chat-realistic-label input[role="switch"]:disabled { cursor: not-allowed; opacity: .55; }
+.yl-private-chat-realistic-status { margin: 0; }
 .yl-private-chat-more-menu .yl-conversation-image-controls {
     flex-direction: column;
     align-items: stretch;
