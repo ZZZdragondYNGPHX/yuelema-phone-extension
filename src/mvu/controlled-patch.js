@@ -66,8 +66,11 @@ const CHAT_SESSION_UID_PATTERN = /^chat_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const MEETUP_UID_PATTERN = /^meetup_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const GROUP_UID_PATTERN = /^group_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const SERVICE_ORDER_UID_PATTERN = /^service_[a-z0-9][a-z0-9_-]{0,63}$/i;
-const SERVICE_PRODUCT_CATEGORY_LABELS = Object.freeze({
+const SERVICE_PRODUCT_CATEGORY_LABELS_SFW = Object.freeze({
     girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品',
+});
+const SERVICE_PRODUCT_CATEGORY_LABELS_NSFW = Object.freeze({
+    girl_shuren: '熟人性爱幻想', girl_luren: '陌生约炮邂逅', random_generation: '随机性癖体验',
 });
 const LEGACY_SERVICE_CATEGORY_BY_MODE = Object.freeze({
     SFW: Object.freeze({ coffee_walk: '咖啡与散步', arts_outing: '展览与演出', city_guide: '城市向导', hobby_day: '兴趣活动' }),
@@ -75,8 +78,8 @@ const LEGACY_SERVICE_CATEGORY_BY_MODE = Object.freeze({
 });
 // Legacy activities are retained solely to validate and preserve existing history.
 const SERVICE_CATEGORY_BY_MODE = Object.freeze({
-    SFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS, ...LEGACY_SERVICE_CATEGORY_BY_MODE.SFW }),
-    NSFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS, ...LEGACY_SERVICE_CATEGORY_BY_MODE.NSFW }),
+    SFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS_SFW, ...LEGACY_SERVICE_CATEGORY_BY_MODE.SFW }),
+    NSFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS_NSFW, ...LEGACY_SERVICE_CATEGORY_BY_MODE.NSFW }),
 });
 const RELATIONSHIP_VALUE_FIELDS = Object.freeze(['好感', '信任', '戒备', '面基意愿']);
 const BOND_VALUE_FIELDS = Object.freeze(['友情值', '心动值', '欲望值']);
@@ -646,7 +649,7 @@ function serviceCategoryForMode(mode, categoryId) {
 
 function serviceCategoryForNewOrder(mode, categoryId) {
     if (!['SFW', 'NSFW'].includes(mode) || typeof categoryId !== 'string') return '';
-    return SERVICE_PRODUCT_CATEGORY_LABELS[categoryId] ?? '';
+    return (mode === 'NSFW' ? SERVICE_PRODUCT_CATEGORY_LABELS_NSFW : SERVICE_PRODUCT_CATEGORY_LABELS_SFW)[categoryId] ?? '';
 }
 
 function serviceTopicForCandidate(candidate, category) {
@@ -1878,11 +1881,13 @@ export function buildRealisticPrivateChatProactivePatch(state, {
     response,
     generationTime,
     triggerTime,
+    onlySfwAtRequest = null,
+    nsfwConsentReferenceAtRequest = null,
 } = {}) {
     if (parsePhoneTimestamp(generationTime) === null || parsePhoneTimestamp(triggerTime) === null) return fail('private_chat_realistic_generation_invalid');
     const target = realisticTarget(state, sessionUid, npcUid);
     if (!target.ok) return target;
-    const { session, realistic } = target.value;
+    const { session, realistic, onlySfw } = target.value;
     if (!realistic.启用 || realistic.主动触发时间 !== triggerTime || !isPhoneTimestampDue(triggerTime, generationTime)) {
         return fail('private_chat_realistic_proactive_not_due');
     }
@@ -1890,8 +1895,21 @@ export function buildRealisticPrivateChatProactivePatch(state, {
     if (realistic.待投递消息.length || realistic.回复触发时间) return fail('private_chat_realistic_delivery_pending');
     const pendingPlayers = listPendingRealisticPlayerMessages(session);
     if (!pendingPlayers.ok || pendingPlayers.value.length) return fail('private_chat_realistic_player_messages_pending');
+    const effectiveOnlySfwAtRequest = onlySfwAtRequest === null ? onlySfw : onlySfwAtRequest;
+    if (effectiveOnlySfwAtRequest !== onlySfw) return fail('private_chat_realistic_proactive_mode_changed');
+    const sourceMode = currentContentMode(state);
+    const requiresConsent = sourceMode === 'NSFW' && onlySfw !== true;
+    let consentRevision = 0;
+    if (requiresConsent) {
+        const consent = validateNsfwConsent(session.NSFW同意);
+        if (!consent.ok || !isActiveNsfwConsent(consent.value)
+            || !matchesNsfwConsentReference(consent.value, nsfwConsentReferenceAtRequest)) {
+            return fail('private_chat_nsfw_consent_state_changed');
+        }
+        consentRevision = consent.value.修订号;
+    }
     let normalized;
-    try { normalized = normalizeRealisticPrivateChatResponse(response, { contentMode: 'SFW' }); }
+    try { normalized = normalizeRealisticPrivateChatResponse(response, { contentMode: requiresConsent ? 'NSFW' : 'SFW' }); }
     catch { return fail('private_chat_response_invalid'); }
     if (normalized.replies.length > 3
         || RELATIONSHIP_VALUE_FIELDS.some((field) => normalized.relationship[field] !== 0)
@@ -1905,7 +1923,16 @@ export function buildRealisticPrivateChatProactivePatch(state, {
         value: chatMessage('角色', `msg_${sessionUid}_n_${number + index}`, reply),
     }));
     const triggerId = triggerTime.replace(/[^0-9]/gu, '');
-    const plan = queuedDeliveryPlan({ sessionUid, trigger: 'proactive', triggerId, generationTime, response: normalized, messageOperations });
+    const plan = queuedDeliveryPlan({
+        sessionUid,
+        trigger: 'proactive',
+        triggerId,
+        generationTime,
+        response: normalized,
+        messageOperations,
+        contentMode: requiresConsent ? 'NSFW' : 'SFW',
+        consentRevision,
+    });
     if (plan.invalid) return fail('private_chat_realistic_delivery_overflow');
     const operations = [{
         op: 'replace', path: encodeJsonPointer(['会话', sessionUid, '拟真聊天', '最近主动触发时间']), value: triggerTime,
@@ -1939,6 +1966,9 @@ export function buildDeliverRealisticPrivateChatMessagesPatch(state, { sessionUi
         const consent = validateNsfwConsent(session.NSFW同意);
         if (currentContentMode(state) !== 'NSFW' || onlySfw === true) return fail('private_chat_realistic_delivery_mode_changed');
         if (!consent.ok || consent.value.修订号 !== Number(batchSafety[0][2])) {
+            return fail('private_chat_realistic_delivery_consent_changed');
+        }
+        if (realistic.待投递消息[0]?.批次UID.includes('_proactive_') && !isActiveNsfwConsent(consent.value)) {
             return fail('private_chat_realistic_delivery_consent_changed');
         }
     }
@@ -3157,6 +3187,7 @@ function validateExactRealisticPrivateChatTransition(state, patch) {
         const sessionUid = proactiveMarker.path.split('/')[2];
         const session = ownRecord(state.会话)?.[sessionUid];
         const npcUid = ownRecord(session)?.对象UID;
+        const onlySfwAtRequest = deriveRelationshipSafetyState(ownRecord(ownRecord(state.关系叙事)?.[npcUid])?.进程).onlySfw;
         const pendingOperations = patch.filter((operation) => operation?.op === 'add'
             && operation.path === encodeJsonPointer(['会话', sessionUid, '拟真聊天', '待投递消息', '-']));
         const replies = pendingOperations.map((operation) => operation.value?.内容);
@@ -3182,6 +3213,9 @@ function validateExactRealisticPrivateChatTransition(state, patch) {
                     },
                     generationTime: timingCandidate.generationTime,
                     triggerTime: proactiveMarker.value,
+                    onlySfwAtRequest,
+                    nsfwConsentReferenceAtRequest: currentContentMode(state) === 'NSFW' && !onlySfwAtRequest
+                        ? nsfwConsentReference(session?.NSFW同意) : null,
                 });
                 if (exactPatchMatch(expected, patch)) return true;
             }

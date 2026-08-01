@@ -16,10 +16,15 @@ const SERVICE_WAIT_CAPTIONS = Object.freeze(['管家正在挑选人选…', '核
 const SERVICE_WAIT_SHIFT_TEXT = '高质量的人选值得多等几秒…';
 const SERVICE_PROFILE_MAX_RETRIES = 3;
 // 美人团外卖参考卡的三类商品结构；仅借用分类语义，不继承其中与本项目成年人、同意和隐私规则冲突的内容。
-const SERVICE_PRODUCT_CATEGORIES = Object.freeze([
+const SERVICE_PRODUCT_CATEGORIES_SFW = Object.freeze([
     Object.freeze({ id: 'girl_shuren', label: '熟人商品', note: '虚构的成年熟人关系；不映射现实具体个人，仍须当次确认。' }),
     Object.freeze({ id: 'girl_luren', label: '路人商品', note: '虚构的成年陌生人邂逅；不使用现实可识别人物。' }),
     Object.freeze({ id: 'random_generation', label: '随机商品', note: '按你的偏好随机组合的虚构成年都市角色。' }),
+]);
+const SERVICE_PRODUCT_CATEGORIES_NSFW = Object.freeze([
+    Object.freeze({ id: 'girl_shuren', label: '熟人性爱幻想', note: '明确成年熟人设定；默认生成露骨欲望、身体偏好与完整成人玩法资料。' }),
+    Object.freeze({ id: 'girl_luren', label: '陌生约炮邂逅', note: '明确成年陌生人设定；直接生成露骨约炮意图、性偏好与可选玩法。' }),
+    Object.freeze({ id: 'random_generation', label: '随机性癖体验', note: '按 XP 随机组合明确成年、自愿的色情玩法与成人角色。' }),
 ]);
 const SERVICE_HUB_TABS = Object.freeze([
     Object.freeze({ id: 'featured', label: '精选', iconName: 'sparkle' }),
@@ -98,9 +103,9 @@ export function createServicePage(ctx) {
             label: nsfw ? 'NSFW · 夜色模式' : 'SFW · 心动模式',
             title: nsfw ? '夜色心动档案' : '今日心动档案',
             subtitle: nsfw
-                ? '先选择想认识的成年人角色原型；NSFW 只调整虚构成人表达的尺度，仍需逐人、当次确认。'
+                ? '进入即按全尺度成人内容生成：可直接选择色情分类与 XP，不强制含蓄、转场或淡出；每位参与者仍需明确成年并在相应边界内自愿。'
                 : '先选择想认识的成年人角色原型；SFW 会生成恋爱与日常向的相处可能，不自动下单或发送。',
-            categories: SERVICE_PRODUCT_CATEGORIES,
+            categories: nsfw ? SERVICE_PRODUCT_CATEGORIES_NSFW : SERVICE_PRODUCT_CATEGORIES_SFW,
         });
     }
     function serviceCategory(copy, categoryId) { return copy.categories.find((category) => category.id === categoryId) ?? copy.categories[0] ?? null; }
@@ -117,7 +122,7 @@ export function createServicePage(ctx) {
                 ? '人物必须是虚构、不可识别的成年人陌生人，不得仿写现实名人或真实个人。'
                 : '人物由偏好随机组合为虚构的成年人现代都市角色，不得引用受版权保护的具名角色。';
         return mode === 'NSFW'
-            ? `创作一名明确成年、现代都市中的「${label}」人物原型角色。只写公开资料；人物应主动、鲜明且直白地表现已确认的成人取向与虚构文字角色扮演偏好，但不得默认同意。不得出现未成年人、胁迫或非自愿内容。${categoryConstraint}${xpConstraint}`
+            ? `创作一名明确成年、现代都市中的「${label}」人物原型角色。只写公开资料；这是全尺度色情分类，默认直白写明裸体、身体与器官偏好、自慰、口交、性交、高潮、性玩具、BDSM、多人幻想、情色角色扮演及其他成人玩法，可具体描述动作、感官、语言、强度与身体反应，不得含蓄化、自动转场或淡出。成人尺度不等于替任何参与者默认同意；不得出现未成年人、胁迫或非自愿内容。${categoryConstraint}${xpConstraint}`
             : `创作一名明确成年、现代都市中的「${label}」人物原型角色。只写公开资料；人物应自然、温柔且适合恋爱与日常陪伴剧情。不得出现成人色情内容、未成年人、胁迫或非自愿内容。${categoryConstraint}${xpConstraint}`;
     }
     function serviceProfileName(profile) {
@@ -133,7 +138,7 @@ export function createServicePage(ctx) {
         const category = serviceProfileCategoryLabel(profiles[0]);
         const orderReference = SERVICE_ORDER_UID_PATTERN.test(orderUid ?? '') ? '【本次新建的待确认订单】' : '';
         return mode === 'NSFW'
-            ? `${orderReference}我选择与「${names}」进行「${category}」主题的虚构成人服务角色扮演。请依据本次订单，在正文中让每位明确成年人分别、自愿地协商结构化主题、允许项、排除项、强度与隐私处理；玩家确认接单后才推进为进行中。仅记录本次所需的最小摘要，不展示内部订单编号。` :
+            ? `${orderReference}我选择与「${names}」进行「${category}」主题的全尺度成人体验。请依据本次订单，在正文中让每位明确成年人分别、自愿地协商结构化主题、允许项、排除项、强度与隐私处理；玩家确认接单后，可按已确认范围完整描写裸体、器官、性行为、感官与身体反应，不要求含蓄、转场或淡出。仅记录本次所需的最小摘要，不展示内部订单编号。` :
             `${orderReference}我想与「${names}」体验「${category}」租借陪伴主题。请依据本次订单，在正文中让每位明确成年人分别、自愿地协商结构化主题、允许项、排除项、时间与隐私处理；玩家确认接单后才推进为进行中。仅记录本次所需的最小摘要，不展示内部订单编号。`;
     }
     function serviceBatchKey(mode, categoryId, xpSearch = '') {
@@ -870,7 +875,7 @@ export function createServicePage(ctx) {
             element('p', { text: '搜索词只用于本次本地角色草稿，不会写入订单、MVU、历史或运行记录。' }),
         ]);
         const row = element('div', { className: 'yl-service-xp-search-row' });
-        const input = element('input', { className: 'yl-settings-control yl-service-xp-search-input', type: 'search', name: 'service-xp-search', maxLength: 80, value: ctx.serviceXpSearchDraft, placeholder: '例如：制服、清冷、年下、拉扯感、办公室', ariaLabel: '搜索想探索的 XP' });
+        const input = element('input', { className: 'yl-settings-control yl-service-xp-search-input', type: 'search', name: 'service-xp-search', maxLength: 80, value: ctx.serviceXpSearchDraft, placeholder: ctx.currentView.mode === 'NSFW' ? '例如：主导、臣服、捆绑、群体、公开场景幻想' : '例如：制服、清冷、拉扯感、办公室', ariaLabel: '搜索想探索的 XP' });
         const applySearch = () => {
             const next = normalizeServiceXpSearch(ctx.serviceXpSearchDraft);
             ctx.serviceXpSearchDraft = next;

@@ -273,7 +273,7 @@ test('SFW and NSFW recommendation contexts expose different public-tag contracts
     assert.equal(sfw.publicTagContract.forbidden.includes('成人取向或身体性化关键词'), false, 'SFW 不再携带成人词汇硬禁止项');
     assert.equal(sfw.publicTagContract.forbidden.includes('未成年人'), true);
     assert.equal(sfw.publicTagContract.forbidden.includes('非自愿或胁迫'), true);
-    assert.equal(nsfw.publicTagContract.allowedTagCategories.includes('成年人明确自愿的成人取向或身体偏好公开资料'), true);
+    assert.equal(nsfw.publicTagContract.allowedTagCategories.includes('成年人明确自愿的全尺度性偏好、身体偏好或成人玩法公开资料'), true);
     assert.equal(Object.hasOwn(nsfw.publicTagContract, 'examples'), false, '开放标签不应由固定示例词库限定。');
     assert.equal(JSON.stringify(nsfw).includes('绝不能发送给模型'), false);
     assert.equal(JSON.stringify(nsfw).includes('同样不能发送'), false);
@@ -307,7 +307,9 @@ test('fast recommender applies the selected SFW/NSFW output contract before any 
     assert.deepEqual(nsfw.candidate.公开资料.生活方式标签, ['翘臀']);
     assert.equal(JSON.stringify(nsfwMessages).includes('NSFW 输出合同'), true);
     assert.equal(JSON.stringify(nsfwMessages).includes('简介、寻找意图与四个标签字段'), true);
-    assert.equal(JSON.stringify(nsfwMessages).includes('线下性行为'), true);
+    assert.equal(JSON.stringify(nsfwMessages).includes('全尺度直白写明'), true);
+    assert.equal(JSON.stringify(nsfwMessages).includes('不强制转场或淡出'), true);
+    assert.equal(JSON.stringify(nsfwMessages).includes('不得叙述、安排或演绎线下性行为'), false);
     for (const requiredField of ['成人验证', '仅好友资料', '隐藏资料', '实际年龄', '私人备注', '拒绝阈值', '与玩家关系', '全局账号表现', 'NPC专属匹配度', '面基意愿']) {
         assert.equal(JSON.stringify(nsfwMessages).includes(requiredField), true, `NSFW 核心合同缺少 ${requiredField}`);
     }

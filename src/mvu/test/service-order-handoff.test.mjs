@@ -386,10 +386,11 @@ test('terminal rebooking accepts a bounded 2600-character service contract witho
 
 test('new controlled service patches accept every person category in either mode and reject legacy or unknown categories', () => {
     const personCategories = {
-        girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品',
+        SFW: { girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品' },
+        NSFW: { girl_shuren: '熟人性爱幻想', girl_luren: '陌生约炮邂逅', random_generation: '随机性癖体验' },
     };
     for (const mode of ['SFW', 'NSFW']) {
-        for (const [categoryId, category] of Object.entries(personCategories)) {
+        for (const [categoryId, category] of Object.entries(personCategories[mode])) {
             const state = serviceState();
             state.软件.内容模式 = mode;
             const built = buildServiceOrderHandoffPatch(state, { candidate: adultCandidate(), categoryId });

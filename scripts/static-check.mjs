@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.0.18') fail('manifest.version 必须与扩展版本 1.0.18 统一');
+if (manifest.version !== '1.0.19') fail('manifest.version 必须与扩展版本 1.0.19 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -121,7 +121,7 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.0.18'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.18 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.0.19'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.19 统一（必须位于壳层 app-shell.js）');
 if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
     || !appShellCore.includes("'placement_reset'")
     || !appShellCore.includes("'mvu_read_complete'")
@@ -169,6 +169,10 @@ const settingsPanel = await readFile(resolve(root, 'src/settings-panel.js'), 'ut
 const defaultPromptPresets = await readFile(resolve(root, 'src/settings/default-prompt-presets.js'), 'utf8');
 if (!settingsStore.includes('FUNCTION_KEYS') || !settingsStore.includes('functionModeBindings') || !settingsStore.includes('exportJson') || !settingsStore.includes('importJson')) fail('缺少设置预设与安全导入导出层');
 if (!defaultPromptPresets.includes('builtin_recommendation_sfw') || !defaultPromptPresets.includes('builtin_private_chat_sfw') || !defaultPromptPresets.includes('builtin_group_chat_sfw') || !defaultPromptPresets.includes('builtin_forum_sfw') || !defaultPromptPresets.includes('builtin_chat_summary_sfw') || !defaultPromptPresets.includes('builtin_character_authoring_sfw')) fail('缺少本地可编辑的默认 SFW/NSFW 提示词预设');
+if (!defaultPromptPresets.includes('全尺度') || !defaultPromptPresets.includes('自慰、口交、性交、高潮')
+    || !defaultPromptPresets.includes('不强制含蓄') || !settingsStore.includes('refreshNsfwBuiltinPromptPresets')) {
+    fail('缺少 v1.0.19 全尺度 NSFW 内置提示词或 v21→v22 定向迁移');
+}
 if (!settingsPanel.includes('unlockSessionKey') || !settingsPanel.includes('hasPersistentKey') || !settingsPanel.includes('deletePersistentKey') || !settingsPanel.includes('fetchModels') || !settingsPanel.includes('functionBindings')) fail('缺少设置 UI 的浏览器 Key 缓存、模型拉取或功能绑定接线');
 if (!index.includes('createBrowserSettingsStorage') || !index.includes('createOpenAICompatibleClient')) fail('缺少浏览器非机密设置持久化或显式 LLM transport 接线');
 console.log('✓ 非机密设置、浏览器 Key 缓存、模型拉取与功能绑定接线');
@@ -360,7 +364,7 @@ const imageGenerationClient = await readFile(resolve(root, 'src/llm/image-genera
 const drawingDnaRules = await readFile(resolve(root, 'src/recommendation/drawing-dna-rules.js'), 'utf8');
 if (!index.includes('createImageGenerationClient') || !actionBridge.includes('generateConversationImage')) fail('缺少生图客户端注入或对话生图桥接');
 if (!appShell.includes("'settings_image_generation'") || !appShell.includes("'settings_image_cache'") || !appShell.includes('buildConversationImageControls') || !appShell.includes('buildImageDirectiveCard') || !appShell.includes('buildConversationImageCachePage') || !appShell.includes('openImageOriginalDialog') || !appShell.includes('generateConversationImage')) fail('缺少生图设置 / 缓存路由、会话开关、结构化指令或原图 UI 接线');
-if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 21') || !settingsStore.includes('IMAGE_CLIENT_MODES') || !settingsStore.includes('NAI_SAMPLER_OPTIONS') || !settingsStore.includes('NAI_NOISE_SCHEDULE_OPTIONS')
+if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 22') || !settingsStore.includes('IMAGE_CLIENT_MODES') || !settingsStore.includes('NAI_SAMPLER_OPTIONS') || !settingsStore.includes('NAI_NOISE_SCHEDULE_OPTIONS')
     || !settingsStore.includes('openaiBaseUrl') || !settingsStore.includes('openaiWidth') || !settingsStore.includes('comfyBaseUrl') || !settingsStore.includes('promptPresets') || !settingsStore.includes('activePromptPresetIds') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) {
     fail('缺少生图设置 schema、三接口独立提示词预设、客户端模式、NAI 固定选项、OpenAI/ComfyUI 专属配置或逐会话自动生图隔离');
 }

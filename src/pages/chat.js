@@ -707,7 +707,7 @@ export function createChatPage(ctx) {
             text: '只保存下列枚举范围和有限轮数，不保存原始露骨文本。每次发送前仍需单独勾选“本轮继续”。',
         }));
         const scopeInputs = [];
-        for (const [value, labelText] of [['成人话题', '成人话题讨论'], ['露骨调情', '露骨调情'], ['线上文爱', '线上文爱']]) {
+        for (const [value, labelText] of [['成人话题', '成人话题讨论'], ['露骨调情', '露骨调情'], ['线上文爱', '全尺度色情互动']]) {
             const id = `yl-nsfw-consent-${session.sessionUid}-${scopeInputs.length}`;
             const input = element('input', { id, type: 'checkbox', value });
             const label = element('label', { className: 'yl-settings-check-row', htmlFor: id });

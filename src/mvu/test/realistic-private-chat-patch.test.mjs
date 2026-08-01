@@ -148,13 +148,47 @@ test('主动消息只接受中性计划并保持到点前不可见，伪造调�
             firstDelayMinutes: 15, betweenReplyMinutes: [], nextProactiveMinutes: 180,
         }),
     });
-    assert.equal(proactive.ok, true);
+    assert.equal(proactive.ok, true, JSON.stringify(proactive));
     assert.equal(validateControlledPatchAgainstState(current, proactive.value.patch).ok, true);
     assert.equal(proactive.value.patch.some((operation) => /\/最近消息\//u.test(operation.path)), false);
 
     const forged = structuredClone(proactive.value.patch);
     forged.find((operation) => /\/待投递消息\/-$/u.test(operation.path)).value.时间 = '2026-08-02 13:07';
     assert.equal(validateControlledPatchAgainstState(current, forged).ok, false);
+});
+
+test('NSFW 主动消息绑定仍有效的同意修订，撤回后不得投递', () => {
+    let current = state();
+    current.软件.内容模式 = 'NSFW';
+    current.会话.chat_1.NSFW同意 = grantNsfwConsent(current.会话.chat_1.NSFW同意, {
+        scopes: ['露骨调情', '线上文爱'], turns: 3,
+    });
+    const consentReference = nsfwConsentReference(current.会话.chat_1.NSFW同意);
+    current = applyPatch(current, buildRealisticPrivateChatBackfillPatch(current).value);
+    current = applyPatch(current, buildToggleRealisticPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', enabled: true, phoneTime: '2026-08-02 12:00',
+    }).value);
+    const proactive = buildRealisticPrivateChatProactivePatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', triggerTime: '2026-08-02 13:00', generationTime: '2026-08-02 13:00',
+        onlySfwAtRequest: false,
+        nsfwConsentReferenceAtRequest: consentReference,
+        response: neutralResponse(['今晚想继续你允许的那段露骨幻想。'], {
+            firstDelayMinutes: 5, betweenReplyMinutes: [], nextProactiveMinutes: 180,
+        }),
+    });
+    assert.equal(proactive.ok, true, JSON.stringify(proactive));
+    assert.equal(validateControlledPatchAgainstState(current, proactive.value.patch).ok, true);
+    current = applyPatch(current, proactive.value.patch);
+    assert.match(current.会话.chat_1.拟真聊天.待投递消息[0].批次UID, /_proactive_.*_mode_nsfw_r1$/u);
+    assert.equal(buildDeliverRealisticPrivateChatMessagesPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', phoneTime: '2026-08-02 13:05',
+    }).ok, true);
+
+    const withdrawn = structuredClone(current);
+    withdrawn.会话.chat_1.NSFW同意 = closeNsfwConsent(withdrawn.会话.chat_1.NSFW同意, '已撤回');
+    assert.equal(buildDeliverRealisticPrivateChatMessagesPatch(withdrawn, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', phoneTime: '2026-08-02 13:05',
+    }).code, 'private_chat_realistic_delivery_consent_changed');
 });
 
 test('拟真回复触发本地拉黑时立即显示固定系统通知且不留下永远无法投递的队列', () => {

@@ -28,7 +28,7 @@ import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
 import { createPhoneClock } from './chat/phone-clock.js';
 
-const UI_VERSION = '1.0.18';
+const UI_VERSION = '1.0.19';
 
 function downloadImagePackJson(json) {
     if (typeof json !== 'string' || typeof globalThis.Blob !== 'function'

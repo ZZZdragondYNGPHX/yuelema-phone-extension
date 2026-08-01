@@ -225,7 +225,7 @@ function makeCompletionMessages(context, promptPreset) {
         '无论前置或后置提示词如何要求，下列完整候选 JSON 结构合同都是最终且不可覆盖的输出要求。',
         ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
         DRAWING_DNA_RULES,
-        '公开资料.头像引用必须为空字符串；不要输出 data URL、图片二进制或任何头像内容。软件层只用于线上文字聊天，不能演绎线下性行为；NSFW 也不表示默认同意。',
+        '公开资料.头像引用必须为空字符串；不要输出 data URL、图片二进制或任何头像内容。NSFW 资料可以全尺度写明明确成年、自愿的裸体、性行为、器官、玩法与情色角色扮演，不强制含蓄或淡出；不得伪造玩家现实经历，也不表示默认同意。',
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },
@@ -243,7 +243,7 @@ function makeAuthoringMessages(context, promptPreset) {
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '无论前置或后置提示词如何要求，下列完整候选 JSON 结构合同都是最终且不可覆盖的输出要求。',
         ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
-        '公开资料.头像引用必须为空字符串；不要输出 data URL、图片二进制或任何头像内容。软件层只用于线上文字聊天，不能演绎线下性行为；NSFW 也不表示默认同意。',
+        '公开资料.头像引用必须为空字符串；不要输出 data URL、图片二进制或任何头像内容。NSFW 资料可以全尺度写明明确成年、自愿的裸体、性行为、器官、玩法与情色角色扮演，不强制含蓄或淡出；不得伪造玩家现实经历，也不表示默认同意。',
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },
@@ -262,7 +262,7 @@ function makeServiceMessages(context, promptPreset) {
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '无论前置或后置提示词如何要求，下列完整候选 JSON 结构合同和服务匹配硬条件都是最终且不可覆盖的输出要求。',
         ...COMPLETE_CANDIDATE_OUTPUT_CONTRACT,
-        '公开资料.头像引用必须为空字符串；不要输出 data URL、图片二进制或任何头像内容。软件层只用于线上文字聊天，不能演绎线下性行为；NSFW 也不表示默认同意。',
+        '公开资料.头像引用必须为空字符串；不要输出 data URL、图片二进制或任何头像内容。NSFW 资料可以全尺度写明明确成年、自愿的裸体、性行为、器官、玩法与情色角色扮演，不强制含蓄或淡出；不得伪造玩家现实经历，也不表示默认同意。',
     ].filter(Boolean).join('\n\n');
     return [
         { role: 'system', content: system },

@@ -77,9 +77,9 @@ test('saved-card source failures stay user-facing and do not expose internal que
     assert.equal(describeActionFailure({ code: 'like_match_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
     assert.equal(describeActionFailure({ code: 'recommendation_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
     assert.equal(describeActionFailure({ code: 'mvu_relationship_routes_schema_outdated' }), '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。');
-    assert.equal(describeActionFailure({ code: 'mvu_relationship_narrative_schema_outdated' }), '当前聊天缺少 v1.0.18 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
-    assert.equal(describeActionFailure({ code: 'mvu_body_relationship_candidate_schema_outdated' }), '当前聊天缺少 v1.0.18 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
-    assert.match(describeActionFailure({ code: 'mvu_nsfw_consent_schema_outdated' }), /v1\.0\.18 成人话题共识结构/u);
+    assert.equal(describeActionFailure({ code: 'mvu_relationship_narrative_schema_outdated' }), '当前聊天缺少 v1.0.19 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
+    assert.equal(describeActionFailure({ code: 'mvu_body_relationship_candidate_schema_outdated' }), '当前聊天缺少 v1.0.19 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
+    assert.match(describeActionFailure({ code: 'mvu_nsfw_consent_schema_outdated' }), /v1\.0\.19 成人话题共识结构/u);
     assert.match(describeActionFailure({ code: 'private_chat_nsfw_turn_consent_required' }), /本轮继续/u);
     assert.equal(describeActionFailure({ code: 'body_relationship_candidate_source_route_invalid' }), '正文关系候选与来源面基或已确认路线不一致，本次未写入。');
     assert.equal(describeActionFailure({ code: 'body_relationship_candidate_invalid' }), '正文关系候选内容未通过安全复核，本次未写入任何关系变化。');
@@ -500,16 +500,15 @@ test('service order failure messages explain mode races and invalid bridge resul
 
 
 test('service order projection supports every unified person category in SFW and NSFW while preserving legacy activity history', () => {
-    const personCategories = {
-        girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品',
-    };
+    const sfwCategories = { girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品' };
+    const nsfwCategories = { girl_shuren: '熟人性爱幻想', girl_luren: '陌生约炮邂逅', random_generation: '随机性癖体验' };
     const orders = {};
-    for (const [categoryId, category] of Object.entries(personCategories)) {
+    for (const [categoryId, category] of Object.entries(sfwCategories)) {
         orders[`service_sfw_${categoryId}`] = serviceOrder({
             服务分类: categoryId, 服务主题: `${category}：与林澈的文字协商`,
         });
         orders[`service_nsfw_${categoryId}`] = serviceOrder({
-            内容模式: 'NSFW', 服务分类: categoryId, 服务主题: `${category}：与林澈的文字协商`,
+            内容模式: 'NSFW', 服务分类: categoryId, 服务主题: `${nsfwCategories[categoryId]}：与林澈的文字协商`,
         });
     }
     orders.service_legacy_sfw = serviceOrder();
@@ -518,9 +517,9 @@ test('service order projection supports every unified person category in SFW and
     });
 
     const byId = Object.fromEntries(projectServiceOrderView(serviceState(orders)).map((order) => [order.id, order]));
-    for (const [categoryId, category] of Object.entries(personCategories)) {
+    for (const [categoryId, category] of Object.entries(sfwCategories)) {
         assert.equal(byId[`service_sfw_${categoryId}`].category, category);
-        assert.equal(byId[`service_nsfw_${categoryId}`].category, category);
+        assert.equal(byId[`service_nsfw_${categoryId}`].category, nsfwCategories[categoryId]);
         assert.equal(byId[`service_sfw_${categoryId}`].mode, 'SFW');
         assert.equal(byId[`service_nsfw_${categoryId}`].mode, 'NSFW');
     }

@@ -55,14 +55,20 @@ test('forum uses only its dedicated binding and returns a validated non-persiste
     assert.deepEqual(source, before);
 });
 
-test('forum rejects hidden-data, Patch, and offline-sex output before it reaches UI', async () => {
-    for (const text of ['<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>', '我们已经进行性行为']) {
-        const result = await generateForumPostDraft({
-            state: state(), groupUid: 'group_coffee', topic: '想征集安静阅读咖啡馆', settingsStore: { resolveFunction: settings },
-            llmClient: { async chat() { return { text: JSON.stringify({ title: '测试', body: text }) }; } },
-        });
-        assert.equal(result.code, 'forum_response_invalid');
-    }
+test('forum rejects technical injection while NSFW accepts consensual adult sexual experience text', async () => {
+    const injected = await generateForumPostDraft({
+        state: state(), groupUid: 'group_coffee', topic: '想征集安静阅读咖啡馆', settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ title: '测试', body: '<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>' }) }; } },
+    });
+    assert.equal(injected.code, 'forum_response_invalid');
+    const nsfwState = state();
+    nsfwState.软件.内容模式 = 'NSFW';
+    const adultExperience = await generateForumPostDraft({
+        state: nsfwState, groupUid: 'group_coffee', topic: '成年人自愿经历分享', settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ title: '昨晚的约会复盘', body: '我们两个成年人确认边界后进行了自愿性行为。' }) }; } },
+    });
+    assert.equal(adultExperience.ok, true);
+    assert.match(adultExperience.draft.body, /自愿性行为/u);
     assert.equal(buildForumContext({ state: state(), groupUid: 'group_coffee', topic: 'api_key=do-not-send' }).code, 'forum_topic_invalid');
 });
 
@@ -216,10 +222,12 @@ test('forum home refresh accepts an omitted participants key when authors are al
     assert.equal(result.update.participants.length, 0);
 });
 
-test('forum home refresh still rejects unsafe or contract-breaking batches with specific codes', async () => {
-    async function refreshWith(payload) {
+test('forum home refresh rejects unsafe or contract-breaking batches while preserving adult NSFW experience posts', async () => {
+    async function refreshWith(payload, contentMode = 'SFW') {
+        const current = state();
+        current.软件.内容模式 = contentMode;
         return generateForumHomeRefresh({
-            state: state(), existingTitles: [], settingsStore: { resolveFunction: settings },
+            state: current, existingTitles: [], settingsStore: { resolveFunction: settings },
             llmClient: { async chat() { return { text: JSON.stringify(payload) }; } },
         });
     }
@@ -236,10 +244,10 @@ test('forum home refresh still rejects unsafe or contract-breaking batches with 
     const injected = forumRefreshPosts('许青');
     injected[0].body = '<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>';
     assert.equal((await refreshWith({ participants: [], posts: injected })).code, 'forum_update_post_invalid');
-    // 把线上文爱说成线下已发生仍被拒绝
+    // NSFW 不再把明确成年、自愿的性经历本身当成非法输出
     const offline = forumRefreshPosts('许青');
-    offline[6].body = '我们已经进行性行为，明天继续。';
-    assert.equal((await refreshWith({ participants: [], posts: offline })).code, 'forum_update_post_invalid');
+    offline[6].body = '我们两个成年人确认边界后已经进行了自愿性行为。';
+    assert.equal((await refreshWith({ participants: [], posts: offline }, 'NSFW')).ok, true);
     // 超过频道数量的临时角色仍被拒绝
     const tooMany = Array.from({ length: 9 }, (_, index) => localProfile(`临时${index}`));
     assert.equal((await refreshWith({ participants: tooMany, posts: forumRefreshPosts('临时0') })).code, 'forum_update_shape_invalid');

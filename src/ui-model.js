@@ -368,8 +368,11 @@ export function projectPrivateChatView(state) {
 
 const SERVICE_ORDER_UID_PATTERN = /^service_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const SERVICE_ORDER_STATES = new Set(['待确认', '进行中', '已完成', '已取消']);
-const SERVICE_PRODUCT_CATEGORY_LABELS = Object.freeze({
+const SERVICE_PRODUCT_CATEGORY_LABELS_SFW = Object.freeze({
     girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品',
+});
+const SERVICE_PRODUCT_CATEGORY_LABELS_NSFW = Object.freeze({
+    girl_shuren: '熟人性爱幻想', girl_luren: '陌生约炮邂逅', random_generation: '随机性癖体验',
 });
 const SERVICE_LEGACY_CATEGORY_LABELS = Object.freeze({
     SFW: Object.freeze({ coffee_walk: '咖啡与散步', arts_outing: '展览与演出', city_guide: '城市向导', hobby_day: '兴趣活动' }),
@@ -377,8 +380,8 @@ const SERVICE_LEGACY_CATEGORY_LABELS = Object.freeze({
 });
 // New person categories work in both modes. Legacy activities remain display-only for historical orders.
 const SERVICE_CATEGORY_LABELS = Object.freeze({
-    SFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS, ...SERVICE_LEGACY_CATEGORY_LABELS.SFW }),
-    NSFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS, ...SERVICE_LEGACY_CATEGORY_LABELS.NSFW }),
+    SFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS_SFW, ...SERVICE_LEGACY_CATEGORY_LABELS.SFW }),
+    NSFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS_NSFW, ...SERVICE_LEGACY_CATEGORY_LABELS.NSFW }),
 });
 const SERVICE_ORDER_LIFECYCLE_FIELDS = Object.freeze(['发起时间', '开始时间', '结束时间', '结束摘要', '已确认边界']);
 const SERVICE_TIME_SAFE_PATTERNS = Object.freeze([
@@ -570,9 +573,9 @@ export function describeActionFailure(result) {
         mvu_parse_input_clone_failed: 'MVU 的临时解析副本不可用，本次未写入任何数据。',
         mvu_relationship_routes_schema_outdated: '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。',
         mvu_story_memory_schema_outdated: '当前聊天缺少 v1.0.8 正文记忆结构。请导入与小手机相同版本的《约了吗》MVU 角色卡后重试；本次未写入。',
-        mvu_relationship_narrative_schema_outdated: '当前聊天缺少 v1.0.18 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
-        mvu_body_relationship_candidate_schema_outdated: '当前聊天缺少 v1.0.18 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
-        mvu_nsfw_consent_schema_outdated: '当前聊天缺少 v1.0.18 成人话题共识结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
+        mvu_relationship_narrative_schema_outdated: '当前聊天缺少 v1.0.19 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
+        mvu_body_relationship_candidate_schema_outdated: '当前聊天缺少 v1.0.19 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
+        mvu_nsfw_consent_schema_outdated: '当前聊天缺少 v1.0.19 成人话题共识结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
         story_memory_backfill_state_invalid: '当前正文记忆状态不可修复，请刷新后重试。',
         story_memory_backfill_role_invalid: '当前角色记录无法建立独立正文记忆，本次未写入。',
         story_memory_backfill_value_invalid: '现有正文记忆格式异常；为避免误删经历，本次未自动修复。',
@@ -585,7 +588,7 @@ export function describeActionFailure(result) {
         body_relationship_candidate_npc_uid_invalid: '当前私聊对象标识异常，本次未写入。请返回消息列表后重试。',
         body_relationship_candidate_role_pool_invalid: '当前角色资料状态异常，无法安全复核正文关系候选，本次未写入。',
         body_relationship_candidate_npc_missing: '当前私聊对象已不在角色资料中，本次未写入。请返回消息列表刷新。',
-        body_relationship_candidate_root_invalid: '正文关系候选结构异常；为避免误写关系值，本次未写入。请使用 v1.0.18 角色卡新开聊天后重试。',
+        body_relationship_candidate_root_invalid: '正文关系候选结构异常；为避免误写关系值，本次未写入。请使用 v1.0.19 角色卡新开聊天后重试。',
         body_relationship_candidate_slot_missing: '当前对象缺少独立的正文关系候选槽位，本次未写入。请刷新后重试。',
         body_relationship_candidate_invalid: '正文关系候选内容未通过安全复核，本次未写入任何关系变化。',
         body_relationship_candidate_uid_mismatch: '正文关系候选与当前私聊对象不一致，本次未写入。请返回消息列表刷新。',
@@ -604,7 +607,7 @@ export function describeActionFailure(result) {
         private_chat_not_matched: '当前对象尚未建立可发送的私聊。',
         private_chat_player_adult_verification_failed: '玩家资料尚未通过成年人校验，无法发送私聊。',
         private_chat_adult_verification_failed: '该资料未通过成年人校验，无法发送私聊。',
-        private_chat_relationship_narrative_schema_outdated: '当前对象缺少完整的关系安全状态，请导入与小手机相同版本的 v1.0.18 角色卡并新开聊天。',
+        private_chat_relationship_narrative_schema_outdated: '当前对象缺少完整的关系安全状态，请导入与小手机相同版本的 v1.0.19 角色卡并新开聊天。',
         private_chat_relationship_paused: '当前关系已暂停、拉黑或归档，私聊保持只读。',
         private_chat_relationship_ended: '当前关系已经结束，私聊保持只读。',
         private_chat_safety_reference_invalid: '本次私聊的安全状态引用无效，未写入任何消息。',
@@ -614,8 +617,8 @@ export function describeActionFailure(result) {
         private_chat_nsfw_safety_not_matched: '当前会话已变化，无法调整成人话题设置。',
         private_chat_nsfw_safety_already_paused: '当前关系已经是“仅 SFW”。',
         private_chat_nsfw_safety_not_paused: '当前关系没有暂停成人话题。',
-        private_chat_nsfw_consent_schema_outdated: '当前会话缺少 v1.0.18 成人话题共识结构，请刷新；若仍出现，请使用同版本角色卡新开聊天。',
-        private_chat_realistic_schema_outdated: '当前会话缺少 v1.0.18 拟真聊天结构，请刷新；若仍出现，请使用同版本角色卡新开聊天。',
+        private_chat_nsfw_consent_schema_outdated: '当前会话缺少 v1.0.19 成人话题共识结构，请刷新；若仍出现，请使用同版本角色卡新开聊天。',
+        private_chat_realistic_schema_outdated: '当前会话缺少 v1.0.19 拟真聊天结构，请刷新；若仍出现，请使用同版本角色卡新开聊天。',
         private_chat_realistic_backfill_state_invalid: '当前会话结构异常，无法安全建立拟真聊天调度。',
         private_chat_realistic_disabled: '该会话尚未开启拟真聊天。',
         private_chat_realistic_player_burst_full: '这一组已经连续发送 6 条，请等对方处理后再继续。',

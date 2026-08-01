@@ -112,7 +112,7 @@ test('SFW 内置提示词升级为恋爱 App 质感的指导式文案（v15 基�
     assert.match(byId.get(BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw).content, /租借陪伴服务者/, '约伴 SFW 必须是租借伴侣式日常/恋爱陪伴定位');
 });
 
-test('NSFW 内置提示词以自愿成年人的主动线上成人表达为默认', () => {
+test('NSFW 内置提示词以明确成年、自愿的全尺度色情表达为默认', () => {
     for (const preset of presetsByMode('NSFW')) {
         assert.match(preset.content, /明确成年|所有人物必须明确成年|明确成年的/, `${preset.id} 缺少成年边界`);
         assert.match(preset.content, /自愿/, `${preset.id} 缺少自愿边界`);
@@ -120,35 +120,39 @@ test('NSFW 内置提示词以自愿成年人的主动线上成人表达为默认
         assert.match(preset.content, /同意可撤回|同意明确且可撤回/, `${preset.id} 缺少可撤回同意边界`);
         assert.match(
             preset.content,
-            /直白调情|直截了当地调情|直接的成人调情|成人调情|主动调情|露骨文爱|线上文爱|欲望表达|欲望偏好|情色角色扮演|成人向特征/,
-            `${preset.id} 缺少直接成人表达许可`,
+            /全尺度|色情强度上限|不设.*上限/,
+            `${preset.id} 缺少全尺度成人表达许可`,
         );
+        assert.match(preset.content, /裸体/u, `${preset.id} 缺少裸体题材许可`);
+        assert.match(preset.content, /性交/u, `${preset.id} 缺少明确性行为许可`);
+        assert.match(preset.content, /BDSM/u, `${preset.id} 缺少成人玩法许可`);
         assert.match(
             preset.content,
-            /优先|默认主动|主要话题|完整保留/,
+            /优先|默认|主要话题|完整保留|不设色情强度上限/,
             `${preset.id} 没有把成人表达放在默认优先级`,
         );
         assert.doesNotMatch(
             preset.content,
-            /克制|不露骨|不得.{0,8}露骨|只能.{0,12}(?:含糊|隐晦|保守)/,
+            /不露骨|不得.{0,8}露骨|只能.{0,12}(?:含糊|隐晦|保守)/,
             `${preset.id} 不得继续施加成人尺度限制`,
         );
+        assert.match(preset.content, /不强制.{0,12}(?:含蓄|转场|淡出)|不要求含蓄化|不得含蓄化/u, `${preset.id} 缺少禁止自动降级条款`);
     }
 });
 
 test('NSFW 内置提示词从许可式升级为指导式：各职能带具体情色写作指导', () => {
     const GUIDANCE_BASELINE = {
-        [BUILTIN_PROMPT_PRESET_IDS.recommendationNsfw]: [/咬合/, /独有的色/, /感官画面/, /钩子/],
-        [BUILTIN_PROMPT_PRESET_IDS.privateChatNsfw]: [/欲擒故纵/, /感官细节/, /破碎|喘息/, /命令与恳求/, /隔着屏幕/],
-        [BUILTIN_PROMPT_PRESET_IDS.groupChatNsfw]: [/荤法/, /有来有回/, /分寸差异/, /人设/],
-        [BUILTIN_PROMPT_PRESET_IDS.forumNsfw]: [/钩子/, /有来有回|接龙/, /个性差异/, /感官细节/],
-        [BUILTIN_PROMPT_PRESET_IDS.chatSummaryNsfw]: [/温度而非流水账/, /关键节点/, /兴奋点与雷区/, /热度/],
-        [BUILTIN_PROMPT_PRESET_IDS.characterCompletionNsfw]: [/咬合/, /独有的色/, /场景、节奏/, /口癖/],
-        [BUILTIN_PROMPT_PRESET_IDS.characterAuthoringNsfw]: [/人格化/, /延伸或反差/, /口癖/, /钩子/, /欲望层次/],
-        [BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw]: [/剧目要具体可选/, /卖点/, /感官细节/, /咬合/],
-        [BUILTIN_PROMPT_PRESET_IDS.soulMatchNsfw]: [/欲望维度/, /细化/, /同一种色/],
-        [BUILTIN_PROMPT_PRESET_IDS.voiceMatchNsfw]: [/欲望信号/, /节奏与强度/, /羞耻点/],
-        [BUILTIN_PROMPT_PRESET_IDS.imageMatchNsfw]: [/氛围与构图/, /光线/, /衣物细节/, /独有的色/],
+        [BUILTIN_PROMPT_PRESET_IDS.recommendationNsfw]: [/咬合/, /独有的色/, /身体、动作、感官和反应链/, /钩子/],
+        [BUILTIN_PROMPT_PRESET_IDS.privateChatNsfw]: [/节奏可慢可快/, /具体动作、感官、身体反应/, /粗俗直白|细腻煽情/, /角色本人/],
+        [BUILTIN_PROMPT_PRESET_IDS.groupChatNsfw]: [/各有性格/, /接梗/, /多人互动/, /人设/],
+        [BUILTIN_PROMPT_PRESET_IDS.forumNsfw]: [/直接钩子/, /调情接龙/, /交换玩法/, /具体动作、感官/],
+        [BUILTIN_PROMPT_PRESET_IDS.chatSummaryNsfw]: [/关键节点/, /称呼/, /兴奋点/, /未完成悬念/],
+        [BUILTIN_PROMPT_PRESET_IDS.characterCompletionNsfw]: [/咬合/, /具体场景、动作、节奏/, /身体反应/, /口癖/],
+        [BUILTIN_PROMPT_PRESET_IDS.characterAuthoringNsfw]: [/人格化/, /延伸或反差/, /具体场景、动作、器官/, /钩子/, /欲望层次/],
+        [BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw]: [/动作、器官、节奏/, /成人菜单/, /招牌玩法/, /互相咬合/],
+        [BUILTIN_PROMPT_PRESET_IDS.soulMatchNsfw]: [/具体欲望维度/, /身体部位/, /玩法组合/, /同一种色/],
+        [BUILTIN_PROMPT_PRESET_IDS.voiceMatchNsfw]: [/主导或顺从/, /身体部位/, /玩法组合/, /节奏/],
+        [BUILTIN_PROMPT_PRESET_IDS.imageMatchNsfw]: [/构图/, /光线/, /身体细节/, /完整色情场景/],
     };
     const presets = presetsByMode('NSFW');
     assert.equal(Object.keys(GUIDANCE_BASELINE).length, presets.length, '每个 NSFW 预设都必须有写作指导基线');
@@ -162,7 +166,7 @@ test('NSFW 内置提示词从许可式升级为指导式：各职能带具体情
 
 test('NSFW 推荐人物预设不再把普通社交或含糊成人标签当作默认', () => {
     const preset = createBuiltinPromptPresets().find((item) => item.id === BUILTIN_PROMPT_PRESET_IDS.recommendationNsfw);
-    assert.match(preset.content, /不把普通饭搭子或轻社交当作默认/);
+    assert.match(preset.content, /不把普通饭搭子、轻社交或含蓄暧昧当作默认/);
     assert.match(preset.content, /至少一个公开标签应直接给出成人向特征/);
     assert.doesNotMatch(preset.content, /只能克制地放在允许的公开/u);
 });
@@ -196,7 +200,7 @@ test('候选生成类内置预设带阈值人设映射与三层资料互相印�
         BUILTIN_PROMPT_PRESET_IDS.characterAuthoringNsfw,
         BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw,
     ]) {
-        assert.match(byId.get(id).content, /对等.{0,6}(?:热度|直白)的回应/u, `${id} 缺少对等回应容忍条款`);
+        assert.match(byId.get(id).content, /对等.{0,8}(?:热度|直白)[^。；]*回应|相同边界内的回应必须有同级容忍/u, `${id} 缺少对等回应容忍条款`);
         assert.match(byId.get(id).content, /秒拉黑|因顾客回应自己主动挑起的话题而拉黑/u, `${id} 缺少禁止秒拉黑条款`);
     }
     // 阈值-初值联动（代码级校验：初始戒备 ≤ 40、已读不回阈值 ≥ 开局压力 + 15）
@@ -214,7 +218,7 @@ test('候选生成类内置预设带阈值人设映射与三层资料互相印�
     }
 });
 
-test('NSFW 内置提示词仍保留同意、隐私、线上边界和现实行动硬限制', () => {
+test('NSFW 内置提示词只保留成年、自愿、隐私、事实与现实执行硬边界', () => {
     for (const preset of presetsByMode('NSFW')) {
         assert.match(preset.content, /未成年人/, `${preset.id} 缺少未成年人禁止项`);
         assert.match(preset.content, /胁迫/, `${preset.id} 缺少胁迫禁止项`);
@@ -222,12 +226,12 @@ test('NSFW 内置提示词仍保留同意、隐私、线上边界和现实行动
         assert.match(preset.content, /隐私|隐藏资料/, `${preset.id} 缺少隐私隔离`);
         assert.match(
             preset.content,
-            /不得[^。；]*线上[^。；]*线下[^。；]*发生/,
-            `${preset.id} 缺少线上内容不得冒充线下事实的边界`,
+            /不得[^。；]*(?:伪造|新增|编造)[^。；]*(?:现实经历|事实)|不新增玩家经历/,
+            `${preset.id} 缺少不得伪造玩家现实经历的边界`,
         );
         assert.match(
             preset.content,
-            /不得自动安排或触发现实行动/,
+            /不得自动[^。；]*(?:现实行动|触发现实行动)|不得[^。；]*自动触发现实行动/,
             `${preset.id} 缺少不得自动触发现实行动的边界`,
         );
     }

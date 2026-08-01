@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { YueLeMaLlmError } from '../../llm/openai-compatible-client.js';
-import { buildPrivateChatContext, consumePrivateChatDiagnostics, generatePrivateChatReply, generatePrivateChatSummary } from '../private-chat-service.js';
+import { buildPrivateChatContext, consumePrivateChatDiagnostics, generatePrivateChatReply, generatePrivateChatSummary, generateRealisticPrivateChatReply } from '../private-chat-service.js';
 import { buildPrivateChatPatch, validateControlledPatchAgainstState } from '../../mvu/controlled-patch.js';
 import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
 import { bodyRelationshipEventIdForSource, createEmptyBodyRelationshipCandidate } from '../../mvu/body-relationship-candidate.js';
 import { createEmptyNsfwConsent, grantNsfwConsent } from '../../mvu/nsfw-consent.js';
+import { createDefaultRealisticChatState } from '../../mvu/realistic-chat.js';
 
 function state() {
     return {
@@ -391,18 +392,53 @@ test('NSFW core contract permits consensual adult chat without treating explicit
             },
         },
     });
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.response.relationship.戒备, 0);
     assert.equal(result.response.nsfwSafetyAssessment, 'none');
     assert.equal(result.response.nsfwConsentAssessment, 'in_scope');
     assert.deepEqual(result.nsfwConsentReferenceAtRequest, { revision: 1, remainingTurns: 3, scopes: ['成人话题', '露骨调情'] });
-    assert.match(request.messages[0].content, /结构化范围、有限剩余轮数与本轮显式确认/u);
+    assert.match(request.messages[0].content, /有效、有限且可撤回的结构化同意/u);
+    assert.match(request.messages[0].content, /本轮玩家显式确认/u);
+    assert.match(request.messages[0].content, /色情内容不设强度上限/u);
     assert.match(request.messages[0].content, /模型不得选路、锁线、给阈值或决定面基/u);
     assert.match(request.messages[0].content, /nsfwConsentAssessment 必须先对照本轮玩家文本与 nsfwConsent\.scopes 分类/u);
     assert.match(request.messages[0].content, /只有 in_scope 才可给出可结算的 romantic_desire\/sexual_desire/u);
     assert.match(request.messages[0].content, /NSFW 允许 none\/friendly\/romantic_flirt\/romantic_desire\/sexual_desire/u);
     assert.match(request.messages[0].content, /普通问候或日常友好交流应使用 none 或 friendly/u);
     assert.doesNotMatch(request.messages[1].content, /剩余轮数|修订号|玩家私聊工具/u);
+});
+
+test('NSFW 拟真主动消息沿用仍有效的结构化范围，不再强制降级为 SFW', async () => {
+    let request;
+    const current = activeNsfwState({ scopes: ['露骨调情', '线上文爱'], turns: 3 });
+    current.会话.chat_1.拟真聊天 = createDefaultRealisticChatState({
+        enabled: true,
+        proactiveAt: '2026-08-02 13:00',
+    });
+    const result = await generateRealisticPrivateChatReply({
+        state: current,
+        sessionUid: 'chat_1',
+        npcUid: 'npc_adult',
+        trigger: 'proactive',
+        phoneTime: '2026-08-02 13:00',
+        settingsStore: settingsStore(),
+        llmClient: { async chat(input) {
+            request = input;
+            return { text: JSON.stringify({
+                replies: ['我还记得你允许的那个玩法。'],
+                relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+                timing: { firstDelayMinutes: 5, betweenReplyMinutes: [], nextProactiveMinutes: 120 },
+                bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
+                sfwInsightAssessment: 'none', sfwResolutionAssessment: 'none',
+                nsfwConsentAssessment: 'none', nsfwSafetyAssessment: 'none', bodyEventReview: 'defer',
+            }) };
+        } },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.nsfwConsentReferenceAtRequest, { revision: 1, remainingTurns: 3, scopes: ['露骨调情', '线上文爱'] });
+    assert.match(request.messages[0].content, /当前有效同意范围允许主动成人消息/u);
+    assert.match(request.messages[0].content, /露骨色情内容、性幻想或性行为描写/u);
+    assert.doesNotMatch(request.messages[0].content, /始终按 SFW 尺度/u);
 });
 
 test('private chat summary uses its dedicated preset and returns only validated in-memory text and anchors', async () => {

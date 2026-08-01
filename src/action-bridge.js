@@ -592,6 +592,8 @@ export function createActionBridge({
                     response: generated.response,
                     generationTime: phoneTime,
                     triggerTime: scheduled.triggerTime,
+                    onlySfwAtRequest: generated.onlySfwAtRequest,
+                    nsfwConsentReferenceAtRequest: generated.nsfwConsentReferenceAtRequest,
                 });
             if (!built.ok) return { ...rejectedFromBuild(built), stateChanged, deliveredMessageUids, summaryCheckRequested, summarySessionUids: [...summarySessionUids] };
             const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });

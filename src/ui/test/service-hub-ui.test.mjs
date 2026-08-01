@@ -117,6 +117,27 @@ test('约伴页收成三 tab：精选/订单/记录，旧 tab id 折算且可来
     }
 });
 
+test('NSFW 陪伴首页使用色情目标分类并把全尺度合同传给角色生成', () => {
+    const harness = createHarness({ mode: 'NSFW' });
+    const { page, container } = harness;
+    try {
+        assert.match(container.textContent, /进入即按全尺度成人内容生成/u);
+        assert.match(container.textContent, /熟人性爱幻想/u);
+        assert.match(container.textContent, /陌生约炮邂逅/u);
+        assert.match(container.textContent, /随机性癖体验/u);
+        assert.doesNotMatch(container.textContent, /熟人商品|路人商品|随机商品/u);
+        assert.equal(container.querySelector('[name="service-xp-search"]').getAttribute('placeholder'), '例如：主导、臣服、捆绑、群体、公开场景幻想');
+        const copy = page.serviceHubModeCopy('NSFW');
+        const brief = page.serviceCreativeBrief(page.serviceCategory(copy, 'girl_luren'), 'NSFW', 'BDSM');
+        assert.match(brief, /全尺度色情分类/u);
+        assert.match(brief, /裸体、身体与器官偏好、自慰、口交、性交、高潮/u);
+        assert.match(brief, /不得含蓄化、自动转场或淡出/u);
+        assert.match(brief, /未成年人、胁迫或非自愿/u);
+    } finally {
+        harness.destroy();
+    }
+});
+
 test('三席生成器：空席虚线框、生成中骨架、完成后角色卡带勾选并可多选下单', async () => {
     const resolvers = [];
     const handoffDrafts = [];
