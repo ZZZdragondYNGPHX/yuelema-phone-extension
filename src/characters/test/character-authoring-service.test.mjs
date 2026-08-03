@@ -305,7 +305,7 @@ test('invalid input and missing binding fail before calling the model with a saf
     assert.deepEqual(invalid, {
         ok: false,
         code: 'character_authoring_input_invalid',
-        message: '待补全的公开资料或说明无效；当前草稿未改变。',
+        message: '待补全的资料层或说明无效；当前草稿未改变。',
         detail: '输入校验未通过：创作/补全说明为空、超长（>1200 字符）、含控制字符或 HTML，或公开上下文结构无效',
     });
 

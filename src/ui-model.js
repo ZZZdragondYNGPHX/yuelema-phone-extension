@@ -506,6 +506,7 @@ export function createPhoneView(readResult) {
             candidates: Object.freeze([]),
             favorites: Object.freeze([]),
             playerProfile: projectPlayerPublicProfile(null),
+            profileOnboardingRequired: false,
             queueCount: 0,
             matches: Object.freeze([]),
             messageSessions: Object.freeze([]),
@@ -517,6 +518,8 @@ export function createPhoneView(readResult) {
 
     const software = ownRecord(readResult.state.软件) ? readResult.state.软件 : {};
     const mode = software.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+    // 只投影严格的 false：旧聊天缺字段时不得强制弹出引导。
+    const profileOnboardingRequired = ownRecord(software.功能开关) && software.功能开关.玩家已建档 === false;
     const collections = projectRecommendationCollections(readResult.state);
     const candidates = Object.freeze([...collections.queue, ...collections.favorites.filter((favorite) => !collections.queue.some((candidate) => candidate.uid === favorite.uid))]);
     return Object.freeze({
@@ -527,6 +530,7 @@ export function createPhoneView(readResult) {
         candidates,
         favorites: collections.favorites,
         playerProfile: projectPlayerPublicProfile(readResult.state),
+        profileOnboardingRequired,
         queueCount: countPublicCandidates(readResult.state),
         matches: projectMatchView(readResult.state),
         messageSessions: projectPrivateChatView(readResult.state),

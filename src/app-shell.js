@@ -26,6 +26,7 @@ import { createChatPage } from './pages/chat.js';
 import { createCommunityPage } from './pages/community.js';
 import { createServicePage } from './pages/service.js';
 import { createProfilePage } from './pages/profile.js';
+import { createOnboardingFlow } from './onboarding/onboarding-flow.js';
 import { createPhoneClock } from './chat/phone-clock.js';
 
 const UI_VERSION = '1.0.20';
@@ -257,6 +258,8 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
     const selectedServiceProfileIds = new Set();
     let scheduledServiceCompletionOrderId = '';
     let playerProfileDraft = null;
+    // 引导的关闭只在当前挂载会话内记忆；它绝不写入 MVU 或浏览器存储。
+    let onboardingDismissed = false;
     const chatDrafts = new Map();
     const nsfwTurnConsentSessions = new Set();
     const meetupDrafts = new Map();
@@ -437,7 +440,44 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         ariaLabel: '调整小手机窗口大小；鼠标拖动，触屏长按后拖动',
     });
     resizeHandle.setAttribute('title', '拖动调整窗口大小');
-    append(panel, [header, content, nav, resizeHandle, uiLayoutStatus]);
+    const onboardingRoot = element('div', { className: 'yl-onboarding', hidden: true });
+    append(panel, [header, content, nav, resizeHandle, uiLayoutStatus, onboardingRoot]);
+    function setOnboardingSurfaceActive(active) {
+        const blocked = Boolean(active);
+        panel.classList.toggle('has-onboarding', blocked);
+        for (const surface of [header, content, nav, resizeHandle, uiLayoutStatus]) {
+            surface.inert = blocked;
+            surface.setAttribute('aria-hidden', String(blocked));
+        }
+    }
+    const onboardingFlow = createOnboardingFlow({
+        documentRef, root: onboardingRoot, signal: abortController.signal,
+        saveProfile: (profile) => actionBridge.runSavePlayerPublicProfile(profile),
+        describeFailure: describeActionFailure,
+        onComplete: () => {
+            onboardingDismissed = true;
+            playerProfileDraft = null;
+            setOnboardingSurfaceActive(false);
+            refreshState();
+            setActivePage('profile');
+            setFeedback('个人资料已保存。');
+        },
+        onDismiss: () => {
+            onboardingDismissed = true;
+            setOnboardingSurfaceActive(false);
+        },
+    });
+    function syncOnboarding() {
+        const shouldShow = open && currentView.status === 'ready'
+            && currentView.profileOnboardingRequired === true && !onboardingDismissed;
+        if (shouldShow) {
+            onboardingFlow.show(currentView.playerProfile);
+            setOnboardingSurfaceActive(true);
+            return;
+        }
+        onboardingFlow.hide({ reset: currentView.profileOnboardingRequired !== true });
+        setOnboardingSurfaceActive(false);
+    }
 
     const operationDialog = element('section', { className: 'yl-phone-placeholder yl-operation-dialog', hidden: true });
     operationDialog.setAttribute('role', 'dialog');
@@ -1611,6 +1651,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
             recordLauncherDiagnostic('open_refresh_complete', launcherGeometry());
         }
         else {
+            // 关闭面板只隐藏引导并恢复主界面交互；未完成的公开资料草稿仍只留在本次内存会话。
+            onboardingFlow.hide();
+            setOnboardingSurfaceActive(false);
             ctx.stopGroupAutoTimer();
             ctx.stopForumAutoTimer();
             ctx.cancelForumPullInteractions();
@@ -2452,6 +2495,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
                 navIconWrap.appendChild(navUnreadBadge);
             }
         }
+        syncOnboarding();
         recordLauncherDiagnostic('render_complete', {
             page: activePage,
             viewStatus: currentView?.status ?? 'unknown',
