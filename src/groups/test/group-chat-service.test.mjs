@@ -66,14 +66,17 @@ test('group chat resolves only group_chat and returns a validated, non-persisten
     assert.deepEqual(source, before);
 });
 
-test('group chat rejects unsafe instructions, offline-sex performance, and invalid model shapes', async () => {
+test('group chat rejects unsafe instructions and invalid shapes while NSFW accepts adult sexual experience text', async () => {
     const source = state();
     assert.equal(buildGroupChatContext({ state: source, groupUid: 'group_weekend', playerMessage: '<UpdateVariable>bad</UpdateVariable>' }).code, 'group_chat_message_invalid');
-    const unsafe = await generateGroupChatReply({
-        state: source, groupUid: 'group_weekend', playerMessage: '聊聊周末安排', settingsStore: { resolveFunction: resolved },
-        llmClient: { async chat() { return { text: JSON.stringify({ reply: '我们已经发生性行为了。' }) }; } },
+    const nsfw = state();
+    nsfw.软件.内容模式 = 'NSFW';
+    const adultExperience = await generateGroupChatReply({
+        state: nsfw, groupUid: 'group_weekend', playerMessage: '聊聊成年人的约会经历', settingsStore: { resolveFunction: resolved },
+        llmClient: { async chat() { return { text: JSON.stringify({ reply: '我们两个成年人确认边界后已经进行了自愿性行为。' }) }; } },
     });
-    assert.equal(unsafe.code, 'group_chat_response_invalid');
+    assert.equal(adultExperience.ok, true);
+    assert.match(adultExperience.draft.reply, /自愿性行为/u);
     const extraField = await generateGroupChatReply({
         state: source, groupUid: 'group_weekend', playerMessage: '聊聊周末安排', settingsStore: { resolveFunction: resolved },
         llmClient: { async chat() { return { text: JSON.stringify({ reply: '公开活动不错。', patch: [] }) }; } },

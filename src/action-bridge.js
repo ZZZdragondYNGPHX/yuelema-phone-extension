@@ -1,7 +1,7 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch } from './mvu/controlled-patch.js';
+import { buildAppendRealisticPrivateChatPlayerMessagePatch, buildBodyRelationshipCandidateBackfillPatch, buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildDeliverRealisticPrivateChatMessagesPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatNsfwConsentBackfillPatch, buildPrivateChatNsfwConsentPatch, buildPrivateChatNsfwDirectionPatch, buildPrivateChatNsfwRelationshipActionPatch, buildPrivateChatNsfwSafetyPatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRealisticPrivateChatBackfillPatch, buildRealisticPrivateChatProactivePatch, buildRealisticPrivateChatResponsePatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildRelationshipNarrativeBackfillPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch, buildToggleRealisticPrivateChatPatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
-import { generatePrivateChatReply, generatePrivateChatSummary } from './chat/private-chat-service.js';
+import { generatePrivateChatReply, generatePrivateChatSummary, generateRealisticPrivateChatReply } from './chat/private-chat-service.js';
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
 import { generateCandidateMatchDraft as generateCandidateMatchDraftService, generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
 import { materializeCandidateMatchDraft } from './recommendation/match-candidate-materializer.js';
@@ -12,6 +12,8 @@ import { generateForumExistingPostsUpdate as generateForumExistingPostsUpdateSer
 import { generateLocalConversationSummary as generateLocalConversationSummaryService } from './groups/local-conversation-summary-service.js';
 import { composeImagePrompt, ImageDirectiveError } from './images/image-directive.js';
 import { toPublicImageGenerationError } from './llm/image-generation-client.js';
+import { createPhoneClock } from './chat/phone-clock.js';
+import { nsfwConsentReference } from './mvu/nsfw-consent.js';
 
 const PASSIVE_KINDS = new Set([
     'open_character_creator',
@@ -120,7 +122,7 @@ function seedGeneratedCandidateKeywords(settingsStore, state, candidate) {
  * The sole UI-to-MVU write boundary. Browser UI can express only named actions;
  * it cannot provide a JSON Pointer, patch, state object, or arbitrary value.
  *
- * @param {{ documentRef: Document, mvu?: unknown, eventEmit?: unknown, getContext?: (() => unknown)|undefined, settingsStore?: unknown, llmClient?: unknown, imageGenerationClient?: unknown, imageMatchCoordinator?: unknown, diagnosticLogger?: unknown, onControlledAction?: (command: Readonly<{kind:string, payload:Readonly<Record<string,string>>}>) => void }} options
+ * @param {{ documentRef: Document, mvu?: unknown, eventEmit?: unknown, getContext?: (() => unknown)|undefined, settingsStore?: unknown, llmClient?: unknown, phoneClock?: unknown, imageGenerationClient?: unknown, imageMatchCoordinator?: unknown, diagnosticLogger?: unknown, onControlledAction?: (command: Readonly<{kind:string, payload:Readonly<Record<string,string>>}>) => void }} options
  */
 export function createActionBridge({
     documentRef,
@@ -129,6 +131,7 @@ export function createActionBridge({
     getContext = globalThis.SillyTavern?.getContext?.bind(globalThis.SillyTavern),
     settingsStore = null,
     llmClient = null,
+    phoneClock = createPhoneClock(),
     imageGenerationClient = null,
     imageMatchCoordinator = null,
     diagnosticLogger = null,
@@ -311,7 +314,7 @@ export function createActionBridge({
      * No state is written until the reply and all relationship deltas validate;
      * the state is deliberately re-read after the asynchronous model request.
      */
-    async function runPrivateChat({ sessionUid, npcUid, playerMessage, signal } = {}) {
+    async function runPrivateChat({ sessionUid, npcUid, playerMessage, turnConsentConfirmed = false, signal } = {}) {
         const key = actionKey('private_chat', sessionUid);
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
         pending.add(key);
@@ -327,15 +330,46 @@ export function createActionBridge({
                 firstRead = readLatestState({ mvu: currentMvu });
                 if (!firstRead.ok) return firstRead;
             }
+            const narrativeBackfill = buildRelationshipNarrativeBackfillPatch(firstRead.state);
+            if (!narrativeBackfill.ok) return rejectedFromBuild(narrativeBackfill);
+            if (narrativeBackfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: narrativeBackfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                firstRead = readLatestState({ mvu: currentMvu });
+                if (!firstRead.ok) return firstRead;
+            }
+            const bodyCandidateBackfill = buildBodyRelationshipCandidateBackfillPatch(firstRead.state);
+            if (!bodyCandidateBackfill.ok) return rejectedFromBuild(bodyCandidateBackfill);
+            if (bodyCandidateBackfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: bodyCandidateBackfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                firstRead = readLatestState({ mvu: currentMvu });
+                if (!firstRead.ok) return firstRead;
+            }
+            const consentBackfill = buildPrivateChatNsfwConsentBackfillPatch(firstRead.state);
+            if (!consentBackfill.ok) return rejectedFromBuild(consentBackfill);
+            if (consentBackfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: consentBackfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                firstRead = readLatestState({ mvu: currentMvu });
+                if (!firstRead.ok) return firstRead;
+            }
             const generated = await generatePrivateChatReply({
-                state: firstRead.state, sessionUid, npcUid, playerMessage, settingsStore, llmClient, signal,
+                state: firstRead.state, sessionUid, npcUid, playerMessage, turnConsentConfirmed, settingsStore, llmClient, signal,
             });
             if (!generated.ok) return { ok: false, status: 'rejected', code: generated.code, message: generated.message };
 
             const secondRead = readLatestState({ mvu: currentMvu });
             if (!secondRead.ok) return secondRead;
             const built = buildPrivateChatPatch(secondRead.state, {
-                sessionUid, npcUid, playerMessage: generated.playerMessage, response: generated.response,
+                sessionUid,
+                npcUid,
+                playerMessage: generated.playerMessage,
+                response: generated.response,
+                bodyCandidateEventId: generated.bodyCandidateEventId,
+                onlySfwAtRequest: generated.onlySfwAtRequest,
+                turnConsentConfirmed: generated.turnConsentConfirmed,
+                nsfwConsentReferenceAtRequest: generated.nsfwConsentReferenceAtRequest,
             });
             if (!built.ok) return rejectedFromBuild(built);
             const interactionOutcome = built.value.some((operation) => operation?.op === 'replace'
@@ -361,6 +395,304 @@ export function createActionBridge({
                 summaryCheckRequested: interactionOutcome === 'replied' && summarySettings.enabled,
                 imageDirectives,
             } : applied;
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    function currentPhoneTime() {
+        try {
+            const value = phoneClock?.nowText?.();
+            return typeof value === 'string' ? value : '';
+        } catch {
+            return '';
+        }
+    }
+
+    async function ensureRealisticPrivateChatFoundations(currentMvu) {
+        let read = readLatestState({ mvu: currentMvu });
+        if (!read.ok) return read;
+        let changed = false;
+        const builders = [
+            buildStoryMemoryBackfillPatch,
+            buildRelationshipNarrativeBackfillPatch,
+            buildBodyRelationshipCandidateBackfillPatch,
+            buildPrivateChatNsfwConsentBackfillPatch,
+            buildRealisticPrivateChatBackfillPatch,
+        ];
+        for (const build of builders) {
+            const built = build(read.state);
+            if (!built.ok) return rejectedFromBuild(built);
+            if (!built.value.length) continue;
+            const migrated = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            if (!migrated.ok) return migrated;
+            changed = true;
+            read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+        }
+        return { ok: true, state: read.state, changed };
+    }
+
+    async function setRealisticPrivateChatMode({ sessionUid, npcUid, enabled } = {}) {
+        const key = actionKey('private_chat_realistic_toggle', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const phoneTime = currentPhoneTime();
+            if (!phoneTime) return { ok: false, status: 'rejected', code: 'private_chat_realistic_time_unavailable' };
+            const currentMvu = resolveMvu(mvu);
+            const ready = await ensureRealisticPrivateChatFoundations(currentMvu);
+            if (!ready.ok) return ready;
+            const built = buildToggleRealisticPrivateChatPatch(ready.state, { sessionUid, npcUid, enabled, phoneTime });
+            if (!built.ok) return rejectedFromBuild(built);
+            const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+            return applied.ok ? { ...applied, enabled: enabled === true } : applied;
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    async function sendRealisticPrivateChatMessage({ sessionUid, npcUid, playerMessage, turnConsentConfirmed = false } = {}) {
+        const key = actionKey('private_chat_realistic_send', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const phoneTime = currentPhoneTime();
+            if (!phoneTime) return { ok: false, status: 'rejected', code: 'private_chat_realistic_time_unavailable' };
+            const currentMvu = resolveMvu(mvu);
+            const ready = await ensureRealisticPrivateChatFoundations(currentMvu);
+            if (!ready.ok) return ready;
+            const session = ready.state?.会话?.[sessionUid];
+            const reference = nsfwConsentReference(session?.NSFW同意);
+            const built = buildAppendRealisticPrivateChatPlayerMessagePatch(ready.state, {
+                sessionUid,
+                npcUid,
+                playerMessage,
+                phoneTime,
+                turnConsentConfirmed,
+                nsfwConsentReferenceAtSend: reference,
+            });
+            if (!built.ok) return rejectedFromBuild(built);
+            const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
+            return applied.ok ? { ...applied, messageUid: built.value.messageUid } : applied;
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    async function runRealisticPrivateChatTick({ signal } = {}) {
+        const key = actionKey('private_chat_realistic_tick', 'global');
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const phoneTime = currentPhoneTime();
+            if (!phoneTime) return { ok: false, status: 'rejected', code: 'private_chat_realistic_time_unavailable' };
+            const currentMvu = resolveMvu(mvu);
+            const ready = await ensureRealisticPrivateChatFoundations(currentMvu);
+            if (!ready.ok) return ready;
+            let state = ready.state;
+            let stateChanged = ready.changed;
+            const deliveredMessageUids = [];
+            let summaryCheckRequested = false;
+            const summarySessionUids = new Set();
+
+            // Delivery is deterministic and cheap, so every due session is drained
+            // before at most one model generation is selected for this tick.
+            for (const [sessionUid, session] of Object.entries(state?.会话 ?? {}).sort(([left], [right]) => left.localeCompare(right))) {
+                const npcUid = session?.对象UID;
+                const dueAt = session?.拟真聊天?.待投递消息?.[0]?.时间;
+                if (session?.拟真聊天?.启用 !== true || typeof dueAt !== 'string' || dueAt > phoneTime) continue;
+                const built = buildDeliverRealisticPrivateChatMessagesPatch(state, { sessionUid, npcUid, phoneTime });
+                if (!built.ok) {
+                    const mustCancel = [
+                        'private_chat_realistic_delivery_mode_changed',
+                        'private_chat_realistic_delivery_consent_changed',
+                        'private_chat_relationship_paused',
+                        'private_chat_relationship_ended',
+                    ].includes(built.code);
+                    if (!mustCancel) continue;
+                    const cancelled = buildToggleRealisticPrivateChatPatch(state, {
+                        sessionUid, npcUid, enabled: false, phoneTime,
+                    });
+                    if (!cancelled.ok) continue;
+                    const appliedCancel = await applyControlledPatch({ patch: cancelled.value, mvu: currentMvu, eventEmit, getContext });
+                    if (!appliedCancel.ok) return appliedCancel;
+                    stateChanged = true;
+                    const refreshedAfterCancel = readLatestState({ mvu: currentMvu });
+                    if (!refreshedAfterCancel.ok) return refreshedAfterCancel;
+                    state = refreshedAfterCancel.state;
+                    continue;
+                }
+                const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
+                if (!applied.ok) return applied;
+                stateChanged = true;
+                deliveredMessageUids.push(...built.value.deliveredMessageUids);
+                summaryCheckRequested ||= built.value.summaryCheckRequested;
+                if (built.value.summaryCheckRequested) summarySessionUids.add(sessionUid);
+                const refreshed = readLatestState({ mvu: currentMvu });
+                if (!refreshed.ok) return refreshed;
+                state = refreshed.state;
+            }
+
+            let scheduled = null;
+            for (const [sessionUid, session] of Object.entries(state?.会话 ?? {}).sort(([left], [right]) => left.localeCompare(right))) {
+                const realistic = session?.拟真聊天;
+                if (realistic?.启用 !== true || session?.状态 !== '已匹配' || realistic.待投递消息?.length) continue;
+                if (typeof realistic.回复触发时间 === 'string' && realistic.回复触发时间 && realistic.回复触发时间 <= phoneTime) {
+                    scheduled = { trigger: 'reply', sessionUid, npcUid: session.对象UID };
+                    break;
+                }
+            }
+            if (!scheduled) {
+                for (const [sessionUid, session] of Object.entries(state?.会话 ?? {}).sort(([left], [right]) => left.localeCompare(right))) {
+                    const realistic = session?.拟真聊天;
+                    if (realistic?.启用 !== true || session?.状态 !== '已匹配' || realistic.待投递消息?.length || realistic.回复触发时间) continue;
+                    if (typeof realistic.主动触发时间 === 'string' && realistic.主动触发时间 && realistic.主动触发时间 <= phoneTime) {
+                        scheduled = { trigger: 'proactive', sessionUid, npcUid: session.对象UID, triggerTime: realistic.主动触发时间 };
+                        break;
+                    }
+                }
+            }
+            if (!scheduled) return { ok: true, status: 'idle', stateChanged, deliveredMessageUids, summaryCheckRequested, summarySessionUids: [...summarySessionUids] };
+
+            const sessionConsent = state?.会话?.[scheduled.sessionUid]?.NSFW同意;
+            const consentReference = nsfwConsentReference(sessionConsent);
+            const turnConsentConfirmed = scheduled.trigger === 'reply'
+                && Boolean(consentReference
+                    && state?.会话?.[scheduled.sessionUid]?.拟真聊天?.待回复同意修订号 === consentReference.revision);
+            const generated = await generateRealisticPrivateChatReply({
+                state,
+                sessionUid: scheduled.sessionUid,
+                npcUid: scheduled.npcUid,
+                trigger: scheduled.trigger,
+                phoneTime,
+                turnConsentConfirmed,
+                settingsStore,
+                llmClient,
+                signal,
+            });
+            if (!generated.ok) return { ...generated, status: 'rejected', stateChanged, deliveredMessageUids, summaryCheckRequested, summarySessionUids: [...summarySessionUids] };
+            const refreshed = readLatestState({ mvu: currentMvu });
+            if (!refreshed.ok) return refreshed;
+            const built = scheduled.trigger === 'reply'
+                ? buildRealisticPrivateChatResponsePatch(refreshed.state, {
+                    sessionUid: scheduled.sessionUid,
+                    npcUid: scheduled.npcUid,
+                    response: generated.response,
+                    generationTime: phoneTime,
+                    playerMessageUids: generated.playerMessageUids,
+                    bodyCandidateEventId: generated.bodyCandidateEventId,
+                    onlySfwAtRequest: generated.onlySfwAtRequest,
+                    turnConsentConfirmed: generated.turnConsentConfirmed,
+                    nsfwConsentReferenceAtRequest: generated.nsfwConsentReferenceAtRequest,
+                })
+                : buildRealisticPrivateChatProactivePatch(refreshed.state, {
+                    sessionUid: scheduled.sessionUid,
+                    npcUid: scheduled.npcUid,
+                    response: generated.response,
+                    generationTime: phoneTime,
+                    triggerTime: scheduled.triggerTime,
+                    onlySfwAtRequest: generated.onlySfwAtRequest,
+                    nsfwConsentReferenceAtRequest: generated.nsfwConsentReferenceAtRequest,
+                });
+            if (!built.ok) return { ...rejectedFromBuild(built), stateChanged, deliveredMessageUids, summaryCheckRequested, summarySessionUids: [...summarySessionUids] };
+            const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
+            return applied.ok ? {
+                ...applied,
+                stateChanged: true,
+                generated: true,
+                trigger: scheduled.trigger,
+                sessionUid: scheduled.sessionUid,
+                npcUid: scheduled.npcUid,
+                interactionOutcome: built.value.interactionOutcome,
+                imageDirectives: built.value.imageDirectives,
+                deliveredMessageUids,
+                summaryCheckRequested,
+                summarySessionUids: [...summarySessionUids],
+            } : applied;
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Toggles only the current matched session's NSFW safety pause leaf. */
+    async function runPrivateChatNsfwSafety({ sessionUid, action } = {}) {
+        const key = actionKey('private_chat_nsfw_safety', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            let read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const backfill = buildPrivateChatNsfwConsentBackfillPatch(read.state);
+            if (!backfill.ok) return rejectedFromBuild(backfill);
+            if (backfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: backfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                read = readLatestState({ mvu: currentMvu });
+                if (!read.ok) return read;
+            }
+            const built = buildPrivateChatNsfwSafetyPatch(read.state, { sessionUid, action });
+            if (!built.ok) return rejectedFromBuild(built);
+            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Establishes or revokes only the current matched session's scoped C.2 envelope. */
+    async function runPrivateChatNsfwConsent({ sessionUid, action, scopes = [], turns = 0 } = {}) {
+        const key = actionKey('private_chat_nsfw_consent', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            let read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const backfill = buildPrivateChatNsfwConsentBackfillPatch(read.state);
+            if (!backfill.ok) return rejectedFromBuild(backfill);
+            if (backfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: backfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                read = readLatestState({ mvu: currentMvu });
+                if (!read.ok) return read;
+            }
+            const built = buildPrivateChatNsfwConsentPatch(read.state, { sessionUid, action, scopes, turns });
+            if (!built.ok) return rejectedFromBuild(built);
+            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Records an explicit C.3 direction choice; it never chooses from scores. */
+    async function runPrivateChatNsfwDirection({ sessionUid, direction } = {}) {
+        const key = actionKey('private_chat_nsfw_direction', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const built = buildPrivateChatNsfwDirectionPatch(read.state, { sessionUid, direction });
+            if (!built.ok) return rejectedFromBuild(built);
+            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    async function runPrivateChatNsfwRelationshipAction({ sessionUid, action } = {}) {
+        const key = actionKey('private_chat_nsfw_relationship', sessionUid);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        pending.add(key);
+        try {
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const built = buildPrivateChatNsfwRelationshipActionPatch(read.state, { sessionUid, action });
+            if (!built.ok) return rejectedFromBuild(built);
+            return await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         } finally {
             pending.delete(key);
         }
@@ -667,6 +999,14 @@ export function createActionBridge({
             const currentMvu = resolveMvu(mvu);
             let read = readLatestState({ mvu: currentMvu });
             if (!read.ok) return read;
+            const consentBackfill = buildPrivateChatNsfwConsentBackfillPatch(read.state);
+            if (!consentBackfill.ok) return rejectedFromBuild(consentBackfill);
+            if (consentBackfill.value.length) {
+                const migrated = await applyControlledPatch({ patch: consentBackfill.value, mvu: currentMvu, eventEmit, getContext });
+                if (!migrated.ok) return migrated;
+                read = readLatestState({ mvu: currentMvu });
+                if (!read.ok) return read;
+            }
             let forcedSummaryCount = 0;
             while (listUnsummarizedConversationMessages(read.state?.会话?.[request?.sessionUid]).length > 0) {
                 if (forcedSummaryCount >= 4) {
@@ -826,27 +1166,41 @@ export function createActionBridge({
         }
     }
 
-    /** Generates an AI completion from the editor's public projection only; this remains an in-memory draft. */
-    async function generateCharacterCompletionDraft({ publicProfile, instruction, contentMode, signal } = {}) {
+    /** Generates a selectively scoped AI completion from the editor draft; this remains in memory. */
+    async function generateCharacterCompletionDraft({ candidateDraft, completionScopes, instruction, expectedContentMode = '', signal } = {}) {
         const key = actionKey('character_completion_draft', '');
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
+        if (expectedContentMode && !CONTENT_MODES.has(expectedContentMode)) return { ok: false, status: 'rejected', code: 'character_completion_mode_invalid' };
         pending.add(key);
         try {
-            return await generateCharacterCompletionCandidate({
-                publicProfile,
+            const currentMvu = resolveMvu(mvu);
+            const read = readLatestState({ mvu: currentMvu });
+            if (!read.ok) return read;
+            const currentMode = read.state?.软件?.内容模式;
+            if (expectedContentMode && currentMode !== expectedContentMode) return { ok: false, status: 'rejected', code: 'character_completion_mode_changed', message: '内容模式已改变，请重新补全角色。' };
+            const generated = await generateCharacterCompletionCandidate({
+                candidateDraft,
+                completionScopes,
                 instruction,
-                contentMode,
+                contentMode: currentMode,
                 settingsStore,
                 llmClient,
                 signal,
             });
+            if (!expectedContentMode || !generated?.ok) return generated;
+            const latest = readLatestState({ mvu: currentMvu });
+            if (!latest.ok) return latest;
+            if (latest.state?.软件?.内容模式 !== expectedContentMode) {
+                return { ok: false, status: 'rejected', code: 'character_completion_mode_changed', message: '内容模式已改变，请重新补全角色。' };
+            }
+            return generated;
         } finally {
             pending.delete(key);
         }
     }
 
     /** Generates a full AI candidate from a safe brief and the latest public player context; no MVU write occurs. */
-    async function generateCharacterAuthoringDraft({ creativeBrief, expectedContentMode = '', signal } = {}) {
+    async function generateCharacterAuthoringDraft({ creativeBrief, characterBlueprint = {}, expectedContentMode = '', signal } = {}) {
         const key = actionKey('character_authoring_draft', '');
         if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending' };
         if (expectedContentMode && !CONTENT_MODES.has(expectedContentMode)) return { ok: false, status: 'rejected', code: 'character_authoring_mode_invalid' };
@@ -861,6 +1215,7 @@ export function createActionBridge({
                 creativeBrief,
                 contentMode: currentMode,
                 playerPublicProfile: read.state?.玩家?.公开资料,
+                characterBlueprint,
                 settingsStore,
                 llmClient,
                 signal,
@@ -1341,5 +1696,5 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, generateLibraryImage, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, setRealisticPrivateChatMode, sendRealisticPrivateChatMessage, runRealisticPrivateChatTick, runPrivateChatNsfwSafety, runPrivateChatNsfwConsent, runPrivateChatNsfwDirection, runPrivateChatNsfwRelationshipAction, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, generateLibraryImage, isPending, appendMeetupDraft });
 }

@@ -10,9 +10,91 @@ const TAG_KEYS = Object.freeze(['兴趣标签', '生活方式标签', '性格标
 const PUBLIC_TEXT_KEYS = Object.freeze(['昵称', '年龄段', '性别', '性取向', '城市', '距离范围', '寻找意图', '简介']);
 const FRIEND_TEXT_KEYS = Object.freeze(['关系状态', '边界与偏好']);
 const THRESHOLD_KEYS = Object.freeze(['拒绝阈值', '已读不回阈值', '取消匹配阈值', '拉黑阈值']);
+const COMPLETION_SCOPES = Object.freeze(['public', 'private', 'visual', 'rhythm']);
+const ROLE_BLUEPRINT_PREFIX = '【角色蓝图v1】';
+const ROLE_BLUEPRINT_FIELDS = Object.freeze([
+    ['relationship-goal', '关系目标'],
+    ['initiative-style', '主动方式'],
+    ['message-style', '聊天质感'],
+    ['affection-style', '亲密表达'],
+    ['conflict-style', '冲突处理'],
+    ['life-rhythm', '生活节奏'],
+    ['adult-role', '成人角色'],
+    ['adult-language', '色情语言'],
+    ['adult-intensity', '性行为强度'],
+    ['adult-body-preference', '身体偏好'],
+    ['adult-fantasy', '幻想场景'],
+    ['adult-aftercare', '事后照护'],
+    ['adult-hard-limits', '硬性禁区'],
+    ['blueprint-extra', '补充设定'],
+]);
 
 function cleanText(value) { return String(value ?? '').trim(); }
 function splitTags(value) { return cleanText(value).split(/[，,]/u).map((tag) => tag.trim()).filter(Boolean); }
+function cleanBlueprintValue(value) { return cleanText(value).replace(/[｜=【】\u0000-\u001F\u007F]/gu, ' ').replace(/\s{2,}/gu, ' ').trim(); }
+
+function selectedCheckboxValues(form, name) {
+    return [...form.querySelectorAll(`[name="${name}"]`)]
+        .filter((control) => control.checked)
+        .map((control) => cleanBlueprintValue(control.value))
+        .filter(Boolean);
+}
+
+function completionScopesFromForm(form) {
+    return COMPLETION_SCOPES.filter((scope) => form.querySelector(`[name="ai-completion-scope-${scope}"]`)?.checked);
+}
+
+function compileRoleBlueprint(form) {
+    const boundary = form.querySelector('[name="boundary"]');
+    if (boundary?.dataset?.preserveRaw === 'true') return cleanText(boundary.value);
+    const entries = [];
+    for (const [name, label] of ROLE_BLUEPRINT_FIELDS) {
+        const value = cleanBlueprintValue(readNamed(form, name));
+        if (value) entries.push(`${label}=${value}`);
+    }
+    const activities = selectedCheckboxValues(form, 'adult-activity');
+    if (activities.length) entries.splice(Math.min(6, entries.length), 0, `成人玩法=${activities.join('、')}`);
+    return entries.length ? `${ROLE_BLUEPRINT_PREFIX}${entries.join('｜')}` : cleanText(boundary?.value);
+}
+
+function roleBlueprintForAi(form, contentMode) {
+    const blueprint = {};
+    for (const [name, label] of ROLE_BLUEPRINT_FIELDS) {
+        if (contentMode !== 'NSFW' && name.startsWith('adult-')) continue;
+        const value = cleanBlueprintValue(readNamed(form, name));
+        if (value) blueprint[label] = value;
+    }
+    const activities = contentMode === 'NSFW' ? selectedCheckboxValues(form, 'adult-activity') : [];
+    if (activities.length) blueprint.成人玩法 = activities;
+    return blueprint;
+}
+
+function applyRoleBlueprintToForm(form, serialized, contentMode) {
+    const boundary = form.querySelector('[name="boundary"]');
+    if (boundary) { boundary.value = cleanText(serialized); boundary.dataset.preserveRaw = 'false'; }
+    const extra = form.querySelector('[name="blueprint-extra"]');
+    if (!cleanText(serialized).startsWith(ROLE_BLUEPRINT_PREFIX)) {
+        if (extra) extra.value = cleanText(serialized);
+        return;
+    }
+    const values = new Map();
+    for (const part of cleanText(serialized).slice(ROLE_BLUEPRINT_PREFIX.length).split('｜')) {
+        const separator = part.indexOf('=');
+        if (separator > 0) values.set(part.slice(0, separator), part.slice(separator + 1));
+    }
+    const hasAdultBlueprint = [...values.keys()].some((key) => ['成人角色', '成人玩法', '色情语言', '性行为强度', '身体偏好', '幻想场景', '事后照护', '硬性禁区'].includes(key));
+    if (contentMode !== 'NSFW' && hasAdultBlueprint) {
+        if (extra) extra.value = '';
+        if (boundary) boundary.dataset.preserveRaw = 'true';
+        return;
+    }
+    for (const [name, label] of ROLE_BLUEPRINT_FIELDS) {
+        const control = form.querySelector(`[name="${name}"]`);
+        if (control) control.value = values.get(label) ?? '';
+    }
+    const activities = new Set((values.get('成人玩法') ?? '').split('、').filter(Boolean));
+    for (const control of form.querySelectorAll('[name="adult-activity"]')) control.checked = activities.has(control.value);
+}
 
 function baseCandidate() {
     return {
@@ -42,6 +124,30 @@ function textField(container, labelText, { name, value = '', rows = 0, required 
     if (hint) label.appendChild(element('span', { className: 'yl-character-field-hint', text: hint }));
     container.appendChild(label);
     return control;
+}
+
+function selectField(container, labelText, { name, options, hint = '', className = '' } = {}) {
+    const label = element('label', { className: `yl-character-field${className ? ` ${className}` : ''}` });
+    label.appendChild(element('span', { className: 'yl-character-field-label', text: labelText }));
+    const control = element('select', { name, ariaLabel: labelText });
+    control.appendChild(element('option', { value: '', text: '未指定，由角色自然决定' }));
+    for (const option of options) control.appendChild(element('option', { value: option, text: option }));
+    label.appendChild(control);
+    if (hint) label.appendChild(element('span', { className: 'yl-character-field-hint', text: hint }));
+    container.appendChild(label);
+    return control;
+}
+
+function checkboxChoiceGroup(container, { name, choices, selected = [], className = '' }) {
+    const group = element('div', { className: `yl-character-choice-grid${className ? ` ${className}` : ''}` });
+    for (const choice of choices) {
+        const input = element('input', { name, type: 'checkbox', value: choice.value, checked: selected.includes(choice.value), ariaLabel: choice.label });
+        const label = element('label', { className: 'yl-character-choice-chip' });
+        append(label, [input, element('span', { text: choice.label })]);
+        group.appendChild(label);
+    }
+    container.appendChild(group);
+    return group;
 }
 
 function sectionHeading(container, { step = '', eyebrow = '', title, description = '' }) {
@@ -79,7 +185,7 @@ function candidateFromForm(form, avatar) {
     candidate.隐藏资料.私人备注 = cleanText(readNamed(form, 'hidden-note'));
     candidate.绘图.core_dna = cleanText(readNamed(form, 'drawing-core-dna'));
     candidate.绘图.outfit_dna = cleanText(readNamed(form, 'drawing-outfit-dna'));
-    candidate.偏好与边界 = cleanText(readNamed(form, 'boundary'));
+    candidate.偏好与边界 = compileRoleBlueprint(form);
     for (const key of THRESHOLD_KEYS) candidate[key] = Number(readNamed(form, `threshold-${key}`));
     return candidate;
 }
@@ -91,13 +197,28 @@ function publicProfileFromForm(form) {
     for (const key of TAG_KEYS) profile[key] = splitTags(readNamed(form, `tag-${key}`));
     return profile;
 }
+
+function candidateDraftForCompletion(form, scopes) {
+    const full = candidateFromForm(form, { kind: 'placeholder' });
+    const selected = new Set(scopes);
+    const draft = {};
+    if (selected.has('public')) draft.公开资料 = full.公开资料;
+    if (selected.has('private')) {
+        draft.仅好友资料 = full.仅好友资料;
+        draft.隐藏资料 = full.隐藏资料;
+        draft.偏好与边界 = full.偏好与边界;
+    }
+    if (selected.has('visual')) draft.绘图 = full.绘图;
+    if (selected.has('rhythm')) for (const key of THRESHOLD_KEYS) draft[key] = full[key];
+    return draft;
+}
 function avatarFromForm(form, localAvatar) {
     return readNamed(form, 'avatar-kind') === 'embedded' && localAvatar
         ? { kind: 'embedded', dataUrl: localAvatar.dataUrl }
         : { kind: 'placeholder' };
 }
 
-function candidateToForm(form, template) {
+function candidateToForm(form, template, contentMode = 'SFW') {
     const candidate = template.character;
     for (const key of PUBLIC_TEXT_KEYS) {
         const control = form.querySelector(`[name="public-${key}"]`);
@@ -112,21 +233,27 @@ function candidateToForm(form, template) {
         if (control) control.value = candidate.仅好友资料[key] ?? '';
     }
     form.querySelector('[name="hidden-age"]').value = String(candidate.隐藏资料.实际年龄);
+    form.querySelector('[name="hidden-age"]').dataset.aiPlaceholder = 'false';
     form.querySelector('[name="hidden-note"]').value = candidate.隐藏资料.私人备注 ?? '';
     form.querySelector('[name="drawing-core-dna"]').value = candidate.绘图?.core_dna ?? '';
     form.querySelector('[name="drawing-outfit-dna"]').value = candidate.绘图?.outfit_dna ?? '';
-    form.querySelector('[name="boundary"]').value = candidate.偏好与边界 ?? '';
-    for (const key of THRESHOLD_KEYS) form.querySelector(`[name="threshold-${key}"]`).value = String(candidate[key]);
+    applyRoleBlueprintToForm(form, candidate.偏好与边界 ?? '', contentMode);
+    for (const key of THRESHOLD_KEYS) {
+        const control = form.querySelector(`[name="threshold-${key}"]`);
+        control.value = String(candidate[key]);
+        control.dataset.aiPlaceholder = 'false';
+    }
     const avatarKind = form.querySelector('[name="avatar-kind"]');
     if (avatarKind) avatarKind.value = template.avatar?.kind ?? 'placeholder';
 }
 
-function mergeAiCompletionIntoForm(form, candidate) {
-    for (const key of PUBLIC_TEXT_KEYS) {
+function mergeAiCompletionIntoForm(form, candidate, scopes, contentMode) {
+    const selected = new Set(scopes);
+    if (selected.has('public')) for (const key of PUBLIC_TEXT_KEYS) {
         const control = form.querySelector(`[name="public-${key}"]`);
         if (control && !cleanText(control.value)) control.value = candidate.公开资料[key] ?? '';
     }
-    for (const key of TAG_KEYS) {
+    if (selected.has('public')) for (const key of TAG_KEYS) {
         const control = form.querySelector(`[name="tag-${key}"]`);
         if (!control) continue;
         const merged = [...splitTags(control.value)];
@@ -135,29 +262,34 @@ function mergeAiCompletionIntoForm(form, candidate) {
         }
         control.value = merged.slice(0, 24).join(', ');
     }
-    for (const key of FRIEND_TEXT_KEYS) {
+    if (selected.has('private')) for (const key of FRIEND_TEXT_KEYS) {
         const control = form.querySelector(`[name="friend-${key}"]`);
         if (control && !cleanText(control.value)) control.value = candidate.仅好友资料[key] ?? '';
     }
-    const hiddenAge = form.querySelector('[name="hidden-age"]');
+    const hiddenAge = selected.has('private') ? form.querySelector('[name="hidden-age"]') : null;
     const currentAge = Number(hiddenAge?.value);
-    if (hiddenAge && (!Number.isInteger(currentAge) || currentAge < 18 || currentAge > 120)) {
+    if (hiddenAge && (hiddenAge.dataset.aiPlaceholder === 'true' || !Number.isInteger(currentAge) || currentAge < 18 || currentAge > 120)) {
         hiddenAge.value = String(candidate.隐藏资料.实际年龄);
+        hiddenAge.dataset.aiPlaceholder = 'false';
     }
-    for (const [name, value] of [
+    const scopedText = [
         ['hidden-note', candidate.隐藏资料.私人备注],
-        ['drawing-core-dna', candidate.绘图?.core_dna],
-        ['drawing-outfit-dna', candidate.绘图?.outfit_dna],
         ['boundary', candidate.偏好与边界],
-    ]) {
+    ];
+    if (selected.has('visual')) scopedText.push(['drawing-core-dna', candidate.绘图?.core_dna], ['drawing-outfit-dna', candidate.绘图?.outfit_dna]);
+    for (const [name, value] of (selected.has('private') ? scopedText : scopedText.slice(2))) {
         const control = form.querySelector(`[name="${name}"]`);
-        if (control && !cleanText(control.value)) control.value = value ?? '';
+        if (control && !cleanText(control.value)) {
+            control.value = value ?? '';
+            if (name === 'boundary') applyRoleBlueprintToForm(form, value ?? '', contentMode);
+        }
     }
-    for (const key of THRESHOLD_KEYS) {
+    if (selected.has('rhythm')) for (const key of THRESHOLD_KEYS) {
         const control = form.querySelector(`[name="threshold-${key}"]`);
         const current = Number(control?.value);
-        if (control && (!Number.isInteger(current) || current < 0 || current > 100)) {
+        if (control && (control.dataset.aiPlaceholder === 'true' || !Number.isInteger(current) || current < 0 || current > 100)) {
             control.value = String(candidate[key]);
+            control.dataset.aiPlaceholder = 'false';
         }
     }
 }
@@ -305,9 +437,49 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         textField(tagsGroup, label, { name: `tag-${key}`, placeholder });
     }
 
+    const blueprintSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-blueprint', id: 'yl-character-section-blueprint' });
+    const blueprintHeading = sectionHeading(blueprintSection, {
+        step: '02', eyebrow: '角色蓝图', title: '把 TA 的关系方式、声音与欲望都定下来',
+        description: contentMode === 'NSFW'
+            ? '这一层是完整角色的人格骨架。成人设定只写入私有角色蓝图，不会自动放进首页公开名片；如需公开表达，可自行写进公开资料。'
+            : '这一层是完整角色的人格骨架。留空表示交给角色自然生长，已选择的内容会作为后续互动与 AI 创作的明确要求。',
+    });
+    const blueprintBody = collapsibleBody(blueprintSection, blueprintHeading, '角色蓝图');
+    const relationshipGroup = fieldGroup(blueprintBody, '关系与相处动力', '每一项都可留空；选择越具体，角色在聊天与关系推进中越稳定。', 'yl-character-field-grid yl-character-field-grid-two');
+    selectField(relationshipGroup, '关系目标', { name: 'relationship-goal', options: ['轻松聊天搭子', '慢热约会关系', '稳定恋爱关系', '开放式关系', '短期成人关系', '长期性伴侣关系', '由互动自然发展'] });
+    selectField(relationshipGroup, '主动方式', { name: 'initiative-style', options: ['高主动，会主动开话题和邀约', '回应型，熟悉后明显主动', '慢热观察型', '直接明确，不玩猜心', '克制但持续靠近'] });
+    selectField(relationshipGroup, '聊天质感', { name: 'message-style', options: ['短句高频，像即时聊天', '长消息低频，重视完整表达', '幽默互损，熟后更放松', '温柔细致，善于追问', '直球调情，情绪外露', '理性克制，内容密度高'] });
+    selectField(relationshipGroup, '亲密表达', { name: 'affection-style', options: ['语言确认与直白夸奖', '行动照顾与记住细节', '高频陪伴与及时回应', '肢体亲近与主动触碰', '留出空间但稳定出现', '玩笑调情与专属称呼'] });
+    selectField(relationshipGroup, '冲突处理', { name: 'conflict-style', options: ['当场沟通，问题不过夜', '先冷静再主动复盘', '需要明确道歉与补救', '边界被踩会立即拒绝', '倾向回避，需要被温和引导'] });
+    selectField(relationshipGroup, '生活节奏', { name: 'life-rhythm', options: ['朝九晚六，夜晚稳定在线', '夜猫子，深夜更有表达欲', '轮班或作息不固定', '周末活跃，工作日低频', '自由职业，回复节奏随项目变化'] });
+
+    if (contentMode === 'NSFW') {
+        const adultGroup = fieldGroup(blueprintBody, '成年人亲密与性偏好', '仅限明确成年人、自愿、边界清晰且同意可撤回。这里可以直写，不需要用含蓄词替代。', 'yl-character-field-grid yl-character-field-grid-two yl-character-adult-blueprint');
+        selectField(adultGroup, '成人互动角色', { name: 'adult-role', options: ['偏主导', '偏顺从', '可切换', '平等协商', '依具体玩法协商'] });
+        selectField(adultGroup, '色情语言风格', { name: 'adult-language', options: ['直白露骨', '命令与挑逗并重', '温柔描述身体反应', '粗俗脏话', '克制但明确', '随场景切换'] });
+        selectField(adultGroup, '性行为节奏与强度', { name: 'adult-intensity', options: ['慢热细致', '由温柔逐步加深', '直接强烈', '粗暴但全程协商', '强弱交替', '按场景协商'] });
+        const activityGroup = fieldGroup(adultGroup, '愿意探索的成人玩法', '可多选；未勾选不等于禁区，硬性拒绝请写在“硬性禁区”。', 'yl-character-field-wide');
+        checkboxChoiceGroup(activityGroup, {
+            name: 'adult-activity',
+            choices: [
+                ['裸体与身体展示', '裸体'], ['自慰与互相自慰', '自慰'], ['口交', '口交'], ['性交', '性交'],
+                ['高潮与体液', '高潮与体液'], ['性玩具', '性玩具'], ['BDSM', 'BDSM'], ['多人幻想', '多人幻想'],
+                ['情色角色扮演', '情色角色扮演'], ['文爱与露骨聊天', '文爱与露骨聊天'],
+            ].map(([label, value]) => ({ label, value })),
+        });
+        textField(adultGroup, '身体与器官偏好', { name: 'adult-body-preference', rows: 3, placeholder: '可以直接写明偏好的身体特征、器官、触碰方式与身体反应。' });
+        textField(adultGroup, '幻想与具体场景', { name: 'adult-fantasy', rows: 3, placeholder: '写明想探索的地点、身份、动作、节奏、台词或情色角色扮演。' });
+        textField(adultGroup, '事后照护', { name: 'adult-aftercare', rows: 3, placeholder: '例如：拥抱、清洁、补水、情绪确认、独处空间。' });
+        textField(adultGroup, '硬性禁区', { name: 'adult-hard-limits', rows: 3, placeholder: '写明绝不接受的行为、称呼、器具、部位或情境；任何时候都可撤回同意。' });
+    }
+    const blueprintExtraGroup = fieldGroup(blueprintBody, '自由补充', '填写上述选项无法表达的职业习惯、口癖、反差、关系结构或成人偏好。', 'yl-character-field-grid');
+    textField(blueprintExtraGroup, '补充角色设定', { name: 'blueprint-extra', rows: 4, placeholder: contentMode === 'NSFW' ? '可以直接写完整、露骨的成年人自愿设定。' : '补充角色独有的生活细节、习惯、口癖或关系期待。' });
+    const serializedBoundary = element('input', { name: 'boundary', type: 'hidden', value: '' });
+    blueprintBody.appendChild(serializedBoundary);
+
     const avatarSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-avatar', id: 'yl-character-section-avatar' });
     const avatarHeading = sectionHeading(avatarSection, {
-        step: '02', eyebrow: '头像与形象', title: '选一张有故事感的头像',
+        step: '03', eyebrow: '头像与形象', title: '选一张有故事感的头像',
     });
     const avatarBody = collapsibleBody(avatarSection, avatarHeading, '形象与灵感');
     const avatarLayout = element('div', { className: 'yl-character-avatar-layout' });
@@ -345,7 +517,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
 
     const aiSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-ai', id: 'yl-character-section-ai' });
     const aiHeading = sectionHeading(aiSection, {
-        step: '02 · 可选', eyebrow: '创作助手', title: 'AI 补全 / 完整创作：还没想完整？让 AI 帮你补上灵感',
+        step: '03 · 可选', eyebrow: '创作助手', title: 'AI 补全 / 完整创作：还没想完整？让 AI 帮你补上灵感',
     });
     const aiBody = collapsibleBody(aiSection, aiHeading, '创作助手');
     const aiChoices = element('div', { className: 'yl-character-ai-choices' });
@@ -357,8 +529,24 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     }
     completionCard.appendChild(element('span', { className: 'yl-character-ai-choice-badge', text: '保留现有设定' }));
     completionCard.appendChild(element('h3', { className: 'yl-character-ai-choice-title', text: '完善当前名片' }));
-    completionCard.appendChild(element('p', { className: 'yl-character-ai-choice-description', text: '适合已经有基本想法，只想让公开简介和标签更完整。仅发送当前表单里的公开字段。' }));
+    completionCard.appendChild(element('p', { className: 'yl-character-ai-choice-description', text: '适合已有基本想法。默认只发送公开层；你可以明确勾选要让 AI 读取并补全的其他层。未勾选层不会发送。' }));
     const completionInstruction = textField(completionCard, '告诉 AI 哪些地方需要补全', { name: 'ai-completion-instruction', rows: 3, placeholder: '例如：保留已有定位，把简介补成成熟、自然的都市约会资料。' });
+    const completionScopeGroup = fieldGroup(completionCard, '允许 AI 读取并补全', '仅补空白或初始占位值，已有内容保持不变。', 'yl-character-ai-scope-group');
+    checkboxChoiceGroup(completionScopeGroup, {
+        name: 'ai-completion-scope',
+        selected: ['public'],
+        choices: [
+            { value: 'public', label: '公开名片' },
+            { value: 'private', label: '私密与角色蓝图' },
+            { value: 'visual', label: '生图身份锚点' },
+            { value: 'rhythm', label: '互动阈值' },
+        ],
+        className: 'yl-character-scope-grid',
+    });
+    [...completionScopeGroup.querySelectorAll('[name="ai-completion-scope"]')].forEach((control, index) => {
+        control.name = `ai-completion-scope-${COMPLETION_SCOPES[index]}`;
+        control.setAttribute('name', control.name);
+    });
     const completionButton = element('button', { className: 'yl-phone-action-card yl-character-ai-button yl-button-ai', type: 'button', text: 'AI 完善补全到草稿' });
     completionCard.appendChild(completionButton);
 
@@ -370,17 +558,21 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     }
     authoringCard.appendChild(element('span', { className: 'yl-character-ai-choice-badge', text: '从一句话开始' }));
     authoringCard.appendChild(element('h3', { className: 'yl-character-ai-choice-title', text: '创作完整角色草稿' }));
-    authoringCard.appendChild(element('p', { className: 'yl-character-ai-choice-description', text: '适合只有氛围和方向时使用。只发送你的创作说明与最小玩家公开匹配上下文。' }));
+    authoringCard.appendChild(element('p', { className: 'yl-character-ai-choice-description', text: '适合只有氛围和方向时使用。只发送创作说明、最小玩家公开匹配上下文，以及你明确选择发送的角色蓝图。' }));
     const creativeBrief = textField(authoringCard, '描述你想遇见的那个人', { name: 'ai-creative-brief', rows: 3, placeholder: '例如：一名明确成年、生活在上海、偏好先文字聊天再认真约会的独立角色。' });
+    const useBlueprint = element('input', { name: 'ai-authoring-use-blueprint', type: 'checkbox', checked: true, ariaLabel: '将角色蓝图作为完整创作硬条件' });
+    const useBlueprintLabel = element('label', { className: 'yl-character-ai-blueprint-toggle' });
+    append(useBlueprintLabel, [useBlueprint, element('span', { text: '将上方已填写的角色蓝图作为完整创作硬条件' })]);
+    authoringCard.appendChild(useBlueprintLabel);
     const authoringButton = element('button', { className: 'yl-phone-action-card yl-character-ai-button yl-button-ai', type: 'button', text: 'AI 完整创作到草稿' });
     authoringCard.appendChild(authoringButton);
     append(aiChoices, [completionCard, authoringCard]);
     aiBody.appendChild(aiChoices);
-    aiBody.appendChild(element('p', { className: 'yl-character-safety-note', text: '隐私提示：AI 补全不会读取头像、仅好友资料、隐藏资料、偏好与边界或互动阈值。' }));
+    aiBody.appendChild(element('p', { className: 'yl-character-safety-note', text: '隐私提示：头像数据始终不会发送。AI 补全只接收你勾选的资料层；完整创作只接收最小玩家公开匹配上下文和你选择附带的角色蓝图。' }));
 
     const friendSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-private', id: 'yl-character-section-private' });
     const friendHeading = sectionHeading(friendSection, {
-        step: '03', eyebrow: '私密与边界', title: '把亲近后的真实与边界写清楚',
+        step: '04', eyebrow: '私密与边界', title: '把亲近后的真实与边界写清楚',
         description: '这一部分只在你拥有的完整编辑草稿中出现，不会进入普通推荐卡 DOM。明确边界不是扫兴，而是让关系有被尊重的可能。',
     });
     const friendBody = collapsibleBody(friendSection, friendHeading, '边界与节奏');
@@ -388,13 +580,13 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     textField(friendGroup, '关系状态', { name: 'friend-关系状态', required: true, placeholder: '例如：单身 / 未说明' });
     textField(friendGroup, '希望对方尊重的边界', { name: 'friend-边界与偏好', required: true, rows: 3, placeholder: '例如：尊重明确拒绝，重要决定先沟通。' });
     const hiddenGroup = fieldGroup(friendBody, '只属于这份角色草稿', '隐藏资料供系统校验和受控上下文使用，不进入普通 UI 展示。', 'yl-character-field-grid yl-character-field-grid-two yl-character-private-group');
-    textField(hiddenGroup, '实际年龄', { name: 'hidden-age', type: 'number', value: '18', min: 18, max: 120, required: true, inputMode: 'numeric', hint: '必须满 18 岁；登记前仍会经过完整成年人校验。' });
+    const hiddenAgeControl = textField(hiddenGroup, '实际年龄', { name: 'hidden-age', type: 'number', value: '18', min: 18, max: 120, required: true, inputMode: 'numeric', hint: '必须满 18 岁；登记前仍会经过完整成年人校验。' });
+    hiddenAgeControl.dataset.aiPlaceholder = 'true';
     textField(hiddenGroup, '私人创作备注', { name: 'hidden-note', rows: 3, placeholder: '记录不希望公开展示的角色设定，可留空。' });
-    textField(hiddenGroup, '整体偏好与边界', { name: 'boundary', rows: 3, placeholder: '记录关系推进中需要长期遵守的偏好与边界，可留空。', className: 'yl-character-field-wide' });
 
     const thresholdSection = element('section', { className: 'yl-phone-empty-actions yl-character-card yl-character-card-thresholds', id: 'yl-character-section-thresholds' });
     const thresholdHeading = sectionHeading(thresholdSection, {
-        step: '03 · 进阶', eyebrow: '互动节奏', title: '设定 TA 的互动节奏',
+        step: '04 · 进阶', eyebrow: '互动节奏', title: '设定 TA 的互动节奏',
         description: '0–100 的数值用于表达角色在不同负面互动下的反应门槛。它们不是公开标签，也不会替代剧情中的具体沟通与判断。',
     });
     const thresholdBody = collapsibleBody(thresholdSection, thresholdHeading, '互动节奏');
@@ -405,11 +597,14 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         取消匹配阈值: '何时会结束当前匹配关系；越高越难走到这一步。',
         拉黑阈值: '彻底断联的心理底线；建议比已读不回阈值至少高 20，且不低于 60。',
     };
-    for (const key of THRESHOLD_KEYS) textField(thresholdGrid, key, { name: `threshold-${key}`, type: 'number', value: String(baseCandidate()[key]), min: 0, max: 100, required: true, inputMode: 'numeric', hint: thresholdHints[key] });
+    for (const key of THRESHOLD_KEYS) {
+        const control = textField(thresholdGrid, key, { name: `threshold-${key}`, type: 'number', value: String(baseCandidate()[key]), min: 0, max: 100, required: true, inputMode: 'numeric', hint: thresholdHints[key] });
+        control.dataset.aiPlaceholder = 'true';
+    }
 
     const submitSection = element('footer', { className: 'yl-character-submit-card', id: 'yl-character-section-submit' });
     const submitCopy = element('div', { className: 'yl-character-submit-copy' });
-    submitCopy.appendChild(element('span', { className: 'yl-character-step-badge', text: '04' }));
+    submitCopy.appendChild(element('span', { className: 'yl-character-step-badge', text: '05' }));
     const submitWords = element('div', { className: 'yl-character-submit-words' });
     submitWords.appendChild(element('h2', { className: 'yl-character-submit-title', text: '最后检查一次，再让 TA 出现在这段故事里' }));
     submitWords.appendChild(element('p', { className: 'yl-character-submit-description', text: '提交会重新执行模板结构、成年人和资料边界校验；只有校验通过后才会登记到当前聊天。' }));
@@ -421,15 +616,16 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     const submit = element('button', { className: 'yl-phone-action-card yl-character-submit-button', type: 'submit', text: '验证并登记到当前聊天' });
     append(submitSection, [submitCopy, saveLabel, saveDraftButton, submit]);
 
-    append(form, [publicSection, avatarSection, aiSection, friendSection, thresholdSection, submitSection]);
+    append(form, [publicSection, blueprintSection, avatarSection, aiSection, friendSection, thresholdSection, submitSection]);
     section.appendChild(form);
 
     // —— 步骤锚点：hero journey 条与 desktop rail 共用同一步骤状态与跳转逻辑 ——
     const stepTargets = [
         ['01', '心动名片', publicSection],
-        ['02', '形象与灵感', avatarSection],
-        ['03', '边界与节奏', friendSection],
-        ['04', '确认登记', submitSection],
+        ['02', '角色蓝图', blueprintSection],
+        ['03', '形象与 AI', avatarSection],
+        ['04', '边界与节奏', friendSection],
+        ['05', '确认登记', submitSection],
     ];
     const stepButtons = [];
     const journeyButtons = [];
@@ -477,9 +673,10 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     // 滚动时高亮当前步：可选能力（真机有 IntersectionObserver；MiniDOM 无则跳过，点击高亮不受影响）。
     const scrollSpySections = [
         [publicSection, 0],
-        [avatarSection, 1], [aiSection, 1],
-        [friendSection, 2], [thresholdSection, 2],
-        [submitSection, 3],
+        [blueprintSection, 1],
+        [avatarSection, 2], [aiSection, 2],
+        [friendSection, 3], [thresholdSection, 3],
+        [submitSection, 4],
     ];
     const ObserverCtor = globalThis.IntersectionObserver;
     if (typeof ObserverCtor === 'function') {
@@ -563,8 +760,16 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     }
     for (const tagName of ['input', 'textarea', 'select']) {
         for (const field of form.querySelectorAll(tagName)) {
-            listen(field, field, 'input', () => updatePreview(), signal);
-            listen(field, field, 'change', () => updatePreview(), signal);
+            const markEdited = () => {
+                if (field.dataset?.aiPlaceholder === 'true') field.dataset.aiPlaceholder = 'false';
+                if (ROLE_BLUEPRINT_FIELDS.some(([name]) => name === field.name) || field.name === 'adult-activity') {
+                    serializedBoundary.dataset.preserveRaw = 'false';
+                    serializedBoundary.value = '';
+                }
+                updatePreview();
+            };
+            listen(field, field, 'input', markEdited, signal);
+            listen(field, field, 'change', markEdited, signal);
             // 原生必填校验命中折叠卡内控件时自动展开，避免「不可聚焦的失效控件」拦截提交。
             listen(field, field, 'invalid', () => expandCardContaining(field), signal);
         }
@@ -592,7 +797,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
             const exportTextOnly = element('button', { className: 'yl-character-library-action', type: 'button', text: '导出不含头像' });
             const remove = element('button', { className: 'yl-character-library-action yl-character-library-action-danger', type: 'button', text: '删除' });
             listen(load, load, 'click', () => {
-                try { const record = characterLibrary.get(entry.id); candidateToForm(form, record.template); localAvatar = record.template.avatar?.kind === 'embedded' ? record.template.avatar : null; avatarNote.textContent = localAvatar ? '已载入已压缩的本地头像。' : '已载入模板头像设置。'; updatePreview(); onFeedback('已载入本地模板草稿，尚未登记到当前聊天。'); } catch (error) { onFeedback(safeLibraryMessage(error)); }
+                try { const record = characterLibrary.get(entry.id); candidateToForm(form, record.template, contentMode); localAvatar = record.template.avatar?.kind === 'embedded' ? record.template.avatar : null; avatarNote.textContent = localAvatar ? '已载入已压缩的本地头像。' : '已载入模板头像设置。'; updatePreview(); onFeedback('已载入本地模板草稿，尚未登记到当前聊天。'); } catch (error) { onFeedback(safeLibraryMessage(error)); }
             }, signal);
             for (const [button, includeAvatar] of [[exportWithAvatar, true], [exportTextOnly, false]]) listen(button, button, 'click', () => {
                 try { templateText.value = characterLibrary.exportTemplate(entry.id, { includeAvatar }); onFeedback(includeAvatar ? '已写入含头像的导出 JSON，可复制保存。' : '已写入不含头像的导出 JSON，可复制保存。'); } catch (error) { onFeedback(safeLibraryMessage(error)); }
@@ -603,15 +808,15 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         }
     }
 
-    function adoptAiCandidate(candidate, message, { incremental = false } = {}) {
+    function adoptAiCandidate(candidate, message, { incremental = false, completionScopes = [] } = {}) {
         if (incremental) {
-            mergeAiCompletionIntoForm(form, candidate);
+            mergeAiCompletionIntoForm(form, candidate, completionScopes, contentMode);
             updatePreview();
             onFeedback(message);
             return;
         }
         const template = importCharacterTemplate({ format: CHARACTER_TEMPLATE_FORMAT, character: candidate, avatar: { kind: 'placeholder' } });
-        candidateToForm(form, template);
+        candidateToForm(form, template, contentMode);
         localAvatar = null;
         avatarKind.value = 'placeholder';
         avatarNote.textContent = 'AI 草稿不携带头像；可自行选择本地图片或占位头像。';
@@ -626,14 +831,17 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
         if (typeof method !== 'function') { onFeedback('角色创作模型桥接尚未就绪。'); return; }
         const instruction = isCompletion ? cleanText(completionInstruction.value) : cleanText(creativeBrief.value);
         if (!instruction) { onFeedback(isCompletion ? '请先填写补全说明；当前草稿未改变。' : '请先填写完整创作说明；当前草稿未改变。'); return; }
+        const completionScopes = isCompletion ? completionScopesFromForm(form) : [];
+        if (isCompletion && completionScopes.length === 0) { onFeedback('请至少勾选一个允许 AI 读取并补全的资料层；当前草稿未改变。'); return; }
+        if (isCompletion) serializedBoundary.value = compileRoleBlueprint(form);
         button.disabled = true;
         const operationName = isCompletion ? 'AI 补全' : 'AI 完整创作';
         const activityHandle = startActivity(operationName, isCompletion ? '正在生成公开资料补全草稿……' : '正在生成完整角色草稿……');
         onFeedback(isCompletion ? '正在生成公开资料补全草稿；不会自动登记。' : '正在生成完整角色草稿；不会自动登记。');
         try {
             const result = await (isCompletion
-                ? method({ publicProfile: publicProfileFromForm(form), instruction, contentMode, signal })
-                : method({ creativeBrief: instruction, signal }));
+                ? method({ candidateDraft: candidateDraftForCompletion(form, completionScopes), completionScopes, instruction, expectedContentMode: contentMode, signal })
+                : method({ creativeBrief: instruction, characterBlueprint: useBlueprint.checked ? roleBlueprintForAi(form, contentMode) : {}, expectedContentMode: contentMode, signal }));
             if (!result?.ok || !result?.candidate) {
                 settleActivity('fail', activityHandle, '角色草稿未生成。', failureDetail(result, { operation: operationName, stage: '模型生成与校验' }));
                 onFeedback(isCompletion ? 'AI 补全未生成可用草稿；当前草稿未改变。' : 'AI 完整创作未生成可用草稿；当前草稿未改变。');
@@ -643,7 +851,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
             adoptAiCandidate(
                 result.candidate,
                 isCompletion ? 'AI 已增量补全草稿；原有内容与头像已保留，请检查后再登记。' : 'AI 完整创作草稿已载入编辑器；请检查全部字段后再登记。',
-                { incremental: isCompletion },
+                { incremental: isCompletion, completionScopes },
             );
         } catch (error) {
             settleActivity('fail', activityHandle, '角色草稿未生成。', failureDetail(error, { operation: operationName, stage: '调用角色创作桥接' }));
@@ -684,7 +892,7 @@ export function buildCharacterCreatorPanel({ documentRef, actionBridge, characte
     listen(importButton, importButton, 'click', () => {
         try {
             const template = importCharacterTemplate(templateText.value);
-            candidateToForm(form, template);
+            candidateToForm(form, template, contentMode);
             localAvatar = template.avatar?.kind === 'embedded' ? template.avatar : null;
             avatarNote.textContent = localAvatar ? '已导入已压缩的本地头像。' : '已导入头像设置。';
             updatePreview();

@@ -3,11 +3,17 @@ import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
 
 import { decodeJsonPointer, getAtPointer } from '../json-pointer.js';
+import { createEmptyRelationshipNarrative, createRelationshipNarrativeFromProfile, validateRelationshipNarrative } from '../relationship-narrative.js';
+import { createEmptyBodyRelationshipCandidate } from '../body-relationship-candidate.js';
 import {
     LATEST_MESSAGE_SCOPE,
     buildClearPrivateChatPatch,
+    buildBodyRelationshipCandidateBackfillPatch,
     buildControlledPatch,
+    buildPrivateChatNsfwConsentBackfillPatch,
+    buildPrivateChatPatch,
     buildRecommendationInitialCandidatePatch,
+    buildRelationshipNarrativeBackfillPatch,
     buildServiceOrderHandoffPatch,
     buildStoryMemoryBackfillPatch,
     buildUpdateVariable,
@@ -15,6 +21,7 @@ import {
     validateControlledPatchWhitelist,
 } from '../controlled-patch.js';
 import { applyControlledPatch, readLatestState } from '../adapter.js';
+import { consumeNsfwConsent, createEmptyNsfwConsent, grantNsfwConsent } from '../nsfw-consent.js';
 
 function npc({ status = '陌生', age = 28 } = {}) {
     return {
@@ -38,6 +45,8 @@ function stateFixture() {
         玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
         角色池: {},
         正文记忆: {},
+        正文关系候选: {},
+        关系叙事: {},
         会话: {},
         推荐: {
             当前队列: ['npc_alpha'],
@@ -78,20 +87,22 @@ test('JSON Pointer only traverses own safe properties', () => {
     assert.equal(getAtPointer({ a: ['x'] }, '/a/-').found, false);
 });
 
-test('favorite promotes a trusted candidate by move without serializing its hidden data', () => {
+test('favorite promotes a trusted candidate and seeds its protected narrative in the same controlled patch', () => {
     const state = stateFixture();
     const result = buildControlledPatch(state, { kind: 'favorite', npcUid: 'npc_alpha' });
     assert.equal(result.ok, true);
     assert.deepEqual(result.value, [
         { op: 'move', from: '/推荐/临时候选池/npc_alpha', path: '/角色池/npc_alpha' },
         { op: 'add', path: '/正文记忆/npc_alpha', value: '' },
+        { op: 'add', path: '/关系叙事/npc_alpha', value: createRelationshipNarrativeFromProfile(state.推荐.临时候选池.npc_alpha) },
+        { op: 'add', path: '/正文关系候选/npc_alpha', value: createEmptyBodyRelationshipCandidate() },
         { op: 'add', path: '/推荐/收藏角色UID/-', value: 'npc_alpha' },
         { op: 'remove', path: '/推荐/当前队列/0' },
     ]);
     const wrapped = buildUpdateVariable(result.value);
     assert.equal(wrapped.ok, true);
     assert.match(wrapped.value, /^<UpdateVariable><JSONPatch>\[/);
-    assert.doesNotMatch(wrapped.value, /不得进入 UI/);
+    assert.match(wrapped.value, /关系叙事/u);
 });
 
 test('story-memory backfill creates every missing role slot and removes only orphan slots', () => {
@@ -112,6 +123,48 @@ test('story-memory backfill creates every missing role slot and removes only orp
         ...current,
         正文记忆: { npc_alpha: 42, npc_beta: '' },
     }).code, 'story_memory_backfill_value_invalid');
+});
+
+test('relationship narrative records are exact, bounded, and backfill never deletes orphan state', () => {
+    const current = stateFixture();
+    current.角色池.npc_alpha = npc();
+    current.角色池.npc_beta = npc();
+    const retained = createEmptyRelationshipNarrative();
+    retained.人生底色.公开轮廓 = '保留的公开轮廓。';
+    retained.人生底色.生活痕迹 = ['晨跑'];
+    retained.未竟心愿.线索节点 = ['一封未寄出的信'];
+    retained.进程.最后结算回合UID = 'turn_20260730_1';
+    retained.进程.已消费事件ID = ['event_1'];
+    current.关系叙事 = { npc_beta: retained };
+
+    const built = buildRelationshipNarrativeBackfillPatch(current);
+    assert.deepEqual(built, { ok: true, value: [
+        { op: 'add', path: '/关系叙事/npc_alpha', value: createRelationshipNarrativeFromProfile(current.角色池.npc_alpha) },
+    ] });
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+    assert.deepEqual(current.关系叙事.npc_beta, retained);
+
+    const forged = structuredClone(built.value);
+    forged[0].value.进程.NSFW路线锁定 = '伪造路线';
+    assert.equal(validateControlledPatchAgainstState(current, forged).ok, false);
+
+    const malformed = createEmptyRelationshipNarrative();
+    malformed.未竟心愿.变化轨迹 = '随意改写';
+    assert.equal(validateRelationshipNarrative(malformed).ok, false);
+    const getterBacked = createEmptyRelationshipNarrative();
+    Object.defineProperty(getterBacked, '版本', { enumerable: true, get: () => 1 });
+    assert.equal(validateRelationshipNarrative(getterBacked).ok, false);
+    const duplicatedIds = createEmptyRelationshipNarrative();
+    duplicatedIds.进程.已消费事件ID = ['event_1', 'event_1'];
+    assert.equal(validateRelationshipNarrative(duplicatedIds).ok, false);
+
+    const orphanState = structuredClone(current);
+    orphanState.关系叙事.npc_orphan = createEmptyRelationshipNarrative();
+    const before = structuredClone(orphanState.关系叙事);
+    assert.deepEqual(buildRelationshipNarrativeBackfillPatch(orphanState), {
+        ok: false, code: 'relationship_narrative_backfill_orphan', detail: '',
+    });
+    assert.deepEqual(orphanState.关系叙事, before);
 });
 
 test('like only records homepage feedback and never creates a role or matched session', () => {
@@ -173,8 +226,16 @@ test('five-click gate only unlocks the slider and explicit toggle changes SFW/NS
 
     const nsfw = stateFixture();
     nsfw.软件.内容模式 = 'NSFW';
+    nsfw.会话.chat_1 = { NSFW同意: grantNsfwConsent(createEmptyNsfwConsent(), { scopes: ['成人话题'], turns: 3 }) };
+    nsfw.会话.chat_2 = { NSFW同意: consumeNsfwConsent(grantNsfwConsent(createEmptyNsfwConsent(), { scopes: ['成人话题'], turns: 1 })) };
     const toggledBack = buildControlledPatch(nsfw, { kind: 'toggle_content_mode' });
-    assert.deepEqual(toggledBack.value.at(-1), { op: 'replace', path: '/软件/内容模式', value: 'SFW' });
+    assert.equal(toggledBack.value[0].path, '/软件/内容模式');
+    assert.equal(toggledBack.value[0].value, 'SFW');
+    assert.equal(toggledBack.value[1].path, '/会话/chat_1/NSFW同意');
+    assert.equal(toggledBack.value[1].value.状态, '已撤回');
+    assert.equal(toggledBack.value[2].path, '/会话/chat_2/NSFW同意');
+    assert.equal(toggledBack.value[2].value.状态, '已撤回');
+    assert.equal(toggledBack.value[2].value.修订号, 3, '离开 NSFW 也要推进已过期记录的修订号，使待投递消息失效');
     assert.equal(validateControlledPatchAgainstState(nsfw, toggledBack.value).ok, true);
 
     const state = stateFixture();
@@ -406,9 +467,11 @@ test('service-order handoff persists when the schema supplies its empty legal co
         parseMessage: async (_raw, data) => {
             calls.push('parse');
             const next = structuredClone(data);
-            const [role, memory, order, roleCounter, orderCounter] = built.value.patch;
+            const [role, memory, narrative, bodyCandidate, order, roleCounter, orderCounter] = built.value.patch;
             next.stat_data.角色池.npc_service_2 = role.value;
             next.stat_data.正文记忆.npc_service_2 = memory.value;
+            next.stat_data.关系叙事.npc_service_2 = narrative.value;
+            next.stat_data.正文关系候选.npc_service_2 = bodyCandidate.value;
             next.stat_data.服务订单.service_1 = { ...order.value, 合法结束条件: { 已满足: false, 摘要: '', 记录时间: '' } };
             next.stat_data.系统.UID计数器.角色 = roleCounter.value;
             next.stat_data.系统.UID计数器.服务订单 = orderCounter.value;
@@ -445,9 +508,11 @@ test('service-order schema omissions report the precise safe postcondition diagn
         parseMessage: async (_raw, data) => {
             calls.push('parse');
             const next = structuredClone(data);
-            const [role, memory, order, roleCounter, orderCounter] = built.value.patch;
+            const [role, memory, narrative, bodyCandidate, order, roleCounter, orderCounter] = built.value.patch;
             next.stat_data.角色池.npc_service_2 = role.value;
             next.stat_data.正文记忆.npc_service_2 = memory.value;
+            next.stat_data.关系叙事.npc_service_2 = narrative.value;
+            next.stat_data.正文关系候选.npc_service_2 = bodyCandidate.value;
             const { 合法结束条件: _omitted, ...legacyOrder } = order.value;
             next.stat_data.服务订单.service_1 = legacyOrder;
             next.stat_data.系统.UID计数器.角色 = roleCounter.value;
@@ -467,14 +532,14 @@ test('service-order schema omissions report the precise safe postcondition diagn
     assert.equal(result.ok, false);
     assert.equal(result.code, 'mvu_parse_postcondition_failed');
     assert.deepEqual(result.detail, {
-        operationIndex: 2, operation: 'add', path: '/服务订单/service_1/合法结束条件',
+        operationIndex: 4, operation: 'add', path: '/服务订单/service_1/合法结束条件',
         kind: 'missing_key', expectedType: 'object', actualType: 'missing',
     });
     assert.deepEqual(diagnosticCalls, [[
         '[约了吗][MVU 受控写入被拒绝]',
         {
             code: 'mvu_parse_postcondition_failed', phase: 'provider_postcondition',
-            reason: 'MVU provider 返回结果缺少 Patch 预期字段', operationIndex: 2, operation: 'add',
+            reason: 'MVU provider 返回结果缺少 Patch 预期字段', operationIndex: 4, operation: 'add',
             path: '/服务订单/service_1/合法结束条件', kind: 'missing_key', expectedType: 'object', actualType: 'missing',
         },
     ]]);
@@ -529,6 +594,131 @@ test('stripped relationship routes identify an outdated schema without leaking a
     assert.equal(oldData.stat_data.推荐.临时候选池[uid], undefined);
     assert.deepEqual(oldData.stat_data.推荐.当前队列, []);
     assert.equal(oldData.stat_data.系统.UID计数器.角色, 1);
+});
+
+test('stripped B.1 relationship-progress leaves fail closed as a narrative-schema mismatch', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    const role = completeCandidate();
+    role.与玩家关系 = {
+        ...role.与玩家关系,
+        状态: '已匹配', NPC专属匹配度: 70,
+        好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+    };
+    oldData.stat_data.角色池.npc_alpha = role;
+    oldData.stat_data.推荐.当前队列 = [];
+    oldData.stat_data.推荐.临时候选池 = {};
+    oldData.stat_data.正文记忆.npc_alpha = '';
+    oldData.stat_data.正文关系候选.npc_alpha = createEmptyBodyRelationshipCandidate();
+    oldData.stat_data.关系叙事.npc_alpha = createEmptyRelationshipNarrative();
+    oldData.stat_data.会话.chat_1 = { 对象UID: 'npc_alpha', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' };
+    const built = buildPrivateChatPatch(oldData.stat_data, {
+        sessionUid: 'chat_1', npcUid: 'npc_alpha', playerMessage: '我会尊重你的节奏。',
+        response: {
+            replies: ['谢谢，这让我很安心。'],
+            relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+            bondAssessment: { kind: 'friendly', intensity: 1, direction: 'increase' },
+        },
+    });
+    assert.equal(built.ok, true);
+
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async (_raw, data) => {
+            calls.push('parse');
+            const next = structuredClone(data);
+            for (const operation of built.value) {
+                const segments = decodeJsonPointer(operation.path);
+                const key = segments.pop();
+                let parent = next.stat_data;
+                for (const segment of segments) parent = parent[segment];
+                if (operation.op === 'add' && Array.isArray(parent) && key === '-') parent.push(structuredClone(operation.value));
+                else parent[key] = structuredClone(operation.value);
+            }
+            delete next.stat_data.关系叙事.npc_alpha.进程.已消费事件ID;
+            return next;
+        },
+        replaceMvuData: async () => calls.push('replace'),
+    };
+
+    const result = await applyControlledPatch({ patch: built.value, mvu, eventEmit: async () => calls.push('event'), diagnosticLogger: { error() {} } });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.code, 'mvu_relationship_narrative_schema_outdated');
+    assert.equal(result.detail.path, '/关系叙事/npc_alpha/进程/已消费事件ID');
+    assert.deepEqual(calls, ['parse']);
+    assert.deepEqual(oldData.stat_data.关系叙事.npc_alpha.进程.已消费事件ID, []);
+});
+
+test('stripped B.2 body-candidate slot identifies an outdated schema without committing a partial parse', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    oldData.stat_data.角色池.npc_alpha = npc({ status: '已匹配' });
+    oldData.stat_data.推荐.当前队列 = [];
+    oldData.stat_data.推荐.临时候选池 = {};
+    const built = buildBodyRelationshipCandidateBackfillPatch(oldData.stat_data);
+    assert.deepEqual(built, {
+        ok: true,
+        value: [{ op: 'add', path: '/正文关系候选/npc_alpha', value: createEmptyBodyRelationshipCandidate() }],
+    });
+
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async (_raw, data) => {
+            calls.push('parse');
+            const next = structuredClone(data);
+            // Simulate an older card schema that silently discards the B.2 slot
+            // while still returning a superficially changed envelope.
+            next.stat_data.面基记录 = {};
+            return next;
+        },
+        replaceMvuData: async () => calls.push('replace'),
+    };
+    const result = await applyControlledPatch({ patch: built.value, mvu, eventEmit: async () => calls.push('event'), diagnosticLogger: { error() {} } });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.code, 'mvu_body_relationship_candidate_schema_outdated');
+    assert.deepEqual(calls, ['parse']);
+    assert.equal(Object.hasOwn(oldData.stat_data.正文关系候选, 'npc_alpha'), false);
+});
+
+test('stripped C.2 consent envelope identifies an outdated schema without committing a partial parse', async () => {
+    const calls = [];
+    const oldData = { stat_data: stateFixture() };
+    oldData.stat_data.角色池.npc_alpha = npc({ status: '已匹配' });
+    oldData.stat_data.会话.chat_1 = { 对象UID: 'npc_alpha', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' };
+    const built = buildPrivateChatNsfwConsentBackfillPatch(oldData.stat_data);
+    assert.deepEqual(built, {
+        ok: true,
+        value: [{ op: 'add', path: '/会话/chat_1/NSFW同意', value: createEmptyNsfwConsent() }],
+    });
+    const diagnostics = [];
+    const mvu = {
+        events: { VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended' },
+        getMvuData: () => oldData,
+        parseMessage: async (_raw, data) => {
+            calls.push('parse');
+            const next = structuredClone(data);
+            next.stat_data.面基记录 = {};
+            return next;
+        },
+        replaceMvuData: async () => calls.push('replace'),
+    };
+    const result = await applyControlledPatch({
+        patch: built.value,
+        mvu,
+        eventEmit: async () => calls.push('event'),
+        diagnosticLogger: { error(...args) { diagnostics.push(args); } },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.code, 'mvu_nsfw_consent_schema_outdated');
+    assert.equal(result.detail.path, '/会话/chat_1/NSFW同意');
+    assert.deepEqual(calls, ['parse']);
+    assert.equal(Object.hasOwn(oldData.stat_data.会话.chat_1, 'NSFW同意'), false);
+    assert.equal(diagnostics[0][1].code, 'mvu_nsfw_consent_schema_outdated');
 });
 
 test('content-mode toggle is persisted only when provider output satisfies the exact replace', async () => {

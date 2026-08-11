@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { YueLeMaLlmError } from '../../llm/openai-compatible-client.js';
-import { buildPrivateChatContext, consumePrivateChatDiagnostics, generatePrivateChatReply, generatePrivateChatSummary } from '../private-chat-service.js';
+import { buildPrivateChatContext, consumePrivateChatDiagnostics, generatePrivateChatReply, generatePrivateChatSummary, generateRealisticPrivateChatReply } from '../private-chat-service.js';
 import { buildPrivateChatPatch, validateControlledPatchAgainstState } from '../../mvu/controlled-patch.js';
+import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
+import { bodyRelationshipEventIdForSource, createEmptyBodyRelationshipCandidate } from '../../mvu/body-relationship-candidate.js';
+import { createEmptyNsfwConsent, grantNsfwConsent } from '../../mvu/nsfw-consent.js';
+import { createDefaultRealisticChatState } from '../../mvu/realistic-chat.js';
 
 function state() {
     return {
         系统: { UID计数器: { 角色: 1, 会话: 1, 面基: 0 } },
-        软件: { 内容模式: 'NSFW', 关于软件点击数: 0 },
+        软件: { 内容模式: 'SFW', 关于软件点击数: 0 },
         玩家: {
             成人验证: true,
             公开资料: { 昵称: '玩家', 简介: '公开简介' },
@@ -35,6 +39,14 @@ function state() {
             npc_adult: '玩家与小满在线下见过一次，一起喝了咖啡。',
             npc_other: '玩家与周遥一起看过展览，分别时约定分享书单。',
         },
+        正文关系候选: {
+            npc_adult: createEmptyBodyRelationshipCandidate(),
+            npc_other: createEmptyBodyRelationshipCandidate(),
+        },
+        关系叙事: {
+            npc_adult: createEmptyRelationshipNarrative(),
+            npc_other: createEmptyRelationshipNarrative(),
+        },
         推荐: { 当前队列: [], 临时候选池: {}, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
         会话: {
             chat_1: {
@@ -42,11 +54,18 @@ function state() {
                 最近消息: [{ 消息UID: 'old', 发送者: '角色', 内容: '嗨', 时间: '', 层数: 1 }],
                 对话层数: 1,
                 总结: { 已总结消息UID: '', 总结序号: 0, 记录: [], 状态: '空闲', 失败原因: '', 目标总结UID: '', 尝试次数: 0 },
-                已确认边界: '', 已确认承诺: '',
+                已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent(),
             },
         },
         面基记录: {},
     };
+}
+
+function activeNsfwState({ scopes = ['成人话题'], turns = 3 } = {}) {
+    const current = state();
+    current.软件.内容模式 = 'NSFW';
+    current.会话.chat_1.NSFW同意 = grantNsfwConsent(current.会话.chat_1.NSFW同意, { scopes, turns });
+    return current;
 }
 
 function response() {
@@ -199,6 +218,59 @@ test('private chat rejects unmatched, forged, underage and malformed messages be
     assert.equal(buildPrivateChatContext({ state: state(), sessionUid: 'chat_1', npcUid: 'npc_other', playerMessage: '你好' }).ok, false);
 });
 
+test('player adulthood and protected pause/end gates reject before the model is called', async () => {
+    for (const mutate of [
+        (current) => { current.玩家.成人验证 = false; },
+        (current) => { current.关系叙事.npc_adult.进程.边界暂停状态 = '暂停'; },
+        (current) => { current.关系叙事.npc_adult.进程.关系结束状态 = '结束联系'; },
+    ]) {
+        const current = state();
+        mutate(current);
+        let modelCalls = 0;
+        const result = await generatePrivateChatReply({
+            state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '你好', settingsStore: settingsStore(),
+            llmClient: { async chat() { modelCalls += 1; return { text: JSON.stringify(response()) }; } },
+        });
+        assert.equal(result.ok, false);
+        assert.equal(modelCalls, 0);
+    }
+});
+
+test('only-SFW context exposes a stage-cropped current-object narrative and no internal progress fields', () => {
+    const current = state();
+    current.关系叙事.npc_adult.进程.边界暂停状态 = '仅SFW';
+    const built = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '继续聊电影' });
+    assert.equal(built.ok, true);
+    assert.equal(built.context.onlySfw, true);
+    assert.equal(built.context.sfwNarrative.stage, 'ordinary');
+    const serialized = JSON.stringify(built.context);
+    assert.doesNotMatch(serialized, /边界暂停状态|关系结束状态|冻结关系值|关系叙事|仅SFW/u);
+});
+
+test('SFW understanding context projects only the current role protected facts at the eligible stage', () => {
+    const current = state();
+    current.角色池.npc_adult.与玩家关系.友情值 = 59;
+    current.关系叙事.npc_adult.人生底色.完整理解 = '当前对象的受限理解';
+    current.关系叙事.npc_adult.未竟心愿.表层愿望 = '开一家夜间书店';
+    current.关系叙事.npc_adult.未竟心愿.真实需要 = '被尊重地陪伴';
+    current.关系叙事.npc_other.人生底色.完整理解 = '另一对象的绝密理解';
+    const built = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我愿意认真听你说' });
+    assert.equal(built.ok, true);
+    assert.equal(built.context.sfwNarrative.stage, 'understanding_check');
+    assert.equal(built.context.sfwNarrative.insightRequired, 'direct_understanding_or_not_yet');
+    const serialized = JSON.stringify(built.context.sfwNarrative);
+    assert.match(serialized, /当前对象的受限理解/u);
+    assert.doesNotMatch(serialized, /另一对象的绝密理解|SFW理解已检查|友情值/u);
+
+    current.关系叙事.npc_adult.进程.SFW双轨结局已解锁 = true;
+    current.关系叙事.npc_adult.进程.关系结束状态 = '深度朋友';
+    const settled = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '最近过得怎么样？' });
+    assert.equal(settled.ok, true);
+    assert.equal(settled.context.sfwNarrative.stage, 'settled');
+    assert.equal(settled.context.sfwNarrative.resolutionAvailable, false);
+    assert.deepEqual(settled.context.sfwNarrative.availableDisclosure, {});
+});
+
 test('private chat requests replies and returns only validated multi-bubble data in memory', async () => {
     let request;
     const current = state();
@@ -212,34 +284,161 @@ test('private chat requests replies and returns only validated multi-bubble data
     assert.match(request.messages[0].content, /保持简短/);
     assert.match(request.messages[0].content, /"replies"/);
     assert.match(request.messages[0].content, /1-6/);
+    assert.match(request.messages[0].content, /正文记忆只用于自然回复连续性/u);
+    assert.match(request.messages[0].content, /不能作为 bondAssessment 的依据/u);
     assert.doesNotMatch(JSON.stringify(request.messages), /绝不泄露|不得发送|实际年龄/);
     assert.deepEqual(current, before);
 });
 
+test('B.2 body candidate is safely projected and atomically consumed only after the matching phone review', () => {
+    const current = state();
+    current.软件.内容模式 = 'SFW';
+    current.角色池.npc_adult.与玩家关系.友情值 = 38;
+    current.正文关系候选.npc_adult = {
+        ...createEmptyBodyRelationshipCandidate(),
+        状态: '待复盘',
+        角色UID: 'npc_adult',
+        事件ID: bodyRelationshipEventIdForSource('meetup_1', 1),
+        来源面基UID: 'meetup_1',
+        来源摘要版本: 1,
+        事件类别: '兑现承诺',
+        关系路线: 'SFW友情',
+        允许影响关系值: ['友情值'],
+        建议方向: '正向',
+        严重度: '常规',
+        证据摘要: '双方兑现了此前的散步约定，并保留了各自的舒适边界。',
+        需再次确认: true,
+    };
+    current.面基记录.meetup_1 = {
+        对象UID: 'npc_adult', 状态: '已结束', 关系路线: '友情',
+        正文结果摘要: '两人完成了此前约定的散步，交流自然，也保留了各自的舒适边界。',
+    };
+
+    const context = buildPrivateChatContext({ state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我也很珍惜那天，一起慢慢来。' });
+    assert.equal(context.ok, true);
+    assert.deepEqual(context.context.bodyEventCandidate, {
+        事件类别: '兑现承诺',
+        关系路线: 'SFW友情',
+        证据摘要: '双方兑现了此前的散步约定，并保留了各自的舒适边界。',
+        需再次确认: true,
+    });
+    assert.equal(context.bodyCandidateEventId, 'body:meetup_1:1');
+    const serializedContext = JSON.stringify(context.context);
+    assert.doesNotMatch(serializedContext, /npc_adult|meetup_1|body:|来源摘要版本/u);
+
+    const committed = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1',
+        npcUid: 'npc_adult',
+        playerMessage: '我也很珍惜那天，一起慢慢来。',
+        bodyCandidateEventId: context.bodyCandidateEventId,
+        response: {
+            replies: ['我也很开心。', '谢谢你愿意把节奏留给我们。'],
+            relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+            bodyEventReview: 'confirm',
+            bondAssessment: { kind: 'friendly', intensity: 3, direction: 'increase' },
+        },
+    });
+    assert.equal(committed.ok, true);
+    assert.equal(validateControlledPatchAgainstState(current, committed.value).ok, true);
+    const bondChange = committed.value.find((operation) => operation.path === '/角色池/npc_adult/与玩家关系/友情值');
+    assert.deepEqual(bondChange, { op: 'replace', path: '/角色池/npc_adult/与玩家关系/友情值', value: 40 });
+    assert.equal(committed.value.filter((operation) => operation.path === '/角色池/npc_adult/与玩家关系/友情值').length, 1);
+    assert.equal(committed.value.some((operation) => operation.path === '/关系叙事/npc_adult/进程/已消费事件ID'
+        && operation.value.includes('body:meetup_1:1')), true);
+    const cleared = committed.value.find((operation) => operation.path === '/正文关系候选/npc_adult');
+    assert.deepEqual(cleared?.value, createEmptyBodyRelationshipCandidate());
+
+    const onlySfw = structuredClone(current);
+    onlySfw.软件.内容模式 = 'NSFW';
+    onlySfw.关系叙事.npc_adult.进程.边界暂停状态 = '仅SFW';
+    const onlySfwCommitted = buildPrivateChatPatch(onlySfw, {
+        sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '只聊友情，也确认那次散步。',
+        bodyCandidateEventId: 'body:meetup_1:1', onlySfwAtRequest: true,
+        response: {
+            replies: ['好，我们按舒服的友情节奏来。'],
+            relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+            bodyEventReview: 'confirm',
+            bondAssessment: { kind: 'friendly', intensity: 1, direction: 'increase' },
+        },
+    });
+    assert.equal(onlySfwCommitted.ok, true);
+    assert.equal(onlySfwCommitted.value.some((operation) => operation.path === '/角色池/npc_adult/与玩家关系/友情值' && operation.value === 40), true, '仅 SFW 仍可复盘既有 SFW 友情候选');
+    assert.equal(validateControlledPatchAgainstState(onlySfw, onlySfwCommitted.value).ok, true);
+
+    const staleReference = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我也很珍惜那天，一起慢慢来。',
+        bodyCandidateEventId: 'body:meetup_other:1',
+        response: { replies: ['我听见了。'], relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 }, bodyEventReview: 'confirm' },
+    });
+    assert.equal(staleReference.ok, true);
+    assert.equal(staleReference.value.some((operation) => operation.path === '/正文关系候选/npc_adult'), false);
+    assert.equal(staleReference.value.some((operation) => operation.path === '/角色池/npc_adult/与玩家关系/友情值'), false);
+});
+
 test('NSFW core contract permits consensual adult chat without treating explicitness as local block pressure', async () => {
     let request;
+    const current = activeNsfwState({ scopes: ['成人话题', '露骨调情'], turns: 3 });
     const result = await generatePrivateChatReply({
-        state: state(), sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我想和你聊些更亲密的事，可以吗？', settingsStore: settingsStore(),
+        state: current, sessionUid: 'chat_1', npcUid: 'npc_adult', playerMessage: '我想和你聊些更亲密的事，可以吗？', turnConsentConfirmed: true, settingsStore: settingsStore(),
         llmClient: {
             async chat(input) {
                 request = input;
                 return { text: JSON.stringify({
                     replies: ['可以，我们按彼此舒服的节奏来。'],
                     relationship: { 好感: 1, 信任: 1, 戒备: 0, 面基意愿: 0 },
-                    bondAssessment: { kind: 'sexual_desire', intensity: 1 },
+                    bondAssessment: { kind: 'sexual_desire', intensity: 1, direction: 'increase' },
+                    nsfwConsentAssessment: 'in_scope',
                 }) };
             },
         },
     });
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.response.relationship.戒备, 0);
-    assert.match(request.messages[0].content, /成人话题尊重已知边界/u);
-    assert.match(request.messages[0].content, /直白或露骨本身不是冒犯/u);
-    assert.match(request.messages[0].content, /不得仅因内容成人化降低好感或信任、提高戒备/u);
-    assert.match(request.messages[0].content, /明确的拒绝或撤回同意、已知边界冲突、胁迫、非自愿、隐私侵犯/u);
-    assert.match(request.messages[0].content, /同意或边界不清时应先用线上文字澄清/u);
+    assert.equal(result.response.nsfwSafetyAssessment, 'none');
+    assert.equal(result.response.nsfwConsentAssessment, 'in_scope');
+    assert.deepEqual(result.nsfwConsentReferenceAtRequest, { revision: 1, remainingTurns: 3, scopes: ['成人话题', '露骨调情'] });
+    assert.match(request.messages[0].content, /有效、有限且可撤回的结构化同意/u);
+    assert.match(request.messages[0].content, /本轮玩家显式确认/u);
+    assert.match(request.messages[0].content, /色情内容不设强度上限/u);
+    assert.match(request.messages[0].content, /模型不得选路、锁线、给阈值或决定面基/u);
+    assert.match(request.messages[0].content, /nsfwConsentAssessment 必须先对照本轮玩家文本与 nsfwConsent\.scopes 分类/u);
+    assert.match(request.messages[0].content, /只有 in_scope 才可给出可结算的 romantic_desire\/sexual_desire/u);
     assert.match(request.messages[0].content, /NSFW 允许 none\/friendly\/romantic_flirt\/romantic_desire\/sexual_desire/u);
     assert.match(request.messages[0].content, /普通问候或日常友好交流应使用 none 或 friendly/u);
+    assert.doesNotMatch(request.messages[1].content, /剩余轮数|修订号|玩家私聊工具/u);
+});
+
+test('NSFW 拟真主动消息沿用仍有效的结构化范围，不再强制降级为 SFW', async () => {
+    let request;
+    const current = activeNsfwState({ scopes: ['露骨调情', '线上文爱'], turns: 3 });
+    current.会话.chat_1.拟真聊天 = createDefaultRealisticChatState({
+        enabled: true,
+        proactiveAt: '2026-08-02 13:00',
+    });
+    const result = await generateRealisticPrivateChatReply({
+        state: current,
+        sessionUid: 'chat_1',
+        npcUid: 'npc_adult',
+        trigger: 'proactive',
+        phoneTime: '2026-08-02 13:00',
+        settingsStore: settingsStore(),
+        llmClient: { async chat(input) {
+            request = input;
+            return { text: JSON.stringify({
+                replies: ['我还记得你允许的那个玩法。'],
+                relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+                timing: { firstDelayMinutes: 5, betweenReplyMinutes: [], nextProactiveMinutes: 120 },
+                bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
+                sfwInsightAssessment: 'none', sfwResolutionAssessment: 'none',
+                nsfwConsentAssessment: 'none', nsfwSafetyAssessment: 'none', bodyEventReview: 'defer',
+            }) };
+        } },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.nsfwConsentReferenceAtRequest, { revision: 1, remainingTurns: 3, scopes: ['露骨调情', '线上文爱'] });
+    assert.match(request.messages[0].content, /当前有效同意范围允许主动成人消息/u);
+    assert.match(request.messages[0].content, /露骨色情内容、性幻想或性行为描写/u);
+    assert.doesNotMatch(request.messages[0].content, /始终按 SFW 尺度/u);
 });
 
 test('private chat summary uses its dedicated preset and returns only validated in-memory text and anchors', async () => {

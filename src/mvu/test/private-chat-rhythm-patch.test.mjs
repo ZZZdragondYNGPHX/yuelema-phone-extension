@@ -1,7 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildClearPrivateChatPatch, buildDeleteCharacterPatch, buildPrivateChatPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import {
+    buildClearPrivateChatPatch,
+    buildDeleteCharacterPatch,
+    buildPrivateChatNsfwConsentBackfillPatch,
+    buildPrivateChatNsfwConsentPatch,
+    buildPrivateChatNsfwDirectionPatch,
+    buildPrivateChatNsfwRelationshipActionPatch,
+    buildPrivateChatNsfwSafetyPatch,
+    buildPrivateChatPatch,
+    validateControlledPatchAgainstState,
+} from '../controlled-patch.js';
+import { bodyRelationshipEventIdForSource, createEmptyBodyRelationshipCandidate } from '../body-relationship-candidate.js';
+import { createEmptyRelationshipNarrative } from '../relationship-narrative.js';
+import { createEmptyNsfwConsent, grantNsfwConsent, nsfwConsentReference } from '../nsfw-consent.js';
 
 function state({ readThreshold = 55, blockThreshold = 90, relationship } = {}) {
     return {
@@ -16,10 +29,18 @@ function state({ readThreshold = 55, blockThreshold = 90, relationship } = {}) {
             },
         },
         正文记忆: { npc_one: '' },
-        会话: { chat_1: { 对象UID: 'npc_one', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } },
+        正文关系候选: { npc_one: createEmptyBodyRelationshipCandidate() },
+        关系叙事: { npc_one: createEmptyRelationshipNarrative() },
+        会话: { chat_1: { 对象UID: 'npc_one', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } },
         推荐: { 当前队列: [], 临时候选池: {}, 冷却角色UID: [], 收藏角色UID: [], 不喜欢角色UID: [], 拉黑角色UID: [] },
         面基记录: {},
     };
+}
+
+function activateNsfw(current, { scopes = ['成人话题'], turns = 3 } = {}) {
+    current.软件.内容模式 = 'NSFW';
+    current.会话.chat_1.NSFW同意 = grantNsfwConsent(current.会话.chat_1.NSFW同意, { scopes, turns });
+    return nsfwConsentReference(current.会话.chat_1.NSFW同意);
 }
 
 function response(relationship = { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 }) {
@@ -35,7 +56,7 @@ test('normal private chat appends each validated reply as its own bubble', () =>
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
 });
 
-test('private chat can lower one bond route by at most ten through the controlled patch', () => {
+test('private chat applies the global bounded decline and its turn/event lock in one controlled patch', () => {
     const current = state({
         relationship: {
             状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
@@ -43,7 +64,7 @@ test('private chat can lower one bond route by at most ten through the controlle
             友情值: 30, 心动值: 40, 欲望值: 80,
         },
     });
-    current.软件.内容模式 = 'NSFW';
+    const consentReference = activateNsfw(current);
     const built = buildPrivateChatPatch(current, {
         sessionUid: 'chat_1',
         npcUid: 'npc_one',
@@ -51,10 +72,402 @@ test('private chat can lower one bond route by at most ten through the controlle
         response: {
             ...response(),
             bondAssessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
+            nsfwSafetyAssessment: 'known_boundary_conflict',
+            nsfwConsentAssessment: 'in_scope',
+        },
+        turnConsentConfirmed: true,
+        nsfwConsentReferenceAtRequest: consentReference,
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path === '/角色池/npc_one/与玩家关系/欲望值' && operation.value === 76), true);
+    assert.equal(built.value.some((operation) => operation.path === '/关系叙事/npc_one/进程/最后结算回合UID' && operation.value === 'msg_chat_1_p_1'), true);
+    assert.deepEqual(
+        built.value.find((operation) => operation.path === '/关系叙事/npc_one/进程/已消费事件ID')?.value,
+        ['chat:1:1'],
+    );
+    assert.equal(built.value.some((operation) => operation.path === '/关系叙事/npc_one/进程/边界暂停状态' && operation.value === '仅SFW'), true);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
+test('C.3 ordinary in-scope NSFW assessments move only their rail while unclear scope stays closed', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 30, 心动值: 40, 欲望值: 39,
+        },
+    });
+    const consentReference = activateNsfw(current);
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '范围内的成人互动',
+        response: { ...response(), bondAssessment: { kind: 'sexual_desire', intensity: 3, direction: 'increase' }, nsfwConsentAssessment: 'in_scope' },
+        turnConsentConfirmed: true, nsfwConsentReferenceAtRequest: consentReference,
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/欲望值') && operation.value === 40), true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/NSFW共识亲密阶段40已触发') && operation.value === true), true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/NSFW路线锁定')), false);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+
+    const unclear = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '含糊的成人互动',
+        response: { ...response(), bondAssessment: { kind: 'sexual_desire', intensity: 3, direction: 'increase' }, nsfwConsentAssessment: 'unclear' },
+        turnConsentConfirmed: true, nsfwConsentReferenceAtRequest: consentReference,
+    });
+    assert.equal(unclear.ok, true);
+    assert.equal(unclear.value.some((operation) => operation.path.endsWith('/欲望值')), false);
+    assert.equal(validateControlledPatchAgainstState(current, unclear.value).ok, true);
+});
+
+test('dedicated NSFW pause/resume patch derives the NPC from the matched session and exactly rebuilds', () => {
+    const current = state();
+    current.软件.内容模式 = 'NSFW';
+    const paused = buildPrivateChatNsfwSafetyPatch(current, { sessionUid: 'chat_1', action: 'pause', npcUid: 'npc_forged' });
+    assert.deepEqual(paused, {
+        ok: true,
+        value: [{ op: 'replace', path: '/关系叙事/npc_one/进程/边界暂停状态', value: '仅SFW' }],
+    });
+    assert.equal(validateControlledPatchAgainstState(current, paused.value).ok, true);
+    assert.equal(validateControlledPatchAgainstState(current, [{ ...paused.value[0], path: '/关系叙事/npc_forged/进程/边界暂停状态' }]).ok, false);
+    assert.equal(validateControlledPatchAgainstState(current, [{ ...paused.value[0], value: '暂停' }]).ok, false);
+
+    current.关系叙事.npc_one.进程.边界暂停状态 = '仅SFW';
+    const resumed = buildPrivateChatNsfwSafetyPatch(current, { sessionUid: 'chat_1', action: 'resume' });
+    assert.deepEqual(resumed.value, [{ op: 'replace', path: '/关系叙事/npc_one/进程/边界暂停状态', value: '' }]);
+    assert.equal(validateControlledPatchAgainstState(current, resumed.value).ok, true);
+});
+
+test('C.2 backfills legacy sessions as unconfirmed and accepts only explicit scoped consent writes', () => {
+    const legacy = state();
+    delete legacy.会话.chat_1.NSFW同意;
+    const backfill = buildPrivateChatNsfwConsentBackfillPatch(legacy);
+    assert.deepEqual(backfill, {
+        ok: true,
+        value: [{ op: 'add', path: '/会话/chat_1/NSFW同意', value: createEmptyNsfwConsent() }],
+    });
+    assert.equal(validateControlledPatchAgainstState(legacy, backfill.value).ok, true);
+
+    const current = state();
+    current.软件.内容模式 = 'NSFW';
+    const granted = buildPrivateChatNsfwConsentPatch(current, {
+        sessionUid: 'chat_1', action: 'grant', scopes: ['线上文爱', '成人话题'], turns: 3,
+    });
+    assert.equal(granted.ok, true);
+    assert.deepEqual(granted.value[0].value, {
+        版本: 1, 状态: '有效', 允许范围: ['成人话题', '线上文爱'], 剩余轮数: 3, 来源: '玩家私聊工具', 修订号: 1,
+    });
+    assert.equal(validateControlledPatchAgainstState(current, granted.value).ok, true);
+    assert.equal(buildPrivateChatNsfwConsentPatch(current, {
+        sessionUid: 'chat_1', action: 'grant', scopes: [], turns: 3,
+    }).code, 'private_chat_nsfw_consent_invalid_selection');
+});
+
+test('C.2 consent is checked against latest revision, consumed per committed turn, and revoked or expired atomically', () => {
+    const current = state();
+    const reference = activateNsfw(current, { scopes: ['露骨调情'], turns: 3 });
+    const consumed = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '继续范围内调情',
+        response: { ...response(), bondAssessment: { kind: 'romantic_desire', intensity: 1, direction: 'increase' }, nsfwConsentAssessment: 'in_scope' },
+        turnConsentConfirmed: true, nsfwConsentReferenceAtRequest: reference,
+    });
+    assert.equal(consumed.ok, true);
+    assert.deepEqual(consumed.value.find((operation) => operation.path === '/会话/chat_1/NSFW同意')?.value, {
+        版本: 1, 状态: '有效', 允许范围: ['露骨调情'], 剩余轮数: 2, 来源: '玩家私聊工具', 修订号: 2,
+    });
+    assert.equal(validateControlledPatchAgainstState(current, consumed.value).ok, true);
+
+    const stale = structuredClone(current);
+    stale.会话.chat_1.NSFW同意 = grantNsfwConsent(stale.会话.chat_1.NSFW同意, { scopes: ['成人话题'], turns: 1 });
+    assert.equal(buildPrivateChatPatch(stale, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '这是旧请求', response: { ...response(), nsfwConsentAssessment: 'in_scope' },
+        turnConsentConfirmed: true, nsfwConsentReferenceAtRequest: reference,
+    }).code, 'private_chat_nsfw_consent_state_changed');
+
+    const withdrawn = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '停下，不继续了',
+        response: { ...response(), nsfwConsentAssessment: 'withdrawn' },
+        turnConsentConfirmed: true, nsfwConsentReferenceAtRequest: reference,
+    });
+    assert.equal(withdrawn.value.find((operation) => operation.path === '/会话/chat_1/NSFW同意')?.value.状态, '已撤回');
+    assert.equal(validateControlledPatchAgainstState(current, withdrawn.value).ok, true);
+
+    const finalTurn = state();
+    const finalReference = activateNsfw(finalTurn, { scopes: ['成人话题'], turns: 1 });
+    const expired = buildPrivateChatPatch(finalTurn, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '这轮继续', response: { ...response(), nsfwConsentAssessment: 'in_scope' },
+        turnConsentConfirmed: true, nsfwConsentReferenceAtRequest: finalReference,
+    });
+    assert.equal(expired.value.find((operation) => operation.path === '/会话/chat_1/NSFW同意')?.value.状态, '已过期');
+    assert.equal(validateControlledPatchAgainstState(finalTurn, expired.value).ok, true);
+});
+
+test('C.3 direction confirmation is user-triggered, threshold-bound, and blocked during active NSFW meetups', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 30, 心动值: 50, 欲望值: 49,
+        },
+    });
+    activateNsfw(current);
+    current.关系叙事.npc_one.进程.NSFW方向确认可用 = true;
+    const love = buildPrivateChatNsfwDirectionPatch(current, { sessionUid: 'chat_1', direction: 'love' });
+    assert.deepEqual(love, {
+        ok: true,
+        value: [{ op: 'replace', path: '/关系叙事/npc_one/进程/NSFW路线锁定', value: '爱情' }],
+    });
+    assert.equal(validateControlledPatchAgainstState(current, love.value).ok, true);
+    assert.equal(buildPrivateChatNsfwDirectionPatch(current, { sessionUid: 'chat_1', direction: 'consensual_intimacy' }).code, 'private_chat_nsfw_direction_unavailable');
+    assert.equal(buildPrivateChatNsfwDirectionPatch(current, { sessionUid: 'chat_1', direction: 'defer' }).ok, true);
+
+    current.面基记录.meetup_1 = { 对象UID: 'npc_one', 关系路线: '恋爱', 状态: '正文进行中' };
+    assert.equal(buildPrivateChatNsfwDirectionPatch(current, { sessionUid: 'chat_1', direction: 'love' }).code, 'private_chat_nsfw_direction_meetup_active');
+});
+
+test('stage C degrades or ends without deleting history and revokes active consent in the same patch', () => {
+    const degraded = state();
+    activateNsfw(degraded);
+    degraded.关系叙事.npc_one.进程.NSFW方向确认可用 = true;
+    degraded.关系叙事.npc_one.进程.NSFW路线锁定 = '爱情';
+    degraded.关系叙事.npc_one.进程.冻结关系值 = '欲望值';
+    const degradePatch = buildPrivateChatNsfwRelationshipActionPatch(degraded, { sessionUid: 'chat_1', action: 'degrade_to_friends' });
+    assert.equal(degradePatch.ok, true);
+    assert.deepEqual(degradePatch.value.map((operation) => [operation.path, operation.value?.状态 ?? operation.value]), [
+        ['/关系叙事/npc_one/进程/NSFW路线锁定', '暂不定义'],
+        ['/关系叙事/npc_one/进程/冻结关系值', ''],
+        ['/关系叙事/npc_one/进程/边界暂停状态', '仅SFW'],
+        ['/会话/chat_1/NSFW同意', '已撤回'],
+    ]);
+    assert.equal(degradePatch.value.some((operation) => operation.op === 'remove'), false);
+    assert.equal(validateControlledPatchAgainstState(degraded, degradePatch.value).ok, true);
+
+    const ended = state();
+    activateNsfw(ended);
+    const endPatch = buildPrivateChatNsfwRelationshipActionPatch(ended, { sessionUid: 'chat_1', action: 'end_contact' });
+    assert.equal(endPatch.ok, true);
+    assert.deepEqual(endPatch.value.map((operation) => [operation.path, operation.value?.状态 ?? operation.value]), [
+        ['/关系叙事/npc_one/进程/关系结束状态', '结束联系'],
+        ['/关系叙事/npc_one/进程/边界暂停状态', '暂停'],
+        ['/关系叙事/npc_one/进程/最近关系观察', '结局确认'],
+        ['/会话/chat_1/NSFW同意', '已撤回'],
+    ]);
+    assert.equal(endPatch.value.some((operation) => operation.op === 'remove'), false);
+    assert.equal(validateControlledPatchAgainstState(ended, endPatch.value).ok, true);
+});
+
+test('stage D pauses, resumes, and archives a relationship without deleting history or scores', () => {
+    const current = state();
+    const paused = buildPrivateChatNsfwRelationshipActionPatch(current, { sessionUid: 'chat_1', action: 'pause_contact' });
+    assert.equal(paused.ok, true);
+    assert.deepEqual(paused.value.map((operation) => [operation.path, operation.value]), [
+        ['/关系叙事/npc_one/进程/边界暂停状态', '暂停'],
+        ['/关系叙事/npc_one/进程/最近关系观察', '安全降级'],
+    ]);
+    assert.equal(validateControlledPatchAgainstState(current, paused.value).ok, true);
+    assert.equal(paused.value.some((operation) => operation.op === 'remove' || operation.path.includes('/与玩家关系/')), false);
+
+    const pausedState = state();
+    pausedState.关系叙事.npc_one.进程.边界暂停状态 = '暂停';
+    pausedState.关系叙事.npc_one.进程.最近关系观察 = '安全降级';
+    const resumed = buildPrivateChatNsfwRelationshipActionPatch(pausedState, { sessionUid: 'chat_1', action: 'resume_contact' });
+    assert.equal(resumed.ok, true);
+    assert.equal(validateControlledPatchAgainstState(pausedState, resumed.value).ok, true);
+
+    const archived = buildPrivateChatNsfwRelationshipActionPatch(current, { sessionUid: 'chat_1', action: 'archive_contact' });
+    assert.equal(archived.ok, true);
+    assert.deepEqual(archived.value.map((operation) => operation.value), ['已归档', '已归档', '结局确认']);
+    assert.equal(validateControlledPatchAgainstState(current, archived.value).ok, true);
+
+    const archivedState = state();
+    archivedState.关系叙事.npc_one.进程.关系结束状态 = '已归档';
+    archivedState.关系叙事.npc_one.进程.边界暂停状态 = '已归档';
+    assert.equal(buildPrivateChatNsfwRelationshipActionPatch(archivedState, { sessionUid: 'chat_1', action: 'end_contact' }).ok, false);
+    assert.equal(buildPrivateChatNsfwRelationshipActionPatch(archivedState, { sessionUid: 'chat_1', action: 'archive_contact' }).ok, false);
+});
+
+test('stage C atomically reviews a matching NSFW body candidate, freezes the other rail, and consumes the slot', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 30, 心动值: 50, 欲望值: 65,
+        },
+    });
+    const reference = activateNsfw(current);
+    current.关系叙事.npc_one.进程.NSFW方向确认可用 = true;
+    current.关系叙事.npc_one.进程.NSFW路线锁定 = '爱情';
+    current.面基记录.meetup_love = {
+        对象UID: 'npc_one', 状态: '已结束', 关系路线: '恋爱', 正文结果摘要: '双方完成一次自愿的约会，并尊重了彼此节奏。',
+    };
+    current.正文关系候选.npc_one = {
+        ...createEmptyBodyRelationshipCandidate(),
+        状态: '待复盘', 角色UID: 'npc_one', 事件ID: bodyRelationshipEventIdForSource('meetup_love', 1),
+        来源面基UID: 'meetup_love', 来源摘要版本: 1, 事件类别: '推进心愿', 关系路线: 'NSFW爱情',
+        允许影响关系值: ['心动值'], 建议方向: '正向', 严重度: '明显',
+        证据摘要: '双方兑现了约会承诺，并由角色自主推进了一项心愿。', 需再次确认: true,
+    };
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '我愿意继续按你的方式一起推进。',
+        bodyCandidateEventId: 'body:meetup_love:1',
+        response: { ...response(), bodyEventReview: 'confirm', nsfwConsentAssessment: 'in_scope' },
+        turnConsentConfirmed: true, nsfwConsentReferenceAtRequest: reference,
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/心动值') && operation.value === 52), true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/冻结关系值') && operation.value === '欲望值'), true);
+    assert.deepEqual(built.value.find((operation) => operation.path === '/正文关系候选/npc_one')?.value, createEmptyBodyRelationshipCandidate());
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
+test('a classified safety conflict pauses NSFW atomically even when the selected score is already zero', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 0, 心动值: 0, 欲望值: 0,
+        },
+    });
+    const consentReference = activateNsfw(current);
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '继续索取已经拒绝的现实隐私',
+        response: {
+            ...response(),
+            bondAssessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
+            nsfwSafetyAssessment: 'privacy_violation',
+            nsfwConsentAssessment: 'in_scope',
+        },
+        turnConsentConfirmed: true,
+        nsfwConsentReferenceAtRequest: consentReference,
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/欲望值')), false);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/边界暂停状态') && operation.value === '仅SFW'), true);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
+test('repeating an explicitly classified safety violation still sets the only-SFW gate', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 0, 心动值: 0, 欲望值: 0,
+        },
+    });
+    const consentReference = activateNsfw(current);
+    current.会话.chat_1.最近消息 = [{ 消息UID: 'old', 发送者: '玩家', 内容: '把已经拒绝的现实隐私告诉我', 时间: '', 层数: 1 }];
+    current.会话.chat_1.对话层数 = 1;
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '把已经拒绝的现实隐私告诉我',
+        response: {
+            ...response(),
+            bondAssessment: { kind: 'sexual_desire', intensity: 3, direction: 'decrease' },
+            nsfwSafetyAssessment: 'privacy_violation',
+            nsfwConsentAssessment: 'in_scope',
+        },
+        turnConsentConfirmed: true,
+        nsfwConsentReferenceAtRequest: consentReference,
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/边界暂停状态') && operation.value === '仅SFW'), true);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+});
+
+test('private chat rejects a reply built under a different only-SFW state', () => {
+    const current = state();
+    const consentReference = activateNsfw(current);
+    current.关系叙事.npc_one.进程.边界暂停状态 = '仅SFW';
+    assert.equal(buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '继续聊', response: response(), onlySfwAtRequest: false,
+    }).code, 'private_chat_safety_state_changed');
+});
+
+test('SFW threshold settlement writes only narrow protected progress leaves in the same transaction', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 19, 心动值: 0, 欲望值: 0,
+        },
+    });
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '我会按你的节奏来。',
+        response: { ...response(), bondAssessment: { kind: 'friendly', intensity: 2, direction: 'increase' } },
+    });
+    assert.equal(built.ok, true);
+    const progressOperations = built.value.filter((operation) => operation.path.startsWith('/关系叙事/npc_one/进程/'));
+    assert.deepEqual(progressOperations, [
+        { op: 'replace', path: '/关系叙事/npc_one/进程/最后结算回合UID', value: 'msg_chat_1_p_1' },
+        { op: 'replace', path: '/关系叙事/npc_one/进程/已消费事件ID', value: ['chat:1:1'] },
+        { op: 'replace', path: '/关系叙事/npc_one/进程/SFW细微裂缝已触发', value: true },
+        { op: 'replace', path: '/关系叙事/npc_one/进程/最近关系观察', value: '关系靠近' },
+    ]);
+    assert.equal(built.value.some((operation) => operation.path === '/角色池/npc_one/与玩家关系/友情值' && operation.value === 20), true);
+    assert.equal(built.value.some((operation) => operation.path === '/关系叙事/npc_one'), false, 'never serialize protected life/wish records into a chat settlement');
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+
+    const forgedTurn = structuredClone(built.value);
+    forgedTurn.find((operation) => operation.path.endsWith('/最后结算回合UID')).value = 'msg_chat_1_p_999';
+    assert.equal(validateControlledPatchAgainstState(current, forgedTurn).ok, false, 'only the locally generated turn UID may pass exact reconstruction');
+    const forgedFlag = structuredClone(built.value);
+    forgedFlag.find((operation) => operation.path.endsWith('/SFW细微裂缝已触发')).value = false;
+    assert.equal(validateControlledPatchAgainstState(current, forgedFlag).ok, false, 'flags may never be reset by this path');
+    assert.equal(validateControlledPatchAgainstState(current, [{ op: 'replace', path: '/关系叙事/npc_one/人生底色/完整理解', value: '越权' }]).ok, false);
+});
+
+test('stage B direct understanding is reconstructed exactly and cannot be forged into a different ending', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 59, 心动值: 0, 欲望值: 0,
+        },
+    });
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '我理解，也愿意尊重你的选择。',
+        response: {
+            ...response(),
+            bondAssessment: { kind: 'friendly', intensity: 2, direction: 'increase' },
+            sfwInsightAssessment: 'direct_understanding',
         },
     });
     assert.equal(built.ok, true);
-    assert.equal(built.value.some((operation) => operation.path === '/角色池/npc_one/与玩家关系/欲望值' && operation.value === 70), true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/SFW理解已检查') && operation.value === true), true);
+    assert.equal(built.value.some((operation) => operation.path.endsWith('/SFW心动已解锁') && operation.value === true), true);
+    assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
+
+    const forged = structuredClone(built.value);
+    forged.push({ op: 'replace', path: '/关系叙事/npc_one/进程/关系结束状态', value: '恋人' });
+    assert.equal(validateControlledPatchAgainstState(current, forged).ok, false);
+});
+
+test('private chat fails closed without a complete relationship narrative registry', () => {
+    const current = state();
+    delete current.关系叙事.npc_one;
+    assert.deepEqual(
+        buildPrivateChatPatch(current, { sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '你好', response: response() }),
+        { ok: false, code: 'mvu_relationship_narrative_schema_outdated', detail: '' },
+    );
+});
+
+test('a recently repeated player message may receive a reply but cannot settle another relationship change', () => {
+    const current = state({
+        relationship: {
+            状态: '已匹配', 全局账号表现: 50, NPC专属匹配度: 70,
+            好感: 20, 信任: 10, 戒备: 15, 面基意愿: 0,
+            友情值: 19, 心动值: 0, 欲望值: 0,
+        },
+    });
+    current.会话.chat_1.最近消息 = [{
+        消息UID: 'msg_chat_1_p_1', 发送者: '玩家', 内容: '我会按你的节奏来。', 时间: '', 层数: 1,
+    }];
+    current.会话.chat_1.对话层数 = 1;
+    const built = buildPrivateChatPatch(current, {
+        sessionUid: 'chat_1', npcUid: 'npc_one', playerMessage: '我会按你的节奏来。',
+        response: { ...response(), bondAssessment: { kind: 'friendly', intensity: 1, direction: 'increase' } },
+    });
+    assert.equal(built.ok, true);
+    assert.equal(built.value.some((operation) => operation.path === '/角色池/npc_one/与玩家关系/友情值'), false);
+    assert.equal(built.value.some((operation) => operation.path.startsWith('/关系叙事/npc_one/进程/')), false);
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);
 });
 
@@ -192,6 +605,8 @@ test('deleteCharacter removes the complete character record and every controlled
     otherRole.公开资料.昵称 = '其他角色';
     current.角色池.npc_other = otherRole;
     current.正文记忆.npc_other = '其他对象自己的经历';
+    current.正文关系候选.npc_other = createEmptyBodyRelationshipCandidate();
+    current.关系叙事.npc_other = createEmptyRelationshipNarrative();
     current.推荐 = {
         当前队列: ['npc_one', 'npc_other'],
         临时候选池: { npc_one: structuredClone(current.角色池.npc_one), npc_other: structuredClone(otherRole) },
@@ -226,6 +641,8 @@ test('deleteCharacter removes the complete character record and every controlled
         { op: 'replace', path: '/群组/group_city/可发现角色UID', value: [] },
         { op: 'remove', path: '/推荐/临时候选池/npc_one' },
         { op: 'remove', path: '/正文记忆/npc_one' },
+        { op: 'remove', path: '/正文关系候选/npc_one' },
+        { op: 'remove', path: '/关系叙事/npc_one' },
         { op: 'remove', path: '/角色池/npc_one' },
     ]);
     assert.equal(validateControlledPatchAgainstState(current, built.value).ok, true);

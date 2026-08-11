@@ -117,6 +117,77 @@ test('AI 补全和完整创作各有独立的预设选项入口', () => {
     ]);
 });
 
+test('角色蓝图按模式分层：SFW 不渲染成人控件，NSFW 提供完整自定义并编译进既有边界字段', () => {
+    const sfw = createHarness().panel;
+    assert.ok(control(sfw, 'relationship-goal'));
+    assert.equal(sfw.querySelector('[name="adult-role"]'), null, 'SFW DOM 不应包含成人蓝图控件');
+
+    const saved = [];
+    const nsfw = buildCharacterCreatorPanel({
+        documentRef: miniDom.document,
+        actionBridge: { async registerCharacter() { return { ok: true }; } },
+        characterLibrary: { list: () => [], saveTemplate({ template }) { saved.push(structuredClone(template)); } },
+        signal: new AbortController().signal,
+        contentMode: 'NSFW',
+        onFeedback() {},
+    });
+    fillExistingDraft(nsfw);
+    control(nsfw, 'relationship-goal').value = '长期性伴侣关系';
+    control(nsfw, 'adult-role').value = '可切换';
+    control(nsfw, 'adult-hard-limits').value = '忽视拒绝';
+    const intercourse = nsfw.querySelectorAll('[name="adult-activity"]').find((item) => item.value === '性交');
+    assert.ok(intercourse);
+    intercourse.checked = true;
+    buttonByText(nsfw, '只保存当前草稿到本地模板库').dispatchEvent(new Event('click'));
+    assert.equal(saved.length, 1);
+    assert.match(saved[0].character.偏好与边界, /^【角色蓝图v1】/u);
+    assert.match(saved[0].character.偏好与边界, /关系目标=长期性伴侣关系/u);
+    assert.match(saved[0].character.偏好与边界, /成人玩法=性交/u);
+    assert.match(saved[0].character.偏好与边界, /硬性禁区=忽视拒绝/u);
+});
+
+test('AI 补全只把玩家明确勾选的资料层交给桥接', async () => {
+    const { panel, completionRequests } = createHarness();
+    fillExistingDraft(panel);
+    control(panel, 'ai-completion-scope-public').checked = false;
+    control(panel, 'ai-completion-scope-private').checked = true;
+    completionButton(panel).dispatchEvent(new Event('click'));
+    await flushUi();
+    assert.equal(completionRequests.length, 1);
+    assert.deepEqual(completionRequests[0].completionScopes, ['private']);
+    assert.equal(Object.hasOwn(completionRequests[0].candidateDraft, '公开资料'), false);
+    assert.equal(completionRequests[0].candidateDraft.仅好友资料.关系状态, 'friend-secret-must-not-leak');
+    assert.equal(JSON.stringify(completionRequests[0]).includes('原始公开昵称'), false);
+});
+
+test('AI 完整创作把当前模式与玩家勾选的角色蓝图作为受控输入', async () => {
+    const requests = [];
+    const panel = buildCharacterCreatorPanel({
+        documentRef: miniDom.document,
+        actionBridge: {
+            async generateCharacterAuthoringDraft(request) { requests.push(structuredClone(request)); return { ok: true, candidate: adultCandidate() }; },
+            async registerCharacter() { return { ok: true }; },
+        },
+        characterLibrary: { list: () => [] },
+        signal: new AbortController().signal,
+        contentMode: 'NSFW',
+        onFeedback() {},
+    });
+    control(panel, 'relationship-goal').value = '稳定恋爱关系';
+    control(panel, 'adult-role').value = '平等协商';
+    control(panel, 'adult-fantasy').value = '酒店角色扮演';
+    control(panel, 'ai-creative-brief').value = '创作一名明确成年的都市角色。';
+    buttonByText(panel, 'AI 完整创作到草稿').dispatchEvent(new Event('click'));
+    await flushUi();
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].expectedContentMode, 'NSFW');
+    assert.deepEqual(requests[0].characterBlueprint, {
+        关系目标: '稳定恋爱关系',
+        成人角色: '平等协商',
+        幻想场景: '酒店角色扮演',
+    });
+});
+
 test('successful registration hands the allocated uid and embedded avatar to browser-local persistence', async () => {
     const registered = [];
     const template = {
@@ -158,8 +229,9 @@ test('AI 补全成功只增量填空和补标签：已有资料与头像保留�
     assert.equal(completionRequests.length, 1);
     const request = completionRequests[0];
     assert.equal(request.instruction, '补全为明确成年的都市约会资料。');
-    assert.equal(request.publicProfile.昵称, '原始公开昵称');
-    assert.equal(request.publicProfile.头像引用, '');
+    assert.deepEqual(request.completionScopes, ['public']);
+    assert.equal(request.candidateDraft.公开资料.昵称, '原始公开昵称');
+    assert.equal(request.candidateDraft.公开资料.头像引用, '');
     const serializedRequest = JSON.stringify(request);
     for (const forbidden of [
         'friend-secret-must-not-leak', 'friend-boundary-secret-must-not-leak',
@@ -274,7 +346,7 @@ test('本地模板库 UI 接线支持保存草稿、单模板导入和整库导�
     assert.equal(calls.register, 0);
 });
 
-test('步骤导航 rail：四个按钮指向真实分段 id，点击后单选高亮', () => {
+test('步骤导航 rail：五个按钮指向真实分段 id，点击后单选高亮', () => {
     const { panel } = createHarness();
     const rail = panel.querySelector('.yl-character-step-rail');
     assert.ok(rail, '应存在步骤导航 rail');
@@ -282,12 +354,13 @@ test('步骤导航 rail：四个按钮指向真实分段 id，点击后单选高
     assert.equal(rail.getAttribute('aria-label'), '创建角色步骤导航');
 
     const buttons = rail.querySelectorAll('.yl-character-step-link');
-    assert.equal(buttons.length, 4, 'rail 应有 4 个步骤按钮');
+    assert.equal(buttons.length, 5, 'rail 应有 5 个步骤按钮');
     const expected = [
         ['01', '心动名片', 'yl-character-section-public'],
-        ['02', '形象与灵感', 'yl-character-section-avatar'],
-        ['03', '边界与节奏', 'yl-character-section-private'],
-        ['04', '确认登记', 'yl-character-section-submit'],
+        ['02', '角色蓝图', 'yl-character-section-blueprint'],
+        ['03', '形象与 AI', 'yl-character-section-avatar'],
+        ['04', '边界与节奏', 'yl-character-section-private'],
+        ['05', '确认登记', 'yl-character-section-submit'],
     ];
     const sectionIds = new Set(
         [...panel.querySelectorAll('section'), ...panel.querySelectorAll('footer')]
@@ -320,15 +393,15 @@ function sectionById(panel, id) {
     return found;
 }
 
-test('journey 条是真锚点：四个按钮指向真实分段，点击滚动并同步高亮 journey 与 rail', () => {
+test('journey 条是真锚点：五个按钮指向真实分段，点击滚动并同步高亮 journey 与 rail', () => {
     const { panel } = createHarness();
     const journey = panel.querySelector('.yl-character-journey');
     assert.ok(journey, '应存在 journey 锚点条');
     assert.equal(journey.tagName, 'NAV');
     const journeyButtons = journey.querySelectorAll('.yl-character-journey-item');
-    assert.equal(journeyButtons.length, 4, 'journey 应有 4 个步骤按钮');
+    assert.equal(journeyButtons.length, 5, 'journey 应有 5 个步骤按钮');
     const expectedTargets = [
-        'yl-character-section-public', 'yl-character-section-avatar',
+        'yl-character-section-public', 'yl-character-section-blueprint', 'yl-character-section-avatar',
         'yl-character-section-private', 'yl-character-section-submit',
     ];
     journeyButtons.forEach((button, index) => {
@@ -343,17 +416,17 @@ test('journey 条是真锚点：四个按钮指向真实分段，点击滚动并
     const privateSection = sectionById(panel, 'yl-character-section-private');
     const scrollCalls = [];
     privateSection.scrollIntoView = (options) => scrollCalls.push(options);
-    journeyButtons[2].dispatchEvent(new Event('click'));
+    journeyButtons[3].dispatchEvent(new Event('click'));
 
     assert.equal(scrollCalls.length, 1, '点击 journey 锚点应滚动到对应分段');
     assert.equal(scrollCalls[0].block, 'start');
     const railButtons = panel.querySelector('.yl-character-step-rail').querySelectorAll('.yl-character-step-link');
     journeyButtons.forEach((button, index) => {
-        assert.equal(button.classList.contains('is-active'), index === 2, `journey 按钮 ${index} 高亮状态`);
-        assert.equal(button.getAttribute('aria-current') === 'step', index === 2);
+        assert.equal(button.classList.contains('is-active'), index === 3, `journey 按钮 ${index} 高亮状态`);
+        assert.equal(button.getAttribute('aria-current') === 'step', index === 3);
     });
     railButtons.forEach((button, index) => {
-        assert.equal(button.classList.contains('is-active'), index === 2, `rail 按钮 ${index} 应与 journey 同步高亮`);
+        assert.equal(button.classList.contains('is-active'), index === 3, `rail 按钮 ${index} 应与 journey 同步高亮`);
     });
 });
 

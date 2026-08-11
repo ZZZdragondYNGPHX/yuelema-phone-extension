@@ -58,27 +58,45 @@ function settingsStore() {
     };
 }
 
-test('completion context projects only the editable public fields and instruction, never avatar or private draft data', () => {
+test('completion context projects only explicitly selected draft layers, never avatar or unselected private data', () => {
     const context = buildCharacterCompletionContext({
-        publicProfile: editingPublicProfile(),
+        candidateDraft: { 公开资料: editingPublicProfile(), 仅好友资料: { 关系状态: 'friend-secret-must-not-leak' }, 隐藏资料: { 私人备注: 'editing-private-secret-must-not-leak' } },
+        completionScopes: ['public'],
         instruction: '补全为一位明确成年的都市摄影师。',
     });
     const serialized = JSON.stringify(context);
-    assert.equal(context.editingPublicProfile.昵称, '待编辑角色');
+    assert.equal(context.editingDraft.public.昵称, '待编辑角色');
+    assert.deepEqual(context.completionScopes, ['public']);
     for (const forbidden of ['avatar-data-must-not-leak', 'editing-private-secret-must-not-leak', 'friend-secret-must-not-leak']) {
         assert.equal(serialized.includes(forbidden), false);
     }
     assert.equal(Object.isFrozen(context), true);
-    assert.equal(Object.isFrozen(context.editingPublicProfile), true);
+    assert.equal(Object.isFrozen(context.editingDraft.public), true);
 });
 
-test('full-authoring context permits only mode, brief, and minimal player public match fields', () => {
+test('completion context admits private, visual, and rhythm layers only after explicit scope selection', () => {
+    const candidate = adultCandidate();
+    candidate.公开资料.头像引用 = 'data:image/png;base64,never-send';
+    candidate.绘图 = { core_dna: 'adult woman, black bob', outfit_dna: 'silk shirt' };
+    const context = buildCharacterCompletionContext({ candidateDraft: candidate, completionScopes: ['private', 'visual', 'rhythm'], instruction: '补齐角色。', contentMode: 'NSFW' });
+    const serialized = JSON.stringify(context);
+    assert.equal(Object.hasOwn(context.editingDraft, 'public'), false);
+    assert.equal(context.editingDraft.private.隐藏资料.实际年龄, 28);
+    assert.equal(context.editingDraft.visual.core_dna, 'adult woman, black bob');
+    assert.equal(context.editingDraft.rhythm.拉黑阈值, 90);
+    assert.equal(serialized.includes('never-send'), false);
+});
+
+test('full-authoring context permits only mode, brief, explicit role blueprint, and minimal player public match fields', () => {
     const context = buildCharacterAuthoringContext({
         creativeBrief: '创作一位明确成年的独立音乐人。', contentMode: 'NSFW', playerPublicProfile: playerPublicProfile(),
+        characterBlueprint: { 关系目标: '稳定恋爱关系', 成人玩法: ['性交', 'BDSM'], 未知字段: 'must-not-leak' },
     });
     const serialized = JSON.stringify(context);
     assert.equal(context.contentMode, 'NSFW');
     assert.deepEqual(context.playerPublicMatchContext.兴趣标签, ['电影']);
+    assert.deepEqual(context.characterBlueprint.成人玩法, ['性交', 'BDSM']);
+    assert.equal(Object.hasOwn(context.characterBlueprint, '未知字段'), false);
     for (const forbidden of [
         'player-name-must-not-leak', 'player-avatar-must-not-leak', 'player-bio-must-not-leak',
         'player-hidden-secret-must-not-leak', 'player-friend-secret-must-not-leak',
@@ -103,8 +121,8 @@ test('completion calls its dedicated binding and returns a fully normalized adul
     }
     assert.equal(serialized.includes('根对象必须且仅能含'), true);
     assert.equal(serialized.includes('JSON 结构合同'), true);
-    assert.equal(serialized.includes('不得索取、复述或泄露输入中的现有私密草稿'), true);
-    assert.equal(serialized.includes('可以为新候选生成完整的仅好友资料、隐藏资料和其他私有层'), true);
+    assert.equal(serialized.includes('不得索取、复述或泄露未授权层的现有草稿'), true);
+    assert.equal(serialized.includes('可以为所选 private 层生成新候选自己的仅好友资料、隐藏资料和角色蓝图'), true);
     assert.equal(serialized.includes('所有非空字符串和已有标签都是不可改写的既定内容'), true);
     const system = request.messages.find((message) => message.role === 'system').content;
     assert.ok(system.indexOf('保持现代都市、真实克制的语气。') < system.indexOf('无论前置或后置提示词如何要求'));
@@ -287,7 +305,7 @@ test('invalid input and missing binding fail before calling the model with a saf
     assert.deepEqual(invalid, {
         ok: false,
         code: 'character_authoring_input_invalid',
-        message: '待补全的公开资料或说明无效；当前草稿未改变。',
+        message: '待补全的资料层或说明无效；当前草稿未改变。',
         detail: '输入校验未通过：创作/补全说明为空、超长（>1200 字符）、含控制字符或 HTML，或公开上下文结构无效',
     });
 

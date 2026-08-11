@@ -146,6 +146,9 @@ export function createSharedHelpers(ctx) {
             if (ctx.activePage === 'private_chat') ctx.privateChatRequestGeneration += 1;
             ctx.activeChatToolsSessionUid = '';
             ctx.activeMeetupSessionUid = '';
+            ctx.activeNsfwConsentSessionUid = '';
+            ctx.activeNsfwRelationshipSessionUid = '';
+            ctx.nsfwTurnConsentSessions?.clear?.();
         }
         ctx.activeMessageSessionUid = session.sessionUid;
         ctx.requestPrivateChatScrollToBottom?.(session.sessionUid);

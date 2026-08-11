@@ -185,6 +185,13 @@ test('NSFW permits adult-oriented public profile text while retaining adult, con
     adultTermOutsideTags.公开资料.简介 = '偏好翘臀。';
     assert.equal(normalizeGeneratedCandidate(adultTermOutsideTags, { contentMode: 'NSFW' }).公开资料.简介, '偏好翘臀。');
 
+    const inPersonAdultPreference = completeAdultCandidate();
+    inPersonAdultPreference.公开资料.简介 = '想找明确成年的自愿对象线下做爱，也喜欢开房后的完整性爱体验。';
+    assert.equal(
+        normalizeGeneratedCandidate(inPersonAdultPreference, { contentMode: 'NSFW' }).公开资料.简介,
+        '想找明确成年的自愿对象线下做爱，也喜欢开房后的完整性爱体验。',
+    );
+
     const coerciveTag = completeAdultCandidate();
     coerciveTag.公开资料.兴趣标签 = ['非自愿'];
     assert.throws(

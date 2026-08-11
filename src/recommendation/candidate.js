@@ -83,9 +83,10 @@ export const COMPLETE_CANDIDATE_OUTPUT_CONTRACT = Object.freeze([
 // 阶段 55: an adult's stated orientation or body/style preference is legitimate
 // public-profile content in every mode; the SFW/NSFW tone difference lives in
 // prompt copy only, never in a code-level adult-vocabulary blocklist. Hard bans
-// below stay mode-independent: minors, coercion, non-consent, crime, offline
-// sexual enactment claims, and private identifiers.
-const PROHIBITED_PUBLIC_CONTENT_PATTERN = /(?:未成年|未滿|未满\s*18|minor|underage|非自愿|非自願|强迫|強迫|胁迫|脅迫|迷奸|下药|下藥|强奸|強奸|偷拍|偷窥|偷窺|勒索|诈骗|詐騙|线下(?:性行为|性行為|做爱|做愛|开房|開房|上床)|(?:性行为|性行為|做爱|做愛|开房|開房|上床)演绎|演繹|身份证|身份證|手机号|手機號|电话号码|電話號碼|具体住址|具體住址|家庭住址|门牌|門牌|真实姓名|真實姓名|银行卡|銀行卡|私人账号|私人帳號)/iu;
+// below stay mode-independent: minors, coercion, non-consent, crime and
+// private identifiers. Consensual adult sexual interests are valid profile
+// content whether they describe online fantasy or desired in-person activity.
+const PROHIBITED_PUBLIC_CONTENT_PATTERN = /(?:未成年|未滿|未满\s*18|minor|underage|非自愿|非自願|强迫|強迫|胁迫|脅迫|迷奸|下药|下藥|强奸|強奸|偷拍|偷窥|偷窺|勒索|诈骗|詐騙|身份证|身份證|手机号|手機號|电话号码|電話號碼|具体住址|具體住址|家庭住址|门牌|門牌|真实姓名|真實姓名|银行卡|銀行卡|私人账号|私人帳號)/iu;
 // Provenance stays in memory only. It is never enumerable, serialized, persisted,
 // sent to a model, or written into MVU state. This lets the controlled patch path
 // retain the mode that already passed the state-aware fast recommender validator.

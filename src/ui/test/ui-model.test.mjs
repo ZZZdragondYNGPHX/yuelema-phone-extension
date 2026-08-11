@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PAGE_COPY, createPhoneView, describeActionFailure, parseChatMessageTime, projectMatchView, projectPlayerPublicProfile, projectPublicProfile, projectServiceOrderView, projectServiceOrderIssues } from '../../ui-model.js';
+import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
+import { createEmptyNsfwConsent, grantNsfwConsent } from '../../mvu/nsfw-consent.js';
+import { createDefaultRealisticChatState } from '../../mvu/realistic-chat.js';
 
 function profile() {
     return {
@@ -74,6 +77,13 @@ test('saved-card source failures stay user-facing and do not expose internal que
     assert.equal(describeActionFailure({ code: 'like_match_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
     assert.equal(describeActionFailure({ code: 'recommendation_source_not_available' }), '该资料已不在当前候选或收藏列表，请返回后刷新。');
     assert.equal(describeActionFailure({ code: 'mvu_relationship_routes_schema_outdated' }), '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。');
+    assert.equal(describeActionFailure({ code: 'mvu_relationship_narrative_schema_outdated' }), '当前聊天缺少 v1.0.20 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
+    assert.equal(describeActionFailure({ code: 'mvu_body_relationship_candidate_schema_outdated' }), '当前聊天缺少 v1.0.20 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。');
+    assert.match(describeActionFailure({ code: 'mvu_nsfw_consent_schema_outdated' }), /v1\.0\.20 成人话题共识结构/u);
+    assert.match(describeActionFailure({ code: 'private_chat_nsfw_turn_consent_required' }), /本轮继续/u);
+    assert.equal(describeActionFailure({ code: 'body_relationship_candidate_source_route_invalid' }), '正文关系候选与来源面基或已确认路线不一致，本次未写入。');
+    assert.equal(describeActionFailure({ code: 'body_relationship_candidate_invalid' }), '正文关系候选内容未通过安全复核，本次未写入任何关系变化。');
+    assert.equal(describeActionFailure({ code: 'relationship_narrative_backfill_orphan' }), '发现无法对应当前角色的关系叙事记录；为避免删除资料，本次未自动修复。请保留当前聊天并附上脱敏诊断反馈。');
 });
 
 test('private chat view exposes only public profile and session-visible transcript', () => {
@@ -85,11 +95,93 @@ test('private chat view exposes only public profile and session-visible transcri
             会话: { chat_a: { 对象UID: 'npc_a', 状态: '已匹配', 最近消息: [{ 消息UID: 'm1', 发送者: '角色', 内容: '你好', 时间: '' }], 总结: { 记录: [{ 内容: '公开会话摘要' }] } } },
         },
     };
+    read.state.会话.chat_a.拟真聊天 = createDefaultRealisticChatState({
+        enabled: true,
+        proactiveAt: '2026-08-02 13:00',
+    });
+    read.state.会话.chat_a.拟真聊天.待投递消息.push({
+        消息UID: 'msg_chat_a_n_2',
+        发送者: '角色',
+        内容: 'future-message-must-not-render',
+        时间: '2026-08-02 12:10',
+        批次UID: 'batch_chat_a_proactive_202608021200',
+    });
     const view = createPhoneView(read);
     assert.equal(view.messageSessions.length, 1);
     assert.equal(view.messageSessions[0].profile.昵称, '公开名');
+    assert.deepEqual(view.messageSessions[0].realisticChat, {
+        supported: true,
+        enabled: true,
+        pendingCount: 1,
+        nextDeliveryAt: '2026-08-02 12:10',
+        replyDueAt: '',
+        proactiveDueAt: '2026-08-02 13:00',
+    });
     const serialized = JSON.stringify(view.messageSessions);
-    assert.doesNotMatch(serialized, /秘密|实际年龄|关系状态/);
+    assert.doesNotMatch(serialized, /秘密|实际年龄|关系状态|future-message-must-not-render|batch_chat_a_proactive_202608021200|待回复同意修订号/);
+});
+
+test('private chat view projects coarse relationship safety/observation without scores and closes unsafe actions', () => {
+    const narrative = createEmptyRelationshipNarrative();
+    narrative.进程.边界暂停状态 = '仅SFW';
+    const read = {
+        ok: true,
+        state: {
+            软件: { 内容模式: 'NSFW' }, 推荐: { 当前队列: [], 临时候选池: {} },
+            角色池: {
+                npc_a: {
+                    成人验证: true,
+                    公开资料: { 昵称: '公开名' },
+                    与玩家关系: { 状态: '已匹配', 友情值: 100, 心动值: 100, 欲望值: 100 },
+                },
+            },
+            会话: { chat_a: { 对象UID: 'npc_a', 状态: '已匹配', 最近消息: [], NSFW同意: createEmptyNsfwConsent() } },
+            关系叙事: { npc_a: narrative },
+        },
+    };
+    let session = createPhoneView(read).messageSessions[0];
+    assert.deepEqual({ onlySfw: session.onlySfw, paused: session.paused, ended: session.ended }, { onlySfw: true, paused: false, ended: false });
+    assert.equal(session.canSend, true, '仅 SFW 仍允许普通友情私聊');
+    assert.deepEqual(session.meetupAccess, { unlocked: false, route: '', routes: [], reason: 'only_sfw' });
+    assert.doesNotMatch(JSON.stringify(session), /边界暂停状态|关系结束状态|冻结关系值/u, '原始保护字段不得进入 UI 投影');
+    assert.doesNotMatch(JSON.stringify(session.relationshipObservation), /100|50|友情值|心动值|欲望值/u);
+
+    narrative.进程.边界暂停状态 = '';
+    narrative.进程.NSFW方向确认可用 = true;
+    read.state.会话.chat_a.NSFW同意 = grantNsfwConsent(read.state.会话.chat_a.NSFW同意, { scopes: ['成人话题', '线上文爱'], turns: 5 });
+    session = createPhoneView(read).messageSessions[0];
+    assert.equal(session.nsfwConsentActive, true);
+    assert.deepEqual(session.nsfwDirectionOptions, ['love', 'consensual_intimacy', 'defer'], '同轮双 50 只显示全部可选方向，绝不自动决胜');
+    assert.equal(session.nsfwDirection, '');
+    assert.equal(session.nsfwRouteEstablished, false);
+    assert.doesNotMatch(JSON.stringify(session), /成人话题|线上文爱|剩余轮数|修订号|玩家私聊工具/u, '共识范围、轮数、来源和修订不得进入普通 UI 投影');
+
+    narrative.进程.NSFW路线锁定 = '爱情';
+    narrative.进程.冻结关系值 = '欲望值';
+    session = createPhoneView(read).messageSessions[0];
+    assert.equal(session.nsfwRouteEstablished, true);
+    assert.deepEqual(session.nsfwDirectionOptions, [], '正文复盘建立路线后不得继续提供改线按钮');
+    assert.deepEqual(session.meetupAccess, { unlocked: true, route: '恋爱', routes: ['恋爱'], reason: 'eligible' });
+
+    narrative.进程.边界暂停状态 = '暂停';
+    session = createPhoneView(read).messageSessions[0];
+    assert.deepEqual({ onlySfw: session.onlySfw, paused: session.paused, ended: session.ended }, { onlySfw: false, paused: true, ended: false });
+    assert.equal(session.canSend, false);
+    assert.equal(session.meetupAccess.reason, 'relationship_paused');
+
+    narrative.进程.边界暂停状态 = '';
+    narrative.进程.关系结束状态 = '深度朋友';
+    narrative.进程.SFW双轨结局已解锁 = true;
+    session = createPhoneView(read).messageSessions[0];
+    assert.deepEqual({ onlySfw: session.onlySfw, paused: session.paused, ended: session.ended }, { onlySfw: false, paused: false, ended: false });
+    assert.equal(session.canSend, true, '深度朋友是结局标签，不等于断联或归档');
+    assert.equal(session.relationshipObservation.summary, '双方已经确认以深度朋友的方式继续相处。');
+
+    narrative.进程.关系结束状态 = '结束联系';
+    session = createPhoneView(read).messageSessions[0];
+    assert.deepEqual({ onlySfw: session.onlySfw, paused: session.paused, ended: session.ended }, { onlySfw: false, paused: false, ended: true });
+    assert.equal(session.canSend, false);
+    assert.equal(session.meetupAccess.reason, 'relationship_ended');
 });
 
 test('private chat view projects per-npc meetup progress without boundary text or malformed records', () => {
@@ -408,16 +500,15 @@ test('service order failure messages explain mode races and invalid bridge resul
 
 
 test('service order projection supports every unified person category in SFW and NSFW while preserving legacy activity history', () => {
-    const personCategories = {
-        girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品',
-    };
+    const sfwCategories = { girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品' };
+    const nsfwCategories = { girl_shuren: '熟人性爱幻想', girl_luren: '陌生约炮邂逅', random_generation: '随机性癖体验' };
     const orders = {};
-    for (const [categoryId, category] of Object.entries(personCategories)) {
+    for (const [categoryId, category] of Object.entries(sfwCategories)) {
         orders[`service_sfw_${categoryId}`] = serviceOrder({
             服务分类: categoryId, 服务主题: `${category}：与林澈的文字协商`,
         });
         orders[`service_nsfw_${categoryId}`] = serviceOrder({
-            内容模式: 'NSFW', 服务分类: categoryId, 服务主题: `${category}：与林澈的文字协商`,
+            内容模式: 'NSFW', 服务分类: categoryId, 服务主题: `${nsfwCategories[categoryId]}：与林澈的文字协商`,
         });
     }
     orders.service_legacy_sfw = serviceOrder();
@@ -426,12 +517,26 @@ test('service order projection supports every unified person category in SFW and
     });
 
     const byId = Object.fromEntries(projectServiceOrderView(serviceState(orders)).map((order) => [order.id, order]));
-    for (const [categoryId, category] of Object.entries(personCategories)) {
+    for (const [categoryId, category] of Object.entries(sfwCategories)) {
         assert.equal(byId[`service_sfw_${categoryId}`].category, category);
-        assert.equal(byId[`service_nsfw_${categoryId}`].category, category);
+        assert.equal(byId[`service_nsfw_${categoryId}`].category, nsfwCategories[categoryId]);
         assert.equal(byId[`service_sfw_${categoryId}`].mode, 'SFW');
         assert.equal(byId[`service_nsfw_${categoryId}`].mode, 'NSFW');
     }
     assert.equal(byId.service_legacy_sfw.category, '咖啡与散步');
     assert.equal(byId.service_legacy_nsfw.category, '成人直白陪伴');
+});
+
+
+test('profile onboarding gate projects only a strict false boolean without exposing raw software state', () => {
+    const missing = createPhoneView(readResult());
+    assert.equal(missing.profileOnboardingRequired, false);
+    const requiredRead = readResult();
+    requiredRead.state.软件.功能开关 = { 玩家已建档: false, 内部开关: 'never-render' };
+    const required = createPhoneView(requiredRead);
+    assert.equal(required.profileOnboardingRequired, true);
+    assert.equal(JSON.stringify(required).includes('内部开关'), false);
+    requiredRead.state.软件.功能开关.玩家已建档 = true;
+    assert.equal(createPhoneView(requiredRead).profileOnboardingRequired, false);
+    assert.equal(createPhoneView({ ok: false, code: 'mvu_get_unavailable' }).profileOnboardingRequired, false);
 });

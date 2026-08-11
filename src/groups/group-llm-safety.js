@@ -15,13 +15,10 @@ const PRIVATE_DATA_PAYLOAD_PATTERN = /(?:隐藏资料|仅好友资料|实际年�
 const PRIVATE_DATA_CONCEPT_PATTERN = /(?:隐藏资料|仅好友资料|实际年龄|私人备注|私密信息|隐私数据)/iu;
 const MINOR_PATTERN = /(?:未成年(?:人)?|未满\s*(?:18|十八)\s*岁?|(?:^|\D)(?:[0-9]|1[0-7])\s*岁(?:\D|$)|\b(?:minor|underage|child)\b|小学生|初中生|高中生|幼女|幼男|萝莉|正太)/iu;
 const COERCION_PATTERN = /(?:强奸|强暴|迷奸|下药|强迫|胁迫|非自愿|未经同意|没有同意|无视(?:对方)?(?:拒绝|边界)|拒绝后仍|\b(?:rape|non[- ]?consensual|without consent|coerc(?:e|ion))\b)/iu;
-const OFFLINE_SEX_CLAIM_PATTERN = /(?:(?:现实(?:中)?|线下|见面后|昨晚|刚才|已经|曾经|真的).{0,24}(?:(?:发生|进行)(?:过)?性(?:行为|关系)|性交|做爱|开房|上床)|(?:(?:发生|进行)(?:过)?性(?:行为|关系)|性交|做爱|开房|上床).{0,24}(?:现实(?:中)?|线下|见面后|已经发生|发生了|做过))/iu;
-const ONLINE_ROLEPLAY_PATTERN = /(?:线上|文爱|文字(?:角色扮演)?|幻想|想象|虚构|角色扮演).{0,28}(?:性行为|性交|做爱|性爱|裸聊|文爱|上床)/iu;
 // 阶段 55: the former SFW explicit-vocabulary clause blocklist is gone. Adult
 // consensual wording is never a rejection reason by itself; the SFW/NSFW tone
 // difference lives only in the mode instruction copy below. Hard, mode-
-// independent bans remain: minors, coercion, private data, technical payloads,
-// and claiming online erotica happened offline.
+// independent bans remain: minors, coercion, private data and technical payloads.
 const SAFETY_RULE_PATTERN = /(?:禁止|不得|严禁|不允许|不能|不可|不要|避免|拒绝|排除|防止|只允许成年人|仅限成年人|must not|never|forbid|prohibit)/iu;
 
 function ownRecord(value) {
@@ -44,7 +41,7 @@ export function normalizeGroupContentMode(value) {
 
 export function groupContentModeInstruction(contentMode) {
     return normalizeGroupContentMode(contentMode) === 'NSFW'
-        ? '当前内容模式为 NSFW。仅限明确成年人、自愿且边界清晰的线上互动；直白成人调情、露骨性话题讨论和露骨线上文爱都可以主动展开。不得把线上文爱声称为现实线下行为已经发生，也不得自动安排或触发现实行动。'
+        ? '当前内容模式为 NSFW。仅限明确成年人、自愿且边界清晰的内容；色情尺度不设上限，可主动、完整描写裸体、器官、自慰、口交、性交、高潮、体液、性玩具、BDSM、多人幻想、性经历、情色角色扮演及其他成人玩法，不强制含蓄、转场或淡出。不得把输入中未提供的玩家现实经历伪造成事实，也不得自动安排或触发现实行动。'
         : '当前内容模式为 SFW。本模式保持日常社交尺度，以自然暧昧和轻度调情为主。';
 }
 
@@ -66,7 +63,6 @@ function hasUnsafePolicyContent(text) {
         if (!clause) continue;
         const safetyRule = clauseIsSafetyRule(clause);
         if (!safetyRule && (PRIVATE_DATA_CONCEPT_PATTERN.test(clause) || MINOR_PATTERN.test(clause) || COERCION_PATTERN.test(clause))) return true;
-        if (!safetyRule && OFFLINE_SEX_CLAIM_PATTERN.test(clause) && !ONLINE_ROLEPLAY_PATTERN.test(clause)) return true;
     }
     return false;
 }

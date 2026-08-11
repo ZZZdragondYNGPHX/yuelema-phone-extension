@@ -6,9 +6,45 @@ import {
     MAX_PRIVATE_CHAT_REPLY_LENGTH,
     MAX_PRIVATE_CHAT_REPLIES_TOTAL_LENGTH,
     normalizePrivateChatResponse,
+    normalizeRealisticPrivateChatResponse,
     projectPrivateChatResponseDiagnostic,
     projectPrivateChatResponseError,
 } from '../private-chat-response.js';
+
+const realisticTiming = Object.freeze({
+    firstDelayMinutes: 10,
+    betweenReplyMinutes: [5],
+    nextProactiveMinutes: 120,
+});
+
+test('拟真回复接受 0-6 条并严格校验五分钟时间计划', () => {
+    const reply = normalizeRealisticPrivateChatResponse({
+        replies: ['刚忙完', '你刚才说到哪了？'],
+        relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+        timing: realisticTiming,
+    }, { contentMode: 'SFW' });
+    assert.deepEqual(reply.timing, realisticTiming);
+    assert.equal(reply.replies.length, 2);
+
+    const silent = normalizeRealisticPrivateChatResponse({
+        replies: [],
+        relationship: {},
+        timing: { firstDelayMinutes: 5, betweenReplyMinutes: [], nextProactiveMinutes: 180 },
+    }, { contentMode: 'SFW' });
+    assert.deepEqual(silent.replies, []);
+
+    assert.throws(() => normalizeRealisticPrivateChatResponse({
+        replies: ['稍后'], relationship: {},
+        timing: { firstDelayMinutes: 7, betweenReplyMinutes: [], nextProactiveMinutes: 120 },
+    }), /private_chat_response_invalid/u);
+});
+
+test('拟真自然沉默不得偷偷推动关系、SFW 阶段或生图', () => {
+    assert.throws(() => normalizeRealisticPrivateChatResponse({
+        replies: [], relationship: { 好感: 1 }, bondAssessment: { kind: 'friendly', intensity: 1, direction: 'increase' },
+        timing: { firstDelayMinutes: 5, betweenReplyMinutes: [], nextProactiveMinutes: 120 },
+    }, { contentMode: 'SFW' }), /private_chat_response_invalid/u);
+});
 
 function response(overrides = {}) {
     return {
@@ -30,6 +66,11 @@ test('accepts replies and returns an independent canonical clone', () => {
         replies: ['今晚方便聊聊吗？', '我刚好有空。'],
         relationship: raw.relationship,
         bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
+        bodyEventReview: 'defer',
+        sfwInsightAssessment: 'none',
+        sfwResolutionAssessment: 'none',
+        nsfwSafetyAssessment: 'none',
+        nsfwConsentAssessment: 'none',
     });
     assert.notStrictEqual(normalized, raw);
     assert.notStrictEqual(normalized.replies, raw.replies);
@@ -40,6 +81,60 @@ test('accepts replies and returns an independent canonical clone', () => {
     assert.deepEqual(normalized.replies, ['今晚方便聊聊吗？', '我刚好有空。']);
     assert.equal(normalized.relationship.好感, 2);
     assert.deepEqual(normalizePrivateChatResponse(normalized), normalized);
+});
+
+test('accepts only the narrow SFW insight and ending vocabularies', () => {
+    const normalized = normalizePrivateChatResponse(response({
+        sfwInsightAssessment: 'active_reveal',
+        sfwResolutionAssessment: 'romance_declined',
+    }), { contentMode: 'SFW' });
+    assert.equal(normalized.sfwInsightAssessment, 'active_reveal');
+    assert.equal(normalized.sfwResolutionAssessment, 'romance_declined');
+    expectCode(() => normalizePrivateChatResponse(response({ sfwInsightAssessment: 'score_60' }), { contentMode: 'SFW' }), 'private_chat_response_relationship_invalid');
+    expectCode(() => normalizePrivateChatResponse(response({ sfwResolutionAssessment: 'romance_confirmed' }), { contentMode: 'NSFW' }), 'private_chat_response_relationship_invalid');
+});
+
+test('accepts only the bounded NSFW safety vocabulary and keeps SFW fail-closed', () => {
+    assert.equal(normalizePrivateChatResponse(response({
+        nsfwSafetyAssessment: 'known_boundary_conflict',
+    }), { contentMode: 'NSFW' }).nsfwSafetyAssessment, 'known_boundary_conflict');
+    expectCode(
+        () => normalizePrivateChatResponse(response({ nsfwSafetyAssessment: 'known_boundary_conflict' }), { contentMode: 'SFW' }),
+        'private_chat_response_relationship_invalid',
+    );
+    expectCode(
+        () => normalizePrivateChatResponse(response({ nsfwSafetyAssessment: { kind: 'privacy_violation' } }), { contentMode: 'NSFW' }),
+        'private_chat_response_relationship_invalid',
+    );
+});
+
+test('C.2 accepts only the bounded consent assessment vocabulary and fail-closes NSFW omissions', () => {
+    for (const value of ['in_scope', 'withdrawn', 'out_of_scope', 'unclear']) {
+        assert.equal(normalizePrivateChatResponse(response({ nsfwConsentAssessment: value }), { contentMode: 'NSFW' }).nsfwConsentAssessment, value);
+    }
+    assert.equal(normalizePrivateChatResponse(response(), { contentMode: 'NSFW' }).nsfwConsentAssessment, 'unclear');
+    assert.equal(normalizePrivateChatResponse(response(), { contentMode: 'SFW' }).nsfwConsentAssessment, 'none');
+    expectCode(
+        () => normalizePrivateChatResponse(response({ nsfwConsentAssessment: 'in_scope' }), { contentMode: 'SFW' }),
+        'private_chat_response_relationship_invalid',
+    );
+    expectCode(
+        () => normalizePrivateChatResponse(response({ nsfwConsentAssessment: { value: 'in_scope' } }), { contentMode: 'NSFW' }),
+        'private_chat_response_relationship_invalid',
+    );
+});
+
+test('allows only the local B.2 body-event review vocabulary', () => {
+    assert.equal(normalizePrivateChatResponse(response({ bodyEventReview: 'confirm' })).bodyEventReview, 'confirm');
+    assert.equal(normalizePrivateChatResponse(response({ bodyEventReview: 'decline' })).bodyEventReview, 'decline');
+    expectCode(
+        () => normalizePrivateChatResponse(response({ bodyEventReview: 'body:meetup_one:1' })),
+        'private_chat_response_relationship_invalid',
+    );
+    expectCode(
+        () => normalizePrivateChatResponse(response({ bodyEventReview: { review: 'confirm' } })),
+        'private_chat_response_relationship_invalid',
+    );
 });
 
 

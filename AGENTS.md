@@ -1,9 +1,16 @@
 # 约了吗小手机 - Agent Instructions
 
-## Release gate (must read before Git work)
+## Dual-remote release gate (must read before Git work)
 
-`main` is the **only stable user-facing branch**. Do not commit directly to it, push it, tag it, or create a public GitHub Release from it unless the user explicitly confirms in the current conversation that the named review candidate is approved and may be promoted.
+This repository has two fixed remotes:
 
-Every user-impacting change starts from `main` on `release/v<next-version>` (for example `release/v1.0.1`). That branch is the user review target and must be pushed to `origin` before any request to promote it. Read `RELEASE_REVIEW.md` for the required candidate, verification, review, and promotion sequence.
+- `origin` — private `yuelema-phone-extension-dev`; its `main` is the **Dev** integration line.
+- `public` — public `yuelema-phone-extension`; `release/vX.Y.Z` is the **Beta** review line and `main` is the only **Stable** user-facing line.
 
-A local or remote release branch, tests, a GitHub draft, and a push are **not** approval and are **not** SillyTavern runtime acceptance. Preserve the controlled MVU/security contracts and record the exact candidate SHA, test results, user decision, and remaining real-host checks in `../实现进度与交接.md`.
+For normal work, commit and push only to `origin`. Never mirror `origin/main` to `public` automatically.
+
+Only when the user explicitly says “发布到公开仓库” may a verified, exact `origin` commit be pushed to `public/release/vX.Y.Z`. That creates or updates the public Beta candidate only: do **not** push `public/main`, create a version tag, or create a formal GitHub Release. Feedback fixes continue through `origin` first, then update the same public release branch.
+
+Only after the user explicitly approves the named public Beta SHA in the current conversation (“审核通过”, “正式发版”, or an equivalent instruction) may that **same** commit be fast-forwarded to `public/main`, tagged `vX.Y.Z`, and published as a formal GitHub Release. A local/remote candidate branch, tests, a GitHub draft, and a push are **not** approval and are **not** SillyTavern runtime acceptance.
+
+Read `RELEASE_REVIEW.md` for the exact verification and promotion sequence. Preserve the controlled MVU/security contracts and record the private Dev SHA, public Beta branch/SHA, user decision, and remaining real-host checks in `../实现进度与交接.md`.

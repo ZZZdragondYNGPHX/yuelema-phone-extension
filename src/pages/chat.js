@@ -15,6 +15,7 @@ const CHAT_TOOL_LONG_PRESS_MS = 460;
 const CHAT_TIME_DIVIDER_GAP_MS = 10 * 60 * 1000;
 // desktop 上下文栏折叠偏好：纯 UI 状态，只进浏览器本地存储，绝不进 MVU/提示词/导出。
 const CHAT_CONTEXT_COLLAPSED_STORAGE_KEY = 'yuelema.chat-context-collapsed/v1';
+const RELATIONSHIP_OBSERVATION_COLLAPSED_STORAGE_KEY = 'yuelema.relationship-observation-collapsed/v1';
 
 function chatContextStorageOrNull() {
     try {
@@ -29,6 +30,14 @@ function readChatContextCollapsed() {
 function persistChatContextCollapsed(collapsed) {
     try { chatContextStorageOrNull()?.setItem(CHAT_CONTEXT_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0'); }
     catch { /* 本地偏好写入失败时静默降级为本次会话内存行为 */ }
+}
+function readRelationshipObservationCollapsed() {
+    try { return chatContextStorageOrNull()?.getItem(RELATIONSHIP_OBSERVATION_COLLAPSED_STORAGE_KEY) === '1'; }
+    catch { return false; }
+}
+function persistRelationshipObservationCollapsed(collapsed) {
+    try { chatContextStorageOrNull()?.setItem(RELATIONSHIP_OBSERVATION_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0'); }
+    catch { /* 浏览器本地偏好不可用时只影响本次渲染 */ }
 }
 
 // 控制台脱敏器会把 ≥32 字符的连续 token 视作疑似凭据并替换为 [已脱敏]；
@@ -170,6 +179,54 @@ export function createChatPage(ctx) {
         ctx.renderPage();
         return true;
     }
+    function buildRealisticChatSetting(session) {
+        const realistic = session.realisticChat ?? { supported: false, enabled: false };
+        const pending = Boolean(ctx.actionBridge.isPending?.('private_chat_realistic_toggle', session.sessionUid));
+        const supported = realistic.supported === true && typeof ctx.actionBridge.setRealisticPrivateChatMode === 'function';
+        const wrapper = element('section', { className: 'yl-private-chat-realistic-setting', ariaLabel: '拟真聊天设置' });
+        const label = element('label', { className: 'yl-private-chat-realistic-label' });
+        const copy = element('span', { className: 'yl-private-chat-realistic-copy' });
+        append(copy, [
+            element('strong', { text: '拟真聊天' }),
+            element('small', { text: '允许双方连发、错开话题与主动来信；AI 消息到小手机时间后才出现。' }),
+        ]);
+        const toggle = element('input', { type: 'checkbox', checked: realistic.enabled === true, disabled: pending || !supported });
+        toggle.setAttribute('role', 'switch');
+        toggle.setAttribute('aria-label', realistic.enabled ? '关闭拟真聊天' : '开启拟真聊天');
+        listen(toggle, toggle, 'change', () => { void setRealisticChatMode(session, toggle.checked); }, ctx.abortController.signal);
+        append(label, [copy, toggle]);
+        wrapper.appendChild(label);
+        const status = realistic.enabled
+            ? realistic.pendingCount > 0 ? `已开启 · ${realistic.pendingCount} 条消息等待按时送达`
+                : realistic.replyDueAt ? '已开启 · 正在等待你是否继续补充'
+                    : '已开启 · 对方可能在合适的时候主动来信'
+            : supported ? '已关闭 · 使用原来的一问一答即时逻辑' : '当前聊天数据需完成安全迁移后才能开启';
+        wrapper.appendChild(element('p', { className: 'yl-private-chat-realistic-status', text: status }));
+        return wrapper;
+    }
+    async function setRealisticChatMode(session, enabled) {
+        if (typeof ctx.actionBridge.setRealisticPrivateChatMode !== 'function'
+            || ctx.actionBridge.isPending?.('private_chat_realistic_toggle', session.sessionUid)) return;
+        const activity = ctx.operationActivity.start('拟真聊天设置', enabled ? '正在开启拟真聊天。' : '正在恢复原聊天逻辑。');
+        let result;
+        try {
+            result = await ctx.actionBridge.setRealisticPrivateChatMode({
+                sessionUid: session.sessionUid, npcUid: session.npcUid, enabled,
+            });
+        } catch { result = { ok: false, code: 'private_chat_realistic_toggle_failed' }; }
+        if (result?.ok) {
+            ctx.operationActivity.succeed(activity, enabled ? '拟真聊天已开启。' : '已恢复原聊天逻辑。');
+            ctx.setFeedback(enabled
+                ? '拟真聊天已开启：你可以连续发送，对方消息会按小手机时间送达。'
+                : '已恢复原来的一问一答即时逻辑；未送达的拟真消息已取消。');
+        } else {
+            ctx.operationActivity.fail(activity, '拟真聊天设置未保存。', {
+                detail: buildChatFailureDetail({ operation: '拟真聊天设置', kind: 'private_chat', sessionUid: session.sessionUid, result }),
+            });
+            ctx.setFeedback(describeActionFailure(result) || '拟真聊天设置未保存。');
+        }
+        ctx.refreshState();
+    }
     /**
      * 头部（§7.2.6）：返回键在壳层页头；这里是 头像40 + 昵称 + presence 副行 + 「…」菜单。
      * 生图设置 / 自动生图开关 / 聊天总结 / 清空记录 / 删除角色 全部收进菜单。
@@ -204,6 +261,7 @@ export function createChatPage(ctx) {
         }, ctx.abortController.signal);
         actions.appendChild(more);
         const menu = element('div', { className: 'yl-private-chat-more-menu', ariaLabel: '私聊更多操作', hidden: !moreOpen });
+        menu.appendChild(buildRealisticChatSetting(session));
         // 生图设置钮 + 自动生图开关沿用壳层受控控件（aria 与持久化行为不变），仅改挂载位置。
         menu.appendChild(ctx.buildConversationImageControls({ kind: 'private', conversationId: session.sessionUid }));
         const summary = element('button', { className: 'yl-private-chat-menu-item', type: 'button', text: '聊天总结', ariaLabel: '查看聊天总结', disabled: !ctx.chatSummaryEnabled() });
@@ -308,6 +366,8 @@ export function createChatPage(ctx) {
         ctx.activeMessageSessionUid = '';
         ctx.activeChatToolsSessionUid = '';
         ctx.activeMeetupSessionUid = '';
+        ctx.activeNsfwConsentSessionUid = '';
+        ctx.activeNsfwRelationshipSessionUid = '';
         ctx.chatMoreMenuSessionUid = '';
         ctx.chatConfirmationSessionUid = '';
         ctx.chatConfirmationKind = '';
@@ -324,7 +384,12 @@ export function createChatPage(ctx) {
         const text = String(raw ?? '').trim();
         const full = /^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?(?:[ T](\d{1,2}):(\d{2}))?/u.exec(text);
         if (full) {
-            const nowDate = new Date();
+            let nowDate = new Date();
+            try {
+                const phoneNow = ctx.phoneClock?.nowText?.();
+                const phoneMatch = /^(\d{4})-(\d{2})-(\d{2}) /u.exec(phoneNow ?? '');
+                if (phoneMatch) nowDate = new Date(Number(phoneMatch[1]), Number(phoneMatch[2]) - 1, Number(phoneMatch[3]));
+            } catch { /* fall back to real local date for legacy/no-clock hosts */ }
             const sameDay = nowDate.getFullYear() === Number(full[1]) && nowDate.getMonth() + 1 === Number(full[2]) && nowDate.getDate() === Number(full[3]);
             const clock = full[4] ? `${full[4].padStart(2, '0')}:${full[5]}` : '';
             if (sameDay) return clock ? `今天 ${clock}` : '今天';
@@ -635,10 +700,122 @@ export function createChatPage(ctx) {
         if (!session) return ctx.buildEmptyPlaceholder('这个私聊会话暂时不可见。请返回消息列表后重试。');
         return buildConversationSummaryDetail(session, { actionsEnabled: ctx.chatSummaryEnabled() });
     }
+    function buildNsfwConsentPanel(session) {
+        const panel = element('section', { className: 'yl-settings-section yl-chat-consent-panel' });
+        panel.appendChild(element('p', {
+            className: 'yl-phone-page-description',
+            text: '只保存下列枚举范围和有限轮数，不保存原始露骨文本。每次发送前仍需单独勾选“本轮继续”。',
+        }));
+        const scopeInputs = [];
+        for (const [value, labelText] of [['成人话题', '成人话题讨论'], ['露骨调情', '露骨调情'], ['线上文爱', '全尺度色情互动']]) {
+            const id = `yl-nsfw-consent-${session.sessionUid}-${scopeInputs.length}`;
+            const input = element('input', { id, type: 'checkbox', value });
+            const label = element('label', { className: 'yl-settings-check-row', htmlFor: id });
+            append(label, [input, element('span', { text: labelText })]);
+            panel.appendChild(label);
+            scopeInputs.push(input);
+        }
+        const durationLabel = element('label', { className: 'yl-settings-field' });
+        durationLabel.appendChild(element('span', { text: '有效轮数' }));
+        const duration = element('select', { className: 'yl-settings-control', ariaLabel: '选择成人话题共识有效轮数' });
+        for (const turns of [1, 3, 5]) duration.appendChild(element('option', { value: String(turns), text: `${turns} 轮` }));
+        duration.value = '1';
+        durationLabel.appendChild(duration);
+        panel.appendChild(durationLabel);
+        const actions = element('div', { className: 'yl-settings-actions' });
+        const save = element('button', { className: 'yl-settings-button', type: 'button', text: '确认并启用' });
+        listen(save, save, 'click', () => {
+            const scopes = scopeInputs.filter((input) => input.checked).map((input) => input.value);
+            if (!scopes.length) { ctx.setFeedback('请至少选择一项允许范围。'); return; }
+            void runNsfwConsentAction(session, 'grant', { scopes, turns: Number(duration.value) });
+        }, ctx.abortController.signal);
+        actions.appendChild(save);
+        if (session.nsfwConsentActive) {
+            const revoke = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '立即撤回' });
+            listen(revoke, revoke, 'click', () => { void runNsfwConsentAction(session, 'revoke'); }, ctx.abortController.signal);
+            actions.appendChild(revoke);
+        }
+        panel.appendChild(actions);
+        return panel;
+    }
+    function buildNsfwRelationshipPanel(session) {
+        const panel = element('section', { className: 'yl-settings-section yl-chat-relationship-panel' });
+        panel.appendChild(element('p', {
+            className: 'yl-phone-page-description',
+            text: '暂停、归档和结束联系都会保留历史与关系记录，不删除角色资料。删除角色仍需回到会话菜单单独确认。',
+        }));
+        const pending = Boolean(ctx.actionBridge.isPending?.('private_chat_nsfw_relationship', session.sessionUid));
+        const canDegrade = session.nsfwRouteEstablished || ['love', 'consensual_intimacy'].includes(session.nsfwDirection);
+        const actions = element('div', { className: 'yl-settings-actions' });
+        if (ctx.currentView?.mode === 'NSFW') {
+            const degrade = element('button', {
+                className: 'yl-settings-button yl-settings-button-secondary', type: 'button',
+                text: '确认降级为朋友（仅 SFW）', disabled: pending || !canDegrade,
+            });
+            listen(degrade, degrade, 'click', () => { void runNsfwRelationshipAction(session, 'degrade_to_friends'); }, ctx.abortController.signal);
+            actions.appendChild(degrade);
+        }
+        const pause = element('button', {
+            className: 'yl-settings-button yl-settings-button-secondary', type: 'button',
+            text: '确认暂停这段关系', disabled: pending || !session.relationshipObservation?.canPause,
+        });
+        listen(pause, pause, 'click', () => { void runNsfwRelationshipAction(session, 'pause_contact'); }, ctx.abortController.signal);
+        const archive = element('button', {
+            className: 'yl-settings-button yl-chat-delete-confirm', type: 'button',
+            text: '确认归档为只读', disabled: pending || !session.relationshipObservation?.canArchive,
+        });
+        listen(archive, archive, 'click', () => { void runNsfwRelationshipAction(session, 'archive_contact'); }, ctx.abortController.signal);
+        const end = element('button', {
+            className: 'yl-settings-button yl-chat-delete-confirm', type: 'button',
+            text: '确认结束联系', disabled: pending,
+        });
+        listen(end, end, 'click', () => { void runNsfwRelationshipAction(session, 'end_contact'); }, ctx.abortController.signal);
+        append(actions, [pause, archive, end]);
+        panel.appendChild(actions);
+        return panel;
+    }
+
+    function buildRelationshipObservation(session) {
+        const observation = session.relationshipObservation;
+        if (!observation) return null;
+        const collapsed = readRelationshipObservationCollapsed();
+        const panel = element('section', {
+            className: collapsed ? 'yl-relationship-observation is-collapsed' : 'yl-relationship-observation',
+            ariaLabel: '关系观察',
+        });
+        const head = element('div', { className: 'yl-relationship-observation-head' });
+        head.appendChild(element('strong', { text: '关系观察' }));
+        const toggle = element('button', {
+            className: 'yl-settings-button yl-settings-button-secondary', type: 'button',
+            text: collapsed ? '查看' : '收起', ariaLabel: collapsed ? '展开关系观察' : '收起关系观察',
+        });
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        listen(toggle, toggle, 'click', () => {
+            persistRelationshipObservationCollapsed(!collapsed);
+            ctx.renderPage();
+        }, ctx.abortController.signal);
+        head.appendChild(toggle);
+        panel.appendChild(head);
+        if (!collapsed) {
+            panel.appendChild(element('p', { className: 'yl-phone-page-description', text: observation.summary }));
+            if (observation.latest) panel.appendChild(element('p', { className: 'yl-system-pill', text: observation.latest }));
+            panel.appendChild(element('small', { text: '这里只显示经过收窄的阶段性观察。' }));
+        }
+        return panel;
+    }
     /** 工具面板内容（§7.2.8）：图标网格，约定面基未达条件置灰并注明。 */
     function buildChatToolMenu(session, { meetupSupported, meetupUnlocked }) {
         const menu = element('div', { className: 'yl-chat-tool-menu', ariaLabel: '私聊发送工具栏' });
-        const meetupLabel = !meetupSupported ? '面基功能未就绪' : meetupUnlocked ? `约定面基 · ${session.meetupAccess.route}路线` : '关系未达面基条件';
+        const meetupReasonLabels = {
+            relationship_paused: '关系已暂停，不能面基',
+            relationship_ended: '关系已结束，不能面基',
+            only_sfw: '仅 SFW，不可成人面基',
+            nsfw_consent_required: '请先建立本对象的成人话题共识',
+            nsfw_direction_unconfirmed: '等待双方确认成人路线',
+        };
+        const meetupLabel = !meetupSupported ? '面基功能未就绪'
+            : meetupUnlocked ? `约定面基 · ${session.meetupAccess.route}路线`
+                : meetupReasonLabels[session.meetupAccess?.reason] || '关系未达面基条件';
         const meetupTool = element('button', {
             className: 'yl-chat-tool-button', type: 'button', disabled: !meetupUnlocked,
             ariaLabel: meetupUnlocked ? `打开约定面基，${session.meetupAccess.route}路线` : meetupLabel,
@@ -671,7 +848,79 @@ export function createChatPage(ctx) {
             ctx.activeChatToolsSessionUid = '';
             ctx.setActivePage('settings_image_generation');
         }, ctx.abortController.signal);
-        append(menu, [meetupTool, summaryTool, imageTool]);
+        const tools = [meetupTool, summaryTool, imageTool];
+        if (ctx.currentView?.mode === 'NSFW' && typeof ctx.actionBridge.runPrivateChatNsfwSafety === 'function') {
+            const safetyPending = Boolean(ctx.actionBridge.isPending?.('private_chat_nsfw_safety', session.sessionUid));
+            const action = session.onlySfw ? 'resume' : 'pause';
+            const safetyLabel = session.onlySfw ? '恢复成人话题' : '仅 SFW · 暂停成人话题';
+            const safetyTool = element('button', {
+                className: 'yl-chat-tool-button', type: 'button',
+                disabled: safetyPending || session.paused || session.ended,
+                ariaLabel: safetyPending ? '正在更新成人话题安全状态' : safetyLabel,
+            });
+            safetyTool.appendChild(createUiIcon(ctx.documentRef, 'privacy', { className: 'yl-chat-tool-svg', size: 22 }));
+            safetyTool.appendChild(element('span', { text: safetyPending ? '正在更新…' : safetyLabel }));
+            listen(safetyTool, safetyTool, 'click', () => {
+                if (safetyPending || session.paused || session.ended) return;
+                void runNsfwSafetyAction(session, action);
+            }, ctx.abortController.signal);
+            tools.push(safetyTool);
+        }
+        if (ctx.currentView?.mode === 'NSFW' && !session.onlySfw
+            && typeof ctx.actionBridge.runPrivateChatNsfwConsent === 'function') {
+            const consentPending = Boolean(ctx.actionBridge.isPending?.('private_chat_nsfw_consent', session.sessionUid));
+            const consentTool = element('button', {
+                className: 'yl-chat-tool-button', type: 'button',
+                disabled: consentPending || session.paused || session.ended,
+                ariaLabel: session.nsfwConsentActive ? '调整或撤回成人话题共识' : '建立成人话题共识',
+            });
+            consentTool.appendChild(createUiIcon(ctx.documentRef, 'privacy', { className: 'yl-chat-tool-svg', size: 22 }));
+            consentTool.appendChild(element('span', { text: consentPending ? '正在更新…' : session.nsfwConsentActive ? '调整成人共识' : '建立成人共识' }));
+            listen(consentTool, consentTool, 'click', () => {
+                if (consentPending || session.paused || session.ended) return;
+                ctx.activeChatToolsSessionUid = '';
+                ctx.activeNsfwConsentSessionUid = session.sessionUid;
+                ctx.renderPage();
+            }, ctx.abortController.signal);
+            tools.push(consentTool);
+        }
+        if (ctx.currentView?.mode === 'NSFW' && session.nsfwConsentActive
+            && session.nsfwDirectionAvailable && typeof ctx.actionBridge.runPrivateChatNsfwDirection === 'function') {
+            const directionLabels = {
+                love: '选择爱情方向', consensual_intimacy: '选择共识亲密', defer: '暂不定义',
+            };
+            for (const direction of session.nsfwDirectionOptions) {
+                const selected = session.nsfwDirection === direction;
+                const button = element('button', {
+                    className: 'yl-chat-tool-button', type: 'button', disabled: selected,
+                    ariaLabel: selected ? `已${directionLabels[direction]}` : directionLabels[direction],
+                });
+                button.appendChild(createUiIcon(ctx.documentRef, 'hearts', { className: 'yl-chat-tool-svg', size: 22 }));
+                button.appendChild(element('span', { text: selected ? `已${directionLabels[direction]}` : directionLabels[direction] }));
+                listen(button, button, 'click', () => {
+                    if (selected) return;
+                    void runNsfwDirectionAction(session, direction);
+                }, ctx.abortController.signal);
+                tools.push(button);
+            }
+        }
+        if (typeof ctx.actionBridge.runPrivateChatNsfwRelationshipAction === 'function') {
+            const relationshipTool = element('button', {
+                className: 'yl-chat-tool-button', type: 'button',
+                disabled: session.paused || session.ended,
+                ariaLabel: ctx.currentView?.mode === 'NSFW' ? '打开成人关系降级或结束操作' : '打开关系暂停、归档或结束操作',
+            });
+            relationshipTool.appendChild(createUiIcon(ctx.documentRef, 'privacy', { className: 'yl-chat-tool-svg', size: 22 }));
+            relationshipTool.appendChild(element('span', { text: '关系管理' }));
+            listen(relationshipTool, relationshipTool, 'click', () => {
+                if (session.paused || session.ended) return;
+                ctx.activeChatToolsSessionUid = '';
+                ctx.activeNsfwRelationshipSessionUid = session.sessionUid;
+                ctx.renderPage();
+            }, ctx.abortController.signal);
+            tools.push(relationshipTool);
+        }
+        append(menu, tools);
         return menu;
     }
     function buildConversationPanel(session) {
@@ -680,34 +929,60 @@ export function createChatPage(ctx) {
         if (ctx.chatConfirmationSessionUid === session.sessionUid) panel.appendChild(buildPrivateChatConfirmation(session));
         const summaryToastElement = buildSummaryToast(session);
         if (summaryToastElement) panel.appendChild(summaryToastElement);
+        if (session.onlySfw) panel.appendChild(buildSystemPill('当前关系仅进行 SFW 互动；正常友情聊天不受影响，成人话题与 NSFW 面基已暂停。'));
+        if (ctx.currentView?.mode === 'NSFW' && !session.onlySfw) {
+            panel.appendChild(buildSystemPill(session.nsfwConsentActive
+                ? '本对象的成人话题共识已启用；每轮发送前仍需单独确认。'
+                : '当前没有有效的成人话题共识；可在聊天工具中按范围建立。'));
+            const directionCopy = session.nsfwDirection === 'love' ? '已明确选择爱情探索方向。'
+                : session.nsfwDirection === 'consensual_intimacy' ? '已明确选择共识亲密方向。'
+                    : session.nsfwDirection === 'defer' ? '当前选择暂不定义关系方向。' : '';
+            if (directionCopy) panel.appendChild(buildSystemPill(directionCopy));
+        }
+        const relationshipObservation = buildRelationshipObservation(session);
+        if (relationshipObservation) panel.appendChild(relationshipObservation);
         const transcript = buildMessageTimeline(session);
         // 本地已读水位推进：进入/停留在会话即视为读到当前全部可见消息（纯 UI 状态）。
         ctx.messageReadStore?.markRead?.(session.sessionUid, session.messages.length);
-        const pending = Boolean(ctx.actionBridge.isPending?.('private_chat', session.sessionUid));
-        if (pending) transcript.appendChild(buildTypingIndicator(session));
+        const realisticEnabled = session.realisticChat?.enabled === true;
+        const pendingKind = realisticEnabled ? 'private_chat_realistic_send' : 'private_chat';
+        const pending = Boolean(ctx.actionBridge.isPending?.(pendingKind, session.sessionUid));
+        if (pending && !realisticEnabled) transcript.appendChild(buildTypingIndicator(session));
         panel.appendChild(buildMessageTimelineShell(session, transcript));
         if (!session.canSend) {
             // §7.2.11 只读态：禁用输入条 + 状态说明 pill。
-            panel.appendChild(buildSystemPill(session.status === '已拉黑' ? '对方已将你拉黑，无法继续发送消息。' : '该会话当前为只读状态。'));
+            const readonlyText = session.ended ? '当前关系已经结束，私聊仅供查看。'
+                : session.paused ? '当前关系已暂停、拉黑或归档，私聊仅供查看。'
+                    : session.status === '已拉黑' ? '对方已将你拉黑，无法继续发送消息。' : '该会话当前为只读状态。';
+            panel.appendChild(buildSystemPill(readonlyText));
             const composer = element('div', { className: 'yl-chat-composer is-readonly' });
             const input = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 2, placeholder: session.status === '已拉黑' ? '对方已将你拉黑，无法继续发送消息。' : '该会话当前为只读状态。', ariaLabel: '私聊消息输入已禁用', disabled: true });
             const send = element('button', { className: 'yl-chat-send-button', type: 'button', text: '不可发送', ariaLabel: '发送消息已禁用', disabled: true });
-            append(composer, [input, send]); panel.appendChild(composer);
+            append(composer, [input, send]);
+            if (session.relationshipObservation?.canResume && typeof ctx.actionBridge.runPrivateChatNsfwRelationshipAction === 'function') {
+                const resume = element('button', { className: 'yl-settings-button', type: 'button', text: '恢复这段关系' });
+                listen(resume, resume, 'click', () => { void runNsfwRelationshipAction(session, 'resume_contact'); }, ctx.abortController.signal);
+                composer.appendChild(resume);
+            }
+            panel.appendChild(composer);
             return panel;
         }
-        if (typeof ctx.actionBridge.runPrivateChat !== 'function') {
+        const sendSupported = realisticEnabled
+            ? typeof ctx.actionBridge.sendRealisticPrivateChatMessage === 'function'
+            : typeof ctx.actionBridge.runPrivateChat === 'function';
+        if (!sendSupported) {
             panel.appendChild(element('div', { className: 'yl-phone-placeholder', text: '私聊发送尚未就绪。' }));
             return panel;
         }
         const composer = element('div', { className: pending ? 'yl-chat-composer is-pending' : 'yl-chat-composer' });
         const input = element('textarea', {
             className: 'yl-settings-control yl-settings-textarea', rows: 2, maxLength: 600,
-            placeholder: '输入消息…', value: ctx.chatDrafts.get(session.sessionUid) ?? '', disabled: pending,
+            placeholder: realisticEnabled ? '输入消息…（可以连续发送）' : '输入消息…', value: ctx.chatDrafts.get(session.sessionUid) ?? '', disabled: pending,
             ariaLabel: '输入私聊消息',
         });
         const send = element('button', {
             className: 'yl-chat-send-button', type: 'button', disabled: pending,
-            ariaLabel: pending ? '正在生成私聊回复' : '发送消息',
+            ariaLabel: pending ? '正在发送私聊消息' : '发送消息',
         });
         const sendGlyph = pending
             ? element('span', { className: 'yl-chat-send-pending', text: '···' })
@@ -716,15 +991,18 @@ export function createChatPage(ctx) {
         send.appendChild(sendGlyph);
         const meetupSupported = typeof ctx.actionBridge.runPrivateChatMeetupHandoff === 'function' || typeof ctx.actionBridge.runMeetupHandoff === 'function';
         const meetupUnlocked = meetupSupported && session.meetupAccess?.unlocked === true;
+        const requiresTurnConsent = ctx.currentView?.mode === 'NSFW' && !session.onlySfw;
         const toolsOpen = ctx.activeChatToolsSessionUid === session.sessionUid;
         // Disclosure：+ 按钮 / 右键 / 长按展开同一工具面板，不宣称 role=menu。
         send.setAttribute('aria-expanded', String(toolsOpen));
         send.setAttribute('title', '左键发送，右键打开工具栏');
         const updateSendState = () => {
             const empty = !String(input.value ?? '').trim();
-            send.disabled = pending || empty;
+            const consentMissing = requiresTurnConsent
+                && (!session.nsfwConsentActive || !ctx.nsfwTurnConsentSessions?.has?.(session.sessionUid));
+            send.disabled = pending || empty || consentMissing;
             send.classList.toggle('is-empty', empty && !pending);
-            send.setAttribute('aria-disabled', String(pending || empty));
+            send.setAttribute('aria-disabled', String(pending || empty || consentMissing));
         };
         updateSendState();
         listen(input, input, 'input', () => { ctx.chatDrafts.set(session.sessionUid, input.value); updateSendState(); }, ctx.abortController.signal);
@@ -796,6 +1074,21 @@ export function createChatPage(ctx) {
         const controls = element('div', { className: 'yl-chat-composer-controls' });
         controls.appendChild(send);
         append(composer, [plusButton, input, controls]);
+        if (requiresTurnConsent) {
+            const consentId = `yl-nsfw-turn-consent-${session.sessionUid}`;
+            const checkbox = element('input', {
+                id: consentId, type: 'checkbox', checked: ctx.nsfwTurnConsentSessions?.has?.(session.sessionUid) === true,
+                disabled: pending || !session.nsfwConsentActive,
+            });
+            const label = element('label', { className: 'yl-chat-turn-consent', htmlFor: consentId });
+            append(label, [checkbox, element('span', { text: session.nsfwConsentActive ? '本轮继续已选范围（发送后自动取消）' : '请先在工具中建立成人话题共识' })]);
+            listen(checkbox, checkbox, 'change', () => {
+                if (checkbox.checked) ctx.nsfwTurnConsentSessions?.add?.(session.sessionUid);
+                else ctx.nsfwTurnConsentSessions?.delete?.(session.sessionUid);
+                updateSendState();
+            }, ctx.abortController.signal);
+            composer.appendChild(label);
+        }
         // 提示行只在首次使用出现，3 秒后 CSS 淡出，不常驻（§7.2.7）。
         const readStore = ctx.messageReadStore ?? null;
         if (composerHintVisibleThisVisit || !readStore || !readStore.hasSeenComposerHint()) {
@@ -824,6 +1117,26 @@ export function createChatPage(ctx) {
             panel.appendChild(meetupSheet.root);
             meetupSheet.open();
         }
+        if (ctx.activeNsfwConsentSessionUid === session.sessionUid) {
+            const consentSheet = createBottomSheet({
+                documentRef: ctx.documentRef,
+                title: '成人话题共识',
+                content: buildNsfwConsentPanel(session),
+                onRequestClose: () => { ctx.activeNsfwConsentSessionUid = ''; ctx.renderPage(); },
+            });
+            panel.appendChild(consentSheet.root);
+            consentSheet.open();
+        }
+        if (ctx.activeNsfwRelationshipSessionUid === session.sessionUid) {
+            const relationshipSheet = createBottomSheet({
+                documentRef: ctx.documentRef,
+                title: '关系管理',
+                content: buildNsfwRelationshipPanel(session),
+                onRequestClose: () => { ctx.activeNsfwRelationshipSessionUid = ''; ctx.renderPage(); },
+            });
+            panel.appendChild(relationshipSheet.root);
+            relationshipSheet.open();
+        }
         return panel;
     }
     async function runPrivateChat(session) {
@@ -832,19 +1145,33 @@ export function createChatPage(ctx) {
             ctx.setFeedback('请先输入想说的话。');
             return;
         }
-        if (typeof ctx.actionBridge.runPrivateChat !== 'function' || ctx.actionBridge.isPending?.('private_chat', session.sessionUid)) return;
+        const requiresTurnConsent = ctx.currentView?.mode === 'NSFW' && !session.onlySfw;
+        const turnConsentConfirmed = ctx.nsfwTurnConsentSessions?.has?.(session.sessionUid) === true;
+        if (requiresTurnConsent && !session.nsfwConsentActive) {
+            ctx.setFeedback('请先在聊天工具中建立本对象的成人话题共识。');
+            return;
+        }
+        if (requiresTurnConsent && !turnConsentConfirmed) {
+            ctx.setFeedback('本轮未确认继续成人话题；请先勾选输入框下方的本轮确认。');
+            return;
+        }
+        const realisticEnabled = session.realisticChat?.enabled === true;
+        const pendingKind = realisticEnabled ? 'private_chat_realistic_send' : 'private_chat';
+        const runner = realisticEnabled ? ctx.actionBridge.sendRealisticPrivateChatMessage : ctx.actionBridge.runPrivateChat;
+        if (typeof runner !== 'function' || ctx.actionBridge.isPending?.(pendingKind, session.sessionUid)) return;
         const requestGeneration = ++ctx.privateChatRequestGeneration;
         const isStillVisible = () => ctx.open
             && ctx.activePage === 'private_chat'
             && ctx.activeMessageSessionUid === session.sessionUid
             && ctx.privateChatRequestGeneration === requestGeneration;
-        const activityHandle = ctx.operationActivity.start('私聊回复', '正在生成私聊回复……');
+        const activityHandle = ctx.operationActivity.start(realisticEnabled ? '私聊发送' : '私聊回复', realisticEnabled ? '正在发送消息……' : '正在生成私聊回复……');
         // 发送与回复完成都是明确的“跟随最新消息”意图，不依赖旧容器恰好在
         // 布局采样时仍报告接近底部；真实 WebView 即使先塌缩到 0 也会被拉回末尾。
         ctx.requestPrivateChatScrollToBottom?.(session.sessionUid);
+        if (requiresTurnConsent) ctx.nsfwTurnConsentSessions?.delete?.(session.sessionUid);
         let bridgeError = null;
         let request;
-        try { request = ctx.actionBridge.runPrivateChat({ sessionUid: session.sessionUid, npcUid: session.npcUid, playerMessage }); }
+        try { request = runner({ sessionUid: session.sessionUid, npcUid: session.npcUid, playerMessage, turnConsentConfirmed }); }
         catch (error) { bridgeError = error; request = Promise.resolve({ ok: false }); }
         // The bridge marks the exact session pending synchronously before its first await.
         // Re-rendering now gives the composer an inline, non-blocking reply state.
@@ -853,17 +1180,17 @@ export function createChatPage(ctx) {
         try { result = await request; }
         catch (error) { bridgeError = error; result = { ok: false }; }
         if (result?.ok) {
-            consumePrivateChatDiagnostics('private_chat', session.sessionUid);
-            ctx.operationActivity.succeed(activityHandle, '私聊回复已完成。');
+            if (!realisticEnabled) consumePrivateChatDiagnostics('private_chat', session.sessionUid);
+            ctx.operationActivity.succeed(activityHandle, realisticEnabled ? '消息已发出。' : '私聊回复已完成。');
         } else if (result?.code === 'ui_action_pending') {
             ctx.operationActivity.dismiss(activityHandle, '相同会话的发送正在进行，本次请求已忽略。');
         } else {
-            let detail = buildChatFailureDetail({ operation: '私聊回复', kind: 'private_chat', sessionUid: session.sessionUid, result });
+            let detail = buildChatFailureDetail({ operation: realisticEnabled ? '私聊发送' : '私聊回复', kind: 'private_chat', sessionUid: session.sessionUid, result });
             if (bridgeError) {
                 const bridgeDetail = buildErrorDetail(bridgeError, { operation: '私聊回复', stage: '桥接调用' });
                 if (bridgeDetail) detail = detail ? `${detail}\n\n${bridgeDetail}` : bridgeDetail;
             }
-            ctx.operationActivity.fail(activityHandle, '私聊回复未完成。', { detail });
+            ctx.operationActivity.fail(activityHandle, realisticEnabled ? '私聊消息未发出。' : '私聊回复未完成。', { detail });
         }
         if (result?.ok) {
             ctx.chatDrafts.delete(session.sessionUid);
@@ -874,13 +1201,85 @@ export function createChatPage(ctx) {
             }
         } else if (isStillVisible()) {
             const message = result?.message || describeActionFailure(result);
-            ctx.setFeedback(message || '私聊回复未生成，请稍后重试。');
+            ctx.setFeedback(message || (realisticEnabled ? '消息未发出，请稍后重试。' : '私聊回复未生成，请稍后重试。'));
         }
         if (result?.ok) ctx.requestPrivateChatScrollToBottom?.(session.sessionUid);
         ctx.refreshState();
         if (result?.ok && result.summaryCheckRequested) {
             void runChatSummaryForSession(session, { automatic: true });
         }
+    }
+    async function runNsfwSafetyAction(session, action) {
+        if (typeof ctx.actionBridge.runPrivateChatNsfwSafety !== 'function'
+            || ctx.actionBridge.isPending?.('private_chat_nsfw_safety', session.sessionUid)) return;
+        const operationToken = ctx.setFeedback(action === 'pause' ? '正在暂停成人话题…' : '正在恢复成人话题…');
+        ctx.activeChatToolsSessionUid = '';
+        let result;
+        try { result = await ctx.actionBridge.runPrivateChatNsfwSafety({ sessionUid: session.sessionUid, action }); }
+        catch { result = { ok: false, code: 'private_chat_nsfw_safety_invalid_action' }; }
+        ctx.setFeedback(result?.ok
+            ? action === 'pause' ? '已切换为仅 SFW；已有成人话题共识同时撤回。' : '已恢复成人话题入口；不会恢复旧共识，请重新按范围建立。'
+            : describeActionFailure(result), operationToken);
+        ctx.nsfwTurnConsentSessions?.delete?.(session.sessionUid);
+        ctx.refreshState();
+    }
+    async function runNsfwConsentAction(session, action, { scopes = [], turns = 0 } = {}) {
+        if (typeof ctx.actionBridge.runPrivateChatNsfwConsent !== 'function'
+            || ctx.actionBridge.isPending?.('private_chat_nsfw_consent', session.sessionUid)) return;
+        const operationToken = ctx.setFeedback(action === 'grant' ? '正在建立成人话题共识…' : '正在撤回成人话题共识…');
+        let result;
+        try { result = await ctx.actionBridge.runPrivateChatNsfwConsent({ sessionUid: session.sessionUid, action, scopes, turns }); }
+        catch { result = { ok: false, code: 'private_chat_nsfw_consent_invalid_action' }; }
+        if (result?.ok) {
+            ctx.activeNsfwConsentSessionUid = '';
+            ctx.nsfwTurnConsentSessions?.delete?.(session.sessionUid);
+        }
+        ctx.setFeedback(result?.ok
+            ? action === 'grant' ? '已按选定范围建立有限轮数共识；下轮仍需单独勾选。' : '已撤回成人话题共识。'
+            : describeActionFailure(result), operationToken);
+        ctx.refreshState();
+    }
+    async function runNsfwDirectionAction(session, direction) {
+        if (typeof ctx.actionBridge.runPrivateChatNsfwDirection !== 'function'
+            || ctx.actionBridge.isPending?.('private_chat_nsfw_direction', session.sessionUid)) return;
+        const operationToken = ctx.setFeedback('正在确认关系方向…');
+        ctx.activeChatToolsSessionUid = '';
+        let result;
+        try { result = await ctx.actionBridge.runPrivateChatNsfwDirection({ sessionUid: session.sessionUid, direction }); }
+        catch { result = { ok: false, code: 'private_chat_nsfw_direction_invalid_action' }; }
+        const labels = { love: '爱情探索', consensual_intimacy: '共识亲密', defer: '暂不定义' };
+        ctx.setFeedback(result?.ok ? `已由你明确选择：${labels[direction]}。系统没有按分数自动选线。` : describeActionFailure(result), operationToken);
+        ctx.refreshState();
+    }
+    async function runNsfwRelationshipAction(session, action) {
+        if (typeof ctx.actionBridge.runPrivateChatNsfwRelationshipAction !== 'function'
+            || ctx.actionBridge.isPending?.('private_chat_nsfw_relationship', session.sessionUid)) return;
+        const pendingCopy = {
+            degrade_to_friends: '正在降级为朋友关系…',
+            pause_contact: '正在暂停这段关系…',
+            resume_contact: '正在恢复这段关系…',
+            archive_contact: '正在归档这段关系…',
+            end_contact: '正在结束联系…',
+        };
+        const operationToken = ctx.setFeedback(pendingCopy[action] ?? '正在更新关系…');
+        let result;
+        try { result = await ctx.actionBridge.runPrivateChatNsfwRelationshipAction({ sessionUid: session.sessionUid, action }); }
+        catch { result = { ok: false, code: 'private_chat_nsfw_relationship_invalid_action' }; }
+        if (result?.ok) {
+            ctx.activeNsfwRelationshipSessionUid = '';
+            ctx.nsfwTurnConsentSessions?.delete?.(session.sessionUid);
+        }
+        const successCopy = {
+            degrade_to_friends: '已保留历史并降级为朋友关系；成人话题共识已撤回。',
+            pause_contact: '已暂停这段关系；历史与关系记录仍保留。',
+            resume_contact: '已恢复这段关系，可以继续聊天。',
+            archive_contact: '已保留历史并归档为只读。',
+            end_contact: '已保留历史并结束联系；会话现为只读。',
+        };
+        ctx.setFeedback(result?.ok
+            ? successCopy[action] ?? '关系状态已更新。'
+            : describeActionFailure(result), operationToken);
+        ctx.refreshState();
     }
     function meetupFieldsFor(sessionUid) {
         if (!ctx.meetupDrafts.has(sessionUid)) ctx.meetupDrafts.set(sessionUid, { time: '', place: '', mutualIntent: '', confirmedBoundaries: '', pendingItems: '', riskNotice: '' });

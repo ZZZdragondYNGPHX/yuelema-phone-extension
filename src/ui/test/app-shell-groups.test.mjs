@@ -486,7 +486,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             click(version());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /当前版本：1.0.11/u);
+            assert.match(dialog.textContent, /当前版本：1.1.0/u);
         }
         const modeEntry = miniDom.document.querySelector('[name="about-content-mode-entry"]');
         assert.ok(modeEntry, '连续五次版本信息后应显示内容模式隐藏入口');
@@ -504,7 +504,9 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
             assert.match(dialog.textContent, /最近三次更新/u);
-            assert.match(dialog.textContent, /v1.0.8/u);
+            assert.match(dialog.textContent, /v1.1.0/u);
+            assert.match(dialog.textContent, /自动重载页面并重开小手机/u);
+            assert.match(dialog.textContent, /v1.0.20/u);
         }
         const serviceEntry = miniDom.document.querySelector('[name="about-service-entry"]');
         assert.ok(serviceEntry, '连续五次更新日志后应显示专属服务入口');
@@ -561,7 +563,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         mounted.refreshState();
         click(serviceTabs()[0]);
         assert.match(miniDom.document.body.textContent, /夜色心动档案/u);
-        assert.match(miniDom.document.body.textContent, /熟人商品/u);
+        assert.match(miniDom.document.body.textContent, /熟人性爱幻想/u);
         assert.equal(miniDom.document.querySelectorAll('.yl-phone-extension').find((node) => node.id === 'ylm-test-about').dataset.contentMode, 'NSFW');
         assert.doesNotMatch(miniDom.document.body.textContent, /林澄/u, 'SFW 候补不得泄漏到 NSFW 列表');
         serviceState.软件.内容模式 = 'SFW';

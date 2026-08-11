@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createActionBridge } from '../../action-bridge.js';
+import { createEmptyRelationshipNarrative, createRelationshipNarrativeFromProfile } from '../../mvu/relationship-narrative.js';
+import { createEmptyBodyRelationshipCandidate } from '../../mvu/body-relationship-candidate.js';
+import { createEmptyNsfwConsent, grantNsfwConsent } from '../../mvu/nsfw-consent.js';
 
 function adultCandidate() {
     return {
@@ -19,6 +22,8 @@ function state() {
         玩家: { 成人验证: true, 公开资料: {}, 推荐偏好: { 标签权重: { SFW: {}, NSFW: {} } } },
         角色池: {},
         正文记忆: {},
+        正文关系候选: {},
+        关系叙事: {},
         推荐: {
             当前队列: ['npc_ava'],
             临时候选池: {
@@ -41,6 +46,7 @@ function recommendationState() {
     const current = state();
     current.系统 = { UID计数器: { 角色: 12 } };
     current.玩家 = {
+        成人验证: true,
         公开资料: { 昵称: '玩家', 年龄段: '成年人', 性别: '男', 性取向: '异性恋', 城市: '上海', 距离范围: '不限', 寻找意图: '聊天', 简介: '公开简介', 兴趣标签: ['电影'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [] },
         隐藏资料: { 私人备注: '不得发送给快速模型' },
         仅好友资料: { 关系状态: '不得发送给快速模型' },
@@ -51,6 +57,25 @@ function recommendationState() {
 
 const connectionPreset = { id: 'fast', name: 'Fast', url: 'https://example.invalid/v1', model: 'quick', temperature: 0.7, maxTokens: 800, timeoutMs: 30_000 };
 const settingsStore = { resolveFunction: () => ({ connectionPreset, promptPreset: { enabled: true, content: '保持轻快、真实的都市语气。' } }) };
+
+function matchedPrivateChatState(contentMode = 'SFW') {
+    const current = recommendationState();
+    current.软件.内容模式 = contentMode;
+    current.角色池 = {
+        npc_ava: {
+            成人验证: true,
+            公开资料: { 昵称: '艾娃' },
+            仅好友资料: {}, 隐藏资料: { 实际年龄: 24, 私人备注: '' },
+            偏好与边界: '', 拒绝阈值: 0, 已读不回阈值: 80, 取消匹配阈值: 80, 拉黑阈值: 90,
+            与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0, 友情值: 10, 心动值: 20, 欲望值: 30 },
+        },
+    };
+    current.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } };
+    current.正文记忆.npc_ava = '';
+    current.关系叙事.npc_ava = createRelationshipNarrativeFromProfile(current.角色池.npc_ava);
+    current.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
+    return current;
+}
 
 function resolvePatchParent(root, pointer) {
     const segments = pointer.split('/').slice(1).map((segment) => segment.replaceAll('~1', '/').replaceAll('~0', '~'));
@@ -78,7 +103,7 @@ function applyJsonPatch(state, patch) {
     }
 }
 
-function createMvu({ deferredParse = false, initialState = state() } = {}) {
+function createMvu({ deferredParse = false, initialState = state(), persistReplacement = false } = {}) {
     const calls = [];
     let releaseParse;
     const parsePromise = deferredParse ? new Promise(resolve => { releaseParse = resolve; }) : null;
@@ -94,7 +119,10 @@ function createMvu({ deferredParse = false, initialState = state() } = {}) {
             if (encoded) applyJsonPatch(next.stat_data, JSON.parse(encoded));
             return next;
         },
-        async replaceMvuData(nextData, scope) { calls.push(['replace', nextData, scope]); },
+        async replaceMvuData(nextData, scope) {
+            calls.push(['replace', nextData, scope]);
+            if (persistReplacement) data.stat_data = nextData.stat_data;
+        },
     };
     return { mvu, calls, data, releaseParse: () => releaseParse?.() };
 }
@@ -352,8 +380,10 @@ test('private chat runs model validation before one official MVU write transacti
             与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0 },
         },
     };
-    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } };
     initialState.正文记忆.npc_ava = '玩家与艾娃此前在线下见过一次。';
+    initialState.关系叙事.npc_ava = createRelationshipNarrativeFromProfile(initialState.角色池.npc_ava);
+    initialState.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -372,6 +402,231 @@ test('private chat runs model validation before one official MVU write transacti
     assert.doesNotMatch(wrappedPatch, /不得发送/u);
 });
 
+test('拟真私聊桥先落玩家消息，再由时钟调度生成并到点投递 AI 消息', async () => {
+    const initialState = matchedPrivateChatState();
+    const { mvu, data } = createMvu({ initialState, persistReplacement: true });
+    let phoneTime = '2026-08-02 12:00';
+    const modelCalls = [];
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null },
+        mvu,
+        eventEmit: async () => {},
+        phoneClock: { nowText: () => phoneTime },
+        settingsStore,
+        llmClient: {
+            async chat(request) {
+                modelCalls.push(request);
+                return {
+                    text: JSON.stringify({
+                        replies: ['我刚忙完，看到你前面两条了。', '伞后来找到了吗？'],
+                        relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+                        timing: { firstDelayMinutes: 5, betweenReplyMinutes: [5], nextProactiveMinutes: 120 },
+                        bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
+                        bodyEventReview: 'defer', sfwInsightAssessment: 'none', sfwResolutionAssessment: 'none',
+                        nsfwSafetyAssessment: 'none', nsfwConsentAssessment: 'none',
+                    }),
+                };
+            },
+        },
+    });
+
+    const enabled = await bridge.setRealisticPrivateChatMode({ sessionUid: 'chat_1', npcUid: 'npc_ava', enabled: true });
+    assert.equal(enabled.ok, true);
+    const first = await bridge.sendRealisticPrivateChatMessage({ sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '我出门了。' });
+    assert.equal(first.ok, true);
+    phoneTime = '2026-08-02 12:05';
+    const second = await bridge.sendRealisticPrivateChatMessage({ sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '结果忘带伞。' });
+    assert.equal(second.ok, true);
+    assert.equal(data.stat_data.会话.chat_1.最近消息.length, 2);
+    assert.equal(modelCalls.length, 0, '玩家发送不得同步等待模型');
+
+    phoneTime = '2026-08-02 12:15';
+    const planned = await bridge.runRealisticPrivateChatTick();
+    assert.equal(planned.ok, true);
+    assert.equal(planned.interactionOutcome, 'queued');
+    assert.equal(modelCalls.length, 1);
+    assert.equal(data.stat_data.会话.chat_1.最近消息.length, 2, '生成完成仍不得提前显示 AI 消息');
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.待投递消息.length, 2);
+
+    phoneTime = '2026-08-02 12:20';
+    const delivered = await bridge.runRealisticPrivateChatTick();
+    assert.equal(delivered.ok, true);
+    assert.deepEqual(data.stat_data.会话.chat_1.最近消息.map((message) => message.内容), [
+        '我出门了。', '结果忘带伞。', '我刚忙完，看到你前面两条了。',
+    ]);
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.待投递消息.length, 1);
+});
+
+test('拟真 NSFW 消息簇在重载后只凭发送时绑定的同意修订继续，并在计划提交后清零', async () => {
+    const initialState = matchedPrivateChatState('NSFW');
+    initialState.会话.chat_1.NSFW同意 = grantNsfwConsent(initialState.会话.chat_1.NSFW同意, { scopes: ['成人话题'], turns: 3 });
+    const { mvu, data } = createMvu({ initialState, persistReplacement: true });
+    let phoneTime = '2026-08-02 12:00';
+    const phoneClock = { nowText: () => phoneTime };
+    const firstBridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {}, phoneClock, settingsStore,
+    });
+    assert.equal((await firstBridge.setRealisticPrivateChatMode({ sessionUid: 'chat_1', npcUid: 'npc_ava', enabled: true })).ok, true);
+    assert.equal((await firstBridge.sendRealisticPrivateChatMessage({
+        sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '继续我们确认过的成人话题。', turnConsentConfirmed: true,
+    })).ok, true);
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.待回复同意修订号, 1);
+
+    // Recreate the bridge to prove the checkbox itself is not retained in memory;
+    // only the exact controlled consent revision bound at send time survives.
+    phoneTime = '2026-08-02 12:10';
+    const reloadedBridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {}, phoneClock, settingsStore,
+        llmClient: {
+            async chat() {
+                return { text: JSON.stringify({
+                    replies: ['我记得我们确认的范围，先慢一点聊。'],
+                    relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+                    timing: { firstDelayMinutes: 5, betweenReplyMinutes: [], nextProactiveMinutes: 120 },
+                    bondAssessment: { kind: 'none', intensity: 0, direction: 'none' },
+                    nsfwConsentAssessment: 'in_scope', nsfwSafetyAssessment: 'none', bodyEventReview: 'defer',
+                }) };
+            },
+        },
+    });
+    const planned = await reloadedBridge.runRealisticPrivateChatTick();
+    assert.equal(planned.ok, true);
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.待回复同意修订号, 0);
+    assert.equal(data.stat_data.会话.chat_1.NSFW同意.修订号, 2);
+    assert.equal(data.stat_data.会话.chat_1.NSFW同意.剩余轮数, 2);
+
+    // A safety-state change before delivery cancels the invisible queue and
+    // turns realistic mode off instead of revealing a stale NSFW reply.
+    data.stat_data.软件.内容模式 = 'SFW';
+    phoneTime = '2026-08-02 12:15';
+    const cancelled = await reloadedBridge.runRealisticPrivateChatTick();
+    assert.equal(cancelled.ok, true);
+    assert.equal(cancelled.stateChanged, true);
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.启用, false);
+    assert.equal(data.stat_data.会话.chat_1.拟真聊天.待投递消息.length, 0);
+    assert.equal(data.stat_data.会话.chat_1.最近消息.length, 1, '安全状态改变后不得显示排队中的 NSFW 回复');
+});
+
+test('private chat backfills only its missing relationship-narrative slot before generating a reply', async () => {
+    const initialState = recommendationState();
+    initialState.角色池 = {
+        npc_ava: {
+            成人验证: true,
+            公开资料: { 昵称: '艾娃' },
+            仅好友资料: {}, 隐藏资料: { 实际年龄: 24, 私人备注: '不得发送' },
+            偏好与边界: '', 拒绝阈值: 0, 已读不回阈值: 80, 取消匹配阈值: 80, 拉黑阈值: 90,
+            与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0 },
+        },
+    };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } };
+    initialState.正文记忆.npc_ava = '';
+    initialState.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
+    const { mvu, calls } = createMvu({ initialState, persistReplacement: true });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async (...args) => { calls.push(['event', ...args]); }, settingsStore,
+        llmClient: { async chat() { return { text: JSON.stringify({ replies: ['晚上好。'], relationship: { 好感: 1, 信任: 0, 戒备: 0, 面基意愿: 0 } }) }; } },
+    });
+
+    const result = await bridge.runPrivateChat({ sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '晚上好' });
+
+    assert.equal(result.ok, true);
+    const parsedPatches = calls.filter(([name]) => name === 'parse')
+        .map(([, raw]) => JSON.parse(raw.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)[1]));
+    assert.equal(parsedPatches.length, 2);
+    assert.deepEqual(parsedPatches[0].map((operation) => operation.path), ['/关系叙事/npc_ava']);
+    assert.equal(parsedPatches[0][0].op, 'add');
+    assert.deepEqual(parsedPatches[0][0].value, createRelationshipNarrativeFromProfile(initialState.角色池.npc_ava));
+    assert.equal(parsedPatches[1].some((operation) => operation.path === '/会话/chat_1/最近消息/-'), true);
+});
+
+test('dedicated NSFW safety action derives the role from the latest session and commits only one protected leaf', async () => {
+    const initialState = matchedPrivateChatState('NSFW');
+    const { mvu, calls } = createMvu({ initialState, persistReplacement: true });
+    const bridge = createActionBridge({ documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {} });
+
+    const paused = await bridge.runPrivateChatNsfwSafety({ sessionUid: 'chat_1', action: 'pause', npcUid: 'npc_forged' });
+    assert.equal(paused.ok, true, JSON.stringify(paused));
+    let patches = calls.filter(([name]) => name === 'parse')
+        .map(([, raw]) => JSON.parse(raw.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)[1]));
+    assert.deepEqual(patches[0], [{ op: 'replace', path: '/关系叙事/npc_ava/进程/边界暂停状态', value: '仅SFW' }]);
+
+    const resumed = await bridge.runPrivateChatNsfwSafety({ sessionUid: 'chat_1', action: 'resume' });
+    assert.equal(resumed.ok, true);
+    patches = calls.filter(([name]) => name === 'parse')
+        .map(([, raw]) => JSON.parse(raw.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)[1]));
+    assert.deepEqual(patches[1], [{ op: 'replace', path: '/关系叙事/npc_ava/进程/边界暂停状态', value: '' }]);
+});
+
+test('stage C consent, explicit direction, and downgrade actions each use the latest controlled MVU transaction', async () => {
+    const initialState = matchedPrivateChatState('NSFW');
+    initialState.角色池.npc_ava.与玩家关系.心动值 = 50;
+    initialState.关系叙事.npc_ava.进程.NSFW方向确认可用 = true;
+    const { mvu, calls, data } = createMvu({ initialState, persistReplacement: true });
+    const bridge = createActionBridge({ documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {} });
+
+    const granted = await bridge.runPrivateChatNsfwConsent({
+        sessionUid: 'chat_1', action: 'grant', scopes: ['成人话题'], turns: 3,
+    });
+    assert.equal(granted.ok, true);
+    assert.equal(data.stat_data.会话.chat_1.NSFW同意.状态, '有效');
+
+    const direction = await bridge.runPrivateChatNsfwDirection({ sessionUid: 'chat_1', direction: 'love' });
+    assert.equal(direction.ok, true);
+    assert.equal(data.stat_data.关系叙事.npc_ava.进程.NSFW路线锁定, '爱情');
+
+    data.stat_data.关系叙事.npc_ava.进程.冻结关系值 = '欲望值';
+    const degraded = await bridge.runPrivateChatNsfwRelationshipAction({ sessionUid: 'chat_1', action: 'degrade_to_friends' });
+    assert.equal(degraded.ok, true);
+    assert.equal(data.stat_data.关系叙事.npc_ava.进程.NSFW路线锁定, '暂不定义');
+    assert.equal(data.stat_data.关系叙事.npc_ava.进程.冻结关系值, '');
+    assert.equal(data.stat_data.关系叙事.npc_ava.进程.边界暂停状态, '仅SFW');
+    assert.equal(data.stat_data.会话.chat_1.NSFW同意.状态, '已撤回');
+    assert.equal(calls.filter(([name]) => name === 'replace').length, 3);
+});
+
+test('private chat fails closed when only-SFW changes during the async model request', async () => {
+    const initialState = matchedPrivateChatState('NSFW');
+    initialState.会话.chat_1.NSFW同意 = grantNsfwConsent(initialState.会话.chat_1.NSFW同意, { scopes: ['成人话题'], turns: 3 });
+    const { mvu, calls, data } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {}, settingsStore,
+        llmClient: {
+            async chat() {
+                data.stat_data.关系叙事.npc_ava.进程.边界暂停状态 = '仅SFW';
+                return { text: JSON.stringify({ replies: ['收到。'], relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 } }) };
+            },
+        },
+    });
+    const result = await bridge.runPrivateChat({ sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '继续聊', turnConsentConfirmed: true });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'private_chat_safety_state_changed');
+    assert.equal(calls.some(([name]) => name === 'parse'), false);
+});
+
+test('private chat rejects a consent revision changed while the model request is in flight', async () => {
+    const initialState = matchedPrivateChatState('NSFW');
+    initialState.会话.chat_1.NSFW同意 = grantNsfwConsent(initialState.会话.chat_1.NSFW同意, { scopes: ['成人话题'], turns: 3 });
+    const { mvu, calls, data } = createMvu({ initialState });
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {}, settingsStore,
+        llmClient: {
+            async chat() {
+                data.stat_data.会话.chat_1.NSFW同意 = grantNsfwConsent(data.stat_data.会话.chat_1.NSFW同意, { scopes: ['露骨调情'], turns: 1 });
+                return { text: JSON.stringify({
+                    replies: ['范围已经变化，请重新确认。'], relationship: { 好感: 0, 信任: 0, 戒备: 0, 面基意愿: 0 },
+                    nsfwConsentAssessment: 'in_scope',
+                }) };
+            },
+        },
+    });
+    const result = await bridge.runPrivateChat({
+        sessionUid: 'chat_1', npcUid: 'npc_ava', playerMessage: '继续聊', turnConsentConfirmed: true,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'private_chat_nsfw_consent_state_changed');
+    assert.equal(calls.some(([name]) => name === 'parse'), false);
+});
+
 
 test('private chat returns read_without_reply after the local rhythm builder suppresses model bubbles', async () => {
     const initialState = recommendationState();
@@ -386,8 +641,10 @@ test('private chat returns read_without_reply after the local rhythm builder sup
             与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 5, 信任: 5, 戒备: 40, 面基意愿: 0 },
         },
     };
-    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } };
     initialState.正文记忆.npc_ava = '';
+    initialState.关系叙事.npc_ava = createRelationshipNarrativeFromProfile(initialState.角色池.npc_ava);
+    initialState.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -417,8 +674,10 @@ test('private chat returns blocked only after the controlled patch atomically bl
         },
     };
     // 拉黑只在开局宽限层数之外仍持续恶化/不改善时触发。
-    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '' } };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 对话层数: 12, 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } };
     initialState.正文记忆.npc_ava = '';
+    initialState.关系叙事.npc_ava = createRelationshipNarrativeFromProfile(initialState.角色池.npc_ava);
+    initialState.正文关系候选.npc_ava = createEmptyBodyRelationshipCandidate();
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -447,7 +706,7 @@ test('clearPrivateChat reads fresh state, uses the dedicated builder, and commit
             与玩家关系: { 状态: '已匹配', 全局账号表现: 60, NPC专属匹配度: 70, 好感: 20, 信任: 20, 戒备: 20, 面基意愿: 0 },
         },
     };
-    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' } };
+    initialState.会话 = { chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() } };
     const { mvu, calls } = createMvu({ initialState });
     const bridge = createActionBridge({
         documentRef: { querySelector: () => null }, mvu,
@@ -472,6 +731,8 @@ test('deleteCharacter reads fresh state and atomically removes every character r
         npc_other: { ...adultCandidate(), 公开资料: { ...adultCandidate().公开资料, 昵称: '其他角色' } },
     };
     initialState.正文记忆 = { npc_ava: '玩家与艾娃的经历。', npc_other: '玩家与其他角色的经历。' };
+    initialState.正文关系候选 = { npc_ava: createEmptyBodyRelationshipCandidate(), npc_other: createEmptyBodyRelationshipCandidate() };
+    initialState.关系叙事 = { npc_ava: createEmptyRelationshipNarrative(), npc_other: createEmptyRelationshipNarrative() };
     initialState.推荐 = {
         当前队列: ['npc_ava', 'npc_other'],
         临时候选池: { npc_ava: adultCandidate() },
@@ -479,8 +740,8 @@ test('deleteCharacter reads fresh state and atomically removes every character r
         不喜欢角色UID: [], 拉黑角色UID: ['npc_other', 'npc_ava'],
     };
     initialState.会话 = {
-        chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' },
-        chat_other: { 对象UID: 'npc_other', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '' },
+        chat_1: { 对象UID: 'npc_ava', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() },
+        chat_other: { 对象UID: 'npc_other', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '', NSFW同意: createEmptyNsfwConsent() },
     };
     initialState.面基记录 = {
         meetup_1: { 对象UID: 'npc_ava', 状态: '待发送' },
@@ -502,6 +763,7 @@ test('deleteCharacter reads fresh state and atomically removes every character r
     const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
     const patch = JSON.parse(wrappedPatch.match(/<JSONPatch>([\s\S]+)<\/JSONPatch>/u)[1]);
     assert.equal(patch.some((operation) => operation.path === '/角色池/npc_ava' && operation.op === 'remove'), true);
+    assert.equal(patch.some((operation) => operation.path === '/关系叙事/npc_ava' && operation.op === 'remove'), true);
     assert.equal(patch.some((operation) => operation.path === '/推荐/临时候选池/npc_ava' && operation.op === 'remove'), true);
     assert.equal(patch.some((operation) => operation.path === '/会话/chat_1' && operation.op === 'remove'), true);
     assert.equal(patch.some((operation) => operation.path === '/面基记录/meetup_1' && operation.op === 'remove'), true);
@@ -510,6 +772,7 @@ test('deleteCharacter reads fresh state and atomically removes every character r
     assert.deepEqual(result.data.stat_data.群组.group_city.成员UID, ['npc_other']);
     assert.deepEqual(result.data.stat_data.群组.group_city.可发现角色UID, []);
     assert.equal(Object.hasOwn(result.data.stat_data.角色池, 'npc_ava'), false);
+    assert.equal(Object.hasOwn(result.data.stat_data.关系叙事, 'npc_ava'), false);
     assert.equal(Object.hasOwn(result.data.stat_data.会话, 'chat_other'), true);
     assert.equal(Object.hasOwn(result.data.stat_data.面基记录, 'meetup_other'), true);
     assert.deepEqual(result.data.stat_data.系统.UID计数器, { 角色: 12, 会话: 8, 面基: 4, 群组: 2 });
@@ -527,19 +790,20 @@ test('AI character completion and full authoring return memory drafts before any
     });
 
     const completion = await bridge.generateCharacterCompletionDraft({
-        publicProfile: adultCandidate().公开资料,
+        candidateDraft: { 公开资料: adultCandidate().公开资料 },
+        completionScopes: ['public'],
         instruction: '补全为一名明确成年、适合先文字聊天的都市角色。',
     });
     assert.equal(completion.ok, true);
     assert.equal(completion.candidate.公开资料.头像引用, '');
-    assert.deepEqual(calls, []);
+    assert.deepEqual(calls.map(([name]) => name), ['get']);
     assert.doesNotMatch(JSON.stringify(requests[0].messages), /对临时失约敏感/u);
 
     const full = await bridge.generateCharacterAuthoringDraft({ creativeBrief: '创作一名明确成年的现代都市软件角色。' });
     assert.equal(full.ok, true);
     assert.equal(full.candidate.成人验证, true);
     assert.equal(full.candidate.公开资料.头像引用, '');
-    assert.deepEqual(calls.map(([name]) => name), ['get']);
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get']);
     assert.doesNotMatch(JSON.stringify(requests[1].messages), /公开简介|不得发送给快速模型/u);
     assert.equal(calls.some(([name]) => name === 'parse' || name === 'replace'), false);
 });
@@ -637,6 +901,34 @@ test('full authoring rejects a stale expected content mode after local generatio
 
     assert.equal(result.ok, false);
     assert.equal(result.code, 'character_authoring_mode_changed');
+    assert.equal(modelCalls, 1);
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get']);
+    assert.equal(calls.some(([name]) => name === 'parse' || name === 'replace'), false);
+});
+test('selective character completion rejects a stale expected content mode after local generation without writing MVU', async () => {
+    const initialState = recommendationState();
+    initialState.软件 = { 内容模式: 'SFW', 关于软件点击数: 0 };
+    const { mvu, calls, data } = createMvu({ initialState });
+    let modelCalls = 0;
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu, eventEmit: async () => {}, settingsStore,
+        llmClient: {
+            async chat() {
+                modelCalls += 1;
+                data.stat_data.软件.内容模式 = 'NSFW';
+                return { text: JSON.stringify(adultCandidate()) };
+            },
+        },
+    });
+
+    const result = await bridge.generateCharacterCompletionDraft({
+        candidateDraft: { 公开资料: adultCandidate().公开资料 },
+        completionScopes: ['public'],
+        instruction: '补全一名明确成年的角色。',
+        expectedContentMode: 'SFW',
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'character_completion_mode_changed');
     assert.equal(modelCalls, 1);
     assert.deepEqual(calls.map(([name]) => name), ['get', 'get']);
     assert.equal(calls.some(([name]) => name === 'parse' || name === 'replace'), false);

@@ -6,9 +6,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const requiredFiles = [
     'manifest.json', 'index.js', 'style.css', 'README.md', 'AGENTS.md', 'RELEASE_REVIEW.md', 'test/extension-lifecycle.test.mjs',
-    'src/app-shell.js', 'src/host-extension-update.js', 'src/service-order-history-store.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
+    'src/app-shell.js', 'src/host-extension-update.js', 'src/update-restart.js', 'src/test/update-restart.test.mjs', 'src/service-order-history-store.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/onboarding/onboarding-flow.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
     'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
-    'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
+    'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/nsfw-consent.js', 'src/mvu/body-relationship-candidate.js', 'src/mvu/realistic-chat.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/nsfw-consent.test.mjs', 'src/mvu/test/body-relationship-candidate.test.mjs', 'src/mvu/test/realistic-chat.test.mjs', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
@@ -16,13 +16,13 @@ const requiredFiles = [
     'src/images/image-directive.js', 'src/images/image-library-store.js', 'src/images/conversation-image-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js', 'src/images/remote-image-import.js',
     'src/images/test/image-directive.test.mjs', 'src/images/test/image-library-store.test.mjs', 'src/images/test/conversation-image-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs', 'src/images/test/remote-image-import.test.mjs',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js', 'src/groups/group-forum-store.js', 'src/groups/local-conversation-summary-service.js',
-    'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/conversation-summary.js', 'src/chat/interaction-rhythm.js', 'src/chat/relationship-progress.js', 'src/chat/message-read-store.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/conversation-summary.test.mjs', 'src/chat/test/interaction-rhythm.test.mjs', 'src/chat/test/relationship-progress.test.mjs', 'src/chat/test/message-read-store.test.mjs',
+    'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/phone-clock.js', 'src/chat/conversation-summary.js', 'src/chat/interaction-rhythm.js', 'src/chat/relationship-progress.js', 'src/chat/message-read-store.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/phone-clock.test.mjs', 'src/chat/test/conversation-summary.test.mjs', 'src/chat/test/interaction-rhythm.test.mjs', 'src/chat/test/relationship-progress.test.mjs', 'src/chat/test/message-read-store.test.mjs',
     'src/test-support/minidom.mjs', 'src/launcher-drag.js', 'src/ui/test/launcher-drag.test.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/character-template-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
     'src/characters/test/character-template-codec.test.mjs', 'src/characters/test/character-library-store.test.mjs', 'src/characters/test/character-template-library-store.test.mjs', 'src/characters/test/avatar-codec.test.mjs', 'src/characters/test/character-authoring-service.test.mjs', 'src/characters/test/character-creator-panel.test.mjs',
     'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/custom-candidate-encounter.test.mjs', 'src/recommendation/test/match-candidate-materializer.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs', 'src/groups/test/group-forum-store.test.mjs', 'src/groups/test/local-conversation-summary-service.test.mjs',
-    'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs', 'src/mvu/test/service-order-handoff.test.mjs',
-    'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs', 'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/ui/test/service-hub-ui.test.mjs', 'src/ui/test/profile-settings-ui.test.mjs', 'src/test/host-extension-update.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs', 'src/character-avatar-store.js', 'src/test/character-avatar-store.test.mjs',
+    'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/realistic-private-chat-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs', 'src/mvu/test/service-order-handoff.test.mjs',
+    'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs', 'src/ui/test/ui-model.test.mjs', 'src/ui/test/onboarding-ui.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/ui/test/service-hub-ui.test.mjs', 'src/ui/test/profile-settings-ui.test.mjs', 'src/test/host-extension-update.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs', 'src/character-avatar-store.js', 'src/test/character-avatar-store.test.mjs',
     'src/ui/icon.js', 'src/ui/romance-hearts.js', 'src/ui/media-state.js', 'src/ui/dialog-controller.js', 'src/ui/test/icon.test.mjs', 'src/ui/test/media-state.test.mjs', 'src/ui/test/dialog-controller.test.mjs', 'src/ui/test/app-shell-message-search.test.mjs', 'src/ui/test/style-token-contract.test.mjs',
     'src/ui/button.js', 'src/ui/badge.js', 'src/ui/list-row.js', 'src/ui/segmented-control.js', 'src/ui/bottom-sheet.js', 'src/ui/empty-state.js', 'src/ui/skeleton.js', 'src/ui/COMPONENTS.md',
     'src/ui/test/button.test.mjs', 'src/ui/test/badge.test.mjs', 'src/ui/test/list-row.test.mjs', 'src/ui/test/segmented-control.test.mjs', 'src/ui/test/bottom-sheet.test.mjs', 'src/ui/test/empty-state.test.mjs', 'src/ui/test/skeleton.test.mjs', 'src/ui/test/icon-design-system.test.mjs',
@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.0.11') fail('manifest.version 必须与扩展版本 1.0.11 统一');
+if (manifest.version !== '1.1.0') fail('manifest.version 必须与扩展版本 1.1.0 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -57,9 +57,9 @@ console.log('✓ manifest 基础字段与 lifecycle hooks');
 
 const sourceRelativeFiles = [
     'index.js', 'test/extension-lifecycle.test.mjs',
-    'src/app-shell.js', 'src/host-extension-update.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/settings-panel.js',
+    'src/app-shell.js', 'src/host-extension-update.js', 'src/update-restart.js', 'src/test/update-restart.test.mjs', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/onboarding/onboarding-flow.js', 'src/settings-panel.js',
     'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
-    'src/mvu/json-pointer.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/readiness.test.mjs',
+    'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/nsfw-consent.js', 'src/mvu/body-relationship-candidate.js', 'src/mvu/realistic-chat.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/nsfw-consent.test.mjs', 'src/mvu/test/body-relationship-candidate.test.mjs', 'src/mvu/test/realistic-chat.test.mjs', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
     'src/settings/settings-store.js', 'src/settings/default-prompt-presets.js', 'src/settings/browser-storage.js', 'src/settings/prompt-compiler.js', 'src/settings/feature-binding.js',
     'src/settings/test/settings-store.test.mjs', 'src/settings/test/browser-storage.test.mjs', 'src/settings/test/prompt-compiler.test.mjs', 'src/settings/test/settings-panel.test.mjs', 'src/settings/test/feature-binding.test.mjs',
@@ -67,13 +67,13 @@ const sourceRelativeFiles = [
     'src/images/image-directive.js', 'src/images/image-library-store.js', 'src/images/conversation-image-store.js', 'src/images/image-match.js', 'src/images/image-match-service.js', 'src/images/image-match-coordinator.js', 'src/images/image-manager-panel.js', 'src/images/remote-image-import.js',
     'src/images/test/image-directive.test.mjs', 'src/images/test/image-library-store.test.mjs', 'src/images/test/conversation-image-store.test.mjs', 'src/images/test/image-match.test.mjs', 'src/images/test/image-match-coordinator.test.mjs', 'src/images/test/image-manager-panel.test.mjs', 'src/images/test/remote-image-import.test.mjs',
     'src/groups/group-discovery-service.js', 'src/groups/group-llm-safety.js', 'src/groups/group-chat-service.js', 'src/groups/forum-service.js', 'src/groups/group-forum-store.js', 'src/groups/local-conversation-summary-service.js',
-    'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/conversation-summary.js', 'src/chat/interaction-rhythm.js', 'src/chat/relationship-progress.js', 'src/chat/message-read-store.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/conversation-summary.test.mjs', 'src/chat/test/interaction-rhythm.test.mjs', 'src/chat/test/relationship-progress.test.mjs', 'src/chat/test/message-read-store.test.mjs',
+    'src/chat/private-chat-response.js', 'src/chat/private-chat-service.js', 'src/chat/phone-clock.js', 'src/chat/conversation-summary.js', 'src/chat/interaction-rhythm.js', 'src/chat/relationship-progress.js', 'src/chat/message-read-store.js', 'src/chat/test/private-chat-response.test.mjs', 'src/chat/test/private-chat-service.test.mjs', 'src/chat/test/phone-clock.test.mjs', 'src/chat/test/conversation-summary.test.mjs', 'src/chat/test/interaction-rhythm.test.mjs', 'src/chat/test/relationship-progress.test.mjs', 'src/chat/test/message-read-store.test.mjs',
     'src/test-support/minidom.mjs', 'src/characters/character-template-codec.js', 'src/characters/character-library-store.js', 'src/characters/avatar-codec.js', 'src/characters/character-creator-panel.js', 'src/characters/character-authoring-service.js',
     'src/characters/test/character-template-codec.test.mjs', 'src/characters/test/character-library-store.test.mjs', 'src/characters/test/avatar-codec.test.mjs', 'src/characters/test/character-authoring-service.test.mjs', 'src/characters/test/character-creator-panel.test.mjs',
     'src/recommendation/test/candidate.test.mjs', 'src/recommendation/test/recommendation-refresh.test.mjs', 'src/recommendation/test/match-scoring.test.mjs', 'src/recommendation/test/custom-candidate-encounter.test.mjs', 'src/recommendation/test/match-candidate-materializer.test.mjs', 'src/recommendation/test/soul-text-match-service.test.mjs',
     'src/groups/test/group-discovery-service.test.mjs', 'src/groups/test/group-chat-service.test.mjs', 'src/groups/test/forum-service.test.mjs', 'src/groups/test/group-forum-store.test.mjs', 'src/groups/test/local-conversation-summary-service.test.mjs',
-    'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
-    'src/ui/test/ui-model.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/ui/test/service-hub-ui.test.mjs', 'src/ui/test/profile-settings-ui.test.mjs', 'src/test/host-extension-update.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs', 'src/character-avatar-store.js', 'src/test/character-avatar-store.test.mjs',
+    'src/mvu/test/recommendation-refresh-patch.test.mjs', 'src/mvu/test/like-match-patch.test.mjs', 'src/mvu/test/private-chat-rhythm-patch.test.mjs', 'src/mvu/test/realistic-private-chat-patch.test.mjs', 'src/mvu/test/private-chat-summary-patch.test.mjs', 'src/mvu/test/meetup-handoff.test.mjs', 'src/mvu/test/soul-preference-patch.test.mjs', 'src/mvu/test/player-public-profile-patch.test.mjs',
+    'src/ui/test/ui-model.test.mjs', 'src/ui/test/onboarding-ui.test.mjs', 'src/ui/test/action-bridge.test.mjs', 'src/ui/test/app-shell-groups.test.mjs', 'src/ui/test/app-shell-images.test.mjs', 'src/ui/test/app-shell-ux.test.mjs', 'src/ui/test/private-chat-ui.test.mjs', 'src/ui/test/image-generation-ui.test.mjs', 'src/ui/test/service-hub-ui.test.mjs', 'src/ui/test/profile-settings-ui.test.mjs', 'src/test/host-extension-update.test.mjs', 'src/player-avatar-store.js', 'src/test/player-avatar-store.test.mjs', 'src/character-avatar-store.js', 'src/test/character-avatar-store.test.mjs',
     'src/ui/icon.js', 'src/ui/romance-hearts.js', 'src/ui/media-state.js', 'src/ui/dialog-controller.js', 'src/ui/test/icon.test.mjs', 'src/ui/test/media-state.test.mjs', 'src/ui/test/dialog-controller.test.mjs', 'src/ui/test/app-shell-message-search.test.mjs', 'src/ui/test/style-token-contract.test.mjs',
     'src/ui/button.js', 'src/ui/badge.js', 'src/ui/list-row.js', 'src/ui/segmented-control.js', 'src/ui/bottom-sheet.js', 'src/ui/empty-state.js', 'src/ui/skeleton.js',
     'src/ui/test/button.test.mjs', 'src/ui/test/badge.test.mjs', 'src/ui/test/list-row.test.mjs', 'src/ui/test/segmented-control.test.mjs', 'src/ui/test/bottom-sheet.test.mjs', 'src/ui/test/empty-state.test.mjs', 'src/ui/test/skeleton.test.mjs', 'src/ui/test/icon-design-system.test.mjs',
@@ -121,7 +121,15 @@ const pageModuleText = (await Promise.all(pageModuleFiles.map(path => readFile(r
 const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.0.11'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.0.11 统一（必须位于壳层 app-shell.js）');
+const onboardingFlow = await readFile(resolve(root, 'src/onboarding/onboarding-flow.js'), 'utf8');
+if (!appShellCore.includes("const UI_VERSION = '1.1.0'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.1.0 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("import { createOnboardingFlow } from './onboarding/onboarding-flow.js'")
+    || !appShellCore.includes('saveProfile: (profile) => actionBridge.runSavePlayerPublicProfile(profile)')
+    || !uiModel.includes('玩家已建档 === false')
+    || !onboardingFlow.includes("头像引用: '', ...normalized")) {
+    fail('缺少首次公开资料引导、严格建档 gate 或受控公开资料保存接线');
+}
+console.log('✓ 首次公开资料引导仅在严格未建档 gate 下显示，并接入受控资料保存');
 if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
     || !appShellCore.includes("'placement_reset'")
     || !appShellCore.includes("'mvu_read_complete'")
@@ -132,10 +140,20 @@ if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
 }
 const index = await readFile(resolve(root, 'index.js'), 'utf8');
 const hostExtensionUpdater = await readFile(resolve(root, 'src/host-extension-update.js'), 'utf8');
+const updateRestart = await readFile(resolve(root, 'src/update-restart.js'), 'utf8');
 if (!hostExtensionUpdater.includes("HOST_EXTENSION_DIRECTORY = 'yuelema-phone-extension'") || !hostExtensionUpdater.includes("VERSION_ENDPOINT = '/api/extensions/version'") || !hostExtensionUpdater.includes("UPDATE_ENDPOINT = '/api/extensions/update'")) fail('宿主扩展更新器必须固定约了吗目录与原生检查/更新端点');
 if (/globalThis\.fetch|\bfetch\s*\(/u.test(hostExtensionUpdater) || /localStorage|stat_data|\bMvu\b/iu.test(hostExtensionUpdater)) fail('宿主扩展更新器不得直接发网、读浏览器存储或接触 MVU');
 if (!index.includes('createHostExtensionUpdater') || !index.includes('extensionUpdater') || !appShell.includes('about-extension-update') || !appShell.includes('runExtensionUpdate')) fail('缺少关于软件页固定扩展更新器的宿主注入或 UI 接线');
-console.log('✓ 固定扩展宿主检查/自动更新器、CSRF 注入和关于页入口接线');
+if (!index.includes('createExtensionRestartController') || !index.includes('extensionRestartController.schedule()')
+    || !index.includes('extensionRestartController.reopen(appInstance)')
+    || (index.match(/extensionRestartController\.cancel\(\)/gu) ?? []).length < 2
+    || !appShellCore.includes('restartAfterUpdate') || !appShellCore.includes('open() { if (!isDestroyed) setOpen(true); }')
+    || !updateRestart.includes("UPDATE_REOPEN_SESSION_KEY = 'yuelema.update-reopen/v1'")
+    || !updateRestart.includes('sessionStorage') || !updateRestart.includes('globalThis.location.reload()')
+    || !updateRestart.includes('cancelSchedule') || !updateRestart.includes('clearPhoneReopenAfterUpdate')) {
+    fail('缺少更新成功后的自动重载、一次性重开标记、lifecycle 重开或禁用/删除清理接线');
+}
+console.log('✓ 固定扩展宿主检查/自动更新器、CSRF 注入、自动重载重开和关于页入口接线');
 if (!index.includes('export function onDisable') || !index.includes('export function onDelete') || !index.includes('clearSessionKeys()')) fail('缺少扩展禁用/删除时清理内存密钥镜像的生命周期实现');
 for (const label of ['发现', '匹配', '消息', '社区', '我的']) {
     if (!appShell.includes(label) && !allSource.includes(`label: '${label}'`)) fail(`缺少导航：${label}`);
@@ -169,6 +187,11 @@ const settingsPanel = await readFile(resolve(root, 'src/settings-panel.js'), 'ut
 const defaultPromptPresets = await readFile(resolve(root, 'src/settings/default-prompt-presets.js'), 'utf8');
 if (!settingsStore.includes('FUNCTION_KEYS') || !settingsStore.includes('functionModeBindings') || !settingsStore.includes('exportJson') || !settingsStore.includes('importJson')) fail('缺少设置预设与安全导入导出层');
 if (!defaultPromptPresets.includes('builtin_recommendation_sfw') || !defaultPromptPresets.includes('builtin_private_chat_sfw') || !defaultPromptPresets.includes('builtin_group_chat_sfw') || !defaultPromptPresets.includes('builtin_forum_sfw') || !defaultPromptPresets.includes('builtin_chat_summary_sfw') || !defaultPromptPresets.includes('builtin_character_authoring_sfw')) fail('缺少本地可编辑的默认 SFW/NSFW 提示词预设');
+if (!defaultPromptPresets.includes('全尺度') || !defaultPromptPresets.includes('自慰、口交、性交、高潮')
+    || !defaultPromptPresets.includes('不强制含蓄') || !settingsStore.includes('refreshNsfwBuiltinPromptPresets')) {
+    fail('缺少 v1.0.19 全尺度 NSFW 内置提示词或 v21→v22 定向迁移');
+}
+if (!settingsStore.includes('refreshCharacterAuthoringBuiltinPromptPresets') || !defaultPromptPresets.includes('completionScopes') || !defaultPromptPresets.includes('characterBlueprint')) fail('缺少 v1.0.20 角色补全/完整创作内置提示词或 v22→v23 定向迁移');
 if (!settingsPanel.includes('unlockSessionKey') || !settingsPanel.includes('hasPersistentKey') || !settingsPanel.includes('deletePersistentKey') || !settingsPanel.includes('fetchModels') || !settingsPanel.includes('functionBindings')) fail('缺少设置 UI 的浏览器 Key 缓存、模型拉取或功能绑定接线');
 if (!index.includes('createBrowserSettingsStorage') || !index.includes('createOpenAICompatibleClient')) fail('缺少浏览器非机密设置持久化或显式 LLM transport 接线');
 console.log('✓ 非机密设置、浏览器 Key 缓存、模型拉取与功能绑定接线');
@@ -201,6 +224,7 @@ const characterAuthoringService = await readFile(resolve(root, 'src/characters/c
 if (!characterAuthoringService.includes('generateCharacterCompletionCandidate') || !characterAuthoringService.includes('generateCharacterAuthoringCandidate') || !characterAuthoringService.includes("functionKey: 'character_ai_completion'") || !characterAuthoringService.includes("functionKey: 'character_full_authoring'")) fail('缺少角色补全/完整创作模型服务或独立功能绑定');
 if (!characterAuthoringService.includes('serviceMatchRequirements') || !characterAuthoringService.includes('service_profile_basic_compatibility_invalid') || !actionBridge.includes('service_order_basic_compatibility_invalid') || !defaultPromptPresets.includes('SERVICE_MATCH_HARD_PROMPT')) fail('缺少 SFW/NSFW 约伴服务性别与性取向硬条件、生成/下单前拒绝或内置提示词刷新');
 if (!characterCreator.includes('AI 补全 / 完整创作') || !characterCreator.includes('generateCharacterCompletionDraft') || !characterCreator.includes('generateCharacterAuthoringDraft')) fail('缺少只载入草稿的 AI 角色创作 UI 接线');
+if (!characterCreator.includes('ROLE_BLUEPRINT_PREFIX') || !characterCreator.includes('completionScopesFromForm') || !characterCreator.includes('adult-hard-limits') || !characterAuthoringService.includes('editingDraft') || !characterAuthoringService.includes('characterBlueprint')) fail('缺少模式隔离角色蓝图、选择性 AI 补全或完整创作蓝图合同');
 if (!actionBridge.includes('generateCharacterCompletionDraft') || !actionBridge.includes('generateCharacterAuthoringDraft')) fail('缺少 AI 角色创作受控桥接');
 if (!appShell.includes('createLauncherDragController') || !appShell.includes('launcherDrag.dispose')) fail('缺少小手机悬浮入口拖动控制器接线');
 if (!characterCreator.includes('只保存当前草稿到本地模板库') || !characterCreator.includes('导入单个模板到本地库') || !characterCreator.includes('合并导入整个模板库') || !characterCreator.includes('导出整个库')) fail('缺少创建角色界面的模板库生成、存储、导入导出 UI 接线');
@@ -272,10 +296,31 @@ console.log('✓ 正文记忆按对象隔离、旧状态受控补齐，当前/�
 const conversationSummary = await readFile(resolve(root, 'src/chat/conversation-summary.js'), 'utf8');
 const interactionRhythm = await readFile(resolve(root, 'src/chat/interaction-rhythm.js'), 'utf8');
 const relationshipProgress = await readFile(resolve(root, 'src/chat/relationship-progress.js'), 'utf8');
+const nsfwConsent = await readFile(resolve(root, 'src/mvu/nsfw-consent.js'), 'utf8');
+const bodyRelationshipCandidate = await readFile(resolve(root, 'src/mvu/body-relationship-candidate.js'), 'utf8');
 const matchScoring = await readFile(resolve(root, 'src/recommendation/match-scoring.js'), 'utf8');
 if (!privateChatResponse.includes('normalizePrivateChatResponse') || !privateChatResponse.includes('projectPrivateChatResponseError') || !privateChatResponse.includes('MAX_PRIVATE_CHAT_REPLY_COUNT')) fail('缺少私聊多气泡模型回复的严格校验与安全错误投影');
 if (!interactionRhythm.includes('decideInteractionRhythm') || !interactionRhythm.includes('computeInteractionPressure')) fail('缺少已读不回/拉黑互动节奏的本地确定性裁决');
-if (!relationshipProgress.includes('projectBondProgress') || !relationshipProgress.includes('deriveMeetupAccess') || !relationshipProgress.includes('meetupRouteGuidance') || !privateChatResponse.includes('bondAssessment') || !controlledPatch.includes('projectBondProgress') || !uiModel.includes('meetupAccess') || !appShell.includes('meetupUnlocked')) fail('缺少分模式关系成长、面基门禁或路线草稿接线');
+if (!relationshipProgress.includes('settleRelationshipProgress') || !relationshipProgress.includes('relationshipEventIdForTurn')
+    || !relationshipProgress.includes('SFW_MEETUP_ROUTE_THRESHOLD') || !relationshipProgress.includes('deriveMeetupAccess') || !relationshipProgress.includes('meetupRouteGuidance')
+    || !privateChatResponse.includes('bondAssessment') || !controlledPatch.includes('settleRelationshipProgress')
+    || !controlledPatch.includes('SFW细微裂缝已触发') || !uiModel.includes('meetupAccess') || !appShell.includes('meetupUnlocked')) fail('缺少阶段 B.1 三值结算、SFW 面基门禁或路线草稿接线');
+if (!bodyRelationshipCandidate.includes('selectPendingBodyRelationshipCandidate') || !bodyRelationshipCandidate.includes('bodyRelationshipEventIdForSource')
+    || !bodyRelationshipCandidate.includes('projectPendingBodyRelationshipCandidate') || !relationshipProgress.includes('settleBodyRelationshipCandidate')
+    || !privateChatResponse.includes('bodyEventReview') || !privateChatService.includes('bodyEventCandidate')
+    || !privateChatService.includes('bodyCandidateEventId') || !controlledPatch.includes('buildBodyRelationshipCandidateBackfillPatch')
+    || !controlledPatch.includes('正文关系候选') || !actionBridge.includes('buildBodyRelationshipCandidateBackfillPatch')
+    || !uiModel.includes('mvu_body_relationship_candidate_schema_outdated')) fail('缺少阶段 B.2 正文候选、同对象私聊复盘、原子消费或过期卡失败关闭接线');
+if (!nsfwConsent.includes('validateNsfwConsent') || !nsfwConsent.includes('grantNsfwConsent') || !nsfwConsent.includes('consumeNsfwConsent')
+    || !nsfwConsent.includes('matchesNsfwConsentReference') || !controlledPatch.includes('buildPrivateChatNsfwConsentPatch')
+    || !controlledPatch.includes('buildPrivateChatNsfwDirectionPatch') || !controlledPatch.includes('buildPrivateChatNsfwRelationshipActionPatch')
+    || !privateChatResponse.includes('nsfwConsentAssessment') || !privateChatService.includes('nsfwConsentReference')
+    || !actionBridge.includes('runPrivateChatNsfwConsent') || !actionBridge.includes('runPrivateChatNsfwDirection')
+    || !appShell.includes('本轮继续') || !appShell.includes('降级为朋友') || !appShell.includes('结束联系')) fail('缺少阶段 C 持续同意、显式路线、正文复盘冻结或关系收束接线');
+if (!relationshipProgress.includes('NSFW_DIRECTION_THRESHOLD') || !relationshipProgress.includes('NSFW爱情阶段30已触发')
+    || !relationshipProgress.includes('NSFW共识亲密阶段40已触发') || !relationshipProgress.includes('safeProgress.冻结关系值')
+    || !bodyRelationshipCandidate.includes('NSFW爱情') || !bodyRelationshipCandidate.includes('NSFW共识亲密')
+    || !controlledPatch.includes('冻结关系值')) fail('缺少阶段 C 双轨 30/40/50、正文候选路线或冻结合同');
 if (!privateChatService.includes('validatePrivateChatRequest') || !privateChatService.includes('buildPrivateChatContext') || !privateChatService.includes('generatePrivateChatReply') || !privateChatService.includes('generatePrivateChatSummary')) fail('缺少私聊上下文隐私投影、请求校验或模型调用接线');
 if (!conversationSummary.includes('listUnsummarizedConversationMessages') || !conversationSummary.includes('summaryRecordSource') || !conversationSummary.includes('normalizeGeneratedConversationSummary')) fail('缺少受限对话总结状态、原始片段或模型输出校验');
 if (!controlledPatch.includes('buildPrivateChatPatch') || !controlledPatch.includes('buildPrivateChatSummaryPatch') || !controlledPatch.includes('buildPrivateChatSummaryFailurePatch') || !controlledPatch.includes('meetup_summary_required') || !controlledPatch.includes('buildClearPrivateChatPatch') || !controlledPatch.includes('buildDeleteCharacterPatch') || !actionBridge.includes('runPrivateChat') || !actionBridge.includes('runPrivateChatSummary') || !actionBridge.includes('runMeetupHandoff') || !actionBridge.includes('clearPrivateChat') || !actionBridge.includes('deleteCharacter')) fail('缺少私聊节奏/总结/面基前整理的受控 Patch 或唯一 MVU 写入桥接');
@@ -283,6 +328,14 @@ if (!appShell.includes('buildMessagesPage') || !appShell.includes('buildPrivateC
 if (!matchScoring.includes('scoreFavoritePrivateChatInvitation') || !matchScoring.includes('scoreLocalCandidateMatch') || !controlledPatch.includes('buildFavoritePrivateChatPatch') || !actionBridge.includes('runCandidateMatch') || !actionBridge.includes('matchOutcome') || !controlledPatch.includes('buildCandidateMatchOutcomePatch')) fail('缺少收藏主动私聊判定、独立匹配本地评分或接受/婉拒结果写入');
 if (!controlledPatch.includes('appendPreferenceWeightOperations') || !controlledPatch.includes('标签权重')) fail('缺少喜欢、收藏、不喜欢的公开标签权重受控更新');
 if (!controlledPatch.includes('buildSoulMatchPreferencePatch') || !actionBridge.includes('generateMatchDraft') || !actionBridge.includes('applySoulMatchPreferenceDraft')) fail('缺少灵魂匹配偏好草稿兼容链');
+const phoneClock = await readFile(resolve(root, 'src/chat/phone-clock.js'), 'utf8');
+const realisticChat = await readFile(resolve(root, 'src/mvu/realistic-chat.js'), 'utf8');
+if (!phoneClock.includes('PHONE_CLOCK_STORAGE_KEY') || !phoneClock.includes('REAL_MS_PER_PHONE_TICK = 60_000')
+    || !index.includes('createPhoneClock') || !appShellCore.includes('yl-phone-clock')) fail('缺少现实 1 分钟对应小手机 5 分钟的持久时钟或顶栏接线');
+if (!realisticChat.includes('MAX_REALISTIC_PENDING_MESSAGES') || !controlledPatch.includes('buildRealisticPrivateChatResponsePatch')
+    || !controlledPatch.includes('buildDeliverRealisticPrivateChatMessagesPatch') || !actionBridge.includes('runRealisticPrivateChatTick')
+    || !appShell.includes('拟真聊天') || !appShell.includes("role', 'switch")) fail('缺少按会话拟真开关、待投递队列、主动调度或安全投递接线');
+console.log('✓ 五分钟小手机时钟、按会话拟真私聊、延时投递与主动消息已纳入静态检查');
 const soulTextMatchService = await readFile(resolve(root, 'src/recommendation/soul-text-match-service.js'), 'utf8');
 if (!soulTextMatchService.includes('generateSoulMatchDraft') || !soulTextMatchService.includes('generateTextMatchDraft') || !soulTextMatchService.includes('buildSoulTextMatchContext')) fail('缺少灵魂/文字匹配服务或隐私上下文投影');
 const matchCandidateMaterializer = await readFile(resolve(root, 'src/recommendation/match-candidate-materializer.js'), 'utf8');
@@ -331,7 +384,7 @@ const imageGenerationClient = await readFile(resolve(root, 'src/llm/image-genera
 const drawingDnaRules = await readFile(resolve(root, 'src/recommendation/drawing-dna-rules.js'), 'utf8');
 if (!index.includes('createImageGenerationClient') || !actionBridge.includes('generateConversationImage')) fail('缺少生图客户端注入或对话生图桥接');
 if (!appShell.includes("'settings_image_generation'") || !appShell.includes("'settings_image_cache'") || !appShell.includes('buildConversationImageControls') || !appShell.includes('buildImageDirectiveCard') || !appShell.includes('buildConversationImageCachePage') || !appShell.includes('openImageOriginalDialog') || !appShell.includes('generateConversationImage')) fail('缺少生图设置 / 缓存路由、会话开关、结构化指令或原图 UI 接线');
-if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 21') || !settingsStore.includes('IMAGE_CLIENT_MODES') || !settingsStore.includes('NAI_SAMPLER_OPTIONS') || !settingsStore.includes('NAI_NOISE_SCHEDULE_OPTIONS')
+if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 23') || !settingsStore.includes('IMAGE_CLIENT_MODES') || !settingsStore.includes('NAI_SAMPLER_OPTIONS') || !settingsStore.includes('NAI_NOISE_SCHEDULE_OPTIONS')
     || !settingsStore.includes('openaiBaseUrl') || !settingsStore.includes('openaiWidth') || !settingsStore.includes('comfyBaseUrl') || !settingsStore.includes('promptPresets') || !settingsStore.includes('activePromptPresetIds') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) {
     fail('缺少生图设置 schema、三接口独立提示词预设、客户端模式、NAI 固定选项、OpenAI/ComfyUI 专属配置或逐会话自动生图隔离');
 }

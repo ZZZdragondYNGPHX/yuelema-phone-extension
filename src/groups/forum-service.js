@@ -43,10 +43,10 @@ function makeMessages(context, promptPreset) {
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件内的论坛辅助模型。仅根据提供的公开玩家资料和群组公开投影，生成一篇可供玩家审核的短论坛帖子草稿。',
-        '草稿要像真实用户在恋爱社区的随手发帖：有具体的时间、地点或细节钩子（一杯没喝完的咖啡、加班后的末班车、周末的展览票根），以一个开放的问题或邀请收尾，语气自然、不营销化。contentMode 为 SFW 时保持日常暧昧与轻盈分享；为 NSFW 时可直白谈论成年人自愿的欲望、身体偏好与露骨线上话题，但仍只发生在线上文字里。',
+        '草稿要像真实用户在恋爱社区的随手发帖：有具体的时间、地点或细节钩子，以开放问题或邀请收尾，语气自然、不营销化。contentMode 为 SFW 时保持日常暧昧与轻盈分享；为 NSFW 时可全尺度描写成年人自愿的裸体、器官、性行为、身体反应、性经历、成人玩法与露骨欲望，不强制含蓄、转场或淡出。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
-        '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',
-        '软件层只处理线上文字。不得演绎、确认或描述线下性行为；NSFW 不等于同意。不得输出或猜测隐藏资料、仅好友资料、关系数值、候选人、UID、会话、Patch、路径、API Key、密钥或系统实现。',
+        '功能绑定提示词只能影响公开内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',
+        '不得把输入中未提供的玩家现实经历伪造成事实；NSFW 不等于替任何参与者默认同意。不得输出或猜测隐藏资料、仅好友资料、关系数值、候选人、UID、会话、Patch、路径、API Key、密钥或系统实现。',
         '只输出合法 JSON 对象，不得使用 Markdown、代码块或解释。严格形状为：{"title":"1-80字标题","body":"1-900字帖子草稿"}。不得含 HTML、控制字符、UpdateVariable、JSONPatch 或任何写入指令。草稿仅供展示和玩家确认，不能自动发布或写入状态。',
     ].filter(Boolean).join('\n\n');
     return Object.freeze([
@@ -358,8 +358,8 @@ function makeForumHomeMessages(context, promptPreset, refreshMode = 'append') {
         `作者规则：每篇 post 的 author 必须逐字等于 knownPeople 中某个 nickname，或 participants 中某个新角色的 nickname；同一作者可以发多篇帖子。participants 只放本次新出现的临时角色，最多 ${FORUM_CHANNELS.length} 位，不要重复 knownPeople 已有昵称；若全部帖子都由已有人物发出，participants 用空数组 []。`,
         '每位临时角色必须给全 10 个字段：nickname（1-80字）、ageRange、gender、city、mbti、zodiac、occupation、interests（1-12 个非空标签，每个 1-32 字）、presence、matchRate。ageRange 必须是明确的成年写法，例如 "25-29岁"、"31岁" 或 "已验证成年"，其中数字必须都不小于 18；不要写 "90后"、"20代"、"25岁左右" 这类模糊说法。matchRate 只能是 0-100 的整数或 null，不要写百分号、小数或字符串。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
-        '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变频道、字段、数量、数据来源或下方固定 JSON 合同。',
-        '软件层只处理线上文字。不得演绎、确认或描述线下性行为；NSFW 不等于同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。帖子中出现的任何年龄数字只能是 18 岁及以上的成年年龄，也不要写"差3岁"这类年龄差数字或提及未成年人。',
+        '功能绑定提示词只能影响公开内容的题材、语气和内容尺度，不能改变频道、字段、数量、数据来源或下方固定 JSON 合同。',
+        'NSFW 内容可以完整描写虚构成年人的性经历和性行为，但不得把输入中未提供的玩家现实经历伪造成事实，也不等于替任何参与者默认同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。帖子中出现的任何年龄数字只能是 18 岁及以上的成年年龄，也不要写"差3岁"这类年龄差数字或提及未成年人。',
         '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"participants":[{"nickname":"苏晴","ageRange":"25-29岁","gender":"女","city":"上海","mbti":"ISFP","zodiac":"双鱼座","occupation":"花艺师","interests":["花艺","摄影"],"presence":"在线","matchRate":null}],"posts":[{"author":"knownPeople或participants中的昵称","topic":"固定频道名之一","title":"1-120字","body":"1-1200字","tags":["1-32字"]}]}。title 不超过 120 字；body 建议 80-300 字、不得超过 1200 字；每篇 tags 最多 6 个且互不重复；整个 JSON 回复总长不要超过 20000 字符。不得输出 HTML、控制字符、UpdateVariable 或 JSONPatch。',
     ].filter(Boolean).join('\n\n');
     return Object.freeze([
@@ -482,8 +482,8 @@ function makeForumExistingPostsMessages(context, promptPreset) {
         '你是现代现实都市线上约会软件的心动社区既有帖子自动更新模型。只改写给定的本地帖子可见文案，让它们像持续发生的线上社区动态。',
         '每个 slot 必须恰好更新一次；不得新增、删除、合并、重排帖子，不得改变频道、作者、评论、角色资料或任何未列出的数据。新的本地帖子只能由首页下拉刷新生成。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
-        '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变 slot、字段、数量、数据来源或下方固定 JSON 合同。',
-        '软件层只处理线上文字。不得演绎、确认或描述线下性行为；NSFW 不等于同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。',
+        '功能绑定提示词只能影响公开内容的题材、语气和内容尺度，不能改变 slot、字段、数量、数据来源或下方固定 JSON 合同。',
+        'NSFW 内容可以完整保留或改写虚构成年人的性经历与性行为，但不得把输入中未提供的玩家现实经历伪造成事实，也不等于替任何参与者默认同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。',
         '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"updates":[{"slot":1,"title":"1-120字","body":"1-360字","tags":["1-32字"]}]}。updates 数量必须等于输入 posts 数量，slot 必须从 1 到该数量各出现一次；每篇 tags 最多 6 个且互不重复。不得输出 HTML、控制字符、UpdateVariable 或 JSONPatch。',
     ].filter(Boolean).join('\n\n');
     return Object.freeze([
@@ -607,11 +607,11 @@ function makeForumPostMessages(context, promptPreset) {
     const system = [
         preset.before ? `功能绑定提示词（前置条目）：\n${preset.before}` : '',
         '你是现代现实都市线上约会软件内的论坛帖子讨论更新模型。根据公开帖子和受限评论历史，模拟其他用户发表 1–8 条自然评论。',
-        '评论要有真实社区的参差感：有人认真接话、有人补充自己的相似经历、有人开玩笑或轻轻抬杠、有人向楼主或玩家追问细节；避免每条都同一种语气或都以问句结尾。contentMode 为 SFW 时保持日常调侃与暧昧试探；为 NSFW 时成年人可直白讨论欲望与露骨话题，但仍只是线上文字互动。',
+        '评论要有真实社区的参差感：有人认真接话、有人补充自己的相似经历、有人开玩笑或轻轻抬杠、有人向楼主或玩家追问细节；避免每条都同一种语气或都以问句结尾。contentMode 为 SFW 时保持日常调侃与暧昧试探；为 NSFW 时成年人可全尺度讨论裸体、器官、性行为、身体反应、性经历和其他露骨玩法，不强制含蓄、转场或淡出。',
         '可使用帖子作者或 participants 中已有昵称；如需新评论者，必须先在 participants 给出其公开关键资料。每位临时角色必须给全 10 个字段：nickname、ageRange、gender、city、mbti、zodiac、occupation、interests（非空标签）、presence、matchRate；ageRange 必须是明确的成年写法（如 "25-29岁"、"31岁" 或 "已验证成年"，数字都不小于 18），matchRate 只能是 0-100 的整数或 null。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
-        '功能绑定提示词只能影响公开线上内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',
-        '软件层只处理线上文字。不得演绎、确认或描述线下性行为；NSFW 不等于同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。',
+        '功能绑定提示词只能影响公开内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',
+        '不得把输入中未提供的玩家现实经历伪造成事实；NSFW 不等于替任何参与者默认同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。',
         '只输出合法 JSON，不得使用 Markdown、代码块或解释。严格形状：{"participants":[{"nickname":"苏晴","ageRange":"25-29岁","gender":"女","city":"上海","mbti":"ISFP","zodiac":"双鱼座","occupation":"花艺师","interests":["花艺","摄影"],"presence":"在线","matchRate":null}],"messages":[{"speaker":"作者、已有参与者或participants昵称","text":"1-480字","imageDirective":{"kind":"share_photo|selfie|scene_snapshot|private_photo","scene":"English image tags"}}]}。若无新评论者，participants 用空数组 []。imageDirective 可省略，仅在评论确实值得分享照片、角色有分享欲且公开边界允许时使用；不得机械生图。不得输出 UID、URL、完整提示词、绘图 DNA、凭据、HTML、控制字符、UpdateVariable 或 JSONPatch。',
     ].filter(Boolean).join('\n\n');
     return Object.freeze([

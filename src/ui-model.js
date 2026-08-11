@@ -1,6 +1,9 @@
 import { buildGroupBrowseModel } from './groups/group-discovery-service.js';
 import { listConversationSummaryRecords, listUnsummarizedConversationMessages, normalizeConversationSummaryState } from './chat/conversation-summary.js';
-import { deriveMeetupAccess } from './chat/relationship-progress.js';
+import { deriveMeetupAccess, deriveRelationshipSafetyState } from './chat/relationship-progress.js';
+import { validateRelationshipNarrative } from './mvu/relationship-narrative.js';
+import { isActiveNsfwConsent, validateNsfwConsent } from './mvu/nsfw-consent.js';
+import { projectRealisticChatState } from './mvu/realistic-chat.js';
 
 export const NAV_ITEMS = Object.freeze([
     { id: 'home', label: '发现', iconName: 'home' },
@@ -267,12 +270,75 @@ export function projectPrivateChatView(state) {
         }));
         const totalLayers = Number.isInteger(session.对话层数) && session.对话层数 >= messages.length
             ? session.对话层数 : messages.length;
+        const narratives = ownRecord(state.关系叙事) ? state.关系叙事 : null;
+        const narrative = validateRelationshipNarrative(narratives?.[npcUid]);
+        const progress = narrative.ok ? narrative.value.进程 : null;
+        const safety = deriveRelationshipSafetyState(progress);
+        const consent = validateNsfwConsent(session.NSFW同意);
+        const consentActive = consent.ok && isActiveNsfwConsent(consent.value);
+        const relationship = ownRecord(state.角色池[npcUid]?.与玩家关系) ? state.角色池[npcUid].与玩家关系 : {};
+        const routeEstablished = ['心动值', '欲望值'].includes(progress?.冻结关系值);
+        const directionOptions = progress?.NSFW方向确认可用 === true && !routeEstablished
+            ? [
+                Number.isInteger(relationship.心动值) && relationship.心动值 >= 50 ? 'love' : '',
+                Number.isInteger(relationship.欲望值) && relationship.欲望值 >= 50 ? 'consensual_intimacy' : '',
+                'defer',
+            ].filter(Boolean)
+            : [];
         const meetupAccess = deriveMeetupAccess({
             contentMode: state.软件?.内容模式,
-            relationship: state.角色池[npcUid]?.与玩家关系,
+            relationship,
+            progress,
+            nsfwConsent: consent.ok ? consent.value : null,
         });
+        const observationCopy = {
+            无变化: '这轮没有形成新的关系变化。',
+            关系靠近: '彼此的相处正在自然靠近。',
+            边界被尊重: '这段关系里的边界得到了尊重。',
+            保持观望: '对方仍在观察，适合保持自然交流。',
+            正文约定待兑现: '有一项关系进展需要在正文事件中兑现。',
+            主动揭示: '对方主动分享了更真实的一面。',
+            理解已确认: '一次重要的理解已经得到确认。',
+            心愿同行: '双方正在共同面对一项重要心愿。',
+            关系受损: '这轮互动让关系承受了压力。',
+            安全降级: '关系已按你的选择进入更安全的边界。',
+            结局确认: '双方已经确认了当前关系走向。',
+        };
+        const settledCopy = {
+            深度朋友: '双方已经确认以深度朋友的方式继续相处。',
+            恋人: '双方已经明确确认恋人关系。',
+            各自成长: '双方已经确认保留温暖联系，并把重心放回各自生活。',
+        }[progress?.关系结束状态] ?? '';
+        const stageCopy = safety.ended ? '关系已归档或结束。'
+            : safety.paused ? '关系已暂停，历史仍然保留。'
+                : settledCopy || (
+                    progress?.SFW双轨结局已解锁 === true ? '正在等待双方明确确认关系走向。'
+                    : progress?.SFW心动已解锁 === true ? '普通聊天不再推进关系；重要进展需要在正文事件中发生。'
+                        : progress?.SFW理解已检查 === true ? '需要一次更坦诚、尊重边界的交流。'
+                            : progress?.SFW面基已解锁 === true ? '可以通过正文见面继续了解彼此。'
+                                : progress?.SFW朋友分享已触发 === true ? '关系进入了更深入的分享阶段。'
+                                    : progress?.SFW细微裂缝已触发 === true ? '对方开始显露更真实的生活痕迹。'
+                                        : '关系正在自然相处中。');
         sessions.push(Object.freeze({
             sessionUid, npcUid, status: session.状态, profile, messages: Object.freeze(messages),
+            realisticChat: projectRealisticChatState(session.拟真聊天),
+            onlySfw: safety.onlySfw,
+            paused: safety.paused,
+            ended: safety.ended,
+            relationshipObservation: Object.freeze({
+                summary: stageCopy,
+                latest: observationCopy[progress?.最近关系观察] ?? '',
+                canPause: !safety.paused && !safety.onlySfw && !safety.ended,
+                canResume: progress?.边界暂停状态 === '暂停' && !safety.ended,
+                canArchive: !safety.ended,
+            }),
+            nsfwConsentActive: consentActive,
+            nsfwDirectionAvailable: directionOptions.length > 0,
+            nsfwDirectionOptions: Object.freeze(directionOptions),
+            nsfwDirection: progress?.NSFW路线锁定 === '爱情' ? 'love'
+                : progress?.NSFW路线锁定 === '共识亲密' ? 'consensual_intimacy'
+                    : progress?.NSFW路线锁定 === '暂不定义' ? 'defer' : '',
+            nsfwRouteEstablished: routeEstablished,
             meetupAccess,
             meetups: projectSessionMeetups(state, npcUid, contentMode),
             summaryInfo: Object.freeze({
@@ -284,7 +350,7 @@ export function projectPrivateChatView(state) {
                 targetSummaryUid: summaryState.targetSummaryUid,
                 attempts: summaryState.attempts,
             }),
-            canSend: session.状态 === '已匹配',
+            canSend: session.状态 === '已匹配' && !safety.paused && !safety.ended,
         }));
     }
     // §7.1.1：按最后一条消息时间倒序；无可解析时间的会话垫底；同刻/同为无时间时
@@ -302,8 +368,11 @@ export function projectPrivateChatView(state) {
 
 const SERVICE_ORDER_UID_PATTERN = /^service_[a-z0-9][a-z0-9_-]{0,63}$/i;
 const SERVICE_ORDER_STATES = new Set(['待确认', '进行中', '已完成', '已取消']);
-const SERVICE_PRODUCT_CATEGORY_LABELS = Object.freeze({
+const SERVICE_PRODUCT_CATEGORY_LABELS_SFW = Object.freeze({
     girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品',
+});
+const SERVICE_PRODUCT_CATEGORY_LABELS_NSFW = Object.freeze({
+    girl_shuren: '熟人性爱幻想', girl_luren: '陌生约炮邂逅', random_generation: '随机性癖体验',
 });
 const SERVICE_LEGACY_CATEGORY_LABELS = Object.freeze({
     SFW: Object.freeze({ coffee_walk: '咖啡与散步', arts_outing: '展览与演出', city_guide: '城市向导', hobby_day: '兴趣活动' }),
@@ -311,8 +380,8 @@ const SERVICE_LEGACY_CATEGORY_LABELS = Object.freeze({
 });
 // New person categories work in both modes. Legacy activities remain display-only for historical orders.
 const SERVICE_CATEGORY_LABELS = Object.freeze({
-    SFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS, ...SERVICE_LEGACY_CATEGORY_LABELS.SFW }),
-    NSFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS, ...SERVICE_LEGACY_CATEGORY_LABELS.NSFW }),
+    SFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS_SFW, ...SERVICE_LEGACY_CATEGORY_LABELS.SFW }),
+    NSFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS_NSFW, ...SERVICE_LEGACY_CATEGORY_LABELS.NSFW }),
 });
 const SERVICE_ORDER_LIFECYCLE_FIELDS = Object.freeze(['发起时间', '开始时间', '结束时间', '结束摘要', '已确认边界']);
 const SERVICE_TIME_SAFE_PATTERNS = Object.freeze([
@@ -437,6 +506,7 @@ export function createPhoneView(readResult) {
             candidates: Object.freeze([]),
             favorites: Object.freeze([]),
             playerProfile: projectPlayerPublicProfile(null),
+            profileOnboardingRequired: false,
             queueCount: 0,
             matches: Object.freeze([]),
             messageSessions: Object.freeze([]),
@@ -448,6 +518,8 @@ export function createPhoneView(readResult) {
 
     const software = ownRecord(readResult.state.软件) ? readResult.state.软件 : {};
     const mode = software.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+    // 只投影严格的 false：旧聊天缺字段时不得强制弹出引导。
+    const profileOnboardingRequired = ownRecord(software.功能开关) && software.功能开关.玩家已建档 === false;
     const collections = projectRecommendationCollections(readResult.state);
     const candidates = Object.freeze([...collections.queue, ...collections.favorites.filter((favorite) => !collections.queue.some((candidate) => candidate.uid === favorite.uid))]);
     return Object.freeze({
@@ -458,6 +530,7 @@ export function createPhoneView(readResult) {
         candidates,
         favorites: collections.favorites,
         playerProfile: projectPlayerPublicProfile(readResult.state),
+        profileOnboardingRequired,
         queueCount: countPublicCandidates(readResult.state),
         matches: projectMatchView(readResult.state),
         messageSessions: projectPrivateChatView(readResult.state),
@@ -504,16 +577,80 @@ export function describeActionFailure(result) {
         mvu_parse_input_clone_failed: 'MVU 的临时解析副本不可用，本次未写入任何数据。',
         mvu_relationship_routes_schema_outdated: '当前聊天的角色卡仍缺少关系路线字段。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次模型结果未写入。',
         mvu_story_memory_schema_outdated: '当前聊天缺少 v1.0.8 正文记忆结构。请导入与小手机相同版本的《约了吗》MVU 角色卡后重试；本次未写入。',
+        mvu_relationship_narrative_schema_outdated: '当前聊天缺少 v1.0.20 关系叙事结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
+        mvu_body_relationship_candidate_schema_outdated: '当前聊天缺少 v1.0.20 正文关系候选结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
+        mvu_nsfw_consent_schema_outdated: '当前聊天缺少 v1.0.20 成人话题共识结构。请导入与小手机相同版本的《约了吗》MVU 角色卡，并新开聊天后重试；本次未写入。',
         story_memory_backfill_state_invalid: '当前正文记忆状态不可修复，请刷新后重试。',
         story_memory_backfill_role_invalid: '当前角色记录无法建立独立正文记忆，本次未写入。',
         story_memory_backfill_value_invalid: '现有正文记忆格式异常；为避免误删经历，本次未自动修复。',
+        relationship_narrative_backfill_state_invalid: '当前关系叙事状态异常；为避免覆盖既有资料，本次未自动修复。',
+        relationship_narrative_backfill_orphan: '发现无法对应当前角色的关系叙事记录；为避免删除资料，本次未自动修复。请保留当前聊天并附上脱敏诊断反馈。',
+        relationship_narrative_uid_conflict: '当前角色的关系叙事记录发生冲突，请刷新后重试。',
+        body_relationship_candidate_backfill_state_invalid: '当前正文关系候选状态异常；为避免覆盖已发生的经历，本次未自动修复。请刷新后重试。',
+        body_relationship_candidate_uid_conflict: '当前角色的正文关系候选记录发生冲突，请刷新后重试。',
+        body_relationship_candidate_state_invalid: '正文关系候选所在的软件状态异常，本次未写入。请刷新后重试。',
+        body_relationship_candidate_npc_uid_invalid: '当前私聊对象标识异常，本次未写入。请返回消息列表后重试。',
+        body_relationship_candidate_role_pool_invalid: '当前角色资料状态异常，无法安全复核正文关系候选，本次未写入。',
+        body_relationship_candidate_npc_missing: '当前私聊对象已不在角色资料中，本次未写入。请返回消息列表刷新。',
+        body_relationship_candidate_root_invalid: '正文关系候选结构异常；为避免误写关系值，本次未写入。请使用 v1.0.20 角色卡新开聊天后重试。',
+        body_relationship_candidate_slot_missing: '当前对象缺少独立的正文关系候选槽位，本次未写入。请刷新后重试。',
+        body_relationship_candidate_invalid: '正文关系候选内容未通过安全复核，本次未写入任何关系变化。',
+        body_relationship_candidate_uid_mismatch: '正文关系候选与当前私聊对象不一致，本次未写入。请返回消息列表刷新。',
+        body_relationship_candidate_source_registry_invalid: '正文面基记录状态异常，无法安全复核关系候选，本次未写入。',
+        body_relationship_candidate_source_missing: '正文关系候选的来源面基记录已不存在，本次未写入。',
+        body_relationship_candidate_source_invalid: '正文关系候选的来源面基记录格式异常，本次未写入。',
+        body_relationship_candidate_source_uid_mismatch: '正文关系候选的来源对象不一致，本次未写入。',
+        body_relationship_candidate_source_not_completed: '来源面基尚未结束，正文关系候选不会提前结算。',
+        body_relationship_candidate_source_route_invalid: '正文关系候选与来源面基或已确认路线不一致，本次未写入。',
+        body_relationship_candidate_source_summary_invalid: '来源面基缺少可复核的正文结果摘要，本次未写入。',
         mvu_replace_failed: 'MVU 保存本次修改时出错。',
         mvu_read_failed: '读取当前状态失败，未写入任何数据。',
         private_chat_invalid_target: '当前私聊会话已变化，请返回消息列表后重试。',
         private_chat_session_not_found: '当前私聊会话已不可用，请返回消息列表后重试。',
         private_chat_story_memory_schema_outdated: '当前对象尚无独立正文记忆槽位，请刷新后重试。',
         private_chat_not_matched: '当前对象尚未建立可发送的私聊。',
+        private_chat_player_adult_verification_failed: '玩家资料尚未通过成年人校验，无法发送私聊。',
         private_chat_adult_verification_failed: '该资料未通过成年人校验，无法发送私聊。',
+        private_chat_relationship_narrative_schema_outdated: '当前对象缺少完整的关系安全状态，请导入与小手机相同版本的 v1.0.20 角色卡并新开聊天。',
+        private_chat_relationship_paused: '当前关系已暂停、拉黑或归档，私聊保持只读。',
+        private_chat_relationship_ended: '当前关系已经结束，私聊保持只读。',
+        private_chat_safety_reference_invalid: '本次私聊的安全状态引用无效，未写入任何消息。',
+        private_chat_safety_state_changed: '生成回复期间成人话题安全状态已变化；为避免使用过期授权，本条消息未写入，请重新发送。',
+        private_chat_nsfw_safety_invalid_action: '成人话题安全操作无效，未写入。',
+        private_chat_nsfw_safety_mode_changed: '内容模式已变化，请刷新后重试成人话题设置。',
+        private_chat_nsfw_safety_not_matched: '当前会话已变化，无法调整成人话题设置。',
+        private_chat_nsfw_safety_already_paused: '当前关系已经是“仅 SFW”。',
+        private_chat_nsfw_safety_not_paused: '当前关系没有暂停成人话题。',
+        private_chat_nsfw_consent_schema_outdated: '当前会话缺少 v1.0.20 成人话题共识结构，请刷新；若仍出现，请使用同版本角色卡新开聊天。',
+        private_chat_realistic_schema_outdated: '当前会话缺少 v1.0.20 拟真聊天结构，请刷新；若仍出现，请使用同版本角色卡新开聊天。',
+        private_chat_realistic_backfill_state_invalid: '当前会话结构异常，无法安全建立拟真聊天调度。',
+        private_chat_realistic_disabled: '该会话尚未开启拟真聊天。',
+        private_chat_realistic_player_burst_full: '这一组已经连续发送 6 条，请等对方处理后再继续。',
+        private_chat_realistic_player_burst_too_long: '这一组消息合计超过 600 字，请等对方处理或缩短内容。',
+        private_chat_realistic_time_unavailable: '小手机时间暂不可用，本次没有发送或改动设置。',
+        private_chat_realistic_player_batch_changed: '生成期间又收到了你的新消息，本次旧回复计划已丢弃，将按最新消息重新处理。',
+        private_chat_realistic_delivery_pending: '对方已有消息等待按时送达，本次暂不重复生成。',
+        private_chat_realistic_delivery_mode_changed: '等待送达期间内容模式已改变，未显示的消息已取消，请按当前模式重新开启拟真聊天。',
+        private_chat_realistic_delivery_consent_changed: '等待送达期间成人话题共识已改变，未显示的消息已取消，请重新确认后开启拟真聊天。',
+        private_chat_realistic_toggle_no_change: '拟真聊天已经处于所选状态。',
+        private_chat_nsfw_consent_backfill_state_invalid: '当前会话结构异常，无法安全建立成人话题共识槽位。',
+        private_chat_nsfw_consent_invalid_action: '成人话题共识操作无效，未写入。',
+        private_chat_nsfw_consent_invalid_selection: '请至少选择一个允许范围，并选择 1、3 或 5 轮有效期。',
+        private_chat_nsfw_consent_not_active: '当前没有可撤回的成人话题共识。',
+        private_chat_nsfw_consent_only_sfw: '当前关系仅允许 SFW；恢复成人话题后仍需重新建立共识。',
+        private_chat_nsfw_consent_required: '请先在聊天工具中建立本会话的成人话题共识。',
+        private_chat_nsfw_turn_consent_invalid: '本轮确认状态无效，未发送消息。',
+        private_chat_nsfw_turn_consent_required: '发送成人话题前，请勾选“本轮继续”；该确认发送后自动取消。',
+        private_chat_nsfw_consent_state_changed: '生成回复期间成人话题共识已变化或过期；本条消息未写入，请重新确认。',
+        private_chat_nsfw_consent_revision_exhausted: '成人话题共识修订次数已达安全上限，请保留当前聊天并反馈脱敏诊断。',
+        private_chat_nsfw_direction_invalid_action: '成人关系方向选择无效，未写入。',
+        private_chat_nsfw_direction_unavailable: '当前尚未达到可确认的成人关系方向，或所选方向尚未满足条件。',
+        private_chat_nsfw_direction_no_change: '当前已经是这个成人关系方向。',
+        private_chat_nsfw_direction_meetup_active: '已有进行中的成人面基，结束或取消后才能调整方向。',
+        private_chat_nsfw_direction_locked: '该成人关系路线已由正文面基复盘建立；如需改变，请先使用“降级为朋友”。',
+        private_chat_nsfw_relationship_invalid_action: '关系暂停、归档、降级或结束操作无效，未写入。',
+        private_chat_nsfw_relationship_not_established: '当前尚未建立可降级的成人关系路线。',
+        private_chat_nsfw_relationship_no_change: '当前关系已经处于该状态。',
         private_chat_message_invalid: '消息不能为空或格式不正确。',
         private_chat_settings_unavailable: '私聊设置暂不可用。',
         private_chat_settings_invalid: '私聊预设无效，请检查设置。',
@@ -525,6 +662,12 @@ export function describeActionFailure(result) {
         private_chat_session_messages_invalid: '当前会话记录异常，本条消息未写入。',
         private_chat_history_requires_summary: '聊天记录已达到保留上限；请先完成未整理的聊天总结后再发送。',
         private_chat_rhythm_state_invalid: '当前角色的互动节奏设置异常，本条消息未写入。',
+        private_chat_body_candidate_reference_invalid: '正文关系候选已变化，请刷新后重试；本条消息未写入。',
+        meetup_relationship_paused: '当前关系已暂停、拉黑或归档，不能发起面基。',
+        meetup_relationship_ended: '当前关系已经结束，不能发起面基。',
+        meetup_nsfw_only_sfw: '当前关系仅允许 SFW 互动，不能发起 NSFW 面基。',
+        meetup_nsfw_consent_required: '当前没有有效的成人话题共识；请重新确认后再发起 NSFW 面基。',
+        meetup_nsfw_direction_unconfirmed: 'NSFW 路线尚未由双方明确确认；当前阶段不会按关系分自动选择面基路线。',
         private_chat_delete_invalid_target: '该会话标识无效，未执行删除。',
         private_chat_delete_not_found: '该会话已不存在，请返回消息列表刷新。',
         private_chat_delete_state_invalid: '该会话状态异常，未执行删除。',

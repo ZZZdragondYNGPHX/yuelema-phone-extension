@@ -1,28 +1,47 @@
-# 发布审核工作流
+# 双 Remote 发布审核工作流
 
 ## 目的与术语
 
-本扩展通过 Git URL 被其他用户安装，所以 `main` 只能承载已经由项目负责人明确认可的稳定版本。
+本扩展采用私有开发、公开 Beta、公开 Stable 的三层交付。remote 名称和职责不得互换：
 
-- **候选分支**：`release/v<版本>`，例如 `release/v1.0.1`。这是审核入口，不是 `main`。
-- **审核版**：候选分支上的已提交、已推送、已验证快照；版本号直接使用最终拟发布的 `X.Y.Z`，以确保审核和正式版指向同一提交。
-- **正式发布**：用户在当前对话明确说“审核通过”“正式发版”或等效指令后，才把**同一个候选提交**快进合并到 `main`、推送 `main`、打 `vX.Y.Z` 标签并发布 GitHub Release。
-- **真机验收**：在真实 SillyTavern 中的独立验证。它不由 Node 测试、分支推送、GitHub Release 或本文件替代。
+| Remote / branch | 职责 | 是否可供普通用户安装 |
+| --- | --- | --- |
+| `origin/main` | 私有 **Dev** 开发主线 | 否 |
+| `public/release/vX.Y.Z` | 公开 **Beta** 审核候选 | 仅审核者/测试环境 |
+| `public/main` | 公开 **Stable** 稳定线 | 是 |
 
-GitHub 的 **draft/pre-release** 可用来展示审核说明，但它本身不会让 Git URL 安装的用户自动获得代码；不能把它误报为正式发布。
+- **私有 Dev SHA**：已提交到 `origin`、可供持续开发的精确提交。
+- **公开 Beta SHA**：从私有 Dev SHA 选定并推送到 `public/release/vX.Y.Z` 的审核快照。
+- **正式发布**：用户在当前对话明确说“审核通过”“正式发版”或等效指令，批准**命名的 Beta SHA**后，才把同一提交推广到 `public/main`、打 `vX.Y.Z` tag 并创建 GitHub Release。
+- **真机验收**：真实 SillyTavern 中的独立验证；Node 测试、分支推送、GitHub Release 或本文件均不能替代它。
 
-## 候选准备（禁止改 main）
+GitHub 的 Draft/Pre-release 可展示审核说明，但不会让 Git URL 普通安装自动转到 Stable，也不等于用户批准。
 
-1. 先确认 `main` 和 `origin/main` 一致，记录基线 SHA；盘点已有脏文件，绝不把来源不明的改动混入。
-2. 从 `main` 创建 `release/vX.Y.Z`。候选期间只在该分支提交和推送：
+## 日常开发（只到私有 origin）
+
+1. 盘点工作树，绝不混入来源不明的改动：
    ```powershell
+   git status --short --branch
+   git fetch origin
+   ```
+2. 在 `origin` 的开发分支进行修改、验证、提交和推送。`origin/main` 是 Dev 集成线；不得把日常提交推送或镜像到 `public`。
+3. 每个功能阶段更新 `../实现进度与交接.md`，写明私有 Dev SHA、验证结果和未做的真机项。
+
+## 公开 Beta（仅在用户明确说“发布到公开仓库”后）
+
+1. 检查代码状态并拉取私有 Dev 主线：
+   ```powershell
+   git status --short --branch
+   git fetch origin public
    git switch main
    git pull --ff-only origin main
-   git switch -c release/vX.Y.Z
    ```
-3. 仅对扩展本身的发布，把 `manifest.json`、`package.json`、`src/app-shell.js` 的 `UI_VERSION`、静态检查锚点、关于页更新日志、相关测试和 README 同步为同一个 `X.Y.Z`。若本次还改了角色卡合同或产物，再单独同步角色卡版本并构建；纯扩展 UI 修复不可伪称角色卡已更新。
-4. 更新 `../实现进度与交接.md` 与相关策划文档，写明候选范围、精确 SHA、验证证据、未做的真机项，以及“尚未进入 main”。
-5. 先运行最小回归，再运行完整门禁：
+   工作树必须干净；记录将发布的精确 `origin/main` SHA 和版本 `X.Y.Z`。
+2. 确认 `public/main` 是该 Dev SHA 的祖先；若公开 Stable 已推进或历史分叉，停止并请用户决定，绝不 force-push：
+   ```powershell
+   git merge-base --is-ancestor public/main origin/main
+   ```
+3. 运行适用的本地门禁，并更新进度文档：
    ```powershell
    node --check .\src\app-shell.js
    npm run check
@@ -30,41 +49,42 @@ GitHub 的 **draft/pre-release** 可用来展示审核说明，但它本身不�
    node --input-type=module -e "await import('./index.js'); console.log('ok')"
    git diff --check
    ```
-6. 只暂存经过审查的文件；检查暂存差异，再提交候选：
+4. 仅将这个精确 Dev SHA 推送为公开 Beta：
    ```powershell
-   git add -- <explicit files>
-   git diff --cached --check
-   git diff --cached --stat
-   git commit -m "fix: <summary> (vX.Y.Z review)"
-   git push -u origin release/vX.Y.Z
+   $sha = git rev-parse origin/main
+   git push public "${sha}:refs/heads/release/vX.Y.Z"
+   git ls-remote --heads public release/vX.Y.Z
    ```
+   此步骤**不得**推 `public/main`、不得打 tag、不得创建正式 GitHub Release。
 
-候选推送只会公开审核分支；它不会变更 `origin/main`。若可用 GitHub draft Release，可创建为 **Draft** 并附上候选 SHA、影响范围、测试和真机验收清单；没有 API/CLI 权限时不要伪造“已创建 GitHub Release”。
+向用户报告公开 Beta 分支 URL/SHA、已验证项、明确未验证项及可复现真机步骤，等待反馈。
 
-## 用户审核
+## Beta 反馈与修复
 
-向用户提供候选分支 URL / SHA、已验证项、明确未验证项，以及可复现的真机步骤。普通用户的 Git URL 保持 `main`；审核应使用单独的测试环境、临时 checkout 或项目负责人控制的安装副本，绝不覆盖正在使用的稳定安装。
+1. 修复、验证、提交先进入 `origin`。
+2. 重新运行门禁，记录新的私有 Dev SHA。
+3. 仍只有在用户明确说“发布到公开仓库”后，才把该精确 SHA 更新到同一个 `public/release/vX.Y.Z`；若远端候选分支不允许快进，停止并说明情况，绝不 force-push。
+4. `public/main`、tag 与正式 Release 在此阶段保持不变。
 
-审核结论只有两种：
+## 正式 Stable 推广（须当前对话明确授权）
 
-- **未通过 / 要修改**：继续在同一候选分支修复、重新验证、重新推送；`main` 不动。
-- **明确通过**：才进入下一节。沉默、仅说“看一下”、本地检查全绿或候选推送成功都不是授权。
-
-## 正式推广（须当前对话明确授权）
-
-1. 在独立 detached worktree 对候选提交做一次精确快照复验，避免把工作树未提交内容带入。
-2. 确认候选与 `main` 可快进；若 `main` 已推进，停止并请用户决定是否重新基于 `main` 审核，不能静默 rebase/merge。
-3. 快进、推送、打同一提交的带注释标签，然后创建非 draft GitHub Release：
+1. 用户必须明确批准**精确的** `public/release/vX.Y.Z` SHA；沉默、仅说“看一下”、全绿测试、Beta 推送成功或 Draft/Pre-release 都不是授权。
+2. 在独立干净 worktree 做精确快照复验，随后获取远端引用：
    ```powershell
-   git switch main
-   git pull --ff-only origin main
-   git merge --ff-only release/vX.Y.Z
-   git push origin main
-   git tag -a vX.Y.Z -m "约了吗小手机 vX.Y.Z"
-   git push origin vX.Y.Z
+   git fetch origin public
+   git rev-parse public/release/vX.Y.Z
+   git ls-remote --heads public main release/vX.Y.Z
    ```
-4. 复核 `origin/main` 和标签都指向审核 SHA；在 `../实现进度与交接.md` 分别记录“GitHub main/标签/Release 已发布”和“真机验收状态”。
+3. 确认 Beta SHA 与已批准 SHA 相同，且 `public/main` 可快进至该提交；否则停止并请用户决定。禁止改写已发布历史或强推。
+4. 将**同一** Beta SHA 推广到公开 Stable、打带注释 tag 并创建非 Draft GitHub Release：
+   ```powershell
+   $sha = '<approved-beta-sha>'
+   git push public "${sha}:refs/heads/main"
+   git tag -a vX.Y.Z $sha -m "约了吗小手机 vX.Y.Z"
+   git push public vX.Y.Z
+   ```
+5. 复核 `public/main` 和 `vX.Y.Z` 指向已批准 SHA；在 `../实现进度与交接.md` 分别记录 Beta、Stable、tag、Release 和真机验收状态。
 
 ## 回滚
 
-审核期直接停止使用候选分支即可，`main` 无须回滚。正式版若出现问题，先从稳定 `main` 建立下一条 `release/vX.Y.Z+1` 修复候选；不要 force-push、改写已发布标签或强推用户正在使用的 `main` 历史。
+Beta 期停止更新 `public/release/vX.Y.Z` 即可，`public/main` 无须回滚。Stable 出现问题时，从 `origin` 建立后续修复并重新走 Dev → Beta → Stable；不要 force-push、改写已发布 tag 或强推公开 Stable 历史。

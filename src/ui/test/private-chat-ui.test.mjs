@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installMiniDom } from '../../test-support/minidom.mjs';
 import { createMemoryStorage, createSettingsStore } from '../../settings/settings-store.js';
+import { createEmptyRelationshipNarrative } from '../../mvu/relationship-narrative.js';
+import { createEmptyNsfwConsent, grantNsfwConsent } from '../../mvu/nsfw-consent.js';
+import { createDefaultRealisticChatState } from '../../mvu/realistic-chat.js';
 
 const miniDom = installMiniDom();
 const { mountPhoneApp } = await import('../../app-shell.js');
@@ -46,6 +49,7 @@ function readResult() {
                         { 消息UID: 'm2', 发送者: '玩家', 内容: '刚看完一部电影，想和你分享。', 时间: '20:32' },
                     ],
                     总结: { 记录: [{ 内容: 'session-summary-must-not-render' }] },
+                    NSFW同意: createEmptyNsfwConsent(),
                 },
             },
         },
@@ -78,6 +82,63 @@ async function flushUi() {
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 }
+
+test('手机头部显示五分钟时钟，消息选项可切换拟真聊天并改走即时落玩家消息的桥', async () => {
+    const result = readResult();
+    result.state.会话.chat_lin.拟真聊天 = createDefaultRealisticChatState();
+    const calls = [];
+    let pending = false;
+    const bridge = {
+        emit() {},
+        isPending(kind, sessionUid) { return kind === 'private_chat_realistic_send' && sessionUid === 'chat_lin' && pending; },
+        async setRealisticPrivateChatMode(request) {
+            calls.push({ kind: 'toggle', ...request });
+            result.state.会话.chat_lin.拟真聊天 = createDefaultRealisticChatState({ enabled: request.enabled, proactiveAt: '2026-08-02 15:35' });
+            return { ok: true };
+        },
+        async sendRealisticPrivateChatMessage(request) {
+            calls.push({ kind: 'send', ...request });
+            pending = true;
+            pending = false;
+            return { ok: true, messageUid: 'msg_chat_lin_p_3' };
+        },
+        runPrivateChat() { throw new Error('拟真聊天不得回到原一问一答桥'); },
+    };
+    const phoneClock = {
+        displayText: () => '14:35', nowText: () => '2026-08-02 14:35', delayUntilNextTick: () => 60_000,
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-realistic-chat-ui', actionBridge: bridge, phoneClock,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result,
+    });
+    try {
+        assert.equal(miniDom.document.querySelector('.yl-phone-clock').textContent, '14:35');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的更多操作'));
+        const toggle = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('role') === 'switch');
+        assert.equal(toggle.getAttribute('role'), 'switch');
+        assert.equal(toggle.checked, false);
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change'));
+        await flushUi();
+        assert.deepEqual(calls[0], { kind: 'toggle', sessionUid: 'chat_lin', npcUid: 'npc_lin', enabled: true });
+
+        const input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
+        input.value = '我先发第一条。';
+        input.dispatchEvent(new Event('input'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送消息'));
+        await flushUi();
+        assert.deepEqual(calls[1], {
+            kind: 'send', sessionUid: 'chat_lin', npcUid: 'npc_lin', playerMessage: '我先发第一条。', turnConsentConfirmed: false,
+        });
+        assert.equal(miniDom.document.querySelector('.yl-chat-replying'), null, '拟真发送后不伪装成对方正在实时输入');
+        assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息').disabled, false);
+    } finally {
+        mounted.destroy();
+    }
+});
 
 test('private chat uses a distinct mobile conversation surface and only calls the controlled chat bridge', async () => {
     const events = [];
@@ -134,7 +195,7 @@ test('private chat uses a distinct mobile conversation surface and only calls th
         assert.equal(calls.length, 0, 'Shift+Enter 只换行，不发送消息');
 
         click(sendButton);
-        assert.deepEqual(calls, [{ sessionUid: 'chat_lin', npcUid: 'npc_lin', playerMessage: '周末想去看场展览。' }], '左键纸飞机应沿用现有私聊发送桥');
+        assert.deepEqual(calls, [{ sessionUid: 'chat_lin', npcUid: 'npc_lin', playerMessage: '周末想去看场展览。', turnConsentConfirmed: false }], '左键纸飞机应沿用现有私聊发送桥');
         assert.ok(miniDom.document.querySelector('.yl-chat-replying'), '请求期间应在聊天流内显示回复中状态');
         assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息').disabled, true);
 
@@ -450,6 +511,226 @@ test('meetup tool stays visibly disabled and cannot invoke the bridge before a r
         assert.equal(miniDom.document.querySelector('.yl-meetup-panel'), null);
     } finally {
         mounted.destroy();
+    }
+});
+
+test('NSFW chat tools expose a controlled only-SFW toggle without rendering protected relationship fields', async () => {
+    const calls = [];
+    const result = readResult();
+    result.state.软件.内容模式 = 'NSFW';
+    const narrative = createEmptyRelationshipNarrative();
+    narrative.进程.边界暂停状态 = '仅SFW';
+    result.state.关系叙事 = { npc_lin: narrative };
+    const bridge = {
+        emit() {},
+        isPending() { return false; },
+        runPrivateChat() { return { ok: true }; },
+        runPrivateChatNsfwSafety(request) {
+            calls.push(request);
+            narrative.进程.边界暂停状态 = request.action === 'pause' ? '仅SFW' : '';
+            return { ok: true };
+        },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-chat-only-sfw', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        assert.match(miniDom.document.body.textContent, /当前关系仅进行 SFW 互动/u);
+        for (const protectedField of ['边界暂停状态', '关系结束状态', '冻结关系值']) {
+            assert.equal(miniDom.document.body.textContent.includes(protectedField), false, `私聊 DOM 不得暴露 ${protectedField}`);
+        }
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开聊天工具'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '恢复成人话题'));
+        await flushUi();
+        assert.deepEqual(calls, [{ sessionUid: 'chat_lin', action: 'resume' }]);
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开聊天工具'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '仅 SFW · 暂停成人话题'));
+        await flushUi();
+        assert.deepEqual(calls, [
+            { sessionUid: 'chat_lin', action: 'resume' },
+            { sessionUid: 'chat_lin', action: 'pause' },
+        ]);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('stage C UI requires scoped consent plus per-turn confirmation, exposes explicit direction choice, and confirms downgrade', async () => {
+    const result = readResult();
+    result.state.软件.内容模式 = 'NSFW';
+    result.state.角色池.npc_lin.与玩家关系.友情值 = 20;
+    result.state.角色池.npc_lin.与玩家关系.心动值 = 50;
+    result.state.角色池.npc_lin.与玩家关系.欲望值 = 50;
+    const narrative = createEmptyRelationshipNarrative();
+    narrative.进程.NSFW方向确认可用 = true;
+    result.state.角色池.npc_zhou = structuredClone(result.state.角色池.npc_lin);
+    result.state.角色池.npc_zhou.公开资料.昵称 = '周岚';
+    result.state.会话.chat_zhou = {
+        对象UID: 'npc_zhou', 状态: '已匹配', 最近消息: [], 总结: { 记录: [] }, NSFW同意: createEmptyNsfwConsent(),
+    };
+    result.state.关系叙事 = { npc_lin: narrative, npc_zhou: createEmptyRelationshipNarrative() };
+    const consentCalls = [];
+    const chatCalls = [];
+    const directionCalls = [];
+    const relationshipCalls = [];
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        async runPrivateChatNsfwConsent(request) {
+            consentCalls.push(request);
+            result.state.会话.chat_lin.NSFW同意 = request.action === 'grant'
+                ? grantNsfwConsent(result.state.会话.chat_lin.NSFW同意, { scopes: request.scopes, turns: request.turns })
+                : createEmptyNsfwConsent();
+            return { ok: true };
+        },
+        async runPrivateChat(request) { chatCalls.push(request); return { ok: true }; },
+        async runPrivateChatNsfwDirection(request) {
+            directionCalls.push(request);
+            narrative.进程.NSFW路线锁定 = request.direction === 'love' ? '爱情' : request.direction === 'consensual_intimacy' ? '共识亲密' : '暂不定义';
+            return { ok: true };
+        },
+        async runPrivateChatNsfwRelationshipAction(request) {
+            relationshipCalls.push(request);
+            narrative.进程.NSFW路线锁定 = '暂不定义';
+            narrative.进程.边界暂停状态 = '仅SFW';
+            result.state.会话.chat_lin.NSFW同意 = createEmptyNsfwConsent();
+            return { ok: true };
+        },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-chat-c-stage', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        let input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
+        input.value = '先确认范围再继续。';
+        input.dispatchEvent(new Event('input'));
+        assert.equal(miniDom.document.querySelector('.yl-chat-send-button').disabled, true, '没有会话共识时不得发送 NSFW 消息');
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开聊天工具'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '建立成人话题共识'));
+        const scope = miniDom.document.querySelectorAll('input').find((node) => node.value === '成人话题');
+        scope.checked = true;
+        const duration = miniDom.document.querySelectorAll('select').find((node) => node.getAttribute('aria-label') === '选择成人话题共识有效轮数');
+        duration.value = '3';
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确认并启用'));
+        await flushUi();
+        assert.deepEqual(consentCalls, [{ sessionUid: 'chat_lin', action: 'grant', scopes: ['成人话题'], turns: 3 }]);
+
+        input = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '输入私聊消息');
+        input.value = '本轮继续。';
+        input.dispatchEvent(new Event('input'));
+        let turnConsent = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('id') === 'yl-nsfw-turn-consent-chat_lin');
+        assert.ok(turnConsent);
+        assert.equal(miniDom.document.querySelector('.yl-chat-send-button').disabled, true, '会话共识不能代替本轮确认');
+        turnConsent.checked = true;
+        turnConsent.dispatchEvent(new Event('change'));
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '返回'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与周岚的私聊'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '返回'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        turnConsent = miniDom.document.querySelectorAll('input').find((node) => node.getAttribute('id') === 'yl-nsfw-turn-consent-chat_lin');
+        assert.equal(turnConsent.checked, false, '切换角色必须清除本轮继续的瞬时确认');
+        turnConsent.checked = true;
+        turnConsent.dispatchEvent(new Event('change'));
+        click(miniDom.document.querySelector('.yl-chat-send-button'));
+        await flushUi();
+        assert.equal(chatCalls[0].turnConsentConfirmed, true);
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开聊天工具'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '选择爱情方向'));
+        await flushUi();
+        assert.deepEqual(directionCalls, [{ sessionUid: 'chat_lin', direction: 'love' }]);
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开聊天工具'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开成人关系降级或结束操作'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确认降级为朋友（仅 SFW）'));
+        await flushUi();
+        assert.deepEqual(relationshipCalls, [{ sessionUid: 'chat_lin', action: 'degrade_to_friends' }]);
+        assert.match(miniDom.document.body.textContent, /当前关系仅进行 SFW 互动/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('relationship pause and end states keep private chat read-only before any send', () => {
+    const result = readResult();
+    const narrative = createEmptyRelationshipNarrative();
+    narrative.进程.边界暂停状态 = '暂停';
+    result.state.关系叙事 = { npc_lin: narrative };
+    const bridge = { emit() {}, isPending() { return false; }, runPrivateChat() { throw new Error('must not send'); } };
+    const mounted = mountPhoneApp({ documentRef: miniDom.document, rootId: 'ylm-test-chat-relationship-paused', actionBridge: bridge, settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        assert.match(miniDom.document.body.textContent, /当前关系已暂停、拉黑或归档/u);
+        assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '私聊消息输入已禁用')?.disabled, true);
+
+        narrative.进程.边界暂停状态 = '';
+        narrative.进程.关系结束状态 = '结束联系';
+        mounted.refreshState();
+        assert.match(miniDom.document.body.textContent, /当前关系已经结束/u);
+        assert.equal(miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '私聊消息输入已禁用')?.disabled, true);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('stage D relationship observation is closable and pause/archive require explicit confirmation buttons', async () => {
+    const result = readResult();
+    const narrative = createEmptyRelationshipNarrative();
+    narrative.进程.SFW细微裂缝已触发 = true;
+    narrative.进程.最近关系观察 = '关系靠近';
+    result.state.关系叙事 = { npc_lin: narrative };
+    const calls = [];
+    const storage = createMemoryStorage();
+    const previousDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        runPrivateChat() { return Promise.resolve({ ok: true }); },
+        runPrivateChatNsfwRelationshipAction(command) { calls.push(command); return Promise.resolve({ ok: true }); },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-stage-d-relationship', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: () => result,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'messages'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开与林澈的私聊'));
+        const observation = miniDom.document.querySelector('.yl-relationship-observation');
+        assert.match(observation.textContent, /关系观察|自然靠近/u);
+        assert.doesNotMatch(observation.textContent, /100|50|友情值|心动值|隐藏/u);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '收起关系观察'));
+        assert.equal(storage.getItem('yuelema.relationship-observation-collapsed/v1'), '1');
+        assert.ok(miniDom.document.querySelector('.yl-relationship-observation').classList.contains('is-collapsed'));
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开聊天工具'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开关系暂停、归档或结束操作'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确认暂停这段关系'));
+        await flushUi();
+        assert.deepEqual(calls[0], { sessionUid: 'chat_lin', action: 'pause_contact' });
+
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开聊天工具'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开关系暂停、归档或结束操作'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.textContent === '确认归档为只读'));
+        await flushUi();
+        assert.deepEqual(calls[1], { sessionUid: 'chat_lin', action: 'archive_contact' });
+    } finally {
+        mounted.destroy();
+        if (previousDescriptor) Object.defineProperty(globalThis, 'localStorage', previousDescriptor);
+        else delete globalThis.localStorage;
     }
 });
 

@@ -17,14 +17,18 @@ import { createImageMatchCoordinator } from './src/images/image-match-coordinato
 import { createRemoteImageImporter } from './src/images/remote-image-import.js';
 import { createGroupForumStore } from './src/groups/group-forum-store.js';
 import { createHostExtensionUpdater } from './src/host-extension-update.js';
+import { createPhoneClock } from './src/chat/phone-clock.js';
+import { createExtensionRestartController } from './src/update-restart.js';
 
 const EXTENSION_ROOT_ID = 'yuelema-phone-extension-root';
 const browserStorage = createBrowserSettingsStorage();
 const settingsStore = createSettingsStore({ storage: browserStorage });
 const characterLibrary = createCharacterTemplateLibraryStore({ storage: browserStorage });
 const playerAvatarStore = createPlayerAvatarStore({ storage: browserStorage });
+const phoneClock = createPhoneClock({ storage: browserStorage });
+const extensionRestartController = createExtensionRestartController();
 
-/** @type {{ destroy: () => void } | null} */
+/** @type {{ destroy: () => void, refreshState: () => void, open: () => void } | null} */
 let appInstance = null;
 let unsubscribeEvents = () => {};
 let pageHideHandler = null;
@@ -184,6 +188,7 @@ export async function onActivate() {
         getContext,
         settingsStore,
         llmClient,
+        phoneClock,
         imageGenerationClient,
         imageMatchCoordinator,
         diagnosticLogger: globalThis.console,
@@ -192,6 +197,7 @@ export async function onActivate() {
         documentRef,
         rootId: EXTENSION_ROOT_ID,
         actionBridge,
+        phoneClock,
         settingsStore,
         llmClient,
         characterLibrary,
@@ -203,10 +209,12 @@ export async function onActivate() {
         imageGenerationClient,
         remoteImageImporter,
         extensionUpdater,
+        restartAfterUpdate: () => extensionRestartController.schedule(),
         groupForumStore,
         serviceOrderHistoryStore,
         readState: () => readLatestState({ mvu: mvu() }),
     });
+    extensionRestartController.reopen(appInstance);
 
     const instance = appInstance;
     const refreshFromHostEvent = () => appInstance?.refreshState();
@@ -224,10 +232,12 @@ export async function onActivate() {
  * the extension becomes inactive; the user-approved browser-local Key cache stays.
  */
 export function onDisable() {
+    extensionRestartController.cancel();
     destroyActiveInstance();
 }
 
 /** SillyTavern v1.18+ deletion hook; it uses the same runtime-only cleanup. */
 export function onDelete() {
+    extensionRestartController.cancel();
     destroyActiveInstance();
 }
