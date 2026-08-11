@@ -6,7 +6,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const requiredFiles = [
     'manifest.json', 'index.js', 'style.css', 'README.md', 'AGENTS.md', 'RELEASE_REVIEW.md', 'test/extension-lifecycle.test.mjs',
-    'src/app-shell.js', 'src/host-extension-update.js', 'src/service-order-history-store.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/onboarding/onboarding-flow.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
+    'src/app-shell.js', 'src/host-extension-update.js', 'src/update-restart.js', 'src/test/update-restart.test.mjs', 'src/service-order-history-store.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/onboarding/onboarding-flow.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
     'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
     'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/nsfw-consent.js', 'src/mvu/body-relationship-candidate.js', 'src/mvu/realistic-chat.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/nsfw-consent.test.mjs', 'src/mvu/test/body-relationship-candidate.test.mjs', 'src/mvu/test/realistic-chat.test.mjs', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
@@ -57,7 +57,7 @@ console.log('✓ manifest 基础字段与 lifecycle hooks');
 
 const sourceRelativeFiles = [
     'index.js', 'test/extension-lifecycle.test.mjs',
-    'src/app-shell.js', 'src/host-extension-update.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/onboarding/onboarding-flow.js', 'src/settings-panel.js',
+    'src/app-shell.js', 'src/host-extension-update.js', 'src/update-restart.js', 'src/test/update-restart.test.mjs', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/onboarding/onboarding-flow.js', 'src/settings-panel.js',
     'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
     'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/nsfw-consent.js', 'src/mvu/body-relationship-candidate.js', 'src/mvu/realistic-chat.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/nsfw-consent.test.mjs', 'src/mvu/test/body-relationship-candidate.test.mjs', 'src/mvu/test/realistic-chat.test.mjs', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
@@ -140,10 +140,20 @@ if (!appShellCore.includes('LAUNCHER_TOOLS_HOLD_MS = 10_000')
 }
 const index = await readFile(resolve(root, 'index.js'), 'utf8');
 const hostExtensionUpdater = await readFile(resolve(root, 'src/host-extension-update.js'), 'utf8');
+const updateRestart = await readFile(resolve(root, 'src/update-restart.js'), 'utf8');
 if (!hostExtensionUpdater.includes("HOST_EXTENSION_DIRECTORY = 'yuelema-phone-extension'") || !hostExtensionUpdater.includes("VERSION_ENDPOINT = '/api/extensions/version'") || !hostExtensionUpdater.includes("UPDATE_ENDPOINT = '/api/extensions/update'")) fail('宿主扩展更新器必须固定约了吗目录与原生检查/更新端点');
 if (/globalThis\.fetch|\bfetch\s*\(/u.test(hostExtensionUpdater) || /localStorage|stat_data|\bMvu\b/iu.test(hostExtensionUpdater)) fail('宿主扩展更新器不得直接发网、读浏览器存储或接触 MVU');
 if (!index.includes('createHostExtensionUpdater') || !index.includes('extensionUpdater') || !appShell.includes('about-extension-update') || !appShell.includes('runExtensionUpdate')) fail('缺少关于软件页固定扩展更新器的宿主注入或 UI 接线');
-console.log('✓ 固定扩展宿主检查/自动更新器、CSRF 注入和关于页入口接线');
+if (!index.includes('createExtensionRestartController') || !index.includes('extensionRestartController.schedule()')
+    || !index.includes('extensionRestartController.reopen(appInstance)')
+    || (index.match(/extensionRestartController\.cancel\(\)/gu) ?? []).length < 2
+    || !appShellCore.includes('restartAfterUpdate') || !appShellCore.includes('open() { if (!isDestroyed) setOpen(true); }')
+    || !updateRestart.includes("UPDATE_REOPEN_SESSION_KEY = 'yuelema.update-reopen/v1'")
+    || !updateRestart.includes('sessionStorage') || !updateRestart.includes('globalThis.location.reload()')
+    || !updateRestart.includes('cancelSchedule') || !updateRestart.includes('clearPhoneReopenAfterUpdate')) {
+    fail('缺少更新成功后的自动重载、一次性重开标记、lifecycle 重开或禁用/删除清理接线');
+}
+console.log('✓ 固定扩展宿主检查/自动更新器、CSRF 注入、自动重载重开和关于页入口接线');
 if (!index.includes('export function onDisable') || !index.includes('export function onDelete') || !index.includes('clearSessionKeys()')) fail('缺少扩展禁用/删除时清理内存密钥镜像的生命周期实现');
 for (const label of ['发现', '匹配', '消息', '社区', '我的']) {
     if (!appShell.includes(label) && !allSource.includes(`label: '${label}'`)) fail(`缺少导航：${label}`);

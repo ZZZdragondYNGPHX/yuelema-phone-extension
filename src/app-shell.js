@@ -184,7 +184,7 @@ function clearStoredLayoutPosition(storage, key) {
 }
 
 /** @param {{ documentRef: Document, rootId: string, actionBridge: ReturnType<import('./action-bridge.js').createActionBridge>, readState?: () => unknown }} options */
-export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = createPhoneClock(), settingsStore, llmClient, characterLibrary, playerAvatarStore = null, characterAvatarStore = null, imageLibrary = null, conversationImageStore = null, imageMatchCoordinator = null, imageGenerationClient = null, remoteImageImporter = null, extensionUpdater = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
+export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = createPhoneClock(), settingsStore, llmClient, characterLibrary, playerAvatarStore = null, characterAvatarStore = null, imageLibrary = null, conversationImageStore = null, imageMatchCoordinator = null, imageGenerationClient = null, remoteImageImporter = null, extensionUpdater = null, restartAfterUpdate = null, groupForumStore = null, serviceOrderHistoryStore = null, uiLayoutStorage = undefined, readState = () => readLatestState() }) {
     const abortController = new AbortController();
     // 弹窗焦点统一由控制器管理：打开聚焦、Tab 焦点环、Escape 关栈顶、关闭礼貌回 opener。
     const dialogController = createDialogController({ documentRef });
@@ -1860,9 +1860,18 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         try {
             const result = await extensionUpdater.checkAndUpdate();
             const outcome = result?.outcome;
+            let restartStatus = null;
             if (outcome === 'up_to_date') operationActivity.succeed(activityHandle, '扩展已是最新版本。');
-            else if (outcome === 'updated') operationActivity.succeed(activityHandle, '扩展已更新，等待重新载入酒馆页面。');
-            else operationActivity.fail(activityHandle, '酒馆更新服务返回了无法识别的结果。');
+            else if (outcome === 'updated') {
+                try { restartStatus = typeof restartAfterUpdate === 'function' ? restartAfterUpdate() : null; }
+                catch { restartStatus = null; }
+                operationActivity.succeed(
+                    activityHandle,
+                    restartStatus?.scheduled
+                        ? '扩展已更新，将自动重新载入并尝试重开小手机。'
+                        : '扩展已更新，但自动重新载入不可用。',
+                );
+            } else operationActivity.fail(activityHandle, '酒馆更新服务返回了无法识别的结果。');
             if (isDestroyed || !open || activePage !== 'about') return;
             if (outcome === 'up_to_date') {
                 updateOperationDialog(operationToken, {
@@ -1872,11 +1881,16 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
                     message: `v${UI_VERSION} 已是最新版本，无需更新。`,
                 });
             } else if (outcome === 'updated') {
+                const message = restartStatus?.scheduled
+                    ? restartStatus.reopenMarked
+                        ? '扩展已更新，将自动重新载入酒馆页面；新版本加载后会自动重新打开小手机。'
+                        : '扩展已更新，将自动重新载入酒馆页面；浏览器未允许记住重开状态，重载后请点悬浮球。'
+                    : '扩展已更新，但自动重新载入不可用，请手动重载酒馆页面。';
                 updateOperationDialog(operationToken, {
                     state: 'success',
                     visual: 'accepted',
                     title: '更新已完成',
-                    message: '扩展已更新。请重新载入酒馆页面以启用新版本。',
+                    message,
                 });
             } else {
                 updateOperationDialog(operationToken, {
@@ -2915,6 +2929,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
     queueMicrotask(() => { if (!isDestroyed) void runRealisticChatTick(); });
     return Object.freeze({
         refreshState,
+        open() { if (!isDestroyed) setOpen(true); },
         // 诊断接缝：安全控制台的内存台账（不持久化）。宿主与测试可注入条目，detail 已在台账层脱敏。
         operationActivity,
         destroy() { cancelLauncherToolsHold(); closeLauncherTools(); cancelPhoneNavHold(); clearPhoneNavClickSuppression(); ctx.cancelChatToolLongPress(); ctx.clearChatToolClickSuppression(); clearImageDirectiveLongPressTimers(); isDestroyed = true; if (phoneClockTimer !== null) globalThis.clearTimeout?.(phoneClockTimer); phoneClockTimer = null; invalidateServiceProfileGeneration(); invalidateServiceOrderOperations(); ctx.stopGroupAutoTimer(); ctx.stopForumAutoTimer(); ctx.cancelForumPullInteractions(); ctx.clearSummaryToast(); hideOperationDialog(); ctx.closeGroupMemberPicker(); ctx.closeGroupAutoDialog(); ctx.closeForumSettingsDialog(); ctx.resetGroupRoomMenu(); unsubscribeOperationActivity?.(); imageManagerPanel?.dispose?.(); dialogController.dispose(); clearMatchedImageState(); launcherDrag.dispose(); abortController.abort(); root.remove(); },

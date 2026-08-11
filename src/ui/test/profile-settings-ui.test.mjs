@@ -255,15 +255,20 @@ async function flushUi() {
     await Promise.resolve();
 }
 
-test('关于页最底部提供固定扩展检查并自动更新入口，成功后提示重新载入', async () => {
+test('关于页最底部提供固定扩展检查并自动更新入口，成功后安排自动重载与重开', async () => {
     let resolveUpdate;
     let calls = 0;
+    let restartCalls = 0;
     const mounted = mount('ylm-e1-extension-update', {
         extensionUpdater: {
             checkAndUpdate() {
                 calls += 1;
                 return new Promise((resolve) => { resolveUpdate = resolve; });
             },
+        },
+        restartAfterUpdate() {
+            restartCalls += 1;
+            return { scheduled: true, reopenMarked: true };
         },
     });
     try {
@@ -286,7 +291,9 @@ test('关于页最底部提供固定扩展检查并自动更新入口，成功�
         resolveUpdate({ outcome: 'updated' });
         await flushUi();
         assert.match(dialog.textContent, /更新已完成/u);
-        assert.match(dialog.textContent, /重新载入酒馆页面/u);
+        assert.match(dialog.textContent, /自动重新载入酒馆页面/u);
+        assert.match(dialog.textContent, /自动重新打开小手机/u);
+        assert.equal(restartCalls, 1, '更新成功后只安排一次自动重载与重开');
         assert.doesNotMatch(dialog.textContent, /https?:|github|[A-Za-z]:\\/iu, '成功反馈不得暴露远程地址或本地路径');
     } finally {
         mounted.destroy();

@@ -505,6 +505,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             assert.equal(dialog.hidden, false);
             assert.match(dialog.textContent, /最近三次更新/u);
             assert.match(dialog.textContent, /v1.1.0/u);
+            assert.match(dialog.textContent, /自动重载页面并重开小手机/u);
             assert.match(dialog.textContent, /v1.0.20/u);
         }
         const serviceEntry = miniDom.document.querySelector('[name="about-service-entry"]');

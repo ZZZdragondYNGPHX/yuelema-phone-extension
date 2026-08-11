@@ -2128,11 +2128,14 @@ test('extension update failure surfaces HTTP status and host text in the dialog 
 test('extension update success states show the current version and non-git installs get a dedicated explanation', async () => {
     const { HostExtensionUpdateError } = await import('../../host-extension-update.js');
     let result = Promise.resolve({ outcome: 'up_to_date' });
+    let restartCalls = 0;
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-extension-update-success',
         actionBridge: { emit() {}, isPending() { return false; } },
         settingsStore: null, llmClient: null, characterLibrary: null,
-        extensionUpdater: { checkAndUpdate: () => result }, readState: readyReadResult,
+        extensionUpdater: { checkAndUpdate: () => result },
+        restartAfterUpdate() { restartCalls += 1; return { scheduled: true, reopenMarked: true }; },
+        readState: readyReadResult,
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
@@ -2147,13 +2150,16 @@ test('extension update success states show the current version and non-git insta
         assert.equal(dialog.dataset.state, 'success');
         assert.match(dialog.textContent, /当前已是最新版本/u);
         assert.match(dialog.textContent, /v1\.1\.0 已是最新版本/u, '最新结果应展示当前版本号');
+        assert.equal(restartCalls, 0, 'already-current checks must never reload the page');
 
         result = Promise.resolve({ outcome: 'updated' });
         click(updateEntry());
         await flushUi();
         assert.equal(dialog.dataset.state, 'success');
         assert.match(dialog.textContent, /更新已完成/u);
-        assert.match(dialog.textContent, /重新载入酒馆页面/u);
+        assert.match(dialog.textContent, /自动重新载入酒馆页面/u);
+        assert.match(dialog.textContent, /自动重新打开小手机/u);
+        assert.equal(restartCalls, 1, 'a successful update schedules exactly one restart');
 
         result = Promise.reject(new HostExtensionUpdateError('not_git_installation', { phase: 'version' }));
         click(updateEntry());
@@ -2162,12 +2168,30 @@ test('extension update success states show the current version and non-git insta
         assert.match(dialog.textContent, /不是 Git 安装/u);
         assert.match(dialog.textContent, /以 Git 方式重新安装/u);
         assert.doesNotMatch(dialog.textContent, /请在酒馆原生扩展管理中查看详情/u);
+        assert.equal(restartCalls, 1, 'failed checks must not schedule another restart');
 
         /* 运行控制台按次记录：最新 / 已更新 各一条成功 */
         const entries = mounted.operationActivity.snapshot().entries.filter((entry) => entry.name === '扩展更新');
         assert.equal(entries.length, 3);
         assert.equal(entries.filter((entry) => entry.status === 'success').length, 2);
         assert.equal(entries.filter((entry) => entry.status === 'failure').length, 1);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('the lifecycle-facing open capability reveals a mounted phone without a launcher click', () => {
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-lifecycle-reopen',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        const panel = miniDom.document.querySelector('.yl-phone-panel');
+        assert.equal(panel.hidden, true);
+        mounted.open();
+        assert.equal(panel.hidden, false);
+        assert.equal(miniDom.document.querySelector('.yl-phone-extension').classList.contains('is-open'), true);
     } finally {
         mounted.destroy();
     }
