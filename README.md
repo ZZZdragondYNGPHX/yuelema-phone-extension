@@ -111,7 +111,7 @@ node --test
 node --input-type=module -e "await import('./index.js'); console.log('production import graph resolves')"
 ```
 
-当前 v1.1.0 结果：`npm run check` 通过；全量 `node --test` **937 / 937 通过，0 failed**；`node --check src/app-shell.js`、生产 ESM import 图与 `git diff --check` 通过。角色卡权威构建器生成 v1.1.0 JSON，并回读确认 `data.extensions.world`、`data.extensions.mvu_worldbook_name` 与 `data.character_book.name` 都是“约了吗·MVU v1.1.0”，12 条世界书逐字匹配，InitVar 禁用。以上仍是本地/Mock/MiniDOM/静态构建证据，不等同于 SillyTavern、真实 MVU provider、Card Lore 导入绑定或模型供应商真机验收。
+当前 v1.1.0 结果：`npm run check` 通过；全量 `node --test` **946 / 946 通过，0 failed**；`node --check src/app-shell.js`、`node --check src/update-restart.js`、生产 ESM import 图与 `git diff --check` 通过。角色卡权威构建器生成 v1.1.0 JSON（162701 bytes，SHA-256 `A0F1F96990E0FC1B254101580B413B3C7AD624910EF9302D09430BD63C869A7A`），并回读确认 `data.extensions.world`、`data.extensions.mvu_worldbook_name` 与 `data.character_book.name` 都是“约了吗·MVU v1.1.0”，12 条世界书逐字匹配，InitVar 禁用，第一条备选开场为 14 章新手百科。以上仍是本地/Mock/MiniDOM/静态构建证据，不等同于 SillyTavern、真实 MVU provider、Card Lore 导入绑定、扩展自动重载重开或模型供应商真机验收。
 
 下方“阶段 55”及更早章节是历史实施记录，不代表当前版本或当前安装说明。
 

@@ -54,28 +54,6 @@ export function clearPhoneReopenAfterUpdate(storage = undefined) {
     } catch { return false; }
 }
 
-/**
- * Schedules a real page reload so the browser loads the just-updated ESM files.
- * The one-shot session marker is best-effort: a blocked sessionStorage still
- * permits the reload, but the phone cannot be reopened automatically afterward.
- */
-export function scheduleExtensionRestart({ storage = undefined, reload = undefined, schedule = undefined } = {}) {
-    const reopenMarked = rememberPhoneReopenAfterUpdate(storage);
-    const reloadPage = reloadOrNull(reload);
-    const scheduleTask = schedulerOrNull(schedule);
-    if (!reloadPage || !scheduleTask) return Object.freeze({ scheduled: false, reopenMarked });
-
-    try {
-        scheduleTask(() => {
-            try { reloadPage(); }
-            catch { /* The update already succeeded; reload failures stay non-fatal. */ }
-        }, UPDATE_RELOAD_DELAY_MS);
-        return Object.freeze({ scheduled: true, reopenMarked });
-    } catch {
-        return Object.freeze({ scheduled: false, reopenMarked });
-    }
-}
-
 /** Consumes the one-shot marker only after the newly mounted app exposes open(). */
 export function reopenPhoneAfterUpdatedReload(instance, storage = undefined) {
     if (!instance || typeof instance.open !== 'function') return false;
