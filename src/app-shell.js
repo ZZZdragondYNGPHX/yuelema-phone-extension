@@ -29,7 +29,7 @@ import { createProfilePage } from './pages/profile.js';
 import { createOnboardingFlow } from './onboarding/onboarding-flow.js';
 import { createPhoneClock } from './chat/phone-clock.js';
 
-const UI_VERSION = '1.0.20';
+const UI_VERSION = '1.1.0';
 
 function downloadImagePackJson(json) {
     if (typeof json !== 'string' || typeof globalThis.Blob !== 'function'
