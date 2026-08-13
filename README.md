@@ -1,4 +1,4 @@
-# 约了吗小手机 v1.1.0（公开 Beta 汇总候选）
+# 约了吗小手机 v1.1.1（窗口定位与单实例修复候选）
 
 这是现代现实都市「约了吗」MVU 角色卡的配套 SillyTavern UI 扩展。软件层承担推荐、线上短文本私聊、匹配、群组浏览、角色创作与面基约定；现实见面、约会及复杂长文本剧情仍由酒馆正文推进。
 
@@ -7,6 +7,7 @@
 > 连接预设、提示词预设和功能绑定可保存在本浏览器；首次使用会写入 22 份可编辑的默认提示词预设，重开连接页会自动载入默认连接预设。API Key 按连接预设 ID 保存到当前浏览器的独立缓存，绝不导出、写入 MVU 或回显；可在连接页删除当前 Key。真实认证、CORS、模型接口与扩展生命周期仍待目标酒馆版本验证。
 
 ## 当前已实现
+- v1.1.1 修复桌面布局小手机因宿主 fixed/transform 偏移飞到屏幕外、长按工具栏“归位原位”无法恢复的问题；关闭小手机时同步关闭匹配设置等功能预设弹层，并以跨 cachebuster 模块副本的全局运行租约阻止刷新或热重载期间重复挂载两套界面。
 - v1.1.0 汇总 v1.0.12–v1.0.20 的关系系统、拟真聊天、全尺度成年人 NSFW、角色蓝图与城市信号引导，作为公开 Beta 候选；版本信息、更新弹窗、manifest、package 与静态门禁已统一。关于软件中的扩展更新成功后会自动重新载入酒馆页面，并通过当前标签页的一次性会话标记在新版本加载后自动重开小手机；若浏览器阻止会话存储或页面重载，会明确提示对应的手动操作。配套角色卡构建器同时补齐 SillyTavern 官方主世界书绑定字段 `data.extensions.world`，并强制它与 `character_book.name`、项目内世界书标识完全同名，避免 Card Lore 已导入却未绑定到角色。
 - v1.0.20 首次开局新增城市信号引导：仅当 MVU 功能开关明确为“玩家未建档”时，在小手机面板内展示欢迎动画，并逐步收集昵称、公开年龄段、城市、相遇方向、公开简介及生活标签。确认页只预览公开资料；保存仍调用既有受控 MVU 公开资料管线，头像引用固定为空，绝不读取或展示仅好友/隐藏资料。保存成功自动进入“我的”并展示新资料；稍后填写或关闭小手机不写入 MVU，未完成草稿只在当前挂载会话内保留。
 - v1.0.20 角色创建大修：创建旅程升级为“心动名片 / 角色蓝图 / 形象与 AI / 边界与节奏 / 确认登记”五段。角色蓝图可独立定义关系目标、主动方式、聊天质感、亲密表达、冲突处理和生活节奏；NSFW 模式额外提供成人角色、裸体/自慰/口交/性交/高潮与体液/性玩具/BDSM/多人幻想/情色角色扮演/文爱多选、身体与器官偏好、色情语言、性行为节奏与强度、幻想场景、事后照护和硬性禁区，SFW DOM 不渲染这些成人控件。蓝图编译进现有严格 `偏好与边界` 字段，旧模板仍可载入、保存与登记，不新增 MVU 字段。AI 补全默认只读取公开名片，玩家可逐项授权私密与蓝图、生图身份锚点、互动阈值；未勾选层不会进入桥接或模型上下文，头像始终不发送。完整创作可把蓝图非空项作为硬条件，并绑定当前 SFW/NSFW 模式防止异步串模。设置 schema v23 只刷新仍存在的四份角色补全/完整创作内置预设，保留自定义、已删除项和功能绑定。
@@ -99,10 +100,10 @@ readLatestState → build…Patch → validateControlledPatchAgainstState
 1. 在 SillyTavern 的扩展管理页选择“安装扩展”，输入 Git URL：`https://github.com/ZZZdragondYNGPHX/yuelema-phone-extension.git`。
 2. 安装完成后重载 SillyTavern，确认“约了吗小手机”已启用。此扩展声明最低版本为 **SillyTavern v1.18.0**，以使用已核对的 `activate / disable / delete` lifecycle hooks。
 3. 后续版本从同一 Git 仓库更新，不再把本地工作树手工同步到 SillyTavern 安装副本。使用“小手机 → 我的 → 关于软件 → 检查并更新扩展”且确有新版本时，页面会自动重新载入，并在新版本加载后自动重开小手机；若浏览器阻止其中一步，成功提示会说明需要手动重载还是点击悬浮球。
-4. 本轮已生成匹配的 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v1.1.0.json`。在角色管理页面导入后，确认 Card Lore 名为“约了吗·MVU v1.1.0”且已成为角色主世界书，再为该卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。JSON 本地构建通过也不等于真实宿主验收。
+4. 本轮已生成匹配的 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v1.1.1.json`。在角色管理页面导入后，确认 Card Lore 名为“约了吗·MVU v1.1.1”且已成为角色主世界书，再为该卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。JSON 本地构建通过也不等于真实宿主验收。
 5. 首次使用时在“我的 → 设置”配置 OpenAI-compatible 连接预设、提示词预设和功能绑定；输入 API Key 后点击“保存连接预设”会将它保存到当前浏览器并立即可用，不必再额外点模型拉取按钮。禁用、删除或页面卸载只清理内存镜像；下次打开会按同一连接预设自动恢复。Key 不会进入设置导出、MVU、角色卡、提示词、日志或错误面板；需要移除时点击“删除当前已保存 API Key”。
 
-## 本地验证（2026-08-11）
+## 本地验证（2026-08-13）
 
 ```powershell
 Set-Location 'D:\Dev\AI制卡\约了吗\约了吗小手机'
@@ -111,7 +112,7 @@ node --test
 node --input-type=module -e "await import('./index.js'); console.log('production import graph resolves')"
 ```
 
-当前 v1.1.0 结果：`npm run check` 通过；全量 `node --test` **946 / 946 通过，0 failed**；`node --check src/app-shell.js`、`node --check src/update-restart.js`、生产 ESM import 图与 `git diff --check` 通过。角色卡权威构建器生成 v1.1.0 JSON（162701 bytes，SHA-256 `A0F1F96990E0FC1B254101580B413B3C7AD624910EF9302D09430BD63C869A7A`），并回读确认 `data.extensions.world`、`data.extensions.mvu_worldbook_name` 与 `data.character_book.name` 都是“约了吗·MVU v1.1.0”，12 条世界书逐字匹配，InitVar 禁用，第一条备选开场为 14 章新手百科。以上仍是本地/Mock/MiniDOM/静态构建证据，不等同于 SillyTavern、真实 MVU provider、Card Lore 导入绑定、扩展自动重载重开或模型供应商真机验收。
+当前 v1.1.1 结果：`npm run check` 通过；全量 `node --test` **949 / 949 通过，0 failed**；`node --check index.js`、`node --check src/app-shell.js`、`node --check src/update-restart.js`、生产 ESM import 图与 `git diff --check` 通过。角色卡权威构建器生成 v1.1.1 JSON（162857 bytes，SHA-256 `8DD1CE9B8A931BCD7C0275AFFC7FFE02505BE54C3793E193A40F2A94296859E7`），并回读确认 `character_version` 与 InitVar 数据版本均为 1.1.1，`data.extensions.world`、`data.extensions.mvu_worldbook_name` 与 `data.character_book.name` 都是“约了吗·MVU v1.1.1”，12 条世界书逐字匹配，InitVar 禁用，第一条备选开场为 14 章新手百科。以上仍是本地/Mock/MiniDOM/静态构建证据，不等同于 SillyTavern、真实 MVU provider、Card Lore 导入绑定、扩展自动重载重开或模型供应商真机验收。
 
 下方“阶段 55”及更早章节是历史实施记录，不代表当前版本或当前安装说明。
 

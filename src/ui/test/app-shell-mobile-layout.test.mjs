@@ -88,6 +88,41 @@ function mountOnSmallViewport({ rootId, storage = createMemoryStorage(), view })
     });
 }
 
+test('desktop layout also clamps a transformed-host panel back into the visual viewport on open and reset', () => {
+    const previousDefaultView = miniDom.document.defaultView;
+    const previousDocumentElement = miniDom.document.documentElement;
+    const view = createViewStub({ innerWidth: 360, innerHeight: 740, visualViewport: { width: 360, height: 740 } });
+    const storage = createMemoryStorage();
+    storage.setItem('yuelema.ui-layout/v1', 'desktop');
+    const mounted = mountOnSmallViewport({ rootId: 'ylm-test-desktop-panel-offscreen', storage, view });
+    try {
+        const panel = miniDom.document.querySelector('.yl-phone-panel');
+        const tools = miniDom.document.querySelector('.yl-launcher-tools');
+        const styles = installStyleRecorder(panel);
+        panel.getBoundingClientRect = () => {
+            const left = Number.parseFloat(styles.left);
+            const top = Number.parseFloat(styles.top);
+            const finalLeft = Number.isFinite(left) ? left : 8;
+            const finalTop = Number.isFinite(top) ? top : -723;
+            return { left: finalLeft, top: finalTop, right: finalLeft + 401, bottom: finalTop + 715, width: 401, height: 715 };
+        };
+        click(openLauncherButton());
+        assert.equal(panel.dataset.uiLayout, 'desktop');
+        assert.equal(styles.left, '0px', 'desktop 打开时必须把负 left 钳回可视视口');
+        assert.equal(styles.top, '0px', 'desktop 打开时必须把负 top 钳回可视视口');
+
+        tools.hidden = false;
+        const reset = miniDom.document.querySelector('.yl-launcher-tools-reset');
+        click(reset);
+        assert.equal(styles.left, '0px', '桌面布局归位也必须实际修复面板坐标');
+        assert.equal(styles.top, '0px');
+    } finally {
+        mounted.destroy();
+        miniDom.document.defaultView = previousDefaultView;
+        miniDom.document.documentElement = previousDocumentElement;
+    }
+});
+
 test('phone panel with no saved position opens centered in a 360x740 visual viewport even when CSS anchors resolve off-screen', () => {
     const previousDefaultView = miniDom.document.defaultView;
     const previousDocumentElement = miniDom.document.documentElement;

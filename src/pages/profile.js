@@ -13,6 +13,7 @@ import { createEmptyState } from '../ui/empty-state.js';
 import { SERVICE_UNLOCK_STORAGE_KEY } from './shared.js';
 
 const RECENT_RELEASE_NOTES = Object.freeze([
+    'v1.1.1：修复桌面布局小手机飞出屏幕、归位失效、关闭小手机后匹配设置残留，以及刷新或热重载期间重复激活造成的双实例。',
     'v1.1.0：汇总城市信号引导、角色蓝图、拟真聊天与关系系统；扩展更新成功后自动重载页面并重开小手机，进入公开 Beta 审核。',
     'v1.0.20：城市信号与公开资料分步引导。',
     'v1.0.14：已结束的 SFW 友情面基可生成脱敏正文候选；仅在下一次同对象私聊明确复盘后，才由本地规则一次性结算、消费并清空候选。',

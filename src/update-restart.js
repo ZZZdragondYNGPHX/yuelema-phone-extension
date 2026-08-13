@@ -1,4 +1,41 @@
 export const UPDATE_REOPEN_SESSION_KEY = 'yuelema.update-reopen/v1';
+
+export const EXTENSION_RUNTIME_LEASE_KEY = Symbol.for('yuelema.phone-extension/runtime-lease/v1');
+
+/**
+ * Claim the one live extension runtime across repeated/concurrent activation and
+ * cache-busted module copies. A newer claimant releases the older runtime before
+ * either can leave duplicate roots, document listeners, or stacked settings dialogs.
+ */
+export function acquireExtensionRuntimeLease({ globalRef = globalThis, cleanup } = {}) {
+    if (typeof cleanup !== 'function') throw new TypeError('extension_runtime_cleanup_required');
+    const previous = globalRef?.[EXTENSION_RUNTIME_LEASE_KEY];
+    try { previous?.release?.(); } catch { /* stale runtime cleanup is best-effort */ }
+
+    let active = true;
+    let globallyPublished = false;
+    const lease = Object.freeze({
+        isCurrent() {
+            return active && (!globallyPublished || globalRef?.[EXTENSION_RUNTIME_LEASE_KEY] === lease);
+        },
+        release() {
+            if (!active) return false;
+            active = false;
+            try { cleanup(); } finally {
+                try {
+                    if (globalRef?.[EXTENSION_RUNTIME_LEASE_KEY] === lease) delete globalRef[EXTENSION_RUNTIME_LEASE_KEY];
+                } catch { /* global coordination is an optimization; local cleanup already ran */ }
+            }
+            return true;
+        },
+    });
+    try {
+        globalRef[EXTENSION_RUNTIME_LEASE_KEY] = lease;
+        globallyPublished = globalRef[EXTENSION_RUNTIME_LEASE_KEY] === lease;
+    } catch { /* non-extensible host: retain local lease semantics */ }
+    return lease;
+}
+
 export const UPDATE_RELOAD_DELAY_MS = 900;
 
 function sessionStorageOrNull(injected) {

@@ -18,7 +18,7 @@ import { createRemoteImageImporter } from './src/images/remote-image-import.js';
 import { createGroupForumStore } from './src/groups/group-forum-store.js';
 import { createHostExtensionUpdater } from './src/host-extension-update.js';
 import { createPhoneClock } from './src/chat/phone-clock.js';
-import { createExtensionRestartController } from './src/update-restart.js';
+import { acquireExtensionRuntimeLease, createExtensionRestartController } from './src/update-restart.js';
 
 const EXTENSION_ROOT_ID = 'yuelema-phone-extension-root';
 const browserStorage = createBrowserSettingsStorage();
@@ -32,6 +32,7 @@ const extensionRestartController = createExtensionRestartController();
 let appInstance = null;
 let unsubscribeEvents = () => {};
 let pageHideHandler = null;
+let runtimeLease = null;
 
 function safeContext(getContext) {
     try {
@@ -123,7 +124,9 @@ function destroyActiveInstance() {
 
 /** SillyTavern v1.17+ activation hook (declared in manifest.json). */
 export async function onActivate() {
-    destroyActiveInstance();
+    runtimeLease?.release();
+    const lease = acquireExtensionRuntimeLease({ cleanup: destroyActiveInstance });
+    runtimeLease = lease;
 
     const documentRef = globalThis.document;
     if (!documentRef?.body) {
@@ -159,6 +162,7 @@ export async function onActivate() {
     const imageLibrary = createImageLibraryStore({ storage: globalThis.SillyTavern?.libs?.localforage });
     const characterAvatarStore = createCharacterAvatarStore({ storage: globalThis.SillyTavern?.libs?.localforage });
     await characterAvatarStore.ready();
+    if (!lease.isCurrent()) return;
     let conversationImageStore;
     try {
         conversationImageStore = createConversationImageStore({ storage: globalThis.SillyTavern?.libs?.localforage });
@@ -170,6 +174,7 @@ export async function onActivate() {
         conversationImageStore = createConversationImageStore({ storage: createMemoryConversationImageStorage() });
         await conversationImageStore.ready();
     }
+    if (!lease.isCurrent()) return;
     const imageMatchCoordinator = createImageMatchCoordinator({ imageLibrary, settingsStore, llmClient });
     // Group/forum conversations and their summaries are intentionally separate
     // from MVU. localforage keeps their bounded browser cache out of settings.json
@@ -180,6 +185,7 @@ export async function onActivate() {
         groupForumStore = createGroupForumStore();
         await groupForumStore.ready();
     }
+    if (!lease.isCurrent()) return;
     const serviceOrderHistoryStore = createServiceOrderHistoryStore({ getScope: () => serviceOrderHistoryScope(getContext) });
     const actionBridge = createActionBridge({
         documentRef,
@@ -193,6 +199,7 @@ export async function onActivate() {
         imageMatchCoordinator,
         diagnosticLogger: globalThis.console,
     });
+    if (!lease.isCurrent()) return;
     appInstance = mountPhoneApp({
         documentRef,
         rootId: EXTENSION_ROOT_ID,
@@ -220,7 +227,10 @@ export async function onActivate() {
     const refreshFromHostEvent = () => appInstance?.refreshState();
     bindStateUpdateSubscriptions({ mvu, getContext, onUpdate: refreshFromHostEvent });
     refreshWhenMvuReady({ instance, mvu, getContext, onUpdate: refreshFromHostEvent });
-    pageHideHandler = () => destroyActiveInstance();
+    pageHideHandler = () => {
+        lease.release();
+        if (runtimeLease === lease) runtimeLease = null;
+    };
     if (typeof globalThis.addEventListener === 'function') {
         globalThis.addEventListener('pagehide', pageHideHandler, { once: true });
     }
@@ -233,11 +243,15 @@ export async function onActivate() {
  */
 export function onDisable() {
     extensionRestartController.cancel();
+    runtimeLease?.release();
+    runtimeLease = null;
     destroyActiveInstance();
 }
 
 /** SillyTavern v1.18+ deletion hook; it uses the same runtime-only cleanup. */
 export function onDelete() {
     extensionRestartController.cancel();
+    runtimeLease?.release();
+    runtimeLease = null;
     destroyActiveInstance();
 }

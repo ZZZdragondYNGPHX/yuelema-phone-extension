@@ -1801,6 +1801,29 @@ test('Phase 68: dialogs trap focus, close on Escape, and politely return focus t
     }
 });
 
+test('closing the phone also closes the matching settings dialog so no sibling modal is stranded', () => {
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-close-matching-settings',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: createSettingsStore({ storage: createMemoryStorage() }),
+        llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
+        click(launcher);
+        click(buttonByPage('matches'));
+        click(miniDom.document.querySelector('.yl-feature-options'));
+        const dialog = miniDom.document.querySelector('.yl-feature-binding-modal');
+        assert.equal(dialog.hidden, false);
+
+        click(launcher);
+        assert.equal(miniDom.document.querySelector('.yl-phone-panel').hidden, true);
+        assert.equal(dialog.hidden, true, '关闭小手机不得把匹配设置留成无法关闭的顶层弹窗');
+    } finally {
+        mounted.destroy();
+    }
+});
+
 test('Phase 68: operation dialog focuses its close action once and stays put across state updates', async () => {
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-phase68-operation-focus',
@@ -2086,7 +2109,7 @@ test('extension update failure surfaces HTTP status and host text in the dialog 
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'loading');
         assert.match(dialog.textContent, /正在检查扩展更新/u);
-        assert.match(dialog.textContent, /当前版本 v1\.1\.0/u, 'loading 弹窗应展示当前版本');
+        assert.match(dialog.textContent, /当前版本 v1\.1\.1/u, 'loading 弹窗应展示当前版本');
 
         gate.reject(new HostExtensionUpdateError('request_failed_http', {
             status: 500,
@@ -2149,7 +2172,7 @@ test('extension update success states show the current version and non-git insta
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'success');
         assert.match(dialog.textContent, /当前已是最新版本/u);
-        assert.match(dialog.textContent, /v1\.1\.0 已是最新版本/u, '最新结果应展示当前版本号');
+        assert.match(dialog.textContent, /v1\.1\.1 已是最新版本/u, '最新结果应展示当前版本号');
         assert.equal(restartCalls, 0, 'already-current checks must never reload the page');
 
         result = Promise.resolve({ outcome: 'updated' });

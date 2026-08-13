@@ -8,6 +8,7 @@ import {
     consumePhoneReopenAfterUpdate,
     rememberPhoneReopenAfterUpdate,
     reopenPhoneAfterUpdatedReload,
+    acquireExtensionRuntimeLease,
 } from '../update-restart.js';
 import { createMemoryStorage } from '../settings/settings-store.js';
 
@@ -107,4 +108,20 @@ test('lifecycle controller reopens only from its own one-shot session marker', (
     assert.equal(controller.reopen({ open() { opens += 1; } }), false);
     assert.equal(opens, 1);
     controller.cancel();
+});
+
+
+test('runtime lease tears down the previous activation and rejects stale async completion', () => {
+    const globalRef = {};
+    const cleaned = [];
+    const first = acquireExtensionRuntimeLease({ globalRef, cleanup: () => cleaned.push('first') });
+    const second = acquireExtensionRuntimeLease({ globalRef, cleanup: () => cleaned.push('second') });
+
+    assert.deepEqual(cleaned, ['first'], '新的激活租约必须先清理旧实例');
+    assert.equal(first.isCurrent(), false);
+    assert.equal(second.isCurrent(), true);
+    assert.equal(first.release(), false, '旧租约不得二次清理');
+    assert.equal(second.release(), true);
+    assert.deepEqual(cleaned, ['first', 'second']);
+    assert.equal(second.isCurrent(), false);
 });
