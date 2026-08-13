@@ -1,4 +1,41 @@
 export const UPDATE_REOPEN_SESSION_KEY = 'yuelema.update-reopen/v1';
+
+export const EXTENSION_RUNTIME_LEASE_KEY = Symbol.for('yuelema.phone-extension/runtime-lease/v1');
+
+/**
+ * Claim the one live extension runtime across repeated/concurrent activation and
+ * cache-busted module copies. A newer claimant releases the older runtime before
+ * either can leave duplicate roots, document listeners, or stacked settings dialogs.
+ */
+export function acquireExtensionRuntimeLease({ globalRef = globalThis, cleanup } = {}) {
+    if (typeof cleanup !== 'function') throw new TypeError('extension_runtime_cleanup_required');
+    const previous = globalRef?.[EXTENSION_RUNTIME_LEASE_KEY];
+    try { previous?.release?.(); } catch { /* stale runtime cleanup is best-effort */ }
+
+    let active = true;
+    let globallyPublished = false;
+    const lease = Object.freeze({
+        isCurrent() {
+            return active && (!globallyPublished || globalRef?.[EXTENSION_RUNTIME_LEASE_KEY] === lease);
+        },
+        release() {
+            if (!active) return false;
+            active = false;
+            try { cleanup(); } finally {
+                try {
+                    if (globalRef?.[EXTENSION_RUNTIME_LEASE_KEY] === lease) delete globalRef[EXTENSION_RUNTIME_LEASE_KEY];
+                } catch { /* global coordination is an optimization; local cleanup already ran */ }
+            }
+            return true;
+        },
+    });
+    try {
+        globalRef[EXTENSION_RUNTIME_LEASE_KEY] = lease;
+        globallyPublished = globalRef[EXTENSION_RUNTIME_LEASE_KEY] === lease;
+    } catch { /* non-extensible host: retain local lease semantics */ }
+    return lease;
+}
+
 export const UPDATE_RELOAD_DELAY_MS = 900;
 
 function sessionStorageOrNull(injected) {
@@ -52,28 +89,6 @@ export function clearPhoneReopenAfterUpdate(storage = undefined) {
         target.removeItem(UPDATE_REOPEN_SESSION_KEY);
         return true;
     } catch { return false; }
-}
-
-/**
- * Schedules a real page reload so the browser loads the just-updated ESM files.
- * The one-shot session marker is best-effort: a blocked sessionStorage still
- * permits the reload, but the phone cannot be reopened automatically afterward.
- */
-export function scheduleExtensionRestart({ storage = undefined, reload = undefined, schedule = undefined } = {}) {
-    const reopenMarked = rememberPhoneReopenAfterUpdate(storage);
-    const reloadPage = reloadOrNull(reload);
-    const scheduleTask = schedulerOrNull(schedule);
-    if (!reloadPage || !scheduleTask) return Object.freeze({ scheduled: false, reopenMarked });
-
-    try {
-        scheduleTask(() => {
-            try { reloadPage(); }
-            catch { /* The update already succeeded; reload failures stay non-fatal. */ }
-        }, UPDATE_RELOAD_DELAY_MS);
-        return Object.freeze({ scheduled: true, reopenMarked });
-    } catch {
-        return Object.freeze({ scheduled: false, reopenMarked });
-    }
 }
 
 /** Consumes the one-shot marker only after the newly mounted app exposes open(). */

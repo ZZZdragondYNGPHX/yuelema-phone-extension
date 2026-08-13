@@ -8,7 +8,7 @@ import {
     consumePhoneReopenAfterUpdate,
     rememberPhoneReopenAfterUpdate,
     reopenPhoneAfterUpdatedReload,
-    scheduleExtensionRestart,
+    acquireExtensionRuntimeLease,
 } from '../update-restart.js';
 import { createMemoryStorage } from '../settings/settings-store.js';
 
@@ -25,11 +25,12 @@ test('successful update restart schedules one delayed reload and preserves the r
     const storage = createMemoryStorage();
     const tasks = [];
     let reloads = 0;
-    const result = scheduleExtensionRestart({
+    const controller = createExtensionRestartController({
         storage,
         reload() { reloads += 1; },
         schedule(callback, delay) { tasks.push({ callback, delay }); },
     });
+    const result = controller.schedule();
 
     assert.deepEqual(result, { scheduled: true, reopenMarked: true });
     assert.equal(reloads, 0, 'reload must wait long enough for the success UI to render');
@@ -42,15 +43,16 @@ test('successful update restart schedules one delayed reload and preserves the r
 test('blocked session storage still reloads but reports that automatic reopen is unavailable', () => {
     const blocked = { setItem() { throw new Error('blocked'); } };
     const tasks = [];
-    const result = scheduleExtensionRestart({ storage: blocked, reload() {}, schedule(callback) { tasks.push(callback); } });
+    const controller = createExtensionRestartController({ storage: blocked, reload() {}, schedule(callback) { tasks.push(callback); } });
+    const result = controller.schedule();
     assert.deepEqual(result, { scheduled: true, reopenMarked: false });
     assert.equal(tasks.length, 1);
 });
 
 test('reload or scheduler absence fails softly without claiming a restart', () => {
     const storage = createMemoryStorage();
-    assert.deepEqual(scheduleExtensionRestart({ storage, reload: null, schedule() {} }), { scheduled: false, reopenMarked: true });
-    assert.deepEqual(scheduleExtensionRestart({ storage, reload() {}, schedule: null }), { scheduled: false, reopenMarked: true });
+    assert.deepEqual(createExtensionRestartController({ storage, reload: null, schedule() {} }).schedule(), { scheduled: false, reopenMarked: true });
+    assert.deepEqual(createExtensionRestartController({ storage, reload() {}, schedule: null }).schedule(), { scheduled: false, reopenMarked: true });
 });
 
 test('new lifecycle mount consumes the marker and opens the phone exactly once', () => {
@@ -106,4 +108,20 @@ test('lifecycle controller reopens only from its own one-shot session marker', (
     assert.equal(controller.reopen({ open() { opens += 1; } }), false);
     assert.equal(opens, 1);
     controller.cancel();
+});
+
+
+test('runtime lease tears down the previous activation and rejects stale async completion', () => {
+    const globalRef = {};
+    const cleaned = [];
+    const first = acquireExtensionRuntimeLease({ globalRef, cleanup: () => cleaned.push('first') });
+    const second = acquireExtensionRuntimeLease({ globalRef, cleanup: () => cleaned.push('second') });
+
+    assert.deepEqual(cleaned, ['first'], '新的激活租约必须先清理旧实例');
+    assert.equal(first.isCurrent(), false);
+    assert.equal(second.isCurrent(), true);
+    assert.equal(first.release(), false, '旧租约不得二次清理');
+    assert.equal(second.release(), true);
+    assert.deepEqual(cleaned, ['first', 'second']);
+    assert.equal(second.isCurrent(), false);
 });

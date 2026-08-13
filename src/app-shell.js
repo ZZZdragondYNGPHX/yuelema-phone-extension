@@ -29,7 +29,7 @@ import { createProfilePage } from './pages/profile.js';
 import { createOnboardingFlow } from './onboarding/onboarding-flow.js';
 import { createPhoneClock } from './chat/phone-clock.js';
 
-const UI_VERSION = '1.1.0';
+const UI_VERSION = '1.1.1';
 
 function downloadImagePackJson(json) {
     if (typeof json !== 'string' || typeof globalThis.Blob !== 'function'
@@ -1350,9 +1350,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         launcherDrag.reset();
         clearPanelCustomPosition();
         clearPanelCustomSize();
-        if (open && uiLayoutMode === 'phone') {
-            syncPhonePanelViewport();
-            applyPhonePanelPlacement();
+        if (open) {
+            if (uiLayoutMode === 'phone') syncPhonePanelViewport();
+            applyPanelPlacement();
         }
         ensureLauncherWithinViewport();
         recordLauncherDiagnostic('placement_reset', launcherGeometry());
@@ -1370,27 +1370,31 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
     let suppressPhoneNavClick = false;
     let phoneNavClickSuppressionTimer = null;
     /**
-     * 手机布局面板显示定位：
-     * - 持久化坐标仍完整落在当前可视视口内 → 继续生效；
-     * - 无持久化坐标，或坐标已越出当前视口（旋转/换屏/桌面遗留）→ 居中于可视视口。
-     * 两条路径都经 writePanelViewportPosition 补偿 transform 宿主，绝不再依赖
-     * CSS right/bottom 锚点在移动宿主上的解析结果。
+     * 面板显示定位：
+     * - phone：持久化坐标仍完整落在当前可视视口内则恢复，否则回到视口中央；
+     * - desktop：保留 CSS/拖动得到的当前位置，但必须钳回真实可视视口。
+     * 两种布局都经 writePanelViewportPosition 补偿 transform 宿主。旧实现只处理 phone，
+     * 导致 desktop 在 Termux/移动宿主的 fixed 包含块偏移下可长期停在负 top，归位也无法自救。
      */
-    function applyPhonePanelPlacement() {
-        if (uiLayoutMode !== 'phone') return false;
+    function applyPanelPlacement() {
         const rect = panel.getBoundingClientRect?.();
         const width = Number(rect?.width); const height = Number(rect?.height);
         if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return false;
-        const saved = readPhonePanelPosition(layoutStorage);
-        if (saved) {
-            const clamped = clampPanelPosition(saved.left, saved.top, width, height);
-            if (Math.abs(clamped.left - saved.left) <= 1 && Math.abs(clamped.top - saved.top) <= 1) {
-                writePanelViewportPosition(clamped.left, clamped.top);
-                return true;
+        if (uiLayoutMode === 'phone') {
+            const saved = readPhonePanelPosition(layoutStorage);
+            if (saved) {
+                const clamped = clampPanelPosition(saved.left, saved.top, width, height);
+                if (Math.abs(clamped.left - saved.left) <= 1 && Math.abs(clamped.top - saved.top) <= 1) {
+                    writePanelViewportPosition(clamped.left, clamped.top);
+                    return true;
+                }
             }
+            const centered = centeredPanelPosition(width, height);
+            writePanelViewportPosition(centered.left, centered.top);
+            return true;
         }
-        const centered = centeredPanelPosition(width, height);
-        writePanelViewportPosition(centered.left, centered.top);
+        const clamped = clampPanelPosition(Number(rect.left) || 0, Number(rect.top) || 0, width, height);
+        writePanelViewportPosition(clamped.left, clamped.top);
         return true;
     }
     function beginPanelDrag(event, { dragHandle = header, allowPhone = false, rejectHeaderControls = false } = {}) {
@@ -1645,7 +1649,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         if (open) {
             syncPhonePanelViewport();
             applyStoredPanelSize();
-            applyPhonePanelPlacement();
+            applyPanelPlacement();
             ensureLauncherWithinViewport();
             refreshState();
             recordLauncherDiagnostic('open_refresh_complete', launcherGeometry());
@@ -1668,6 +1672,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
             nsfwTurnConsentSessions.clear();
             ctx.clearSummaryToast();
             hideOperationDialog();
+            closeFeatureBindingDialog();
             releaseNotesClickStreak = 0;
             aboutClickStreak = 0;
             invalidateServiceProfileGeneration();
@@ -2853,8 +2858,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
             // 尚未定过位（如打开时尺寸不可测）则重试一次默认居中。拖动中不干预。
             if (open && !panelDrag) {
                 if (panelHasCustomPosition) clampCustomPanelPosition();
-                else applyPhonePanelPlacement();
+                else applyPanelPlacement();
             }
+        } else if (open) {
+            applyPanelPlacement();
         } else {
             clampCustomPanelPosition();
         }
