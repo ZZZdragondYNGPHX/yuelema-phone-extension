@@ -49,6 +49,13 @@ function readResult() {
     };
 }
 
+function readResultWithPlayer(nickname = '原玩家ID') {
+    const result = readResult();
+    result.state.玩家 = adultCharacter(nickname);
+    result.state.玩家.公开资料.头像引用 = '';
+    return result;
+}
+
 function click(node) {
     node.dispatchEvent(new Event('click'));
 }
@@ -486,7 +493,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             click(version());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /当前版本：1.1.1/u);
+            assert.match(dialog.textContent, /当前版本：1.1.2/u);
         }
         const modeEntry = miniDom.document.querySelector('[name="about-content-mode-entry"]');
         assert.ok(modeEntry, '连续五次版本信息后应显示内容模式隐藏入口');
@@ -504,6 +511,9 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
             assert.match(dialog.textContent, /最近三次更新/u);
+            assert.match(dialog.textContent, /v1.1.2/u);
+            assert.match(dialog.textContent, /切换页面不再呈现整台小手机刷新/u);
+            assert.match(dialog.textContent, /社区回帖显示玩家当前昵称/u);
             assert.match(dialog.textContent, /v1.1.1/u);
             assert.match(dialog.textContent, /飞出屏幕/u);
             assert.match(dialog.textContent, /双实例/u);
@@ -847,6 +857,8 @@ test('summary archive lists private chats, local chat groups, and forum posts wh
 test('forum home only calls AI after an armed pull gesture, and opened posts update local discussion after a user reply', async () => {
     let homeCalls = 0;
     let postCalls = 0;
+    let postRequest = null;
+    let playerNickname = '原玩家ID';
     const temporaryProfile = {
         nickname: '苏晴', ageRange: '25-29', gender: '女', city: '上海', mbti: 'ISFP', zodiac: '天秤座', occupation: '花艺师', interests: ['花店'], presence: '在线', matchRate: null,
     };
@@ -858,6 +870,7 @@ test('forum home only calls AI after an armed pull gesture, and opened posts upd
         },
         async generateForumPostConversationUpdate(request) {
             postCalls += 1;
+            postRequest = request;
             assert.equal(request.post.title, '雨后的书店');
             return { ok: true, update: { participants: [], messages: [{ speaker: '苏晴', text: '上午会比较安静，欢迎早点来。' }] } };
         },
@@ -866,7 +879,7 @@ test('forum home only calls AI after an armed pull gesture, and opened posts upd
     await groupForumStore.ready();
     const mounted = mountPhoneApp({
         documentRef: miniDom.document, rootId: 'ylm-test-group-drafts', actionBridge: bridge,
-        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: () => readResultWithPlayer(playerNickname),
     });
     try {
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
@@ -901,9 +914,363 @@ test('forum home only calls AI after an armed pull gesture, and opened posts upd
         click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '发送论坛评论'));
         await flushUi();
         assert.equal(postCalls, 1);
+        assert.equal(postRequest?.history.messages.at(-1)?.speaker, '原玩家ID', '帖子模型历史必须标明当前玩家昵称，不能把“我”当人物昵称');
         const snapshot = await groupForumStore.snapshot();
-        assert.equal(snapshot.posts.find((post) => post.title === '雨后的书店')?.messages.length, 2);
+        const savedPost = snapshot.posts.find((post) => post.title === '雨后的书店');
+        assert.equal(savedPost?.messages.length, 2);
+        assert.equal(savedPost?.messages.find((message) => message.sender === 'user')?.author, null, '玩家身份继续由 sender=user 表示，不把公开资料快照复制进论坛缓存');
+        const playerComment = miniDom.document.querySelectorAll('.yl-comment-row').find((row) => row.querySelector('.yl-comment-text')?.textContent === '周末人会很多吗？');
+        assert.ok(playerComment, '玩家回帖应在帖子评论列表中渲染');
+        assert.equal(playerComment.querySelector('strong')?.textContent, '原玩家ID', '玩家回帖必须显示当前公开昵称，而不是硬编码“我”');
+        assert.match(playerComment.querySelector('.yl-comment-avatar')?.textContent ?? '', /原/u, '玩家回帖应使用玩家头像位而不是空白他人头像');
+        playerNickname = '新玩家ID';
+        mounted.refreshState();
+        const renamedComment = miniDom.document.querySelectorAll('.yl-comment-row').find((row) => row.querySelector('.yl-comment-text')?.textContent === '周末人会很多吗？');
+        assert.equal(renamedComment?.querySelector('strong')?.textContent, '新玩家ID', '旧回帖继续由 sender=user 归属玩家，改名后应动态显示新昵称');
         assert.doesNotMatch(JSON.stringify(snapshot), /session-secret|对象UID|stat_data/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('forum post participant avatars expose one accessible floor-action sheet while player floors remain inert', async () => {
+    const author = {
+        nickname: '许青', ageRange: '25-29', gender: '女', city: '杭州', mbti: 'ENFP', zodiac: '双鱼座', occupation: '插画师', interests: ['书店'], presence: '在线', matchRate: null,
+    };
+    const commenter = {
+        nickname: '林澈', ageRange: '30-34', gender: '男', city: '杭州', mbti: 'INFJ', zodiac: '天秤座', occupation: '摄影师', interests: ['摄影'], presence: '在线', matchRate: null,
+    };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-08-15T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const created = await groupForumStore.addForumRefresh({
+        communityProfiles: [],
+        update: { participants: [author], posts: forumRefreshPosts('许青') },
+    });
+    const post = created.find((item) => item.title === '雨后的书店');
+    await groupForumStore.appendForumModelUpdate({
+        postId: post.id,
+        update: { participants: [commenter], messages: [{ speaker: '林澈', text: '我去过一次，窗边很适合拍照。' }] },
+    });
+    await groupForumStore.appendForumUserComment({ postId: post.id, content: '谢谢分享，我也想去看看。' });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-floor-actions',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: () => readResultWithPlayer('玩家本人'),
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('广场');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开帖子：雨后的书店'));
+
+        const authorTrigger = miniDom.document.querySelectorAll('.yl-forum-participant-trigger')
+            .find((node) => node.getAttribute('aria-label') === '打开许青的楼层操作');
+        const commenterTrigger = miniDom.document.querySelectorAll('.yl-forum-participant-trigger')
+            .find((node) => node.getAttribute('aria-label') === '打开林澈的楼层操作');
+        assert.ok(authorTrigger, '主帖楼层作者头像应是可操作的真实按钮');
+        assert.ok(commenterTrigger, '非玩家回帖头像应复用同一楼层操作入口');
+        assert.equal(authorTrigger.getAttribute('aria-haspopup'), 'dialog');
+        assert.equal(authorTrigger.getAttribute('aria-expanded'), 'false');
+
+        const playerRow = miniDom.document.querySelectorAll('.yl-comment-row')
+            .find((row) => row.querySelector('.yl-comment-text')?.textContent === '谢谢分享，我也想去看看。');
+        assert.ok(playerRow, '玩家楼层应正常渲染');
+        assert.equal(playerRow.querySelector('.yl-forum-participant-trigger'), null, '玩家自己的头像不得提供查看详情或私聊邀请');
+
+        const contextMenu = new Event('contextmenu', { cancelable: true });
+        commenterTrigger.dispatchEvent(contextMenu);
+        assert.equal(contextMenu.defaultPrevented, true, '楼层头像右键应阻止浏览器默认菜单');
+        assert.equal(commenterTrigger.getAttribute('aria-expanded'), 'true');
+        let openSheets = miniDom.document.querySelectorAll('.yl-sheet').filter((node) => !node.hidden);
+        assert.equal(openSheets.length, 1, '任何时刻只打开一层 BottomSheet');
+        assert.equal(openSheets[0].querySelector('.yl-sheet__panel').getAttribute('aria-label'), '林澈的楼层操作');
+        assert.deepEqual(
+            openSheets[0].querySelector('.yl-forum-participant-actions').querySelectorAll('button').map((node) => node.textContent),
+            ['查看详情', '请求私聊'],
+            '楼层操作只暴露两个明确行为',
+        );
+        assert.match(openSheets[0].textContent, /只会使用 TA 在当前帖子中的公开发言/u);
+
+        const secondContextMenu = new Event('contextmenu', { cancelable: true });
+        authorTrigger.dispatchEvent(secondContextMenu);
+        openSheets = miniDom.document.querySelectorAll('.yl-sheet').filter((node) => !node.hidden);
+        assert.equal(openSheets.length, 1, '打开另一楼层操作时必须关闭并移除旧面板');
+        assert.equal(openSheets[0].querySelector('.yl-sheet__panel').getAttribute('aria-label'), '许青的楼层操作');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('forum detail request shows the considering animation then renders only the generated public projection', async () => {
+    const participant = {
+        nickname: '许青', ageRange: '25-29', gender: '女', city: '杭州', mbti: 'ENFP', zodiac: '双鱼座', occupation: '插画师', interests: ['书店'], presence: '在线', matchRate: null,
+    };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-08-15T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const created = await groupForumStore.addForumRefresh({
+        communityProfiles: [],
+        update: { participants: [participant], posts: forumRefreshPosts('许青') },
+    });
+    const post = created.find((item) => item.title === '雨后的书店');
+    await groupForumStore.appendForumModelUpdate({
+        postId: post.id,
+        update: { participants: [], messages: [{ speaker: '许青', text: '周末上午会更安静。' }] },
+    });
+    let request = null;
+    let resolveDetails;
+    const pendingDetails = new Promise((resolve) => { resolveDetails = resolve; });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-participant-details',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            generateForumParticipantDetails(input) { request = input; return pendingDetails; },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: () => readResultWithPlayer('玩家本人'),
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('广场');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开帖子：雨后的书店'));
+        const trigger = miniDom.document.querySelectorAll('.yl-forum-participant-trigger')
+            .find((node) => node.getAttribute('aria-label') === '打开许青的楼层操作');
+        const contextMenu = new Event('contextmenu', { cancelable: true });
+        trigger.dispatchEvent(contextMenu);
+        const sheet = miniDom.document.querySelectorAll('.yl-sheet').find((node) => !node.hidden);
+        click(sheet.querySelectorAll('button').find((node) => node.textContent === '查看详情'));
+
+        const considering = miniDom.document.querySelector('.yl-operation-dialog');
+        assert.equal(considering.hidden, false, '详情生成期间应打开非阻塞操作提示');
+        assert.equal(considering.dataset.state, 'loading');
+        assert.equal(considering.dataset.visual, 'connecting');
+        assert.ok(considering.querySelector('.yl-hearts--connecting'), '考虑中应使用共享的 connecting 双心动画');
+        assert.match(considering.textContent, /请求查看详情.*正在等待 TA 考虑/u);
+        assert.equal(request?.post?.id, post.id, '详情 bridge 必须收到当前帖子完整快照');
+        assert.equal(request?.participant?.nickname, '许青');
+        assert.deepEqual(request?.post?.messages?.map((message) => message.content), ['周末上午会更安静。'], '帖内发言快照应交给 bridge 生成受控提示词');
+
+        resolveDetails({
+            ok: true,
+            contextKey: 'forum-context-safe',
+            profile: {
+                昵称: '许青', 头像引用: 'https://never-render.invalid/avatar.webp', 年龄段: '25-29', 性别: '女', 性取向: '双性恋',
+                城市: '杭州', 距离范围: '5 km', 寻找意图: '从聊天开始', 简介: '喜欢雨后的书店和安静的插画时间。',
+                兴趣标签: ['书店', '插画'], 生活方式标签: ['早起'], 性格标签: ['温和'], 沟通风格标签: ['慢热'],
+                仅好友资料: { 私密边界: 'friend-secret-must-not-render' },
+                隐藏资料: { 实际年龄: 28, 私人备注: 'hidden-secret-must-not-render' },
+                拒绝阈值: 47,
+            },
+        });
+        await flushUi();
+
+        const detailPage = miniDom.document.querySelector('.yl-page-forum_participant_detail');
+        const detail = miniDom.document.querySelector('.yl-forum-participant-detail');
+        assert.ok(detailPage && detail, '对方同意后应进入独立公开资料页');
+        assert.match(detail.textContent, /许青.*25-29.*杭州.*喜欢雨后的书店/u);
+        assert.match(detail.textContent, /书店.*插画/u);
+        assert.doesNotMatch(miniDom.document.body.textContent, /friend-secret-must-not-render|hidden-secret-must-not-render|拒绝阈值|47/u, '生成结果只能向 DOM 投影公开字段');
+        assert.equal(considering.dataset.state, 'success');
+        assert.equal(considering.dataset.visual, 'accepted');
+        assert.ok(considering.querySelector('.yl-hearts--accepted'));
+        assert.match(considering.textContent, /对方同意了.*更完整的公开资料/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('forum private-chat request shows a considering animation then refreshes and opens the committed session', async () => {
+    const participant = {
+        nickname: '许青', ageRange: '25-29', gender: '女', city: '杭州', mbti: 'ENFP', zodiac: '双鱼座', occupation: '插画师', interests: ['书店'], presence: '在线', matchRate: null,
+    };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-08-15T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const created = await groupForumStore.addForumRefresh({
+        communityProfiles: [],
+        update: { participants: [participant], posts: forumRefreshPosts('许青') },
+    });
+    const post = created.find((item) => item.title === '雨后的书店');
+    const liveRead = readResultWithPlayer('玩家本人');
+    let request = null;
+    let resolvePrivateChat;
+    const pendingPrivateChat = new Promise((resolve) => { resolvePrivateChat = resolve; });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-private-chat-request',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            runForumParticipantPrivateChat(input) { request = input; return pendingPrivateChat; },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: () => liveRead,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('广场');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开帖子：雨后的书店'));
+        const trigger = miniDom.document.querySelectorAll('.yl-forum-participant-trigger')
+            .find((node) => node.getAttribute('aria-label') === '打开许青的楼层操作');
+        trigger.dispatchEvent(new Event('contextmenu', { cancelable: true }));
+        const sheet = miniDom.document.querySelectorAll('.yl-sheet').find((node) => !node.hidden);
+        click(sheet.querySelectorAll('button').find((node) => node.textContent === '请求私聊'));
+
+        const considering = miniDom.document.querySelector('.yl-operation-dialog');
+        assert.equal(considering.hidden, false);
+        assert.equal(considering.dataset.state, 'loading');
+        assert.equal(considering.dataset.visual, 'connecting');
+        assert.ok(considering.querySelector('.yl-hearts--connecting'));
+        assert.match(considering.textContent, /请求私聊.*正在等待 TA 考虑是否接受/u);
+        assert.equal(request?.post?.id, post.id);
+        assert.equal(request?.participant?.nickname, '许青');
+
+        liveRead.state.角色池.npc_forum_1 = adultCharacter('许青');
+        liveRead.state.会话.chat_forum_1 = {
+            对象UID: 'npc_forum_1', 状态: '已匹配', 最近消息: [], 已确认边界: '', 已确认承诺: '', 总结: { 记录: [] },
+        };
+        resolvePrivateChat({ ok: true, npcUid: 'npc_forum_1', sessionUid: 'chat_forum_1', contextKey: 'forum-context-safe', profile: adultCharacter('许青').公开资料 });
+        await flushUi();
+
+        assert.ok(miniDom.document.querySelector('.yl-page-private_chat'), '私聊建立成功后必须切换到返回的会话路由');
+        const chat = miniDom.document.querySelector('.yl-private-chat-screen');
+        assert.ok(chat, '新角色不得只进角色池，还必须出现在私聊界面');
+        assert.match(chat.textContent, /许青/u);
+        assert.equal(considering.dataset.state, 'success');
+        assert.equal(considering.dataset.visual, 'accepted');
+        assert.ok(considering.querySelector('.yl-hearts--accepted'));
+        assert.match(considering.textContent, /邀请被接受了.*已进入你的私聊列表/u);
+        const activity = mounted.operationActivity.snapshot().entries.find((item) => item.name === '论坛私聊邀请');
+        assert.equal(activity?.status, 'success');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('closing a pending forum-participant prompt prevents a late accepted result from navigating', async () => {
+    const participant = {
+        nickname: '许青', ageRange: '25-29', gender: '女', city: '杭州', mbti: 'ENFP', zodiac: '双鱼座', occupation: '插画师', interests: ['书店'], presence: '在线', matchRate: null,
+    };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-08-15T04:00:00.000Z') });
+    await groupForumStore.ready();
+    await groupForumStore.addForumRefresh({
+        communityProfiles: [],
+        update: { participants: [participant], posts: forumRefreshPosts('许青') },
+    });
+    let resolveDetails;
+    const pendingDetails = new Promise((resolve) => { resolveDetails = resolve; });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-participant-late-result',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            generateForumParticipantDetails() { return pendingDetails; },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: () => readResultWithPlayer('玩家本人'),
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('广场');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开帖子：雨后的书店'));
+        const trigger = miniDom.document.querySelectorAll('.yl-forum-participant-trigger')
+            .find((node) => node.getAttribute('aria-label') === '打开许青的楼层操作');
+        trigger.dispatchEvent(new Event('contextmenu', { cancelable: true }));
+        const sheet = miniDom.document.querySelectorAll('.yl-sheet').find((node) => !node.hidden);
+        click(sheet.querySelectorAll('button').find((node) => node.textContent === '查看详情'));
+        const dialog = miniDom.document.querySelector('.yl-operation-dialog');
+        click(dialog.querySelector('.yl-dialog-close'));
+        assert.equal(dialog.hidden, true);
+
+        resolveDetails({
+            ok: true, contextKey: 'late-context',
+            profile: { 昵称: '许青', 年龄段: '25-29', 性别: '女', 城市: '杭州', 简介: '这条迟到的详情不应接管当前界面。' },
+        });
+        await flushUi();
+
+        assert.equal(dialog.hidden, true, '用户关闭后迟到成功不得重新打开操作提示');
+        assert.ok(miniDom.document.querySelector('.yl-forum-post-page'), '迟到结果不得强制离开当前帖子');
+        assert.equal(miniDom.document.querySelector('.yl-forum-participant-detail'), null);
+        const activity = mounted.operationActivity.snapshot().entries.find((item) => item.name === '论坛角色详情');
+        assert.equal(activity?.status, 'dismissed');
+        assert.match(activity?.message ?? '', /页面已离开.*未展示/u);
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('forum post detail deletes exactly one local post only after confirmation and preserves the rest of the feed', async () => {
+    const profile = {
+        nickname: '许青', ageRange: '25-29', gender: '女', city: '杭州', mbti: 'ENFP', zodiac: '双鱼座', occupation: '插画师', interests: ['书店'], presence: '在线', matchRate: null,
+    };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const created = await groupForumStore.addForumRefresh({ communityProfiles: [], update: { participants: [profile], posts: forumRefreshPosts('许青') } });
+    const target = created.find((post) => post.title === '雨后的书店');
+    await groupForumStore.appendForumModelUpdate({
+        postId: target.id,
+        update: {
+            participants: [],
+            messages: [{ speaker: '许青', text: '顺手分享一张书店窗边照片。', imageDirective: { kind: 'scene_snapshot', scene: 'quiet bookstore window after rain, warm light' } }],
+        },
+    });
+    const survivorIds = created.filter((post) => post.id !== target.id).map((post) => post.id);
+    const settingsStore = createSettingsStore({ storage: createMemoryStorage() });
+    settingsStore.load();
+    settingsStore.setImageGenerationSettings({ ...settingsStore.getImageGenerationSettings(), enabled: true });
+    settingsStore.setConversationImageGenerationSettings('forum', target.id, { autoGenerate: true });
+    const imageCleanupCalls = [];
+    const imagePutCalls = [];
+    const conversationImageStore = {
+        list() { return []; },
+        async put(record) { imagePutCalls.push(record); return record; },
+        async removeConversation(kind, conversationId) { imageCleanupCalls.push({ kind, conversationId }); return 0; },
+    };
+    let unexpectedWrites = 0;
+    let imageGenerationCalls = 0;
+    let resolveImageGeneration;
+    const pendingImageGeneration = new Promise((resolve) => { resolveImageGeneration = resolve; });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-single-delete',
+        actionBridge: {
+            emit() {}, isPending() { return false; }, runMvuAction() { unexpectedWrites += 1; },
+            generateConversationImage() { imageGenerationCalls += 1; return pendingImageGeneration; },
+        },
+        settingsStore, llmClient: null, characterLibrary: null, groupForumStore, conversationImageStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('广场');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开帖子：雨后的书店'));
+        await flushUi();
+        assert.equal(imageGenerationCalls, 1, '已开启的论坛自动生图会进入一个可控的迟到任务');
+        const remove = () => miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '删除帖子：雨后的书店');
+        assert.ok(remove(), '帖子详情应提供明确的单帖删除按钮');
+        click(remove());
+        await flushUi();
+        const confirmation = miniDom.document.querySelector('.yl-forum-post-delete-confirmation');
+        assert.ok(confirmation);
+        assert.match(confirmation.textContent, /其他帖子和广场设置保持不变/u);
+        assert.equal((await groupForumStore.snapshot()).posts.length, 8, '只打开确认区不得提前删除');
+        assert.equal(miniDom.document.activeElement?.getAttribute('aria-label'), '取消删除帖子：雨后的书店', '危险确认默认聚焦取消按钮');
+
+        const escape = new Event('keydown', { cancelable: true });
+        Object.defineProperty(escape, 'key', { value: 'Escape' });
+        confirmation.dispatchEvent(escape);
+        assert.equal(miniDom.document.querySelector('.yl-forum-post-delete-confirmation'), null, 'Escape 只取消删除确认');
+        assert.equal(miniDom.document.querySelector('.yl-phone-panel').hidden, false, '取消删除不得关闭整台小手机');
+        assert.equal((await groupForumStore.snapshot()).posts.length, 8);
+
+        click(remove());
+        await flushUi();
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '确认删除帖子：雨后的书店'));
+        await flushUi();
+        const after = await groupForumStore.snapshot();
+        assert.deepEqual(after.posts.map((post) => post.id), survivorIds, '只删除目标帖，其他帖子顺序保持不变');
+        assert.equal(after.posts.some((post) => post.id === target.id), false);
+        assert.ok(miniDom.document.querySelector('.yl-forum-home'), '详情删除成功后应回到广场继续浏览');
+        assert.match(miniDom.document.body.textContent, /今天的小确幸/u);
+        assert.doesNotMatch(miniDom.document.querySelector('.yl-forum-home').textContent, /雨后的书店/u);
+        assert.deepEqual(imageCleanupCalls, [{ kind: 'forum', conversationId: target.id }]);
+        assert.deepEqual(settingsStore.getConversationImageGenerationSettings('forum', target.id), { autoGenerate: false }, '删除帖子的自动生图覆盖项也应清理');
+        resolveImageGeneration({ ok: true, image: { src: 'data:image/png;base64,iVBORw0KGgo=' } });
+        await flushUi();
+        assert.equal(imagePutCalls.length, 0, '删除后才返回的生图结果不得重新写回已删除帖子的缓存');
+        assert.equal(unexpectedWrites, 0, '删除浏览器本地帖子不得调用 MVU 写入');
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '关闭操作提示'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开帖子：今天的小确幸'));
+        assert.ok(miniDom.document.querySelector('.yl-forum-post-page'), '删除后其他帖子仍可正常进入详情浏览');
     } finally {
         mounted.destroy();
     }

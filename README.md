@@ -1,4 +1,4 @@
-# 约了吗小手机 v1.1.1（窗口定位与单实例修复候选）
+# 约了吗小手机 v1.1.2（移动端稳定性、社区身份与单帖删除候选）
 
 这是现代现实都市「约了吗」MVU 角色卡的配套 SillyTavern UI 扩展。软件层承担推荐、线上短文本私聊、匹配、群组浏览、角色创作与面基约定；现实见面、约会及复杂长文本剧情仍由酒馆正文推进。
 
@@ -7,6 +7,10 @@
 > 连接预设、提示词预设和功能绑定可保存在本浏览器；首次使用会写入 22 份可编辑的默认提示词预设，重开连接页会自动载入默认连接预设。API Key 按连接预设 ID 保存到当前浏览器的独立缓存，绝不导出、写入 MVU 或回显；可在连接页删除当前 Key。真实认证、CORS、模型接口与扩展生命周期仍待目标酒馆版本验证。
 
 ## 当前已实现
+- v1.1.2 移除路由切换、MVU 数据刷新和同页状态重绘时会反复播放的整页入场动画。小手机 root、面板、顶部栏、内容出口与导航仍保持同一挂载实例；打开手机、消息气泡等局部动效继续保留。同时修正 Termux/移动 Chrome 的 transformed/zoom 宿主下操作与设置弹窗飞出屏幕、聚焦导致视口再次滚动，以及刷新后多个残留 root 叠成无法关闭的双层设置界面。
+- v1.1.2 修复社区广场玩家回帖被硬显示为“我”、模型可把玩家昵称和公开资料重新注册成临时角色的问题。回帖现在动态显示玩家当前公开昵称与浏览器本地头像；缓存继续只用 `sender=user` 表示玩家，不复制玩家资料。论坛首页、帖内讨论、群聊及最终浏览器缓存写入都会拒绝与玩家昵称、“我”或“玩家本人”冲突的模型作者。
+- v1.1.2 在帖子详情增加“删除帖子”按钮：二次确认后只删除选中的浏览器本地帖子，其评论、总结、缓存生图及该帖自动生图覆盖项随父帖清理，其他帖子顺序、频道浏览和论坛级自动更新设置保持不变；删除失败不产生部分写入，也不调用 MVU。
+- v1.1.2 帖子详情中，非玩家楼层头像支持电脑右键、手机长按及键盘/普通点击，统一打开“查看详情 / 请求私聊” BottomSheet。查看详情复用 `recommendation_refresh` 角色刷新绑定，只把该人在当前帖子的楼主正文与本人回帖作为不可信公开语料，排除玩家、其他人和总结；完整角色只缓存于本次 Bridge 内存，DOM 仅显示公开投影。请求私聊会复用同一份已校验角色，通过唯一受控 MVU 事务原子建立 `npc_forum_*` 和 `chat_*`，成功后直接进入私聊，不会冒充为“已牵手”匹配；不同人物的并发邀请会串行重读计数器，绝不复用同一角色或会话 UID。两项请求均复用等待/接受/失败双心动画，网络或 Schema 失败不伪装成对方拒绝。
 - v1.1.1 修复桌面布局小手机因宿主 fixed/transform 偏移飞到屏幕外、长按工具栏“归位原位”无法恢复的问题；关闭小手机时同步关闭匹配设置等功能预设弹层，并以跨 cachebuster 模块副本的全局运行租约阻止刷新或热重载期间重复挂载两套界面。
 - v1.1.0 汇总 v1.0.12–v1.0.20 的关系系统、拟真聊天、全尺度成年人 NSFW、角色蓝图与城市信号引导，作为公开 Beta 候选；版本信息、更新弹窗、manifest、package 与静态门禁已统一。关于软件中的扩展更新成功后会自动重新载入酒馆页面，并通过当前标签页的一次性会话标记在新版本加载后自动重开小手机；若浏览器阻止会话存储或页面重载，会明确提示对应的手动操作。配套角色卡构建器同时补齐 SillyTavern 官方主世界书绑定字段 `data.extensions.world`，并强制它与 `character_book.name`、项目内世界书标识完全同名，避免 Card Lore 已导入却未绑定到角色。
 - v1.0.20 首次开局新增城市信号引导：仅当 MVU 功能开关明确为“玩家未建档”时，在小手机面板内展示欢迎动画，并逐步收集昵称、公开年龄段、城市、相遇方向、公开简介及生活标签。确认页只预览公开资料；保存仍调用既有受控 MVU 公开资料管线，头像引用固定为空，绝不读取或展示仅好友/隐藏资料。保存成功自动进入“我的”并展示新资料；稍后填写或关闭小手机不写入 MVU，未完成草稿只在当前挂载会话内保留。
@@ -100,10 +104,10 @@ readLatestState → build…Patch → validateControlledPatchAgainstState
 1. 在 SillyTavern 的扩展管理页选择“安装扩展”，输入 Git URL：`https://github.com/ZZZdragondYNGPHX/yuelema-phone-extension.git`。
 2. 安装完成后重载 SillyTavern，确认“约了吗小手机”已启用。此扩展声明最低版本为 **SillyTavern v1.18.0**，以使用已核对的 `activate / disable / delete` lifecycle hooks。
 3. 后续版本从同一 Git 仓库更新，不再把本地工作树手工同步到 SillyTavern 安装副本。使用“小手机 → 我的 → 关于软件 → 检查并更新扩展”且确有新版本时，页面会自动重新载入，并在新版本加载后自动重开小手机；若浏览器阻止其中一步，成功提示会说明需要手动重载还是点击悬浮球。
-4. 本轮已生成匹配的 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v1.1.1.json`。在角色管理页面导入后，确认 Card Lore 名为“约了吗·MVU v1.1.1”且已成为角色主世界书，再为该卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。JSON 本地构建通过也不等于真实宿主验收。
+4. 本轮已生成匹配的 `D:\Dev\AI制卡\约了吗\角色卡源\dist\约了吗_MVU_v1.1.2.json`。在角色管理页面导入后，确认 Card Lore 名为“约了吗·MVU v1.1.2”且已成为角色主世界书，再为该卡**新开聊天**；不要用旧聊天的变量状态代替初始化验收。JSON 本地构建通过也不等于真实宿主验收。
 5. 首次使用时在“我的 → 设置”配置 OpenAI-compatible 连接预设、提示词预设和功能绑定；输入 API Key 后点击“保存连接预设”会将它保存到当前浏览器并立即可用，不必再额外点模型拉取按钮。禁用、删除或页面卸载只清理内存镜像；下次打开会按同一连接预设自动恢复。Key 不会进入设置导出、MVU、角色卡、提示词、日志或错误面板；需要移除时点击“删除当前已保存 API Key”。
 
-## 本地验证（2026-08-13）
+## 本地验证（2026-08-15）
 
 ```powershell
 Set-Location 'D:\Dev\AI制卡\约了吗\约了吗小手机'
@@ -112,7 +116,7 @@ node --test
 node --input-type=module -e "await import('./index.js'); console.log('production import graph resolves')"
 ```
 
-当前 v1.1.1 结果：`npm run check` 通过；全量 `node --test` **949 / 949 通过，0 failed**；`node --check index.js`、`node --check src/app-shell.js`、`node --check src/update-restart.js`、生产 ESM import 图与 `git diff --check` 通过。角色卡权威构建器生成 v1.1.1 JSON（162857 bytes，SHA-256 `8DD1CE9B8A931BCD7C0275AFFC7FFE02505BE54C3793E193A40F2A94296859E7`），并回读确认 `character_version` 与 InitVar 数据版本均为 1.1.1，`data.extensions.world`、`data.extensions.mvu_worldbook_name` 与 `data.character_book.name` 都是“约了吗·MVU v1.1.1”，12 条世界书逐字匹配，InitVar 禁用，第一条备选开场为 14 章新手百科。以上仍是本地/Mock/MiniDOM/静态构建证据，不等同于 SillyTavern、真实 MVU provider、Card Lore 导入绑定、扩展自动重载重开或模型供应商真机验收。
+当前 v1.1.2 结果：路由/动效定向回归 **97 / 97 通过**；社区身份定向回归 **59 / 59 通过**；移动弹层与生命周期定向回归 **95 / 95 通过**；单帖删除定向回归（论坛缓存、设置清理与社区 UI）**64 / 64 通过**；论坛楼层人物定向回归（角色生成、MVU Patch、bridge、社区 UI、路由与样式）**159 / 159 通过**；`npm run check` 通过；全量 `node --test` **982 / 982 通过，0 failed**；`node --check index.js`、`node --check src/action-bridge.js`、`node --check src/app-shell.js`、`node --check src/pages/community.js`、`node --check src/characters/character-authoring-service.js`、`node --check src/mvu/controlled-patch.js`、论坛与既有功能相关生产文件语法检查、生产 ESM import 图与 `git diff --check` 通过。角色卡权威构建器生成 v1.1.2 JSON（163016 bytes，SHA-256 `2C5E2F26B2568B93D2679374A54F8F6238DEF2626A4410342D20866F12A83601`），并回读确认 `character_version` 与 InitVar 数据版本均为 1.1.2，`data.extensions.world`、`data.extensions.mvu_worldbook_name` 与 `data.character_book.name` 都是“约了吗·MVU v1.1.2”，12 条世界书逐字匹配且 InitVar 禁用。以上仍是本地/Mock/MiniDOM/静态构建证据，不等同于 SillyTavern、真实 MVU provider、Card Lore 导入绑定、扩展自动重载重开或模型供应商真机验收。
 
 下方“阶段 55”及更早章节是历史实施记录，不代表当前版本或当前安装说明。
 

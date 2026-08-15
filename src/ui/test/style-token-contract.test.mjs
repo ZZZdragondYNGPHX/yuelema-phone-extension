@@ -169,6 +169,67 @@ test('phone 与 desktop 壳层保有显式、分离的网格布局契约', () =>
     assertDeclarations(desktopNav, [/grid-area\s*:\s*nav\s*;/u, /grid-template-columns\s*:/u], '电脑端侧边导航');
 });
 
+test('路由与数据刷新不重放整页入场动画', () => {
+    const shell = section('shell');
+    const page = blockAfter(shell, '.yl-phone-page');
+    assert.doesNotMatch(page, /(?:animation|transition)(?:-[\w-]+)?\s*:/u, '页面节点会按需重建，不得因此重放全页动效制造整机刷新感');
+
+    const panel = blockAfter(shell, '.yl-phone-panel');
+    assert.match(panel, /animation\s*:\s*yl-phone-in\b/u, '打开小手机时的壳层入场动效应保留');
+});
+
+test('二级弹窗共用稳定 fixed 定位，入场动画不得改写居中 transform', () => {
+    const components = section('components');
+    for (const [selector, label] of [['.yl-operation-dialog', '操作弹窗'], ['.yl-settings-modal', '设置弹窗']]) {
+        const block = blockAfter(components, selector);
+        assertDeclarations(block, [
+            /position\s*:\s*fixed/u,
+            /top\s*:\s*50%/u,
+            /right\s*:\s*auto/u,
+            /bottom\s*:\s*auto/u,
+            /left\s*:\s*50%/u,
+            /margin\s*:\s*0/u,
+            /max-width\s*:/u,
+            /max-height\s*:/u,
+            /overflow\s*:\s*auto/u,
+            /transform\s*:\s*translate\(-50%,\s*-50%\)/u,
+        ], label);
+    }
+
+    const featureBinding = blockAfter(section('pages'), '.yl-feature-binding-modal');
+    assert.doesNotMatch(featureBinding, /(?:position|top|right|bottom|left|transform|overflow|box-shadow)\s*:/u,
+        '匹配设置必须继承统一弹窗定位，不得另起一套 fixed 几何');
+
+    const dialogMotion = blockAfter(section('motion'), '@keyframes yl-dialog-pop');
+    assert.match(dialogMotion, /opacity\s*:/u);
+    assert.doesNotMatch(dialogMotion, /(?:transform|translate|scale)\s*:/u,
+        '弹窗入场只能淡入，不得在定位测量期间改写几何');
+
+    const pages = section('pages');
+    const imageEditor = blockAfter(pages, '.yl-image-keyword-editor');
+    assertDeclarations(imageEditor, [
+        /position\s*:\s*fixed/u,
+        /top\s*:\s*50%/u,
+        /right\s*:\s*auto/u,
+        /bottom\s*:\s*auto/u,
+        /left\s*:\s*50%/u,
+        /margin\s*:\s*0/u,
+        /max-width\s*:/u,
+        /max-height\s*:/u,
+        /overflow\s*:\s*auto/u,
+    ], '图片编辑弹窗');
+    const imageMenu = blockAfter(pages, '.yl-image-context-menu');
+    assertDeclarations(imageMenu, [
+        /position\s*:\s*fixed/u,
+        /right\s*:\s*auto/u,
+        /bottom\s*:\s*auto/u,
+        /margin\s*:\s*0/u,
+        /max-width\s*:/u,
+        /max-height\s*:/u,
+        /overflow\s*:\s*auto/u,
+    ], '图片右键或长按菜单');
+});
+
 test('desktop 规则单前缀：第二前缀形态被彻底消灭', () => {
     assert.doesNotMatch(stylesheet, /\.yl-phone-panel\[data-ui-layout/u, '不得再出现 .yl-phone-panel[data-ui-layout 前缀');
     /* 每一处 data-ui-layout 门禁都必须挂在扩展根上 */

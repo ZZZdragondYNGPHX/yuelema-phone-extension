@@ -252,3 +252,105 @@ test('forum refresh cache rejects partial or duplicated channel batches', async 
         (error) => error instanceof GroupForumStoreError && error.code === 'INVALID_FORUM_REFRESH',
     );
 });
+
+test('local persistence rejects model-owned identities that collide with the player or self aliases', async () => {
+    const store = createGroupForumStore();
+    await store.ready();
+
+    await assert.rejects(
+        store.addForumRefresh({
+            communityProfiles: [], reservedPlayerNickname: '原玩家ID',
+            update: { participants: [profile('原玩家ID')], posts: forumRefreshPosts('原玩家ID') },
+        }),
+        (error) => error instanceof GroupForumStoreError && error.code === 'PLAYER_IDENTITY_CONFLICT',
+    );
+    assert.equal((await store.snapshot()).posts.length, 0, '被拒绝的玩家克隆不得部分写入帖子缓存');
+
+    const created = await store.addForumRefresh({
+        communityProfiles: [profile('苏晴')],
+        update: { participants: [], posts: forumRefreshPosts('苏晴') },
+    });
+    await assert.rejects(
+        store.appendForumModelUpdate({
+            postId: created[0].id, reservedPlayerNickname: '原玩家ID',
+            update: { participants: [profile('我')], messages: [{ speaker: '我', text: '冒充玩家的评论。' }] },
+        }),
+        (error) => error instanceof GroupForumStoreError && error.code === 'PLAYER_IDENTITY_CONFLICT',
+    );
+    assert.equal((await store.snapshot()).posts[0].messages.length, 0, '被拒绝的自称克隆不得部分写入评论缓存');
+});
+
+test('deleting one forum post removes its nested discussion and summary while preserving every other post and forum-wide settings', async () => {
+    const storage = createMemoryGroupForumStorage();
+    const store = createGroupForumStore({ storage, now: CLOCK });
+    await store.ready();
+    await store.setForumAuto({ settings: {
+        enabled: true, intervalSeconds: 25,
+        channelBindings: { SFW: { connectionPresetId: 'conn_channel', promptPresetId: 'prompt_channel_sfw' }, NSFW: { connectionPresetId: null, promptPresetId: null } },
+        postBindings: { SFW: { connectionPresetId: 'conn_post', promptPresetId: 'prompt_post_sfw' }, NSFW: { connectionPresetId: null, promptPresetId: null } },
+    } });
+    const created = await store.addForumRefresh({
+        communityProfiles: [profile('林澈')],
+        update: { participants: [], posts: forumRefreshPosts('林澈') },
+    });
+    const target = created[3];
+    await store.appendForumUserComment({ postId: target.id, content: '这条评论应随父帖删除。' });
+    await store.appendForumModelUpdate({
+        postId: target.id,
+        update: { participants: [], messages: [{ speaker: '林澈', text: '这条回复也应随父帖删除。' }] },
+    });
+    await store.saveConversationSummary({
+        target: { kind: 'post', id: target.id }, startFloor: 1, endFloor: 2, content: '这条总结应随父帖删除。',
+    });
+
+    const before = await store.snapshot();
+    const expectedPosts = before.posts.filter((post) => post.id !== target.id);
+    const targetBefore = before.posts.find((post) => post.id === target.id);
+    assert.equal(targetBefore.messages.length, 2);
+    assert.equal(targetBefore.summaries.length, 1);
+
+    assert.deepEqual(await store.deleteForumPost({ postId: target.id }), { postId: target.id });
+    const after = await store.snapshot();
+    assert.deepEqual(after.posts, expectedPosts, '其他帖子的顺序与内容必须逐字保持');
+    assert.deepEqual(after.forumAuto, before.forumAuto, '单帖删除不得清空论坛级 postBindings 或自动更新设置');
+    assert.equal((await store.getSummaryHistory()).posts.some((entry) => entry.id === target.id), false);
+    const serialized = await storage.getItem(GROUP_FORUM_STORAGE_KEY);
+    assert.equal(serialized.includes(target.id), false);
+    assert.doesNotMatch(serialized, /这条评论应随父帖删除|这条回复也应随父帖删除|这条总结应随父帖删除/u);
+});
+
+test('single-post deletion rejects invalid or missing IDs and remains atomic when persistence fails', async () => {
+    const backing = createMemoryGroupForumStorage();
+    let rejectWrites = false;
+    const storage = {
+        getItem(key) { return backing.getItem(key); },
+        setItem(key, value) {
+            if (rejectWrites) throw new Error('simulated write failure');
+            return backing.setItem(key, value);
+        },
+        removeItem(key) { return backing.removeItem(key); },
+    };
+    const store = createGroupForumStore({ storage, now: CLOCK });
+    await store.ready();
+    const created = await store.addForumRefresh({
+        communityProfiles: [profile('林澈')],
+        update: { participants: [], posts: forumRefreshPosts('林澈') },
+    });
+    const before = await store.snapshot();
+
+    for (const postId of ['not-a-post', 'local_post_999999']) {
+        await assert.rejects(
+            store.deleteForumPost({ postId }),
+            (error) => error instanceof GroupForumStoreError && error.code === 'POST_NOT_FOUND',
+        );
+        assert.deepEqual(await store.snapshot(), before, '无效或不存在的 ID 不得改动缓存');
+    }
+
+    rejectWrites = true;
+    await assert.rejects(
+        store.deleteForumPost({ postId: created[0].id }),
+        (error) => error instanceof GroupForumStoreError && error.code === 'STORAGE_WRITE_FAILED',
+    );
+    rejectWrites = false;
+    assert.deepEqual(await store.snapshot(), before, '持久化失败时内存文档不得出现部分删除');
+});

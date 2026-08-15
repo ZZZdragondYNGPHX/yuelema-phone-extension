@@ -1,6 +1,29 @@
 export const UPDATE_REOPEN_SESSION_KEY = 'yuelema.update-reopen/v1';
 
 export const EXTENSION_RUNTIME_LEASE_KEY = Symbol.for('yuelema.phone-extension/runtime-lease/v1');
+export const EXTENSION_ROOT_SELECTOR = '.yl-phone-extension';
+
+/**
+ * Remove every stale shell left in the host document before a new activation
+ * starts. getElementById() only returns one node, so it cannot recover a host
+ * that already contains duplicate roots with the same id.
+ */
+export function removeStaleExtensionRoots(documentRef) {
+    if (!documentRef || typeof documentRef.querySelectorAll !== 'function') return 0;
+    let removed = 0;
+    let roots;
+    try { roots = [...documentRef.querySelectorAll(EXTENSION_ROOT_SELECTOR)]; }
+    catch { return 0; }
+    for (const root of roots) {
+        try {
+            root?.remove?.();
+            removed += 1;
+        } catch {
+            // A hostile or already-detached stale node must not block the new mount.
+        }
+    }
+    return removed;
+}
 
 /**
  * Claim the one live extension runtime across repeated/concurrent activation and

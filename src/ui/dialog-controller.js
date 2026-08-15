@@ -64,10 +64,15 @@ function isWithin(node, ancestor) {
 function tryFocus(node) {
     if (!node || typeof node.focus !== 'function') return false;
     try {
-        node.focus();
+        node.focus({ preventScroll: true });
         return true;
     } catch {
-        return false;
+        try {
+            node.focus();
+            return true;
+        } catch {
+            return false;
+        }
     }
 }
 
@@ -121,11 +126,8 @@ export function createDialogController({ documentRef = globalThis.document } = {
         if (!opener || typeof opener.focus !== 'function') return;
         if (opener.disabled === true) return;
         if (!isWithin(opener, document)) return;
-        try {
-            opener.focus();
-        } catch {
-            // 恢复焦点失败保持静默，不打断关闭流程。
-        }
+        // 防止移动端回焦把宿主布局视口滚动到旧 opener，导致下一次弹窗再次偏移。
+        tryFocus(opener);
     }
 
     function handleKeydown(event) {

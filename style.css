@@ -593,9 +593,13 @@
 /* —— 弹窗体系（operation dialog / settings modal / dialog titlebar） —— */
 .yl-operation-dialog {
     position: fixed;
-    z-index: 10080;
+    /* 操作反馈可由 BottomSheet 内触发，必须位于 sheet/scrim 之上。 */
+    z-index: 10150;
     top: 50%;
+    right: auto;
+    bottom: auto;
     left: 50%;
+    margin: 0;
     display: grid;
     width: min(320px, calc(100vw - 32px));
     max-width: calc(100vw - 28px);
@@ -638,7 +642,10 @@
     position: fixed;
     z-index: 10090;
     top: 50%;
+    right: auto;
+    bottom: auto;
     left: 50%;
+    margin: 0;
     width: min(360px, calc(100vw - 28px));
     max-width: calc(100vw - 28px);
 
@@ -1056,10 +1063,10 @@
     -webkit-overflow-scrolling: touch;
 }
 .yl-phone-page {
+    /* 路由与数据刷新会按需重建此节点；整页动效会因此反复重放。 */
     display: grid;
     gap: var(--yl-space-5);
     padding: var(--yl-space-5) var(--yl-space-4) var(--yl-space-6);
-    animation: yl-page-in var(--yl-dur-2) var(--yl-ease);
 }
 .yl-phone-page h1 { font-family: var(--yl-font-display); font-size: var(--yl-type-headline); font-weight: 780; letter-spacing: -.01em; }
 .yl-phone-page h2 { font-family: var(--yl-font-display); font-size: var(--yl-type-body-lg); font-weight: 720; }
@@ -1773,15 +1780,8 @@
 }
 .yl-feature-options:hover { border-color: var(--yl-border-strong); background: var(--yl-surface-2); }
 .yl-feature-binding-modal {
-    position: fixed;
     z-index: 10090;
-    top: 50%;
-    left: 50%;
     width: min(360px, calc(100vw - 24px));
-    max-height: min(76vh, 620px);
-    overflow: auto;
-    transform: translate(-50%, -50%);
-    box-shadow: var(--yl-shadow-3);
 }
 .yl-feature-binding-row {
     padding: var(--yl-space-3);
@@ -2828,6 +2828,26 @@
 /* §8.2-4 帖子评论：ListRow 变体（头像 + 昵称/相对时间 + 文本） */
 .yl-comment-row { display: flex; align-items: flex-start; gap: var(--yl-space-2); }
 .yl-comment-avatar { width: 32px; height: 32px; font-size: var(--yl-type-xs); }
+.yl-forum-participant-trigger {
+    display: grid;
+    flex: 0 0 var(--yl-icon-hit);
+    width: var(--yl-icon-hit);
+    min-width: var(--yl-icon-hit);
+    height: var(--yl-icon-hit);
+    min-height: var(--yl-icon-hit);
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
+    place-items: center;
+}
+.yl-forum-participant-trigger:hover { background: var(--yl-accent-soft); }
+.yl-forum-participant-trigger[aria-expanded="true"] { background: var(--yl-accent-2-soft); box-shadow: var(--yl-focus-ring); }
+.yl-forum-participant-actions { display: grid; gap: var(--yl-space-2); }
+.yl-forum-participant-actions-note { margin-bottom: var(--yl-space-1); color: var(--yl-text-2); font-size: var(--yl-type-caption); line-height: 1.5; }
+.yl-forum-participant-actions .yl-settings-button { width: 100%; min-height: var(--yl-icon-hit); }
 .yl-comment-body {
     display: grid;
     flex: 1;
@@ -2993,6 +3013,7 @@
     font-weight: 600;
 }
 .yl-post-open:hover, .yl-post-open:focus-visible { background: var(--yl-accent-soft); }
+.yl-forum-post-delete-confirmation { margin-top: var(--yl-space-1); }
 .yl-forum-post-layout { display: grid; grid-template-columns: minmax(0, 1fr) 148px; align-items: start; gap: var(--yl-space-3); }
 .yl-forum-post-main {
     display: grid;
@@ -3006,10 +3027,11 @@
 }
 .yl-forum-post-author { display: flex; align-items: center; gap: var(--yl-space-2); }
 .yl-forum-post-avatar { width: 46px; height: 46px; font-size: var(--yl-type-body); }
+.yl-forum-post-author .yl-forum-participant-trigger { flex-basis: 46px; width: 46px; min-width: 46px; height: 46px; min-height: 46px; }
 .yl-forum-post-author > div { display: grid; min-width: 0; gap: 2px; }
 .yl-forum-post-author strong { font-size: var(--yl-type-body); }
 .yl-forum-post-author span, .yl-forum-post-author small { color: var(--yl-text-2); font-size: var(--yl-type-xs); }
-.yl-forum-post-actions { display: flex; justify-content: flex-end; }
+.yl-forum-post-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--yl-space-2); }
 .yl-forum-post-actions .yl-settings-button { min-height: var(--yl-icon-hit); padding: 6px 10px; font-size: var(--yl-type-xs); }
 .yl-forum-post-main h2 { font-size: var(--yl-type-title); line-height: 1.42; }
 .yl-forum-post-body { color: var(--yl-text); font-size: var(--yl-type-caption); line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -3029,6 +3051,18 @@
 .yl-forum-post-author-card > strong { font-size: var(--yl-type-caption); }
 .yl-forum-post-author-card > span:not(.yl-local-profile-meta) { color: var(--yl-text-2); font-size: var(--yl-type-xs); line-height: 1.4; }
 .yl-forum-comment-composer { position: sticky; bottom: 0; padding-top: var(--yl-space-2); background: linear-gradient(to bottom, transparent, var(--yl-bg) 22%); }
+.yl-forum-participant-detail { gap: var(--yl-space-3); }
+.yl-forum-participant-detail-note {
+    padding: var(--yl-space-3);
+    border: 1px solid var(--yl-border);
+    border-radius: var(--yl-radius-ctrl);
+    color: var(--yl-text-2);
+    background: var(--yl-accent-soft);
+    font-size: var(--yl-type-caption);
+    line-height: 1.55;
+}
+.yl-forum-participant-detail-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.yl-forum-participant-invite { justify-self: start; min-height: var(--yl-icon-hit); }
 /* hub 入口组件（当前由 我的/设置/约伴 等页复用；社区自身不再有 Hub） */
 .yl-hub-eyebrow { color: var(--yl-accent); font-size: var(--yl-type-xs); font-weight: 800; letter-spacing: .12em; line-height: 1.2; text-transform: uppercase; }
 .yl-hub-entry {
@@ -4404,7 +4438,13 @@
 .yl-image-context-menu {
     position: fixed;
     z-index: 10110;
+    right: auto;
+    bottom: auto;
     min-width: 164px;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    margin: 0;
+    overflow: auto;
     padding: 6px;
     border: 1px solid var(--yl-border);
     border-radius: var(--yl-radius-ctrl);
@@ -4435,7 +4475,10 @@
 .yl-image-keyword-editor {
     position: fixed;
     top: 50%;
+    right: auto;
+    bottom: auto;
     left: 50%;
+    margin: 0;
     display: grid;
     gap: var(--yl-space-3);
     width: min(390px, calc(100vw - 28px));
@@ -5099,8 +5142,8 @@
     to { opacity: 1; transform: translateY(0); }
 }
 @keyframes yl-dialog-pop {
-    from { opacity: 0; transform: translate(-50%, -50%) scale(.92); }
-    to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
 @keyframes yl-sheet-up {
     from { opacity: .4; transform: translateY(48px); }

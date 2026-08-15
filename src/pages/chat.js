@@ -1097,45 +1097,58 @@ export function createChatPage(ctx) {
             composer.appendChild(element('span', { className: 'yl-chat-composer-hint', text: '左键发送 · 右键或「+」开工具栏 · Shift+Enter 换行' }));
         }
         panel.appendChild(composer);
-        if (toolsOpen) {
-            const toolSheet = createBottomSheet({
+        const appendManagedSheet = ({ title, content, onRequestClose, opener = plusButton }) => {
+            let sheet = null;
+            const managedController = typeof ctx.openManagedDialog === 'function' && typeof ctx.closeManagedDialog === 'function'
+                ? {
+                    open(dialog, options = {}) {
+                        ctx.openManagedDialog(dialog, {
+                            ...options,
+                            geometryTarget: sheet?.root ?? dialog,
+                            placement: 'viewport-cover',
+                        });
+                    },
+                    close(dialog, options = {}) { ctx.closeManagedDialog(dialog, options); },
+                }
+                : null;
+            sheet = createBottomSheet({
                 documentRef: ctx.documentRef,
+                title,
+                content,
+                onRequestClose,
+                dialogController: managedController,
+            });
+            panel.appendChild(sheet.root);
+            sheet.open({ opener });
+            return sheet;
+        };
+        if (toolsOpen) {
+            appendManagedSheet({
                 title: '聊天工具',
                 content: buildChatToolMenu(session, { meetupSupported, meetupUnlocked }),
                 onRequestClose: () => { ctx.activeChatToolsSessionUid = ''; ctx.renderPage(); },
             });
-            panel.appendChild(toolSheet.root);
-            toolSheet.open();
         }
         if (meetupUnlocked && ctx.activeMeetupSessionUid === session.sessionUid) {
-            const meetupSheet = createBottomSheet({
-                documentRef: ctx.documentRef,
+            appendManagedSheet({
                 title: '约定面基',
                 content: buildMeetupHandoffPanel(session),
                 onRequestClose: () => { ctx.activeMeetupSessionUid = ''; ctx.renderPage(); },
             });
-            panel.appendChild(meetupSheet.root);
-            meetupSheet.open();
         }
         if (ctx.activeNsfwConsentSessionUid === session.sessionUid) {
-            const consentSheet = createBottomSheet({
-                documentRef: ctx.documentRef,
+            appendManagedSheet({
                 title: '成人话题共识',
                 content: buildNsfwConsentPanel(session),
                 onRequestClose: () => { ctx.activeNsfwConsentSessionUid = ''; ctx.renderPage(); },
             });
-            panel.appendChild(consentSheet.root);
-            consentSheet.open();
         }
         if (ctx.activeNsfwRelationshipSessionUid === session.sessionUid) {
-            const relationshipSheet = createBottomSheet({
-                documentRef: ctx.documentRef,
+            appendManagedSheet({
                 title: '关系管理',
                 content: buildNsfwRelationshipPanel(session),
                 onRequestClose: () => { ctx.activeNsfwRelationshipSessionUid = ''; ctx.renderPage(); },
             });
-            panel.appendChild(relationshipSheet.root);
-            relationshipSheet.open();
         }
         return panel;
     }

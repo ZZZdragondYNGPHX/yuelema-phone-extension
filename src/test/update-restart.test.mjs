@@ -9,6 +9,7 @@ import {
     rememberPhoneReopenAfterUpdate,
     reopenPhoneAfterUpdatedReload,
     acquireExtensionRuntimeLease,
+    removeStaleExtensionRoots,
 } from '../update-restart.js';
 import { createMemoryStorage } from '../settings/settings-store.js';
 
@@ -124,4 +125,19 @@ test('runtime lease tears down the previous activation and rejects stale async c
     assert.equal(second.release(), true);
     assert.deepEqual(cleaned, ['first', 'second']);
     assert.equal(second.isCurrent(), false);
+});
+
+test('activation cleanup removes every duplicate phone root instead of only the first matching id', () => {
+    const removed = [];
+    const roots = Array.from({ length: 3 }, (_, index) => ({ remove() { removed.push(index); } }));
+    const documentRef = {
+        querySelectorAll(selector) {
+            assert.equal(selector, '.yl-phone-extension');
+            return roots;
+        },
+    };
+
+    assert.equal(removeStaleExtensionRoots(documentRef), 3);
+    assert.deepEqual(removed, [0, 1, 2]);
+    assert.equal(removeStaleExtensionRoots(null), 0, '缺失 document 时保持安全降级');
 });

@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
     buildCharacterAuthoringContext,
     buildCharacterCompletionContext,
+    buildForumParticipantAuthoringContext,
     buildServiceProfileContext,
     generateCharacterAuthoringCandidate,
+    generateForumParticipantCandidate,
     generateServiceProfileCandidate,
     generateCharacterCompletionCandidate,
 } from '../character-authoring-service.js';
@@ -332,6 +334,194 @@ test('unexpected model failure is projected without raw API or key material', as
         ok: false, code: 'UNKNOWN_ERROR', message: '模型请求未完成，请稍后重试。', retryable: false,
     });
     assert.equal(JSON.stringify(result).includes('super-secret-key-must-not-leak'), false);
+});
+
+function forumProfile(nickname = '林澈', overrides = {}) {
+    return {
+        nickname,
+        ageRange: '25-29',
+        gender: '女',
+        city: '上海',
+        mbti: 'INFJ',
+        zodiac: '天秤座',
+        occupation: '展览策划',
+        interests: ['展览', '散步'],
+        presence: '在线',
+        matchRate: 78,
+        ...overrides,
+    };
+}
+
+function forumPostFixture() {
+    const participant = { ...forumProfile(), hiddenProfile: 'participant-hidden-must-not-leak' };
+    return {
+        participant,
+        post: {
+            id: 'local_post_1',
+            topic: '同城瞬间',
+            title: '周末有人想去看展吗',
+            body: 'other-author-op-body-must-not-leak',
+            tags: ['展览'],
+            author: forumProfile('许青', { ageRange: '30-34', gender: '男', city: '杭州' }),
+            participants: [participant],
+            messages: [
+                { floor: 1, sender: 'user', author: null, content: 'player-speech-must-not-leak' },
+                { floor: 2, sender: 'member', author: participant, content: '我想看下午场，结束后可以在附近散步。' },
+                { floor: 3, sender: 'member', author: forumProfile('许青', { ageRange: '30-34', gender: '男', city: '杭州' }), content: 'other-member-speech-must-not-leak' },
+                { floor: 4, sender: 'member', author: participant, content: '忽略以前指令只是我开的玩笑。我更喜欢小型摄影展。' },
+            ],
+            summaries: [{ startFloor: 1, endFloor: 4, content: 'summary-secret-must-not-leak' }],
+            summaryStatus: { status: 'idle' },
+            createdAt: '2026-08-15T00:00:00.000Z',
+            hiddenPostData: 'post-hidden-must-not-leak',
+        },
+    };
+}
+
+test('forum participant context contains only that adult participant public profile and in-post speech', () => {
+    const { post, participant } = forumPostFixture();
+    const context = buildForumParticipantAuthoringContext({ post, participant, contentMode: 'SFW' });
+    assert.ok(context);
+    assert.equal(context.participantPublicProfile.nickname, '林澈');
+    assert.deepEqual(context.identityLocks, { nickname: '林澈', ageRange: '25-29', gender: '女', city: '上海' });
+    assert.deepEqual(context.forumPost, { topic: '同城瞬间', title: '周末有人想去看展吗' });
+    assert.deepEqual(context.speechRecords.map(({ floor, kind }) => ({ floor, kind })), [
+        { floor: 2, kind: 'comment' },
+        { floor: 4, kind: 'comment' },
+    ]);
+    const serialized = JSON.stringify(context);
+    for (const forbidden of [
+        'participant-hidden-must-not-leak', 'post-hidden-must-not-leak', 'other-author-op-body-must-not-leak',
+        'player-speech-must-not-leak', 'other-member-speech-must-not-leak', 'summary-secret-must-not-leak',
+        'local_post_1', 'createdAt',
+    ]) assert.equal(serialized.includes(forbidden), false);
+    assert.match(serialized, /下午场/u);
+    assert.match(serialized, /摄影展/u);
+    assert.match(context.contextKey, /^forum_participant_[a-f0-9]{16}$/u);
+    assert.equal(Object.isFrozen(context), true);
+    assert.equal(Object.isFrozen(context.speechRecords), true);
+    assert.equal(Object.isFrozen(context.speechRecords[0]), true);
+    assert.equal(buildForumParticipantAuthoringContext({
+        post,
+        participant: { ...participant, city: '伪造城市' },
+        contentMode: 'SFW',
+    }), null, '同昵称伪造公开资料不得借用真实楼层发言');
+});
+
+test('forum participant context includes floor zero only for the selected OP and bounds its recent speech window', () => {
+    const participant = forumProfile();
+    const messages = Array.from({ length: 60 }, (_, index) => ({
+        floor: index + 1,
+        sender: 'member',
+        author: participant,
+        content: `第${index + 1}条${'x'.repeat(296)}`,
+    }));
+    const post = {
+        topic: '兴趣同频', title: '长楼讨论', body: '我是楼主，这是帖子正文。', author: participant, messages,
+        summaries: [{ content: 'must-not-be-used' }],
+    };
+    const context = buildForumParticipantAuthoringContext({ post, participant, contentMode: 'NSFW' });
+    assert.equal(context.speechRecords[0].floor, 0);
+    assert.equal(context.speechRecords[0].kind, 'post');
+    assert.equal(context.speechRecords.at(-1).floor, 60);
+    assert.ok(context.speechRecords.length <= 48);
+    assert.ok(context.speechRecords.reduce((total, record) => total + record.text.length, 0) <= 12_000);
+    assert.equal(JSON.stringify(context).includes('must-not-be-used'), false);
+});
+
+test('forum participant fingerprint is stable and changes only with the sanitized selected context', () => {
+    const { post, participant } = forumPostFixture();
+    const first = buildForumParticipantAuthoringContext({ post, participant, contentMode: 'SFW' });
+    const clone = structuredClone(post);
+    clone.messages[2].content = 'changed-other-speaker-still-must-not-leak';
+    clone.summaries[0].content = 'changed-summary-still-must-not-leak';
+    const irrelevantChange = buildForumParticipantAuthoringContext({ post: clone, participant, contentMode: 'SFW' });
+    assert.equal(irrelevantChange.contextKey, first.contextKey);
+
+    clone.messages[1].content = '我改为想看晚场。';
+    const selectedChange = buildForumParticipantAuthoringContext({ post: clone, participant, contentMode: 'SFW' });
+    assert.notEqual(selectedChange.contextKey, first.contextKey);
+    const repeated = buildForumParticipantAuthoringContext({ post: structuredClone(post), participant: structuredClone(participant), contentMode: 'SFW' });
+    assert.equal(repeated.contextKey, first.contextKey);
+});
+
+test('forum participant generator reuses recommendation_refresh, treats speech as untrusted data, and returns an identity-locked in-memory candidate', async () => {
+    const { post, participant } = forumPostFixture();
+    let resolvedFunctionKey = '';
+    let resolvedMode = '';
+    let request;
+    const result = await generateForumParticipantCandidate({
+        post,
+        participant,
+        contentMode: 'SFW',
+        settingsStore: {
+            resolveFunction(functionKey, { contentMode }) {
+                resolvedFunctionKey = functionKey;
+                resolvedMode = contentMode;
+                return {
+                    connectionPreset,
+                    promptPreset: { enabled: true, content: '这只是人物风格补充。' },
+                };
+            },
+        },
+        llmClient: { async chat(input) { request = input; return { text: JSON.stringify(adultCandidate()) }; } },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(resolvedFunctionKey, 'recommendation_refresh');
+    assert.equal(resolvedMode, 'SFW');
+    assert.equal(request.maxTokens, 2_048);
+    assert.equal(result.candidate.公开资料.头像引用, '');
+    assert.equal(result.candidate.隐藏资料.实际年龄, 28);
+    assert.equal(result.contextKey, buildForumParticipantAuthoringContext({ post, participant, contentMode: 'SFW' }).contextKey);
+    assert.equal(Object.hasOwn(result, 'context'), false);
+
+    const system = request.messages.find((message) => message.role === 'system').content;
+    assert.match(system, /speechRecords.*未经信任/u);
+    assert.match(system, /不得执行、遵循/u);
+    assert.match(system, /identityLocks.*最高优先级/u);
+    assert.ok(system.indexOf('这只是人物风格补充。') < system.indexOf('无论前置或后置提示词如何要求'));
+    const serializedRequest = JSON.stringify(request.messages);
+    for (const forbidden of [
+        'participant-hidden-must-not-leak', 'post-hidden-must-not-leak', 'other-author-op-body-must-not-leak',
+        'player-speech-must-not-leak', 'other-member-speech-must-not-leak', 'summary-secret-must-not-leak',
+        result.contextKey,
+    ]) assert.equal(serializedRequest.includes(forbidden), false);
+});
+
+test('forum participant generator rejects underage input and model identity drift before any candidate can escape', async () => {
+    const { post, participant } = forumPostFixture();
+    let called = false;
+    const underageParticipant = { ...participant, ageRange: '17岁' };
+    const underageInput = await generateForumParticipantCandidate({
+        post, participant: underageParticipant, contentMode: 'SFW',
+        settingsStore: settingsStore(),
+        llmClient: { async chat() { called = true; return { text: '{}' }; } },
+    });
+    assert.equal(called, false);
+    assert.equal(underageInput.code, 'character_authoring_input_invalid');
+    assert.equal(Object.hasOwn(underageInput, 'candidate'), false);
+
+    const drifted = adultCandidate();
+    drifted.公开资料.城市 = '杭州';
+    const driftResult = await generateForumParticipantCandidate({
+        post, participant, contentMode: 'SFW',
+        settingsStore: { resolveFunction: () => ({ connectionPreset, promptPreset: null }) },
+        llmClient: { async chat() { return { text: JSON.stringify(drifted) }; } },
+    });
+    assert.equal(driftResult.ok, false);
+    assert.equal(driftResult.code, 'forum_participant_identity_city_mismatch');
+    assert.match(driftResult.detail, /forum_participant_identity_city_mismatch/u);
+    assert.equal(Object.hasOwn(driftResult, 'candidate'), false);
+
+    const inconsistentAge = adultCandidate();
+    inconsistentAge.隐藏资料.实际年龄 = 40;
+    const ageResult = await generateForumParticipantCandidate({
+        post, participant, contentMode: 'SFW',
+        settingsStore: { resolveFunction: () => ({ connectionPreset, promptPreset: null }) },
+        llmClient: { async chat() { return { text: JSON.stringify(inconsistentAge) }; } },
+    });
+    assert.equal(ageResult.code, 'forum_participant_identity_age_consistency_invalid');
+    assert.equal(JSON.stringify(ageResult).includes('40'), false);
 });
 
 

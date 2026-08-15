@@ -7,6 +7,7 @@ const PUBLIC_TEXT_FIELDS = Object.freeze({
     昵称: 80, 年龄段: 32, 性别: 48, 性取向: 80, 城市: 80, 距离范围: 48, 寻找意图: 120, 简介: 500,
 });
 const PUBLIC_TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
+const PLAYER_SELF_ALIAS_KEYS = new Set(['我', '玩家本人'].map((value) => value.normalize('NFKC').toLowerCase()));
 
 // These implementation-shaped payloads are never useful software-layer prose. Unlike
 // policy words, they are not exempted merely because a sentence also says "不要".
@@ -50,6 +51,22 @@ export function cleanGroupLlmText(value, maxLength) {
     const text = value.trim();
     if (!text || text.length > maxLength || CONTROL_CHARACTER_PATTERN.test(text) || HTML_PATTERN.test(text)) return '';
     return text;
+}
+
+/**
+ * The player remains a code-owned `sender: "user"` actor. Model-created people
+ * must never claim the current public nickname or a self-reference alias.
+ */
+export function normalizeCommunityIdentityKey(value) {
+    const nickname = cleanGroupLlmText(value, 80);
+    return nickname ? nickname.normalize('NFKC').toLowerCase() : '';
+}
+
+export function isReservedPlayerIdentityName(value, playerPublicProfile) {
+    const key = normalizeCommunityIdentityKey(value);
+    if (!key) return false;
+    const playerKey = normalizeCommunityIdentityKey(ownData(playerPublicProfile, '昵称'));
+    return PLAYER_SELF_ALIAS_KEYS.has(key) || Boolean(playerKey && key === playerKey);
 }
 
 function clauseIsSafetyRule(clause) {

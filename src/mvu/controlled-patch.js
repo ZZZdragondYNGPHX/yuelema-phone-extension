@@ -2445,6 +2445,21 @@ function matchCandidateSourceFromRole(candidate) {
     return { ...candidate, 与玩家关系: { ...candidate.与玩家关系, 状态: '陌生' } };
 }
 
+function forumCandidateForRole(candidate, contentMode) {
+    const normalized = normalizeGeneratedCandidate(candidate, {
+        contentMode,
+        enforceRhythmConsistency: true,
+    });
+    return { ...normalized, 与玩家关系: { ...normalized.与玩家关系, 状态: '已匹配' } };
+}
+
+function forumCandidateSourceFromRole(candidate) {
+    if (!ownRecord(candidate) || !ownRecord(candidate.与玩家关系) || candidate.与玩家关系.状态 !== '已匹配') {
+        throw new TypeError('forum_private_chat_candidate_state_invalid');
+    }
+    return { ...candidate, 与玩家关系: { ...candidate.与玩家关系, 状态: '陌生' } };
+}
+
 /** Commits one locally scored candidate outcome. Declines never create a chat session. */
 export function buildCandidateMatchOutcomePatch(state, { candidate, accepted } = {}) {
     if (!ownRecord(state) || typeof accepted !== 'boolean') return fail('candidate_match_state_invalid');
@@ -2480,6 +2495,52 @@ export function buildCandidateMatchOutcomePatch(state, { candidate, accepted } =
 
 export function buildCandidateMatchSessionPatch(state, { candidate } = {}) {
     return buildCandidateMatchOutcomePatch(state, { candidate, accepted: true });
+}
+
+/**
+ * Materializes one validated adult forum participant and establishes their first
+ * private-chat session. Forum handles may be stylized, so this path deliberately
+ * skips the personal-name heuristic while retaining the complete candidate,
+ * hidden-profile, adult and generated-threshold validation gates.
+ */
+export function buildForumPrivateChatSessionPatch(state, { candidate } = {}) {
+    if (!ownRecord(state)) return fail('forum_private_chat_state_invalid');
+    const rolePool = ownRecord(state.角色池);
+    const sessions = ownRecord(state.会话);
+    const counters = ownRecord(state.系统)?.UID计数器;
+    const roleCounter = counters?.角色;
+    const sessionCounter = counters?.会话;
+    const contentMode = ownRecord(state.软件)?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+    if (!rolePool || !sessions
+        || !Number.isInteger(roleCounter) || roleCounter < 0 || roleCounter >= 999999
+        || !Number.isInteger(sessionCounter) || sessionCounter < 0 || sessionCounter >= 999999) {
+        return fail('forum_private_chat_state_invalid');
+    }
+
+    let materialized;
+    try { materialized = forumCandidateForRole(candidate, contentMode); }
+    catch (error) {
+        return fail('forum_private_chat_candidate_invalid', '', candidateValidationReason(error, '论坛角色'));
+    }
+
+    const npcUid = `npc_forum_${roleCounter + 1}`;
+    const sessionUid = `chat_${sessionCounter + 1}`;
+    if (!isNpcUid(npcUid) || roleAt(state, npcUid) || candidateAt(state, npcUid)
+        || !isChatSessionUid(sessionUid) || sessions[sessionUid]) {
+        return fail('forum_private_chat_uid_conflict');
+    }
+
+    const operations = [{ op: 'add', path: encodeJsonPointer(['角色池', npcUid]), value: materialized }];
+    const memory = appendEmptyStoryMemory(state, npcUid, operations);
+    if (!memory.ok) return memory;
+    const narrative = appendRelationshipNarrative(state, npcUid, materialized, operations);
+    if (!narrative.ok) return narrative;
+    const bodyCandidate = appendEmptyBodyRelationshipCandidate(state, npcUid, operations);
+    if (!bodyCandidate.ok) return bodyCandidate;
+    operations.push({ op: 'add', path: encodeJsonPointer(['会话', sessionUid]), value: matchedSession(npcUid) });
+    operations.push({ op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '角色']), value: roleCounter + 1 });
+    operations.push({ op: 'replace', path: encodeJsonPointer(['系统', 'UID计数器', '会话']), value: sessionCounter + 1 });
+    return success(operations);
 }
 
 /** Promotes one existing authored candidate and establishes its first matched session. */
@@ -2846,6 +2907,15 @@ export function validateControlledPatchWhitelist(patch) {
                 if (JSON.stringify(expected) === JSON.stringify(operation.value)) continue;
             } catch { /* reject below */ }
             return fail('candidate_match_candidate_invalid');
+        }
+        const generatedForumRole = /^\/角色池\/(npc_forum_\d+)$/u.exec(path);
+        if (operation.op === 'add' && generatedForumRole && isNpcUid(generatedForumRole[1])) {
+            try {
+                const source = forumCandidateSourceFromRole(operation.value);
+                const expected = forumCandidateForRole(source, 'NSFW');
+                if (JSON.stringify(expected) === JSON.stringify(operation.value)) continue;
+            } catch { /* reject below */ }
+            return fail('forum_private_chat_candidate_invalid');
         }
         if (operation.op === 'add' && path === '/推荐/当前队列/-' && isNpcUid(operation.value)) continue;
         if (operation.op === 'replace' && path === '/系统/UID计数器/角色' && Number.isInteger(operation.value) && operation.value >= 0 && operation.value <= 999999) continue;
@@ -3321,6 +3391,16 @@ export function validateControlledPatchAgainstState(state, patch) {
             if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
         } catch {
             return fail('candidate_match_candidate_invalid');
+        }
+    }
+    const forumRoleAddition = patch.find((operation) => operation?.op === 'add' && /^\/角色池\/npc_forum_\d+$/u.test(operation.path));
+    if (forumRoleAddition && ownRecord(forumRoleAddition.value)) {
+        try {
+            const source = forumCandidateSourceFromRole(forumRoleAddition.value);
+            const expected = buildForumPrivateChatSessionPatch(state, { candidate: source });
+            if (expected.ok && JSON.stringify(expected.value) === JSON.stringify(patch)) return success(undefined);
+        } catch {
+            return fail('forum_private_chat_candidate_invalid');
         }
     }
 

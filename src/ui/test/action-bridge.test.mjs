@@ -1054,6 +1054,50 @@ function groupDraftState() {
     return current;
 }
 
+function forumParticipantProfile() {
+    return {
+        nickname: '林澈', ageRange: '25-29', gender: '女', city: '上海', mbti: 'INTJ', zodiac: '天蝎座',
+        occupation: '展览策划', interests: ['电影', '看展'], presence: '在线', matchRate: 72,
+    };
+}
+
+function forumParticipantPost() {
+    const participant = forumParticipantProfile();
+    return {
+        topic: '城市夜话',
+        title: '周末有人一起看展吗？',
+        body: '这周新开了一个摄影展，想找愿意慢慢逛的人。',
+        author: participant,
+        messages: [
+            { sender: 'member', floor: 1, author: participant, content: '我比较喜欢先看展，再找家安静的店聊聊。' },
+            { sender: 'user', floor: 2, author: null, content: '玩家的发言不应当成对方设定。' },
+            { sender: 'member', floor: 3, author: { ...participant, nickname: '别人' }, content: '其他人的发言也不应混入。' },
+        ],
+    };
+}
+
+function forumParticipantState() {
+    const current = recommendationState();
+    current.系统 = { UID计数器: { 角色: 12, 会话: 4 } };
+    current.角色池 = {};
+    current.会话 = {};
+    current.正文记忆 = {};
+    current.正文关系候选 = {};
+    current.关系叙事 = {};
+    return current;
+}
+
+function forumParticipantCandidate() {
+    const candidate = adultCandidate();
+    candidate.仅好友资料 = { 关系状态: '只对好友公开', 边界与偏好: 'FRIEND_ONLY_MARKER' };
+    candidate.隐藏资料 = { 实际年龄: 28, 私人备注: 'HIDDEN_MARKER' };
+    candidate.拒绝阈值 = 31;
+    candidate.已读不回阈值 = 57;
+    candidate.取消匹配阈值 = 76;
+    candidate.拉黑阈值 = 93;
+    return candidate;
+}
+
 test('group and forum draft bridges read MVU once, use their dedicated bindings, and never write MVU state', async () => {
     const { mvu, calls } = createMvu({ initialState: groupDraftState() });
     const resolved = [];
@@ -1103,6 +1147,172 @@ test('group and forum draft bridge pending keys are isolated by feature and grou
     assert.equal(bridge.isPending('forum_draft', 'group_city'), false);
     release();
     assert.equal((await first).ok, true);
+});
+
+test('forum participant details use recommendation refresh but return only public data without an MVU write', async () => {
+    const { mvu, calls } = createMvu({ initialState: forumParticipantState() });
+    const requests = [];
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: {
+            resolveFunction(key, options) {
+                assert.equal(key, 'recommendation_refresh');
+                assert.deepEqual(options, { contentMode: 'SFW' });
+                return { connectionPreset, promptPreset: { enabled: true, content: '保持真实的都市语气。' } };
+            },
+        },
+        llmClient: { async chat(request) {
+            requests.push(request);
+            return { text: JSON.stringify(forumParticipantCandidate()) };
+        } },
+    });
+
+    const result = await bridge.generateForumParticipantDetails({
+        post: forumParticipantPost(), participant: forumParticipantProfile(),
+    });
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.status, 'generated');
+    assert.equal(result.cached, false);
+    assert.equal(result.profile.昵称, '林澈');
+    assert.equal(result.profile.年龄段, '25-29');
+    assert.equal(result.profile.头像引用, '');
+    assert.equal(Object.hasOwn(result.profile, '仅好友资料'), false);
+    assert.equal(Object.hasOwn(result.profile, '隐藏资料'), false);
+    assert.equal(Object.hasOwn(result.profile, '拒绝阈值'), false);
+    assert.doesNotMatch(JSON.stringify(result), /FRIEND_ONLY_MARKER|HIDDEN_MARKER|实际年龄|私人备注|拒绝阈值|已读不回阈值|取消匹配阈值|拉黑阈值/u);
+    assert.equal(requests.length, 1);
+    assert.ok(requests[0].maxTokens >= 2048, '论坛详情应使用足够的完整角色输出预算。');
+    assert.deepEqual(calls.map(([name]) => name), ['get', 'get']);
+    assert.equal(calls.some(([name]) => ['parse', 'replace', 'event'].includes(name)), false);
+});
+
+test('forum private-chat request reuses the details candidate and atomically creates one forum role plus session', async () => {
+    const { mvu, calls, data } = createMvu({ initialState: forumParticipantState(), persistReplacement: true });
+    let modelCalls = 0;
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: {
+            resolveFunction(key) {
+                assert.equal(key, 'recommendation_refresh');
+                return { connectionPreset, promptPreset: { enabled: true, content: '' } };
+            },
+        },
+        llmClient: { async chat() {
+            modelCalls += 1;
+            return { text: JSON.stringify(forumParticipantCandidate()) };
+        } },
+    });
+    const input = { post: forumParticipantPost(), participant: forumParticipantProfile() };
+
+    const details = await bridge.generateForumParticipantDetails(input);
+    const result = await bridge.runForumParticipantPrivateChat(input);
+
+    assert.equal(details.ok, true, JSON.stringify(details));
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual([result.npcUid, result.sessionUid], ['npc_forum_13', 'chat_5']);
+    assert.equal(result.existing, false);
+    assert.equal(modelCalls, 1, '详情请求已生成的同一候选不应在私聊请求时再调模型。');
+    assert.equal(calls.filter(([name]) => name === 'parse').length, 1);
+    assert.equal(calls.filter(([name]) => name === 'replace').length, 1);
+    assert.equal(calls.filter(([name]) => name === 'event').length, 1);
+    const wrappedPatch = calls.find(([name]) => name === 'parse')[1];
+    assert.match(wrappedPatch, /npc_forum_13/u);
+    assert.match(wrappedPatch, /chat_5/u);
+    assert.equal(data.stat_data.角色池.npc_forum_13.公开资料.昵称, '林澈');
+    assert.equal(data.stat_data.会话.chat_5.对象UID, 'npc_forum_13');
+    assert.equal(data.stat_data.正文记忆.npc_forum_13, '');
+    assert.equal(data.stat_data.系统.UID计数器.角色, 13);
+    assert.equal(data.stat_data.系统.UID计数器.会话, 5);
+
+    const writesBeforeRepeat = calls.filter(([name]) => ['parse', 'replace', 'event'].includes(name)).length;
+    const repeated = await bridge.runForumParticipantPrivateChat(input);
+    assert.equal(repeated.ok, true, JSON.stringify(repeated));
+    assert.equal(repeated.existing, true);
+    assert.deepEqual([repeated.npcUid, repeated.sessionUid], ['npc_forum_13', 'chat_5']);
+    assert.equal(modelCalls, 1);
+    assert.equal(calls.filter(([name]) => ['parse', 'replace', 'event'].includes(name)).length, writesBeforeRepeat, '同一桥接实例中重复请求必须返回已有会话而不重复落库。');
+});
+
+test('concurrent private-chat requests for different forum people allocate distinct consecutive roles and sessions', async () => {
+    const { mvu, calls, data, releaseParse } = createMvu({
+        initialState: forumParticipantState(), deferredParse: true, persistReplacement: true,
+    });
+    const secondParticipant = {
+        ...forumParticipantProfile(), nickname: '顾言', ageRange: '30-34', city: '杭州', occupation: '建筑师', matchRate: 68,
+    };
+    const secondPost = {
+        topic: '城市漫游', title: '这周想去看新建筑', body: '我喜欢沿着老街慢慢走，也会记录有趣的建筑细节。',
+        author: secondParticipant,
+        messages: [
+            { sender: 'member', floor: 1, author: secondParticipant, content: '如果天气合适，可以一起走到傍晚。' },
+        ],
+    };
+    const bridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu,
+        eventEmit: async (...args) => { calls.push(['event', ...args]); },
+        settingsStore: { resolveFunction: () => ({ connectionPreset, promptPreset: { enabled: true, content: '' } }) },
+        llmClient: { async chat(request) {
+            const userContext = request.messages.find((message) => message.role === 'user')?.content ?? '';
+            if (!userContext.includes('"顾言"')) return { text: JSON.stringify(forumParticipantCandidate()) };
+            const candidate = forumParticipantCandidate();
+            candidate.公开资料 = { ...candidate.公开资料, 昵称: '顾言', 年龄段: '30-34', 城市: '杭州', 简介: '喜欢老街和建筑观察。' };
+            candidate.隐藏资料 = { ...candidate.隐藏资料, 实际年龄: 32 };
+            return { text: JSON.stringify(candidate) };
+        } },
+    });
+
+    const first = bridge.runForumParticipantPrivateChat({
+        post: forumParticipantPost(), participant: forumParticipantProfile(),
+    });
+    const second = bridge.runForumParticipantPrivateChat({ post: secondPost, participant: secondParticipant });
+    // Give both independent contexts a chance to enter the read/build/apply window
+    // before releasing parse. A correct bridge may instead serialize that window.
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseParse();
+    const results = await Promise.all([first, second]);
+
+    assert.equal(results.every((result) => result.ok), true, JSON.stringify(results));
+    assert.deepEqual(results.map((result) => result.npcUid).sort(), ['npc_forum_13', 'npc_forum_14']);
+    assert.deepEqual(results.map((result) => result.sessionUid).sort(), ['chat_5', 'chat_6']);
+    assert.deepEqual(Object.keys(data.stat_data.角色池).sort(), ['npc_forum_13', 'npc_forum_14']);
+    assert.deepEqual(Object.keys(data.stat_data.会话).sort(), ['chat_5', 'chat_6']);
+    assert.deepEqual(
+        Object.values(data.stat_data.会话).map((session) => session.对象UID).sort(),
+        ['npc_forum_13', 'npc_forum_14'],
+    );
+    assert.equal(data.stat_data.系统.UID计数器.角色, 14);
+    assert.equal(data.stat_data.系统.UID计数器.会话, 6);
+});
+
+test('forum participant model failure and private-chat content-mode race both perform zero MVU writes', async () => {
+    const failedHarness = createMvu({ initialState: forumParticipantState() });
+    const failedBridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu: failedHarness.mvu, eventEmit: async () => {},
+        settingsStore: { resolveFunction: () => ({ connectionPreset, promptPreset: { enabled: true, content: '' } }) },
+        llmClient: { async chat() { return { text: 'not-json' }; } },
+    });
+    const input = { post: forumParticipantPost(), participant: forumParticipantProfile() };
+    const failed = await failedBridge.generateForumParticipantDetails(input);
+    assert.equal(failed.ok, false);
+    assert.equal(failedHarness.calls.some(([name]) => ['parse', 'replace'].includes(name)), false);
+
+    const raceHarness = createMvu({ initialState: forumParticipantState() });
+    const raceBridge = createActionBridge({
+        documentRef: { querySelector: () => null }, mvu: raceHarness.mvu,
+        eventEmit: async (...args) => { raceHarness.calls.push(['event', ...args]); },
+        settingsStore: { resolveFunction: () => ({ connectionPreset, promptPreset: { enabled: true, content: '' } }) },
+        llmClient: { async chat() {
+            raceHarness.data.stat_data.软件.内容模式 = 'NSFW';
+            return { text: JSON.stringify(forumParticipantCandidate()) };
+        } },
+    });
+    const raced = await raceBridge.runForumParticipantPrivateChat(input);
+    assert.equal(raced.ok, false);
+    assert.equal(raced.code, 'forum_participant_mode_changed');
+    assert.equal(raceHarness.calls.some(([name]) => ['parse', 'replace', 'event'].includes(name)), false);
 });
 
 test('action bridge exposes only the transactional candidate-match entry point', () => {

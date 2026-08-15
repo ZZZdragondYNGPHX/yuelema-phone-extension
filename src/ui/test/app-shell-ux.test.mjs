@@ -159,6 +159,60 @@ test('layout preference is browser-local and the profile header toggles the same
     } finally { mounted.destroy(); }
 });
 
+test('primary navigation reuses the mounted phone shell instead of refreshing the whole interface', () => {
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-route-shell-stability',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null, llmClient: null, characterLibrary: null, readState: readyReadResult,
+    });
+    try {
+        click(miniDom.document.querySelector('.yl-phone-launcher'));
+        const shell = miniDom.document.querySelector('.yl-phone-extension');
+        const panel = miniDom.document.querySelector('.yl-phone-panel');
+        const header = miniDom.document.querySelector('.yl-phone-header');
+        const content = miniDom.document.querySelector('.yl-phone-content');
+        const nav = miniDom.document.querySelector('.yl-phone-nav');
+        const launcher = miniDom.document.querySelector('.yl-phone-launcher');
+        const closeButton = miniDom.document.querySelector('.yl-phone-close');
+        const primaryButtons = new Map(['home', 'matches', 'messages', 'groups', 'profile'].map((page) => [page, buttonByPage(page)]));
+        const assertStableShell = () => {
+            assert.strictEqual(miniDom.document.querySelector('.yl-phone-extension'), shell);
+            assert.strictEqual(miniDom.document.querySelector('.yl-phone-panel'), panel);
+            assert.strictEqual(miniDom.document.querySelector('.yl-phone-header'), header);
+            assert.strictEqual(miniDom.document.querySelector('.yl-phone-content'), content);
+            assert.strictEqual(miniDom.document.querySelector('.yl-phone-nav'), nav);
+            assert.strictEqual(miniDom.document.querySelector('.yl-phone-launcher'), launcher);
+            assert.strictEqual(miniDom.document.querySelector('.yl-phone-close'), closeButton);
+            assert.equal(miniDom.document.querySelectorAll('.yl-phone-extension').length, 1);
+            for (const [page, button] of primaryButtons) assert.strictEqual(buttonByPage(page), button);
+        };
+
+        click(buttonByPage('matches'));
+        assert.ok(miniDom.document.querySelector('.yl-page-matches'));
+        assert.equal(miniDom.document.querySelector('.yl-page-home'), null);
+        assertStableShell();
+
+        const voiceMode = miniDom.document.querySelector('.yl-seg').querySelectorAll('.yl-seg__item').find((node) => node.dataset.segmentId === 'voice');
+        click(voiceMode);
+        const voiceInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '描述匹配文字描述');
+        voiceInput.value = '保留这段未提交的界面草稿';
+        voiceInput.dispatchEvent(new Event('input'));
+
+        click(buttonByPage('profile'));
+        click(buttonByText('编辑公开资料'));
+        assert.ok(backButton(), '子页应使用同一壳层的返回路由');
+        click(backButton());
+        assertStableShell();
+
+        click(buttonByPage('matches'));
+        const restoredVoiceMode = miniDom.document.querySelector('.yl-seg').querySelectorAll('.yl-seg__item').find((node) => node.dataset.segmentId === 'voice');
+        const restoredInput = miniDom.document.querySelectorAll('textarea').find((node) => node.getAttribute('aria-label') === '描述匹配文字描述');
+        assert.equal(restoredVoiceMode.getAttribute('aria-checked'), 'true', '路由往返应保留挂载级匹配模式');
+        assert.equal(restoredInput.value, '保留这段未提交的界面草稿', '未提交的内存草稿不得被当成整机刷新清空');
+        assertStableShell();
+    } finally { mounted.destroy(); }
+});
+
 test('layout preference restores desktop on remount and invalid or unreadable values fall back to phone', async () => {
     const storage = createMemoryStorage();
     storage.setItem('yuelema.ui-layout/v1', 'desktop');
@@ -2109,7 +2163,7 @@ test('extension update failure surfaces HTTP status and host text in the dialog 
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'loading');
         assert.match(dialog.textContent, /正在检查扩展更新/u);
-        assert.match(dialog.textContent, /当前版本 v1\.1\.1/u, 'loading 弹窗应展示当前版本');
+        assert.match(dialog.textContent, /当前版本 v1\.1\.2/u, 'loading 弹窗应展示当前版本');
 
         gate.reject(new HostExtensionUpdateError('request_failed_http', {
             status: 500,
@@ -2172,7 +2226,7 @@ test('extension update success states show the current version and non-git insta
         assert.equal(dialog.hidden, false);
         assert.equal(dialog.dataset.state, 'success');
         assert.match(dialog.textContent, /当前已是最新版本/u);
-        assert.match(dialog.textContent, /v1\.1\.1 已是最新版本/u, '最新结果应展示当前版本号');
+        assert.match(dialog.textContent, /v1\.1\.2 已是最新版本/u, '最新结果应展示当前版本号');
         assert.equal(restartCalls, 0, 'already-current checks must never reload the page');
 
         result = Promise.resolve({ outcome: 'updated' });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCandidateMatchOutcomePatch, buildCandidateMatchSessionPatch, buildControlledPatch, buildLikeMatchPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import { buildCandidateMatchOutcomePatch, buildCandidateMatchSessionPatch, buildControlledPatch, buildForumPrivateChatSessionPatch, buildLikeMatchPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
 import { createEmptyBodyRelationshipCandidate } from '../body-relationship-candidate.js';
 import { createEmptyRelationshipNarrative } from '../relationship-narrative.js';
 
@@ -163,6 +163,95 @@ test('AI match below the local cancellation threshold records a declined role wi
     const forged = structuredClone(result.value);
     forged[0].value.与玩家关系.状态 = '已匹配';
     assert.equal(validateControlledPatchAgainstState(before, forged).ok, false);
+});
+
+test('forum private chat atomically materializes a stylized adult handle and an empty matched session', () => {
+    const before = state();
+    const source = candidate();
+    source.公开资料.昵称 = '🌙_雨夜观测站23';
+    const snapshot = structuredClone(before);
+
+    assert.equal(buildCandidateMatchSessionPatch(before, { candidate: source }).ok, false, '普通 AI 匹配仍保留个人姓名形态闸门');
+    const result = buildForumPrivateChatSessionPatch(before, { candidate: source });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.value.map((operation) => [operation.op, operation.path]), [
+        ['add', '/角色池/npc_forum_2'],
+        ['add', '/正文记忆/npc_forum_2'],
+        ['add', '/关系叙事/npc_forum_2'],
+        ['add', '/正文关系候选/npc_forum_2'],
+        ['add', '/会话/chat_6'],
+        ['replace', '/系统/UID计数器/角色'],
+        ['replace', '/系统/UID计数器/会话'],
+    ]);
+    const role = result.value[0].value;
+    assert.equal(role.成人验证, true);
+    assert.equal(role.公开资料.昵称, '🌙_雨夜观测站23');
+    assert.equal(role.隐藏资料.实际年龄, 28);
+    assert.equal(role.与玩家关系.状态, '已匹配');
+    assert.deepEqual(Object.keys(role.绘图).sort(), ['core_dna', 'outfit_dna']);
+    assert.equal(result.value[1].value, '');
+    assert.deepEqual(result.value[3].value, createEmptyBodyRelationshipCandidate());
+    assert.equal(result.value[4].value.对象UID, 'npc_forum_2');
+    assert.equal(result.value[4].value.状态, '已匹配');
+    assert.deepEqual(result.value[4].value.最近消息, []);
+    assert.equal(result.value[4].value.对话层数, 0);
+    assert.equal(validateControlledPatchAgainstState(before, result.value).ok, true);
+    assert.equal(result.value.some((operation) => operation.path.startsWith('/推荐/')), false, '论坛私聊不写入匹配历史或推荐列表');
+    assert.deepEqual(before, snapshot);
+});
+
+test('forum private chat keeps complete adult, hidden-profile and generated-threshold gates', () => {
+    const underage = candidate();
+    underage.公开资料.昵称 = '深夜频道_17';
+    underage.隐藏资料.实际年龄 = 17;
+    assert.equal(buildForumPrivateChatSessionPatch(state(), { candidate: underage }).ok, false);
+
+    const inconsistentThresholds = candidate();
+    inconsistentThresholds.公开资料.昵称 = '深夜频道_88';
+    inconsistentThresholds.拉黑阈值 = 50;
+    assert.equal(buildForumPrivateChatSessionPatch(state(), { candidate: inconsistentThresholds }).ok, false);
+
+    const incomplete = candidate();
+    incomplete.公开资料.昵称 = '深夜频道_99';
+    delete incomplete.仅好友资料;
+    assert.equal(buildForumPrivateChatSessionPatch(state(), { candidate: incomplete }).ok, false);
+});
+
+test('forum private chat exact reconstruction rejects forged paths, linked values and counters', () => {
+    const before = state();
+    const source = candidate();
+    source.公开资料.昵称 = '夜航员_404';
+    const built = buildForumPrivateChatSessionPatch(before, { candidate: source });
+    assert.equal(built.ok, true);
+
+    const wrongRolePath = structuredClone(built.value);
+    wrongRolePath[0].path = '/角色池/npc_forum_999';
+    assert.equal(validateControlledPatchAgainstState(before, wrongRolePath).ok, false);
+
+    const underageRole = structuredClone(built.value);
+    underageRole[0].value.隐藏资料.实际年龄 = 17;
+    assert.equal(validateControlledPatchAgainstState(before, underageRole).ok, false);
+
+    const wrongSessionTarget = structuredClone(built.value);
+    wrongSessionTarget[4].value.对象UID = 'npc_match_2';
+    assert.equal(validateControlledPatchAgainstState(before, wrongSessionTarget).ok, false);
+
+    const alteredNarrative = structuredClone(built.value);
+    alteredNarrative[2].value.进程.最近关系观察 = '保持观望';
+    assert.equal(validateControlledPatchAgainstState(before, alteredNarrative).ok, false);
+
+    const wrongRoleCounter = structuredClone(built.value);
+    wrongRoleCounter[5].value = 3;
+    assert.equal(validateControlledPatchAgainstState(before, wrongRoleCounter).ok, false);
+
+    const wrongSessionCounter = structuredClone(built.value);
+    wrongSessionCounter[6].value = 7;
+    assert.equal(validateControlledPatchAgainstState(before, wrongSessionCounter).ok, false);
+
+    const reordered = structuredClone(built.value);
+    [reordered[1], reordered[2]] = [reordered[2], reordered[1]];
+    assert.equal(validateControlledPatchAgainstState(before, reordered).ok, false);
 });
 test('clicking a saved favourite again removes its bookmark and disposable candidate record', () => {
     const savedState = state();

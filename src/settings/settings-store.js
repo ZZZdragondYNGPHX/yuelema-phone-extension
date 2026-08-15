@@ -1094,6 +1094,15 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         return persist(next);
     }
 
+    function removeConversationImageGenerationSettings(kind, id) {
+        if (!IMAGE_GENERATION_CONVERSATION_KINDS.has(kind) || typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) fail('INVALID_IMAGE_GENERATION', '对话生图设置标识无效。');
+        const next = cloneDocument(current());
+        if (!Object.hasOwn(next.imageGeneration.conversationSettings[kind], id)) return false;
+        delete next.imageGeneration.conversationSettings[kind][id];
+        persist(next);
+        return true;
+    }
+
     function setPersonalizationEnabled(enabled) {
         if (typeof enabled !== 'boolean') fail('INVALID_PERSONALIZATION', '个性化内容推荐开关必须为布尔值。');
         const next = cloneDocument(current());
@@ -1212,6 +1221,7 @@ export function createSettingsStore({ storage, storageKey = SETTINGS_STORAGE_KEY
         setImageGenerationSettings,
         getConversationImageGenerationSettings,
         setConversationImageGenerationSettings,
+        removeConversationImageGenerationSettings,
         setPersonalizationEnabled,
         setPersonalizationKeywordWeights,
         ensurePersonalizationKeywordWeights,

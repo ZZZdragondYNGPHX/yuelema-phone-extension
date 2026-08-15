@@ -18,8 +18,133 @@ const IMAGE_GENERATION_PROVIDERS = Object.freeze([
 const MAX_GENERATION_PROMPT_LENGTH = 1700;
 const MAX_GENERATED_DATA_URL_LENGTH = 32 * 1024 * 1024;
 const LONG_PRESS_DELAY_MS = 550;
+const FLOATING_SURFACE_GUTTER = 8;
 
 function noop() {}
+
+function visualViewportRect(documentRef) {
+    const windowRef = documentRef?.defaultView;
+    const viewport = windowRef?.visualViewport;
+    const width = Number(viewport?.width);
+    const height = Number(viewport?.height);
+    if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+        return {
+            left: Number.isFinite(Number(viewport.offsetLeft)) ? Number(viewport.offsetLeft) : 0,
+            top: Number.isFinite(Number(viewport.offsetTop)) ? Number(viewport.offsetTop) : 0,
+            width,
+            height,
+        };
+    }
+    return {
+        left: 0,
+        top: 0,
+        width: Math.max(1, Number(windowRef?.innerWidth || documentRef?.documentElement?.clientWidth || 360)),
+        height: Math.max(1, Number(windowRef?.innerHeight || documentRef?.documentElement?.clientHeight || 640)),
+    };
+}
+
+function setInlineStyle(node, property, camelProperty, value) {
+    if (typeof node?.style?.setProperty === 'function') node.style.setProperty(property, value);
+    else if (node?.style) node.style[camelProperty] = value;
+}
+
+function inlineStylePixels(node, property, camelProperty) {
+    const direct = Number.parseFloat(node?.style?.[camelProperty]);
+    if (Number.isFinite(direct)) return direct;
+    if (typeof node?.style?.getPropertyValue !== 'function') return Number.NaN;
+    return Number.parseFloat(node.style.getPropertyValue(property));
+}
+
+function coordinateCorrection(target, measured, coordinate, previous, limit) {
+    const delta = target - measured;
+    if (Math.abs(delta) <= 0.5) return 0;
+    let response = Number.NaN;
+    if (previous && coordinate !== previous.coordinate) {
+        response = (measured - previous.measured) / (coordinate - previous.coordinate);
+    }
+    const step = Number.isFinite(response) && response > 0.05 && response < 8 ? delta / response : delta;
+    return Math.max(-limit, Math.min(limit, step));
+}
+
+/**
+ * Put a short-lived fixed disclosure surface beside its pointer while keeping the
+ * rendered rect inside the actual visual viewport. SillyTavern/Termux may make
+ * fixed coordinates affine through an html transform or zoom, so correction is
+ * based on repeated rendered measurements instead of assuming a 1:1 mapping.
+ */
+function placeFixedSurfaceInViewport(surface, documentRef, requestedLeft, requestedTop) {
+    if (!surface?.style) return;
+    const viewport = visualViewportRect(documentRef);
+    const availableWidth = Math.max(1, Math.floor(viewport.width - (FLOATING_SURFACE_GUTTER * 2)));
+    const availableHeight = Math.max(1, Math.floor(viewport.height - (FLOATING_SURFACE_GUTTER * 2)));
+    setInlineStyle(surface, 'position', 'position', 'fixed');
+    setInlineStyle(surface, 'right', 'right', 'auto');
+    setInlineStyle(surface, 'bottom', 'bottom', 'auto');
+    setInlineStyle(surface, 'margin', 'margin', '0');
+    setInlineStyle(surface, 'max-width', 'maxWidth', `${availableWidth}px`);
+    setInlineStyle(surface, 'max-height', 'maxHeight', `${availableHeight}px`);
+    setInlineStyle(surface, 'overflow', 'overflow', 'auto');
+
+    let cssLeft = Number.isFinite(requestedLeft) ? requestedLeft : viewport.left + FLOATING_SURFACE_GUTTER;
+    let cssTop = Number.isFinite(requestedTop) ? requestedTop : viewport.top + FLOATING_SURFACE_GUTTER;
+    setInlineStyle(surface, 'left', 'left', `${cssLeft.toFixed(2)}px`);
+    setInlineStyle(surface, 'top', 'top', `${cssTop.toFixed(2)}px`);
+
+    // A host scale can make a CSS max-size physically exceed the viewport.
+    for (let fit = 0; fit < 2; fit += 1) {
+        const rect = surface.getBoundingClientRect?.();
+        const width = Number(rect?.width);
+        const height = Number(rect?.height);
+        if (!(width > 0) || !(height > 0)) return;
+        let changed = false;
+        if (width > availableWidth + 0.5) {
+            const current = inlineStylePixels(surface, 'max-width', 'maxWidth');
+            if (Number.isFinite(current) && current > 0) {
+                setInlineStyle(surface, 'min-width', 'minWidth', '0px');
+                setInlineStyle(surface, 'max-width', 'maxWidth', `${Math.max(1, current * (availableWidth / width)).toFixed(2)}px`);
+                changed = true;
+            }
+        }
+        if (height > availableHeight + 0.5) {
+            const current = inlineStylePixels(surface, 'max-height', 'maxHeight');
+            if (Number.isFinite(current) && current > 0) {
+                setInlineStyle(surface, 'max-height', 'maxHeight', `${Math.max(1, current * (availableHeight / height)).toFixed(2)}px`);
+                changed = true;
+            }
+        }
+        if (!changed) break;
+    }
+
+    const measured = surface.getBoundingClientRect?.();
+    const width = Number(measured?.width);
+    const height = Number(measured?.height);
+    if (!(width > 0) || !(height > 0)) return;
+    const minLeft = viewport.left + FLOATING_SURFACE_GUTTER;
+    const minTop = viewport.top + FLOATING_SURFACE_GUTTER;
+    const targetLeft = Math.max(minLeft, Math.min(cssLeft, viewport.left + viewport.width - FLOATING_SURFACE_GUTTER - width));
+    const targetTop = Math.max(minTop, Math.min(cssTop, viewport.top + viewport.height - FLOATING_SURFACE_GUTTER - height));
+    cssLeft = targetLeft;
+    cssTop = targetTop;
+    let previousX = null;
+    let previousY = null;
+    for (let iteration = 0; iteration < 4; iteration += 1) {
+        setInlineStyle(surface, 'left', 'left', `${cssLeft.toFixed(2)}px`);
+        setInlineStyle(surface, 'top', 'top', `${cssTop.toFixed(2)}px`);
+        const rect = surface.getBoundingClientRect?.();
+        const left = Number(rect?.left);
+        const top = Number(rect?.top);
+        if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+        const stepX = coordinateCorrection(targetLeft, left, cssLeft, previousX, viewport.width * 4);
+        const stepY = coordinateCorrection(targetTop, top, cssTop, previousY, viewport.height * 4);
+        if (stepX === 0 && stepY === 0) return;
+        previousX = { coordinate: cssLeft, measured: left };
+        previousY = { coordinate: cssTop, measured: top };
+        cssLeft += stepX;
+        cssTop += stepY;
+    }
+    setInlineStyle(surface, 'left', 'left', `${cssLeft.toFixed(2)}px`);
+    setInlineStyle(surface, 'top', 'top', `${cssTop.toFixed(2)}px`);
+}
 
 function safeCallback(callback, value) {
     try { callback(value); } catch { /* host callbacks must not break the panel */ }
@@ -425,12 +550,12 @@ export function createImageManagerPanel({
         activeImageId = record.id;
         contextMenu.dataset.imageId = record.id;
         contextMenu.hidden = false;
-        if (contextMenu.style && event) {
-            const x = Number(event.clientX);
-            const y = Number(event.clientY);
-            if (Number.isFinite(x)) contextMenu.style.left = `${Math.max(0, x)}px`;
-            if (Number.isFinite(y)) contextMenu.style.top = `${Math.max(0, y)}px`;
-        }
+        const anchorRect = cardForRecord(record.id)?.getBoundingClientRect?.();
+        const eventX = Number(event?.clientX);
+        const eventY = Number(event?.clientY);
+        const x = Number.isFinite(eventX) ? eventX : Number(anchorRect?.left);
+        const y = Number.isFinite(eventY) ? eventY : Number(anchorRect?.bottom);
+        placeFixedSurfaceInViewport(contextMenu, documentRef, x, y);
     }
 
     function makePreview(record, className) {
@@ -568,6 +693,7 @@ export function createImageManagerPanel({
             opener: remoteImportButton,
             initialFocus: remoteUrlInput,
             onRequestClose: () => closeRemoteImportDialog(),
+            coverTarget: remoteBackdrop,
         };
         if (typeof openDialog === 'function') openDialog(remoteDialog, dialogOptions);
         else if (dialogController) dialogController.open(remoteDialog, dialogOptions);
@@ -618,6 +744,7 @@ export function createImageManagerPanel({
         const dialogOptions = {
             opener: opener ?? cardForRecord(record.id),
             onRequestClose: () => closeEditor(),
+            coverTarget: editorBackdrop,
         };
         if (typeof openDialog === 'function') openDialog(editor, dialogOptions);
         else if (dialogController) dialogController.open(editor, dialogOptions);
@@ -841,6 +968,16 @@ export function createImageManagerPanel({
     listen(editorBackdrop, 'click', (event) => {
         if (event.target === editorBackdrop) closeEditor();
     });
+
+    const windowRef = documentRef.defaultView;
+    if (typeof windowRef?.addEventListener === 'function') {
+        listen(windowRef, 'resize', closeContextMenu);
+        listen(windowRef, 'scroll', closeContextMenu);
+    }
+    if (typeof windowRef?.visualViewport?.addEventListener === 'function') {
+        listen(windowRef.visualViewport, 'resize', closeContextMenu);
+        listen(windowRef.visualViewport, 'scroll', closeContextMenu);
+    }
 
     listen(saveButton, 'click', () => {
         const imageId = activeImageId;
