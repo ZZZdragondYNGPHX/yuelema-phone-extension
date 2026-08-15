@@ -1,12 +1,12 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildAppendRealisticPrivateChatPlayerMessagePatch, buildBodyRelationshipCandidateBackfillPatch, buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildDeliverRealisticPrivateChatMessagesPatch, buildExistingCandidateRecommendationPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatNsfwConsentBackfillPatch, buildPrivateChatNsfwConsentPatch, buildPrivateChatNsfwDirectionPatch, buildPrivateChatNsfwRelationshipActionPatch, buildPrivateChatNsfwSafetyPatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRealisticPrivateChatBackfillPatch, buildRealisticPrivateChatProactivePatch, buildRealisticPrivateChatResponsePatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildRelationshipNarrativeBackfillPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch, buildToggleRealisticPrivateChatPatch } from './mvu/controlled-patch.js';
+import { buildAppendRealisticPrivateChatPlayerMessagePatch, buildBodyRelationshipCandidateBackfillPatch, buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildDeliverRealisticPrivateChatMessagesPatch, buildExistingCandidateRecommendationPatch, buildForumPrivateChatSessionPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatNsfwConsentBackfillPatch, buildPrivateChatNsfwConsentPatch, buildPrivateChatNsfwDirectionPatch, buildPrivateChatNsfwRelationshipActionPatch, buildPrivateChatNsfwSafetyPatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRealisticPrivateChatBackfillPatch, buildRealisticPrivateChatProactivePatch, buildRealisticPrivateChatResponsePatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildRelationshipNarrativeBackfillPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch, buildToggleRealisticPrivateChatPatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply, generatePrivateChatSummary, generateRealisticPrivateChatReply } from './chat/private-chat-service.js';
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
 import { generateCandidateMatchDraft as generateCandidateMatchDraftService, generateSoulMatchDraft, generateTextMatchDraft } from './recommendation/soul-text-match-service.js';
 import { materializeCandidateMatchDraft } from './recommendation/match-candidate-materializer.js';
 import { selectCustomCandidateEncounter } from './recommendation/custom-candidate-encounter.js';
-import { generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate, generateServiceProfileCandidate, isServiceProfileCompatible } from './characters/character-authoring-service.js';
+import { buildForumParticipantAuthoringContext, generateCharacterAuthoringCandidate, generateCharacterCompletionCandidate, generateForumParticipantCandidate, generateServiceProfileCandidate, isServiceProfileCompatible } from './characters/character-authoring-service.js';
 import { generateGroupChatReply, generateGroupChatUpdate as generateGroupChatUpdateService } from './groups/group-chat-service.js';
 import { generateForumExistingPostsUpdate as generateForumExistingPostsUpdateService, generateForumHomeRefresh as generateForumHomeRefreshService, generateForumPostConversationUpdate as generateForumPostConversationUpdateService, generateForumPostDraft as generateForumPostDraftService } from './groups/forum-service.js';
 import { generateLocalConversationSummary as generateLocalConversationSummaryService } from './groups/local-conversation-summary-service.js';
@@ -138,14 +138,24 @@ export function createActionBridge({
     onControlledAction = () => {},
 }) {
     const pending = new Set();
-    let serviceModeWriteTail = Promise.resolve();
+    const forumParticipantCandidates = new Map();
+    const forumParticipantRegistrations = new Map();
+    let modeSensitiveWriteTail = Promise.resolve();
 
-    // Mode switches and service-order writes share one transaction lane so their
-    // read -> exact patch -> apply sequence cannot be built from the same stale snapshot.
-    function serializeServiceModeWrite(task) {
-        const previous = serviceModeWriteTail;
+    function rememberForumParticipantCandidate(contextKey, candidate) {
+        forumParticipantCandidates.delete(contextKey);
+        forumParticipantCandidates.set(contextKey, candidate);
+        while (forumParticipantCandidates.size > 16) forumParticipantCandidates.delete(forumParticipantCandidates.keys().next().value);
+    }
+
+    // Mode switches, service-order writes and forum private-chat materialization
+    // share one transaction lane. Each task performs its fresh read -> exact patch
+    // -> apply sequence while holding the lane, so two generated people cannot
+    // allocate the same role/session counters and overwrite one another.
+    function serializeModeSensitiveWrite(task) {
+        const previous = modeSensitiveWriteTail;
         let release;
-        serviceModeWriteTail = new Promise((resolve) => { release = resolve; });
+        modeSensitiveWriteTail = new Promise((resolve) => { release = resolve; });
         return previous.then(task, task).finally(release);
     }
 
@@ -211,7 +221,7 @@ export function createActionBridge({
             };
         };
         try {
-            return SERVICE_MODE_WRITE_KINDS.has(kind) ? await serializeServiceModeWrite(execute) : await execute();
+            return SERVICE_MODE_WRITE_KINDS.has(kind) ? await serializeModeSensitiveWrite(execute) : await execute();
         } finally {
             pending.delete(key);
         }
@@ -1144,6 +1154,123 @@ export function createActionBridge({
         }
     }
 
+    function forumParticipantContext(post, participant, state) {
+        const contentMode = state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+        const context = buildForumParticipantAuthoringContext({ post, participant, contentMode });
+        return context ? { context, contentMode } : null;
+    }
+
+    /**
+     * Expands one selected local-forum participant through the existing role-refresh
+     * binding. The complete candidate stays in this bridge's bounded memory cache;
+     * callers receive only the explicit public projection and no MVU write occurs.
+     */
+    async function generateForumParticipantDetails({ post, participant, signal } = {}) {
+        const currentMvu = resolveMvu(mvu);
+        const firstRead = readLatestState({ mvu: currentMvu });
+        if (!firstRead.ok) return firstRead;
+        const prepared = forumParticipantContext(post, participant, firstRead.state);
+        if (!prepared) return { ok: false, status: 'rejected', code: 'forum_participant_input_invalid', message: '该论坛参与者的公开资料或帖内发言不可用。' };
+        const { context, contentMode } = prepared;
+        const cached = forumParticipantCandidates.get(context.contextKey);
+        if (cached) {
+            const profile = projectGeneratedForumPublicProfile(cached);
+            if (!profile) forumParticipantCandidates.delete(context.contextKey);
+            else {
+                startImageMatch(profile, contentMode, signal);
+                return { ok: true, status: 'generated', profile, contextKey: context.contextKey, cached: true };
+            }
+        }
+
+        const key = actionKey('forum_participant_generation', context.contextKey);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending', message: '对方正在考虑这次请求，请稍候。' };
+        pending.add(key);
+        try {
+            const generated = await generateForumParticipantCandidate({
+                post, participant, contentMode, settingsStore, llmClient, signal,
+            });
+            if (!generated?.ok) return generated;
+            if (generated.contextKey !== context.contextKey) {
+                return { ok: false, status: 'rejected', code: 'forum_participant_context_changed', message: '帖子内容已改变，请重新发起请求。' };
+            }
+            const latest = readLatestState({ mvu: currentMvu });
+            if (!latest.ok) return latest;
+            const latestMode = latest.state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+            if (latestMode !== contentMode) {
+                return { ok: false, status: 'rejected', code: 'forum_participant_mode_changed', message: '内容模式已改变，请重新发起查看请求。' };
+            }
+            const profile = projectGeneratedForumPublicProfile(generated.candidate);
+            if (!profile) return { ok: false, status: 'rejected', code: 'forum_participant_public_profile_invalid', message: '生成的公开资料未通过校验。' };
+            rememberForumParticipantCandidate(context.contextKey, generated.candidate);
+            startImageMatch(profile, contentMode, signal);
+            return { ok: true, status: 'generated', profile, contextKey: context.contextKey, cached: false };
+        } finally {
+            pending.delete(key);
+        }
+    }
+
+    /** Generates/reuses the exact forum candidate and commits role + session atomically through MVU. */
+    async function runForumParticipantPrivateChat({ post, participant, signal } = {}) {
+        const currentMvu = resolveMvu(mvu);
+        const firstRead = readLatestState({ mvu: currentMvu });
+        if (!firstRead.ok) return firstRead;
+        const prepared = forumParticipantContext(post, participant, firstRead.state);
+        if (!prepared) return { ok: false, status: 'rejected', code: 'forum_participant_input_invalid', message: '该论坛参与者的公开资料或帖内发言不可用。' };
+        const { context, contentMode } = prepared;
+
+        const registered = forumParticipantRegistrations.get(context.contextKey);
+        const registeredSession = registered ? firstRead.state?.会话?.[registered.sessionUid] : null;
+        const registeredRole = registered ? firstRead.state?.角色池?.[registered.npcUid] : null;
+        if (registered && registeredSession?.对象UID === registered.npcUid && registeredRole?.成人验证 === true) {
+            const profile = projectGeneratedForumPublicProfile(registeredRole);
+            if (profile) return { ok: true, status: 'applied', ...registered, profile, contextKey: context.contextKey, existing: true };
+        } else if (registered) forumParticipantRegistrations.delete(context.contextKey);
+
+        const key = actionKey('forum_participant_generation', context.contextKey);
+        if (pending.has(key)) return { ok: false, status: 'rejected', code: 'ui_action_pending', message: '对方正在考虑这次请求，请稍候。' };
+        pending.add(key);
+        try {
+            let candidate = forumParticipantCandidates.get(context.contextKey) ?? null;
+            if (!candidate) {
+                const generated = await generateForumParticipantCandidate({
+                    post, participant, contentMode, settingsStore, llmClient, signal,
+                });
+                if (!generated?.ok) return generated;
+                if (generated.contextKey !== context.contextKey) {
+                    return { ok: false, status: 'rejected', code: 'forum_participant_context_changed', message: '帖子内容已改变，请重新发起请求。' };
+                }
+                candidate = generated.candidate;
+            }
+
+            const commit = async () => {
+                const latest = readLatestState({ mvu: currentMvu });
+                if (!latest.ok) return latest;
+                const latestMode = latest.state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW';
+                if (latestMode !== contentMode) {
+                    return { ok: false, status: 'rejected', code: 'forum_participant_mode_changed', message: '内容模式已改变，请重新发起私聊请求。' };
+                }
+                const profile = projectGeneratedForumPublicProfile(candidate);
+                if (!profile) return { ok: false, status: 'rejected', code: 'forum_participant_public_profile_invalid', message: '生成的公开资料未通过校验。' };
+                const built = buildForumPrivateChatSessionPatch(latest.state, { candidate });
+                if (!built.ok) return rejectedFromBuild(built);
+                const roleOperation = built.value.find((operation) => operation?.op === 'add' && /^\/角色池\/npc_forum_\d+$/u.test(operation.path));
+                const sessionOperation = built.value.find((operation) => operation?.op === 'add' && /^\/会话\/chat_[A-Za-z0-9_-]{1,64}$/u.test(operation.path));
+                const npcUid = roleOperation?.path.split('/')[2] ?? '';
+                const sessionUid = sessionOperation?.path.split('/')[2] ?? '';
+                if (!npcUid || !sessionUid) return { ok: false, status: 'rejected', code: 'forum_private_chat_patch_invalid' };
+                const applied = await applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
+                if (!applied.ok) return applied;
+                forumParticipantCandidates.delete(context.contextKey);
+                forumParticipantRegistrations.set(context.contextKey, Object.freeze({ npcUid, sessionUid }));
+                startImageMatch(profile, contentMode, signal);
+                return { ...applied, npcUid, sessionUid, profile, contextKey: context.contextKey, existing: false };
+            };
+            return await serializeModeSensitiveWrite(commit);
+        } finally {
+            pending.delete(key);
+        }
+    }
+
     /** Uses the shared chat_summary binding but never creates an MVU Patch for local group/forum history. */
     async function generateLocalGroupForumSummary({ target, messages, signal } = {}) {
         const targetKey = typeof target?.id === 'string' ? target.id : '';
@@ -1294,7 +1421,7 @@ export function createActionBridge({
             return applied.ok ? { ...applied, npcUid: built.value.npcUid, npcUids: built.value.npcUids, orderUid: built.value.orderUid } : applied;
         };
         try {
-            return await serializeServiceModeWrite(execute);
+            return await serializeModeSensitiveWrite(execute);
         } finally {
             pending.delete(key);
         }
@@ -1319,7 +1446,7 @@ export function createActionBridge({
             return applied.ok ? { ...applied, npcUid: built.value.npcUid, orderUid: built.value.orderUid } : applied;
         };
         try {
-            return await serializeServiceModeWrite(execute);
+            return await serializeModeSensitiveWrite(execute);
         } finally {
             pending.delete(key);
         }
@@ -1340,7 +1467,7 @@ export function createActionBridge({
             const applied = await applyControlledPatch({ patch: built.value.patch, mvu: currentMvu, eventEmit, getContext });
             return applied.ok ? { ...applied, npcUid: built.value.npcUid, npcUids: built.value.npcUids, orderUid: built.value.orderUid } : applied;
         };
-        try { return await serializeServiceModeWrite(execute); }
+        try { return await serializeModeSensitiveWrite(execute); }
         finally { pending.delete(key); }
     }
 
@@ -1413,7 +1540,7 @@ export function createActionBridge({
             if (!built.ok) return rejectedFromBuild(built);
             return applyControlledPatch({ patch: built.value, mvu: currentMvu, eventEmit, getContext });
         };
-        try { return await serializeServiceModeWrite(execute); }
+        try { return await serializeModeSensitiveWrite(execute); }
         finally { pending.delete(key); }
     }
 
@@ -1696,5 +1823,28 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, setRealisticPrivateChatMode, sendRealisticPrivateChatMessage, runRealisticPrivateChatTick, runPrivateChatNsfwSafety, runPrivateChatNsfwConsent, runPrivateChatNsfwDirection, runPrivateChatNsfwRelationshipAction, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, generateLibraryImage, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, setRealisticPrivateChatMode, sendRealisticPrivateChatMessage, runRealisticPrivateChatTick, runPrivateChatNsfwSafety, runPrivateChatNsfwConsent, runPrivateChatNsfwDirection, runPrivateChatNsfwRelationshipAction, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateForumParticipantDetails, runForumParticipantPrivateChat, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, generateLibraryImage, isPending, appendMeetupDraft });
+}
+
+const FORUM_PUBLIC_TEXT_FIELDS = Object.freeze([
+    '昵称', '头像引用', '年龄段', '性别', '性取向', '城市', '距离范围', '寻找意图', '简介',
+]);
+const FORUM_PUBLIC_TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
+
+/** Returns a new explicit public-only object; no hidden/friend/threshold field can cross to the DOM. */
+function projectGeneratedForumPublicProfile(candidate) {
+    const source = candidate?.公开资料;
+    if (candidate?.成人验证 !== true || !source || typeof source !== 'object' || Array.isArray(source)) return null;
+    const profile = {};
+    for (const field of FORUM_PUBLIC_TEXT_FIELDS) {
+        profile[field] = typeof source[field] === 'string' ? source[field].trim().slice(0, field === '简介' ? 600 : 160) : '';
+    }
+    profile.头像引用 = '';
+    for (const field of FORUM_PUBLIC_TAG_FIELDS) {
+        profile[field] = Object.freeze(Array.isArray(source[field])
+            ? source[field].filter((item) => typeof item === 'string' && item.trim()).slice(0, 12).map((item) => item.trim().slice(0, 32))
+            : []);
+    }
+    if (!profile.昵称 || !profile.年龄段) return null;
+    return Object.freeze(profile);
 }

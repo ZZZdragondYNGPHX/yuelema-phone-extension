@@ -33,6 +33,26 @@ async function flushUi(rounds = 4) {
     }
 }
 
+function installStyleRecorder(node) {
+    const values = Object.create(null);
+    node.style = new Proxy({
+        setProperty(name, value) { values[name] = String(value); },
+        getPropertyValue(name) { return values[name] ?? ''; },
+    }, {
+        get(target, key) { return key in target ? target[key] : values[key] ?? ''; },
+        set(_target, key, value) { values[key] = String(value); return true; },
+    });
+    return values;
+}
+
+function pointerEvent(type, fields = {}) {
+    const event = new Event(type, { cancelable: true });
+    for (const [key, value] of Object.entries(fields)) {
+        Object.defineProperty(event, key, { configurable: true, value });
+    }
+    return event;
+}
+
 async function buildHarness({
     seed = [], imageLibrary, compressImageFile, onChange, onFeedback, onConfigure,
     onConfigureGeneration, dialogController, downloadImagePack, generateImage,
@@ -479,6 +499,55 @@ test('右键菜单仅含编辑入口，关键词和 -5..5 整数权重可保存'
         assert.equal(harness.changes.at(-1).type, 'update');
     } finally {
         harness.dispose();
+    }
+});
+
+test('右下角图片菜单在 transformed 宿主下仍被钳制在 visualViewport 内', async () => {
+    const previousDefaultView = miniDom.document.defaultView;
+    const windowRef = new EventTarget();
+    const visualViewport = new EventTarget();
+    Object.assign(windowRef, { innerWidth: 360, innerHeight: 640, visualViewport });
+    Object.assign(visualViewport, { offsetLeft: 10, offsetTop: 20, width: 320, height: 500 });
+    miniDom.document.defaultView = windowRef;
+    const harness = await buildHarness({
+        seed: [{
+            id: 'edge_portrait',
+            source: { kind: 'embedded', dataUrl: WEBP_DATA_URL },
+            keywordWeights: [],
+        }],
+    });
+    try {
+        const card = harness.element.querySelector('.yl-image-card');
+        const menu = harness.element.querySelector('.yl-image-context-menu');
+        const styles = installStyleRecorder(menu);
+        menu.getBoundingClientRect = () => {
+            const cssLeft = Number.parseFloat(styles.left) || 0;
+            const cssTop = Number.parseFloat(styles.top) || 0;
+            const maxWidth = Number.parseFloat(styles['max-width']);
+            const maxHeight = Number.parseFloat(styles['max-height']);
+            const cssWidth = Math.min(164, Number.isFinite(maxWidth) ? maxWidth : 164);
+            const cssHeight = Math.min(60, Number.isFinite(maxHeight) ? maxHeight : 60);
+            const width = cssWidth * 1.35;
+            const height = cssHeight * 0.9;
+            const left = -70 + (cssLeft * 1.35);
+            const top = 85 + (cssTop * 0.9);
+            return { left, top, width, height, right: left + width, bottom: top + height };
+        };
+
+        card.dispatchEvent(pointerEvent('contextmenu', { pointerType: 'mouse', button: 2, clientX: 325, clientY: 505 }));
+
+        assert.equal(menu.hidden, false);
+        const rect = menu.getBoundingClientRect();
+        assert.ok(rect.left >= 18 - 0.5, '菜单左边应留在 visualViewport 内');
+        assert.ok(rect.top >= 28 - 0.5, '菜单顶边应留在 visualViewport 内');
+        assert.ok(rect.right <= 322 + 0.5, '菜单右边不得从触点飞出屏幕');
+        assert.ok(rect.bottom <= 512 + 0.5, '菜单底边不得从触点飞出屏幕');
+
+        visualViewport.dispatchEvent(new Event('resize'));
+        assert.equal(menu.hidden, true, '短暂菜单在视口变化后应关闭，避免保留过期锚点');
+    } finally {
+        harness.dispose();
+        miniDom.document.defaultView = previousDefaultView;
     }
 });
 

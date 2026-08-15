@@ -11,6 +11,7 @@ import { createSegmentedControl } from '../ui/segmented-control.js';
 import { createEmptyState } from '../ui/empty-state.js';
 import { createSkeleton } from '../ui/skeleton.js';
 import { createTagChip } from '../ui/badge.js';
+import { createBottomSheet } from '../ui/bottom-sheet.js';
 import { buildErrorDetail } from '../ui/operation-activity.js';
 import { buildWaitCaptions } from './shared.js';
 
@@ -40,6 +41,8 @@ const COMMUNITY_TABS = Object.freeze([
 const GROUP_TIME_DIVIDER_GAP_MS = 10 * 60 * 1000;
 const NAME_TONE_COUNT = 6;
 const POST_EXPAND_THRESHOLD = 120;
+const FORUM_PARTICIPANT_LONG_PRESS_MS = 460;
+const FORUM_PARTICIPANT_MOVE_TOLERANCE = 8;
 
 // 控制台脱敏器会把 ≥32 字符的连续 token 视作疑似凭据并替换为 [已脱敏]；
 // 超长错误码改用空格分词呈现，避免误脱敏（与服务层 presentGroupDiagnosticCode 同规则）。
@@ -153,6 +156,35 @@ function groupMessageRuns(messages) {
 }
 
 export function createCommunityPage(ctx) {
+    let forumDeleteConfirmationId = '';
+    let forumDeletePendingId = '';
+    let forumParticipantActionSheet = null;
+    let forumParticipantActionOpener = null;
+    let forumParticipantDetail = null;
+    let forumParticipantMountGeneration = 0;
+
+    function removeNode(node) {
+        if (!node) return;
+        if (typeof node.remove === 'function') node.remove();
+        else node.parentNode?.removeChild?.(node);
+    }
+    function closeForumParticipantActionSheet({ restoreFocus = true } = {}) {
+        if (!forumParticipantActionSheet) return;
+        forumParticipantActionOpener?.setAttribute?.('aria-expanded', 'false');
+        const sheet = forumParticipantActionSheet;
+        forumParticipantActionSheet = null;
+        forumParticipantActionOpener = null;
+        sheet.close({ restoreFocus });
+        removeNode(sheet.root);
+    }
+    function resetForumParticipantActions() {
+        forumParticipantMountGeneration += 1;
+        closeForumParticipantActionSheet({ restoreFocus: false });
+    }
+
+    function resetForumPostDeletion() {
+        forumDeleteConfirmationId = '';
+    }
     function communityLandingPage() { return readCommunityTabPreference() === 'chat' ? 'group_chat' : 'group_forum'; }
     function buildGroupsPage() {
         // §8.1 砍掉二选一 Hub：进社区直接跳到上次停留的 tab；本页只渲染一帧过渡骨架。
@@ -167,6 +199,7 @@ export function createCommunityPage(ctx) {
         return section;
     }
     function selectCommunityTab(tabId) {
+        resetForumPostDeletion();
         persistCommunityTabPreference(tabId);
         ctx.setActivePage(tabId === 'chat' ? 'group_chat' : 'group_forum');
     }
@@ -260,6 +293,22 @@ export function createCommunityPage(ctx) {
         try { return groupForumProfileForDisplay(profile); }
         catch { return { 昵称: '未命名成年人', 年龄段: '未知', 性别: '未知', 城市: '', 简介: '', 兴趣标签: [], 性格标签: [], 生活方式标签: [], 沟通风格标签: [] }; }
     }
+    function playerDisplayName({ forModel = false } = {}) {
+        const nickname = typeof ctx.currentView?.playerProfile?.昵称 === 'string'
+            ? ctx.currentView.playerProfile.昵称.trim().slice(0, 80)
+            : '';
+        return nickname || (forModel ? '玩家本人' : '我');
+    }
+    function playerDisplayProfile() {
+        const source = ctx.currentView?.playerProfile;
+        return source && typeof source === 'object'
+            ? { ...source, 昵称: playerDisplayName() }
+            : { 昵称: playerDisplayName(), 头像引用: '' };
+    }
+    function playerAvatarSource() {
+        try { return ctx.playerAvatarStore?.snapshot?.() ?? ''; }
+        catch { return ''; }
+    }
     function currentGroupCards() {
         const cards = [];
         const seen = new Set();
@@ -309,7 +358,7 @@ export function createCommunityPage(ctx) {
         const summaries = (conversation?.summaries ?? []).slice(-24).map((record) => ({ startFloor: record.startFloor, endFloor: record.endFloor, content: record.content }));
         const messages = (conversation?.messages ?? []).filter((message) => Number(message.floor) > info.completedFloor).slice(-48).map((message) => ({
             sender: message.sender,
-            speaker: message.sender === 'user' ? '我' : (message.author?.nickname || '群友'),
+            speaker: message.sender === 'user' ? playerDisplayName({ forModel: true }) : (message.author?.nickname || '群友'),
             content: message.content,
         }));
         return { summaries, messages };
@@ -487,7 +536,7 @@ export function createCommunityPage(ctx) {
             return;
         }
         try {
-            await ctx.groupForumStore?.appendGroupModelUpdate?.({ key: group.cacheKey, title: group.name, update: result.update, members: group.members });
+            await ctx.groupForumStore?.appendGroupModelUpdate?.({ key: group.cacheKey, title: group.name, update: result.update, members: group.members, reservedPlayerNickname: playerDisplayName({ forModel: true }) });
             await syncGroupForumSnapshot({ rerender: false });
             ctx.operationActivity.succeed(activity, '聊天群已按设定时间自动更新。');
             if (ctx.open && ctx.activePage === 'group_chat_room' && ctx.activeGroupCacheKey === cacheKey) ctx.renderPage();
@@ -592,13 +641,13 @@ export function createCommunityPage(ctx) {
     }
     function syncForumAutoTimer() {
         const auto = forumAutoSettings();
-        if (!ctx.open || ctx.activePage !== 'group_forum' || auto.enabled !== true || !socialPosts().length) { stopForumAutoTimer(); return; }
+        if (forumDeletePendingId || !ctx.open || ctx.activePage !== 'group_forum' || auto.enabled !== true || !socialPosts().length) { stopForumAutoTimer(); return; }
         if (ctx.forumAutoTimer !== null) return;
         const generation = ++ctx.forumAutoGeneration;
         ctx.forumAutoTimer = setInterval(() => { void runForumExistingPostsAutoUpdate(generation); }, auto.intervalSeconds * 1000);
     }
     async function runForumExistingPostsAutoUpdate(generation) {
-        if (ctx.isDestroyed || !ctx.open || ctx.activePage !== 'group_forum' || generation !== ctx.forumAutoGeneration || forumAutoSettings().enabled !== true) return;
+        if (forumDeletePendingId || ctx.isDestroyed || !ctx.open || ctx.activePage !== 'group_forum' || generation !== ctx.forumAutoGeneration || forumAutoSettings().enabled !== true) return;
         const posts = socialPosts();
         if (!posts.length || !ctx.actionBridge.generateForumExistingPostsUpdate || ctx.actionBridge.isPending?.('forum_existing_update', '')) return;
         const activity = ctx.operationActivity.start('社区广场自动更新', '正在更新所有已存在的本地帖子，不会生成新帖子。');
@@ -956,7 +1005,7 @@ export function createCommunityPage(ctx) {
             ctx.setFeedback(result?.message || '聊天群更新未完成，请稍后重试。'); ctx.renderPage(); return;
         }
         try {
-            await ctx.groupForumStore?.appendGroupModelUpdate?.({ key: group.cacheKey, title: group.name, update: result.update, members: group.members });
+            await ctx.groupForumStore?.appendGroupModelUpdate?.({ key: group.cacheKey, title: group.name, update: result.update, members: group.members, reservedPlayerNickname: playerDisplayName({ forModel: true }) });
             await syncGroupForumSnapshot({ rerender: false });
             ctx.operationActivity.succeed(activity, '聊天群已更新到本地缓存。'); ctx.renderPage();
             void maybeRunLocalAutomaticSummary({ kind: 'group', id: group.cacheKey, title: group.name });
@@ -1158,6 +1207,118 @@ export function createCommunityPage(ctx) {
         // Listening there makes a wheel over the forum heading and feed behave alike.
         listen(surface, ctx.content, 'wheel', wheel, controller.signal);
     }
+    function forumPostDeleteBlocked(post) {
+        return Boolean(
+            forumDeletePendingId
+            || ctx.forumRefreshing
+            || ctx.localSummaryBusy
+            || ctx.actionBridge.isPending?.('forum_home_refresh', '')
+            || ctx.actionBridge.isPending?.('forum_existing_update', '')
+            || ctx.actionBridge.isPending?.('forum_post_update', post.id)
+        );
+    }
+    function focusForumPostDeleteControl(postId, className) {
+        queueMicrotask(() => {
+            if (ctx.isDestroyed) return;
+            const nodes = Array.from(ctx.content?.querySelectorAll?.(`.${className}`) ?? []);
+            const node = nodes.find((candidate) => candidate.getAttribute('data-forum-post-id') === postId);
+            try { node?.focus?.({ preventScroll: true }); }
+            catch { node?.focus?.(); }
+        });
+    }
+    function openForumPostDeleteConfirmation(post) {
+        if (!post || forumPostDeleteBlocked(post)) return;
+        if (typeof ctx.groupForumStore?.deleteForumPost !== 'function') {
+            ctx.setFeedback('单帖删除功能暂不可用。');
+            return;
+        }
+        forumDeleteConfirmationId = post.id;
+        ctx.renderPage();
+        focusForumPostDeleteControl(post.id, 'yl-forum-post-delete-cancel');
+    }
+    function cancelForumPostDelete(post) {
+        if (!post || forumDeletePendingId) return;
+        forumDeleteConfirmationId = '';
+        ctx.renderPage();
+        focusForumPostDeleteControl(post.id, 'yl-forum-post-delete');
+    }
+    function buildForumPostDeleteConfirmation(post) {
+        if (forumDeleteConfirmationId !== post.id) return null;
+        const pending = forumDeletePendingId === post.id;
+        const titleId = `yl-forum-post-delete-title-${post.id}`;
+        const descriptionId = `yl-forum-post-delete-description-${post.id}`;
+        const confirmation = element('section', { className: 'yl-chat-delete-confirmation yl-forum-post-delete-confirmation' });
+        confirmation.setAttribute('role', 'group');
+        confirmation.setAttribute('aria-labelledby', titleId);
+        confirmation.setAttribute('aria-describedby', descriptionId);
+        confirmation.setAttribute('aria-live', 'polite');
+        confirmation.setAttribute('aria-busy', String(pending));
+        confirmation.setAttribute('data-forum-post-id', post.id);
+        if (pending) confirmation.setAttribute('tabindex', '-1');
+        append(confirmation, [
+            element('strong', { id: titleId, text: `删除《${post.title}》？` }),
+            element('p', { id: descriptionId, text: '只会删除这篇本地帖子、其中的评论与总结；其他帖子和广场设置保持不变。对应的本地生图缓存也会一并清理，删除后无法在此界面恢复。' }),
+        ]);
+        const actions = element('div', { className: 'yl-chat-delete-actions' });
+        const cancel = element('button', {
+            className: 'yl-settings-button yl-settings-button-secondary yl-chat-delete-cancel yl-forum-post-delete-cancel',
+            type: 'button', text: '取消', disabled: pending, ariaLabel: `取消删除帖子：${post.title}`,
+        });
+        const confirm = element('button', {
+            className: 'yl-settings-button yl-chat-delete-confirm yl-forum-post-delete-confirm',
+            type: 'button', text: pending ? '正在删除…' : '确认删除', disabled: pending || forumPostDeleteBlocked(post),
+            ariaLabel: `确认删除帖子：${post.title}`,
+        });
+        for (const control of [cancel, confirm]) control.setAttribute('data-forum-post-id', post.id);
+        listen(confirmation, confirmation, 'keydown', (event) => {
+            if (event.key !== 'Escape' || pending) return;
+            event.preventDefault?.(); event.stopPropagation?.(); cancelForumPostDelete(post);
+        }, ctx.abortController.signal);
+        listen(cancel, cancel, 'click', () => cancelForumPostDelete(post), ctx.abortController.signal);
+        listen(confirm, confirm, 'click', () => { void runForumPostDelete(post); }, ctx.abortController.signal);
+        append(actions, [cancel, confirm]); confirmation.appendChild(actions);
+        return confirmation;
+    }
+    async function runForumPostDelete(post) {
+        if (!post || forumDeleteConfirmationId !== post.id || forumPostDeleteBlocked(post)) return;
+        const remove = ctx.groupForumStore?.deleteForumPost;
+        if (typeof remove !== 'function') { ctx.setFeedback('单帖删除功能暂不可用。'); return; }
+        const startedFromDetail = ['forum_post', 'forum_post_summary'].includes(ctx.activePage) && ctx.activeForumPostId === post.id;
+        forumDeletePendingId = post.id;
+        stopForumAutoTimer();
+        ctx.renderPage();
+        focusForumPostDeleteControl(post.id, 'yl-forum-post-delete-confirmation');
+        try {
+            await remove({ postId: post.id });
+            let artifactCleanupFailed = false;
+            try {
+                const cleanup = await ctx.removeForumConversationArtifacts?.(post.id);
+                artifactCleanupFailed = cleanup?.ok === false;
+            } catch { artifactCleanupFailed = true; }
+            await syncGroupForumSnapshot({ rerender: false });
+            ctx.forumCommentDrafts.delete(post.id);
+            if (ctx.localSummaryTarget?.kind === 'post' && ctx.localSummaryTarget.id === post.id) ctx.localSummaryTarget = null;
+            if (ctx.activeForumPostId === post.id) ctx.activeForumPostId = '';
+            forumDeleteConfirmationId = '';
+            forumDeletePendingId = '';
+            if (ctx.isDestroyed) return;
+            if (startedFromDetail && ['forum_post', 'forum_post_summary'].includes(ctx.activePage)) {
+                ctx.setActivePage('group_forum');
+            } else if (ctx.activePage === 'group_forum') {
+                ctx.renderPage();
+                syncForumAutoTimer();
+            }
+            ctx.setFeedback(artifactCleanupFailed
+                ? '帖子已删除，其他帖子保持不变；对应的本地生图缓存或自动生图设置清理失败。'
+                : '帖子已删除，其他帖子保持不变。');
+        } catch {
+            forumDeletePendingId = '';
+            if (ctx.isDestroyed) return;
+            if (['group_forum', 'forum_post', 'forum_post_summary'].includes(ctx.activePage)) ctx.renderPage();
+            syncForumAutoTimer();
+            ctx.setFeedback('帖子没有删除，请稍后重试。');
+        }
+    }
     // §8.2-2：帖子卡现代化——头像 40 + 昵称 + 频道小 chip + 相对时间 / 正文 6 行截断「展开」/ 底部操作行。
     function buildForumPostCard(post) {
         const card = element('article', { className: 'yl-post-card' });
@@ -1192,7 +1353,7 @@ export function createCommunityPage(ctx) {
         const open = element('button', { className: 'yl-post-open', type: 'button', ariaLabel: `打开帖子：${post.title}` });
         open.appendChild(element('span', { text: '进入详情' }));
         open.appendChild(createUiIcon(ctx.documentRef, 'chevron_right', { className: 'yl-post-open-svg', size: 16 }));
-        listen(open, open, 'click', () => { ctx.activeForumPostId = post.id; ctx.setActivePage('forum_post'); }, ctx.abortController.signal);
+        listen(open, open, 'click', () => { resetForumPostDeletion(); ctx.activeForumPostId = post.id; ctx.setActivePage('forum_post'); }, ctx.abortController.signal);
         footer.appendChild(open);
         card.appendChild(footer);
         return card;
@@ -1246,7 +1407,7 @@ export function createCommunityPage(ctx) {
         return section;
     }
     async function runForumHomeRefresh({ mode = 'replace' } = {}) {
-        if (ctx.forumRefreshing || !ctx.actionBridge.generateForumHomeRefresh || ctx.actionBridge.isPending?.('forum_home_refresh', '')) return;
+        if (forumDeletePendingId || ctx.forumRefreshing || !ctx.actionBridge.generateForumHomeRefresh || ctx.actionBridge.isPending?.('forum_home_refresh', '')) return;
         if (!['replace', 'append'].includes(mode)) return;
         const replacing = mode === 'replace';
         // 追加模式滚动合同：renderPage 会重建滚动容器（content.replaceChildren 后浏览器把
@@ -1278,7 +1439,7 @@ export function createCommunityPage(ctx) {
         }
         try {
             const saveRefresh = replacing ? ctx.groupForumStore?.replaceForumPosts : ctx.groupForumStore?.addForumRefresh;
-            await saveRefresh?.({ update: result.update, communityProfiles: result.communityProfiles ?? [] });
+            await saveRefresh?.({ update: result.update, communityProfiles: result.communityProfiles ?? [], reservedPlayerNickname: playerDisplayName({ forModel: true }) });
             await syncGroupForumSnapshot({ rerender: false });
             ctx.operationActivity.succeed(activity, replacing ? '旧帖子已替换为八个频道的新帖子。' : '新帖子已追加到广场底部。');
             if (!replacing) ctx.setFeedback('已保留旧帖子，并在广场底部追加八个频道的新帖子。');
@@ -1288,12 +1449,257 @@ export function createCommunityPage(ctx) {
             ctx.setFeedback('广场更新没有保存到本地缓存。'); ctx.renderPage(); restoreAppendScroll();
         }
     }
+    function generatedForumPublicProfile(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+        const text = (key, maxLength = 160) => typeof value[key] === 'string' ? value[key].trim().slice(0, maxLength) : '';
+        const tags = (key) => {
+            if (!Array.isArray(value[key])) return Object.freeze([]);
+            const output = [];
+            for (const raw of value[key]) {
+                const tag = typeof raw === 'string' ? raw.trim().slice(0, 32) : '';
+                if (tag && !output.includes(tag)) output.push(tag);
+                if (output.length >= 12) break;
+            }
+            return Object.freeze(output);
+        };
+        const nickname = text('昵称', 80);
+        const ageRange = text('年龄段', 32);
+        if (!nickname || !ageRange) return null;
+        return Object.freeze({
+            昵称: nickname,
+            头像引用: '',
+            年龄段: ageRange,
+            性别: text('性别', 48),
+            性取向: text('性取向', 80),
+            城市: text('城市', 80),
+            距离范围: text('距离范围', 80),
+            寻找意图: text('寻找意图', 120),
+            简介: text('简介', 600),
+            兴趣标签: tags('兴趣标签'),
+            生活方式标签: tags('生活方式标签'),
+            性格标签: tags('性格标签'),
+            沟通风格标签: tags('沟通风格标签'),
+        });
+    }
+    function forumParticipantRequestIsCurrent(requestId, postId) {
+        return !ctx.isDestroyed
+            && requestId === ctx.interactionGeneration
+            && ctx.activeForumPostId === postId
+            && (ctx.activePage === 'forum_post' || ctx.activePage === 'forum_participant_detail');
+    }
+    async function requestForumParticipantDetails(post, participant) {
+        closeForumParticipantActionSheet({ restoreFocus: false });
+        if (typeof ctx.actionBridge.generateForumParticipantDetails !== 'function') {
+            ctx.setFeedback('论坛角色详情生成尚未就绪。');
+            return;
+        }
+        const nickname = safeLocalDisplayProfile(participant).昵称;
+        const requestId = ++ctx.interactionGeneration;
+        const activity = ctx.operationActivity.start('论坛角色详情', '正在等待对方回应查看请求……');
+        const operationToken = ctx.showRomanceLoading('请求查看详情', `已向${nickname}发出请求，正在等待 TA 考虑是否愿意分享更多资料……`);
+        let result;
+        let caughtError = null;
+        try { result = await ctx.actionBridge.generateForumParticipantDetails({ post, participant }); }
+        catch (error) { caughtError = error; result = { ok: false }; }
+        if (!forumParticipantRequestIsCurrent(requestId, post.id)) {
+            ctx.operationActivity.dismiss(activity, '页面已离开，查看请求的返回结果未展示。');
+            return;
+        }
+        const profile = result?.ok ? generatedForumPublicProfile(result.profile) : null;
+        if (!result?.ok || !profile) {
+            ctx.operationActivity.fail(activity, '详情请求未完成。', {
+                detail: communityFailureDetail('论坛角色详情', result, caughtError),
+            });
+            ctx.showRomanceResult({ title: '这次没能看到详情', message: result?.message || '详情生成未完成，请稍后再试。' }, operationToken);
+            return;
+        }
+        forumParticipantDetail = Object.freeze({
+            postId: post.id,
+            post,
+            participant,
+            profile,
+            contextKey: typeof result.contextKey === 'string' ? result.contextKey : '',
+        });
+        ctx.operationActivity.succeed(activity, '对方已同意分享公开详情。');
+        ctx.setActivePage('forum_participant_detail', { preserveOperation: true });
+        ctx.showRomanceResult({ accepted: true, title: '对方同意了', message: `${nickname}已愿意向你展示更完整的公开资料。` }, operationToken);
+    }
+    async function requestForumParticipantPrivateChat(post, participant) {
+        closeForumParticipantActionSheet({ restoreFocus: false });
+        if (typeof ctx.actionBridge.runForumParticipantPrivateChat !== 'function') {
+            ctx.setFeedback('论坛私聊邀请尚未就绪。');
+            return;
+        }
+        const nickname = safeLocalDisplayProfile(participant).昵称;
+        const requestId = ++ctx.interactionGeneration;
+        const activity = ctx.operationActivity.start('论坛私聊邀请', '正在等待对方回应私聊邀请……');
+        const operationToken = ctx.showRomanceLoading('请求私聊', `邀请已送达${nickname}，正在等待 TA 考虑是否接受……`);
+        let result;
+        let caughtError = null;
+        try { result = await ctx.actionBridge.runForumParticipantPrivateChat({ post, participant }); }
+        catch (error) { caughtError = error; result = { ok: false }; }
+        if (!forumParticipantRequestIsCurrent(requestId, post.id)) {
+            ctx.operationActivity.dismiss(activity, '页面已离开，私聊邀请的返回结果未展示。');
+            return;
+        }
+        const sessionUid = typeof result?.sessionUid === 'string' ? result.sessionUid : '';
+        if (!result?.ok || !sessionUid) {
+            ctx.operationActivity.fail(activity, '私聊邀请未完成。', {
+                detail: communityFailureDetail('论坛私聊邀请', result, caughtError),
+            });
+            ctx.showRomanceResult({ title: '邀请暂未送达', message: result?.message || '角色生成或私聊建立未完成，当前状态没有改变。' }, operationToken);
+            return;
+        }
+        ctx.refreshState();
+        if (!forumParticipantRequestIsCurrent(requestId, post.id)) {
+            ctx.operationActivity.dismiss(activity, '页面已离开，已建立的私聊未自动打开。');
+            return;
+        }
+        ctx.openPrivateChat(sessionUid, { preserveOperation: true });
+        ctx.operationActivity.succeed(activity, '对方已接受邀请，私聊已打开。');
+        ctx.showRomanceResult({ accepted: true, title: '邀请被接受了', message: `${nickname}已进入你的私聊列表，去打个招呼吧。` }, operationToken);
+    }
+    function openForumParticipantActionSheet(post, participant, opener, mountGeneration) {
+        if (ctx.activePage !== 'forum_post' || ctx.activeForumPostId !== post.id || mountGeneration !== forumParticipantMountGeneration) return;
+        if (typeof ctx.content?.contains === 'function' && !ctx.content.contains(opener)) return;
+        closeForumParticipantActionSheet({ restoreFocus: false });
+        const nickname = safeLocalDisplayProfile(participant).昵称;
+        const body = element('div', { className: 'yl-forum-participant-actions' });
+        body.appendChild(element('p', { className: 'yl-forum-participant-actions-note', text: `你想对${nickname}做什么？只会使用 TA 在当前帖子中的公开发言。` }));
+        const details = element('button', { className: 'yl-settings-button', type: 'button', text: '查看详情' });
+        const privateChat = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '请求私聊' });
+        listen(details, details, 'click', () => { void requestForumParticipantDetails(post, participant); }, ctx.abortController.signal);
+        listen(privateChat, privateChat, 'click', () => { void requestForumParticipantPrivateChat(post, participant); }, ctx.abortController.signal);
+        append(body, [details, privateChat]);
+        let sheet = null;
+        const managedController = typeof ctx.openManagedDialog === 'function' && typeof ctx.closeManagedDialog === 'function'
+            ? {
+                open(dialog, options = {}) {
+                    ctx.openManagedDialog(dialog, { ...options, geometryTarget: sheet?.root ?? dialog, placement: 'viewport-cover' });
+                },
+                close(dialog, options = {}) { ctx.closeManagedDialog(dialog, options); },
+            }
+            : null;
+        sheet = createBottomSheet({
+            documentRef: ctx.documentRef,
+            title: `${nickname}的楼层操作`,
+            content: body,
+            onRequestClose: () => closeForumParticipantActionSheet(),
+            dialogController: managedController,
+        });
+        forumParticipantActionSheet = sheet;
+        forumParticipantActionOpener = opener;
+        opener.setAttribute('aria-expanded', 'true');
+        ctx.content.appendChild(sheet.root);
+        sheet.open({ opener });
+    }
+    function forumParticipantAvatarTrigger(post, participant, display, { className, mountGeneration }) {
+        const nickname = display.昵称 || '该用户';
+        const button = element('button', {
+            className: 'yl-forum-participant-trigger',
+            type: 'button',
+            ariaLabel: `打开${nickname}的楼层操作`,
+        });
+        button.setAttribute('aria-haspopup', 'dialog');
+        button.setAttribute('aria-expanded', 'false');
+        button.title = '点击、右键或长按查看楼层操作';
+        button.appendChild(ctx.publicAvatar(display, { className, imageEnabled: true, interactive: false }));
+        let holdTimer = null;
+        let holdInput = '';
+        let startX = 0;
+        let startY = 0;
+        let suppressClick = false;
+        const point = (event) => {
+            const touch = event?.touches?.[0] ?? event?.changedTouches?.[0] ?? null;
+            return {
+                x: Number(touch?.clientX ?? event?.clientX ?? 0),
+                y: Number(touch?.clientY ?? event?.clientY ?? 0),
+            };
+        };
+        const clearHold = (input = '') => {
+            if (input && holdInput !== input) return;
+            if (holdTimer !== null) globalThis.clearTimeout(holdTimer);
+            holdTimer = null;
+            holdInput = '';
+        };
+        const beginHold = (event, input) => {
+            if (event?.pointerType === 'mouse') return;
+            if (holdTimer !== null) {
+                if (holdInput === 'pointer' && input === 'touch') return;
+                clearHold();
+            }
+            const start = point(event);
+            startX = start.x;
+            startY = start.y;
+            holdInput = input;
+            holdTimer = globalThis.setTimeout(() => {
+                holdTimer = null;
+                holdInput = '';
+                suppressClick = true;
+                openForumParticipantActionSheet(post, participant, button, mountGeneration);
+                const release = globalThis.setTimeout(() => { suppressClick = false; }, 900);
+                release?.unref?.();
+            }, FORUM_PARTICIPANT_LONG_PRESS_MS);
+            holdTimer?.unref?.();
+        };
+        const moveHold = (event, input) => {
+            if (holdTimer === null || holdInput !== input) return;
+            const current = point(event);
+            if (Math.hypot(current.x - startX, current.y - startY) > FORUM_PARTICIPANT_MOVE_TOLERANCE) clearHold(input);
+        };
+        listen(button, button, 'pointerdown', (event) => beginHold(event, 'pointer'), ctx.abortController.signal);
+        listen(button, button, 'pointermove', (event) => moveHold(event, 'pointer'), ctx.abortController.signal);
+        listen(button, button, 'pointerup', () => clearHold('pointer'), ctx.abortController.signal);
+        listen(button, button, 'pointercancel', () => clearHold('pointer'), ctx.abortController.signal);
+        listen(button, button, 'pointerleave', () => clearHold('pointer'), ctx.abortController.signal);
+        listen(button, button, 'touchstart', (event) => beginHold(event, 'touch'), ctx.abortController.signal);
+        listen(button, button, 'touchmove', (event) => moveHold(event, 'touch'), ctx.abortController.signal);
+        listen(button, button, 'touchend', () => clearHold('touch'), ctx.abortController.signal);
+        listen(button, button, 'touchcancel', () => clearHold('touch'), ctx.abortController.signal);
+        listen(button, button, 'contextmenu', (event) => {
+            event.preventDefault?.();
+            clearHold();
+            openForumParticipantActionSheet(post, participant, button, mountGeneration);
+        }, ctx.abortController.signal);
+        listen(button, button, 'click', () => {
+            if (suppressClick) { suppressClick = false; return; }
+            openForumParticipantActionSheet(post, participant, button, mountGeneration);
+        }, ctx.abortController.signal);
+        return button;
+    }
+    function buildForumParticipantDetailPage() {
+        const detail = forumParticipantDetail;
+        const currentPost = detail ? socialPostFor(detail.postId) : null;
+        if (!detail || !currentPost) return createEmptyState({ documentRef: ctx.documentRef, variant: 'search', title: '该公开资料已不可用', hint: '请返回帖子后重新发起查看请求。' });
+        const profile = detail.profile;
+        const section = element('section', { className: 'yl-public-profile yl-forum-participant-detail' });
+        section.appendChild(ctx.publicAvatar(profile, { className: 'yl-candidate-avatar', imageEnabled: true, interactive: false }));
+        section.appendChild(element('h2', { text: profile.昵称 || '未命名对象' }));
+        section.appendChild(element('p', { className: 'yl-forum-participant-detail-note', text: '这份公开资料根据 TA 在当前帖子中的发言生成，只保留在本次小手机内存中。' }));
+        for (const [label, value] of [['年龄段', profile.年龄段], ['性别', profile.性别], ['性取向', profile.性取向], ['城市', profile.城市], ['距离范围', profile.距离范围], ['寻找意图', profile.寻找意图], ['简介', profile.简介]]) {
+            if (value) section.appendChild(element('p', { className: 'yl-phone-page-description', text: `${label}：${value}` }));
+        }
+        const visibleTags = ctx.displayTags(profile);
+        if (visibleTags.length) {
+            const tagList = element('div', { className: 'yl-tag-list yl-forum-participant-detail-tags' });
+            for (const tag of visibleTags) tagList.appendChild(createTagChip(tag, { documentRef: ctx.documentRef }));
+            section.appendChild(tagList);
+        }
+        const invite = element('button', { className: 'yl-settings-button yl-forum-participant-invite', type: 'button', text: '请求私聊' });
+        // Reuse the exact sanitized speech fingerprint that produced the visible profile,
+        // even if an automatic forum update appends newer floors while this detail is open.
+        listen(invite, invite, 'click', () => { void requestForumParticipantPrivateChat(detail.post, detail.participant); }, ctx.abortController.signal);
+        section.appendChild(invite);
+        return section;
+    }
     // §8.2-4：评论列表 ListRow 变体——头像 + 昵称/相对时间 + 文本（替代旧论坛气泡）。
     function buildForumCommentRow(post, message) {
         const isUser = message.sender === 'user';
         const row = element('div', { className: 'yl-comment-row' });
-        const display = isUser ? { 昵称: '我' } : safeLocalDisplayProfile(message.author);
-        row.appendChild(ctx.publicAvatar(display, { className: 'yl-local-message-avatar yl-comment-avatar', imageEnabled: !isUser, interactive: false }));
+        const display = isUser ? playerDisplayProfile() : safeLocalDisplayProfile(message.author);
+        row.appendChild(isUser
+            ? ctx.publicAvatar(display, { className: 'yl-local-message-avatar yl-comment-avatar', imageEnabled: false, interactive: false, imageSource: playerAvatarSource() })
+            : forumParticipantAvatarTrigger(post, message.author, display, { className: 'yl-local-message-avatar yl-comment-avatar', mountGeneration: forumParticipantMountGeneration }));
         const body = element('div', { className: 'yl-comment-body' });
         const head = element('div', { className: 'yl-comment-head' });
         head.appendChild(element('strong', { text: display.昵称 }));
@@ -1311,19 +1717,37 @@ export function createCommunityPage(ctx) {
         return row;
     }
     function buildForumPostPage() {
+        const mountGeneration = ++forumParticipantMountGeneration;
         const post = socialPostFor(ctx.activeForumPostId);
         if (!post) return createEmptyState({ documentRef: ctx.documentRef, variant: 'search', title: '当前帖子已不可用', hint: '请返回广场后刷新。' });
+        const deleting = forumDeletePendingId === post.id;
         const section = element('section', { className: 'yl-forum-post-page' });
         const layout = element('div', { className: 'yl-forum-post-layout' });
         const main = element('article', { className: 'yl-forum-post-main' });
         const author = safeLocalDisplayProfile(post.author);
         const authorRow = element('div', { className: 'yl-forum-post-author' });
-        authorRow.appendChild(ctx.publicAvatar(author, { className: 'yl-forum-post-avatar', imageEnabled: true, interactive: false }));
+        authorRow.appendChild(forumParticipantAvatarTrigger(post, post.author, author, { className: 'yl-forum-post-avatar', mountGeneration }));
         const authorCopy = element('div'); append(authorCopy, [element('strong', { text: author.昵称 }), element('span', { text: [author.gender, author.ageRange, author.city].filter(Boolean).join(' · ') }), element('small', { text: `${forumChannelForPost(post).title} · ${relativeTimeLabel(post.createdAt) || '刚刚'}` })]); authorRow.appendChild(authorCopy);
         const actionRow = element('div', { className: 'yl-forum-post-actions' });
-        const summary = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '聊天总结', disabled: !ctx.chatSummaryEnabled(), ariaLabel: '查看帖子总结' });
+        const summary = element('button', { className: 'yl-settings-button yl-settings-button-secondary', type: 'button', text: '聊天总结', disabled: deleting || !ctx.chatSummaryEnabled(), ariaLabel: '查看帖子总结' });
         listen(summary, summary, 'click', () => { ctx.localSummaryTarget = { kind: 'post', id: post.id, title: post.title }; ctx.setActivePage('forum_post_summary'); }, ctx.abortController.signal);
-        append(actionRow, [summary, ctx.buildConversationImageControls({ kind: 'forum', conversationId: post.id })]); append(main, [authorRow, actionRow, element('h2', { text: post.title }), element('p', { className: 'yl-forum-post-body', text: post.body })]);
+        const remove = element('button', {
+            className: 'yl-settings-button yl-button-danger yl-forum-post-delete', type: 'button', text: '删除帖子',
+            disabled: forumPostDeleteBlocked(post), ariaLabel: `删除帖子：${post.title}`,
+        });
+        remove.setAttribute('data-forum-post-id', post.id);
+        listen(remove, remove, 'click', () => openForumPostDeleteConfirmation(post), ctx.abortController.signal);
+        const imageControls = ctx.buildConversationImageControls({ kind: 'forum', conversationId: post.id });
+        if (deleting) {
+            imageControls.setAttribute('aria-disabled', 'true');
+            imageControls.setAttribute('inert', '');
+            for (const control of [...imageControls.querySelectorAll('button'), ...imageControls.querySelectorAll('input')]) control.disabled = true;
+        }
+        append(actionRow, [summary, imageControls, remove]);
+        append(main, [authorRow, actionRow]);
+        const deleteConfirmation = buildForumPostDeleteConfirmation(post);
+        if (deleteConfirmation) main.appendChild(deleteConfirmation);
+        append(main, [element('h2', { text: post.title }), element('p', { className: 'yl-forum-post-body', text: post.body })]);
         const tags = element('div', { className: 'yl-tag-list yl-forum-post-tags' });
         for (const tag of post.tags) tags.appendChild(element('span', { className: 'yl-tag-chip', text: '#' + tag }));
         main.appendChild(tags);
@@ -1338,7 +1762,7 @@ export function createCommunityPage(ctx) {
         if (post.author.occupation) side.appendChild(element('span', { text: post.author.occupation }));
         if (post.author.interests.length) side.appendChild(element('span', { text: post.author.interests.join(' / ') }));
         layout.appendChild(side); section.appendChild(layout);
-        const pending = Boolean(ctx.actionBridge.isPending?.('forum_post_update', post.id));
+        const pending = deleting || Boolean(ctx.actionBridge.isPending?.('forum_post_update', post.id));
         const composer = element('section', { className: 'yl-chat-composer yl-local-composer yl-forum-comment-composer' });
         const input = element('textarea', { className: 'yl-settings-control yl-settings-textarea', rows: 2, maxLength: 600, value: ctx.forumCommentDrafts.get(post.id) ?? '', placeholder: '说点什么…', ariaLabel: '输入论坛评论', disabled: pending });
         const send = element('button', { className: 'yl-chat-send-button', type: 'button', text: pending ? '···' : '发送', disabled: pending, ariaLabel: pending ? '帖子正在更新' : '发送论坛评论' });
@@ -1349,6 +1773,7 @@ export function createCommunityPage(ctx) {
         return section;
     }
     async function sendForumComment(post) {
+        if (forumDeletePendingId === post.id) return;
         const content = String(ctx.forumCommentDrafts.get(post.id) ?? '').trim();
         if (!content) { ctx.setFeedback('请先输入评论。'); return; }
         if (!ctx.groupForumStore?.appendForumUserComment) { ctx.setFeedback('本地论坛缓存尚未就绪。'); return; }
@@ -1359,7 +1784,7 @@ export function createCommunityPage(ctx) {
         await runForumPostConversationUpdate(socialPostFor(post.id) ?? post);
     }
     async function runForumPostConversationUpdate(post) {
-        if (!ctx.actionBridge.generateForumPostConversationUpdate || ctx.actionBridge.isPending?.('forum_post_update', post.id)) return;
+        if (forumDeletePendingId === post.id || !ctx.actionBridge.generateForumPostConversationUpdate || ctx.actionBridge.isPending?.('forum_post_update', post.id)) return;
         const activity = ctx.operationActivity.start('论坛帖子更新', '正在生成帖子下的本地讨论。'); ctx.renderPage();
         let result;
         let bridgeError = null;
@@ -1378,7 +1803,7 @@ export function createCommunityPage(ctx) {
             ctx.setFeedback(result?.message || '论坛帖子更新未完成，请稍后重试。'); ctx.renderPage(); return;
         }
         try {
-            await ctx.groupForumStore?.appendForumModelUpdate?.({ postId: post.id, update: result.update });
+            await ctx.groupForumStore?.appendForumModelUpdate?.({ postId: post.id, update: result.update, reservedPlayerNickname: playerDisplayName({ forModel: true }) });
             await syncGroupForumSnapshot({ rerender: false }); ctx.operationActivity.succeed(activity, '论坛帖子已更新到本地缓存。'); ctx.renderPage();
             void maybeRunLocalAutomaticSummary({ kind: 'post', id: post.id, title: post.title });
         } catch (error) {
@@ -1400,7 +1825,7 @@ export function createCommunityPage(ctx) {
         const messages = (conversation?.messages ?? []).filter((message) => message.floor >= startFloor && message.floor <= endFloor).map((message) => ({
             floor: message.floor,
             sender: message.sender,
-            speaker: message.sender === 'user' ? '我' : (message.author?.nickname || '群友'),
+            speaker: message.sender === 'user' ? playerDisplayName({ forModel: true }) : (message.author?.nickname || '群友'),
             content: message.content,
         }));
         return { startFloor, endFloor, messages };
@@ -1562,7 +1987,10 @@ export function createCommunityPage(ctx) {
         bindForumPullToRefresh,
         buildForumPage,
         runForumHomeRefresh,
+        resetForumPostDeletion,
+        resetForumParticipantActions,
         buildForumPostPage,
+        buildForumParticipantDetailPage,
         sendForumComment,
         runForumPostConversationUpdate,
         localConversationForTarget,

@@ -1,7 +1,7 @@
 import { normalizeImageDirective } from '../images/image-directive.js';
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
-import { buildPublicGroupLlmContext, cleanGroupLlmText, groupDiagnostic, groupResponseParseDiagnostic, isSafeGroupLlmOutput, parseGroupLlmJson, projectGroupLlmErrorDiagnostic, projectPublicPlayerProfile } from './group-llm-safety.js';
+import { buildPublicGroupLlmContext, cleanGroupLlmText, groupDiagnostic, groupResponseParseDiagnostic, isReservedPlayerIdentityName, isSafeGroupLlmOutput, parseGroupLlmJson, projectGroupLlmErrorDiagnostic, projectPublicPlayerProfile } from './group-llm-safety.js';
 import { buildGroupBrowseModel } from './group-discovery-service.js';
 import { FORUM_CHANNELS, forumChannelForTopic, groupForumProfileForModel, isKnownForumChannelTopic, normalizeGroupForumProfile, publicProfileToGroupForumProfile } from './group-forum-store.js';
 
@@ -111,6 +111,7 @@ const UPDATE_ERROR_MESSAGES = Object.freeze({
     forum_update_participant_invalid: '论坛更新中的临时角色资料字段无效，已丢弃。',
     forum_update_participant_underage: '论坛更新中的临时角色缺少明确的成年年龄段，已丢弃。',
     forum_update_post_invalid: '论坛更新中的帖子文本超限或包含不允许的内容，已丢弃。',
+    forum_update_player_identity_conflict: '论坛更新试图把玩家本人注册成社区角色，已丢弃。',
 });
 
 function updateFailure(code) {
@@ -212,7 +213,7 @@ function normalizeDraftTags(value, maxCount = 6) {
     return tags;
 }
 
-function normalizeHistory(value) {
+function normalizeHistory(value, playerNickname = '') {
     if (!ownRecord(value) || Object.keys(value).some((key) => !['summaries', 'messages'].includes(key))) return null;
     const summaries = ownValue(value, 'summaries');
     const messages = ownValue(value, 'messages');
@@ -230,9 +231,10 @@ function normalizeHistory(value) {
     for (const item of messages) {
         if (!ownRecord(item) || Object.keys(item).some((key) => !['sender', 'speaker', 'content'].includes(key))) return null;
         const sender = ownValue(item, 'sender');
-        const speaker = cleanGroupLlmText(ownValue(item, 'speaker'), 80);
+        const suppliedSpeaker = cleanGroupLlmText(ownValue(item, 'speaker'), 80);
         const content = cleanGroupLlmText(ownValue(item, 'content'), 600);
-        if (!['user', 'member'].includes(sender) || !speaker || !content || !isSafeGroupLlmOutput(content, 600)) return null;
+        if (!['user', 'member'].includes(sender) || !suppliedSpeaker || !content || !isSafeGroupLlmOutput(content, 600)) return null;
+        const speaker = sender === 'user' ? (cleanGroupLlmText(playerNickname, 80) || '玩家本人') : suppliedSpeaker;
         normalizedMessages.push(Object.freeze({ sender, speaker, content }));
     }
     return Object.freeze({ summaries: Object.freeze(normalizedSummaries), messages: Object.freeze(normalizedMessages) });
@@ -288,7 +290,7 @@ export function buildForumHomeRefreshContext({ state, existingTitles = [] } = {}
  * deduplicated/truncated); adult verification, prototype-pollution guards and
  * the text safety scans are unchanged.
  */
-function normalizeForumHomeUpdate(value, knownPeople) {
+function normalizeForumHomeUpdate(value, knownPeople, playerPublicProfile) {
     const reject = (code, record = {}) => ({ code, diagnostic: groupDiagnostic({ stage: '响应校验', code, ...record }) });
     if (!ownRecord(value)) return reject('forum_update_shape_invalid', { expected: '含 participants/posts 的 JSON 对象', actual: '非对象响应' });
     const participants = ownValue(value, 'participants') ?? [];
@@ -314,6 +316,12 @@ function normalizeForumHomeUpdate(value, knownPeople) {
             });
         }
         const key = profile.nickname.normalize('NFKC').toLowerCase();
+        if (isReservedPlayerIdentityName(profile.nickname, playerPublicProfile)) {
+            return reject('forum_update_player_identity_conflict', {
+                field: `participants[${index}].nickname`, actual: profile.nickname,
+                hint: '玩家昵称与“我/玩家本人”是保留身份，不能注册成临时社区角色',
+            });
+        }
         // A restated known person keeps the canonical community profile instead of failing the batch.
         if (names.has(key)) continue;
         names.add(key);
@@ -328,6 +336,12 @@ function normalizeForumHomeUpdate(value, knownPeople) {
         const title = boundedText(ownValue(post, 'title'), 120);
         const body = boundedText(ownValue(post, 'body'), 1_200);
         const tags = normalizeDraftTags(ownValue(post, 'tags'));
+        if (isReservedPlayerIdentityName(author, playerPublicProfile)) {
+            return reject('forum_update_player_identity_conflict', {
+                field: `posts[${index}].author`, actual: author || '（空）',
+                hint: '模型生成的帖子只能由其他社区成员发布，不能冒用玩家身份',
+            });
+        }
         if (!rawTopic || !isKnownForumChannelTopic(rawTopic)) {
             return reject('forum_update_channel_invalid', { field: `posts[${index}].topic`, actual: rawTopic || '（空）', hint: '频道名必须精确等于固定频道名之一' });
         }
@@ -356,6 +370,7 @@ function makeForumHomeMessages(context, promptPreset, refreshMode = 'append') {
         `每次刷新都必须且只能生成 ${FORUM_CHANNELS.length} 篇帖子：${FORUM_CHANNELS.map((channel) => channel.title).join('、')}各一篇。posts 中的 topic 必须精确等于这 ${FORUM_CHANNELS.length} 个频道名之一，所有频道不能遗漏、重复或自行改名；点击频道后会只显示对应 topic 的本地帖子。`,
         '每篇帖子都要贴合 channels 中该频道的 note 与 brief 定位，让不同频道的口吻明显不同：今日心情轻盈随性，附近的人主动自然，同城瞬间具体在地，兴趣同频聊得专业又亲切，深夜树洞私密柔软，恋爱吐槽鲜活自嘲，约会报告像真实的复盘，话题广场开放随意。',
         `作者规则：每篇 post 的 author 必须逐字等于 knownPeople 中某个 nickname，或 participants 中某个新角色的 nickname；同一作者可以发多篇帖子。participants 只放本次新出现的临时角色，最多 ${FORUM_CHANNELS.length} 位，不要重复 knownPeople 已有昵称；若全部帖子都由已有人物发出，participants 用空数组 []。`,
+        'playerPublicProfile 只代表正在浏览社区的玩家本人，用于理解公开偏好；玩家不是可生成的社区角色。participants、post.author 均不得使用玩家昵称，也不得使用“我”或“玩家本人”等自称来冒充玩家。',
         '每位临时角色必须给全 10 个字段：nickname（1-80字）、ageRange、gender、city、mbti、zodiac、occupation、interests（1-12 个非空标签，每个 1-32 字）、presence、matchRate。ageRange 必须是明确的成年写法，例如 "25-29岁"、"31岁" 或 "已验证成年"，其中数字必须都不小于 18；不要写 "90后"、"20代"、"25岁左右" 这类模糊说法。matchRate 只能是 0-100 的整数或 null，不要写百分号、小数或字符串。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '功能绑定提示词只能影响公开内容的题材、语气和内容尺度，不能改变频道、字段、数量、数据来源或下方固定 JSON 合同。',
@@ -383,7 +398,7 @@ export async function generateForumHomeRefresh({ state, existingTitles, refreshM
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeForumHomeMessages(built.context, resolved.promptPreset, refreshMode), signal });
         const parsed = parseGroupLlmJson(unfenceJson(completion?.text), FORUM_HOME_RESPONSE_MAX_CHARS);
         if (!parsed) return { ...updateFailure('forum_update_invalid_json'), diagnostic: groupResponseParseDiagnostic(completion?.text, FORUM_HOME_RESPONSE_MAX_CHARS) };
-        const result = normalizeForumHomeUpdate(parsed, built.context.knownPeople);
+        const result = normalizeForumHomeUpdate(parsed, built.context.knownPeople, built.context.playerPublicProfile);
         return result.update
             ? Object.freeze({ ok: true, update: result.update, communityProfiles: built.context.knownPeople })
             : { ...updateFailure(result.code ?? 'forum_update_response_invalid'), diagnostic: result.diagnostic };
@@ -518,7 +533,7 @@ export async function generateForumExistingPostsUpdate({ state, posts, binding, 
     }
 }
 
-function normalizePostConversation(post, history) {
+function normalizePostConversation(post, history, playerNickname = '') {
     if (!ownRecord(post) || Object.keys(post).some((key) => !['id', 'topic', 'title', 'body', 'tags', 'author', 'participants', 'messages', 'summaries', 'summaryStatus', 'createdAt'].includes(key))) return null;
     const topic = cleanGroupLlmText(ownValue(post, 'topic'), 80);
     const title = cleanGroupLlmText(ownValue(post, 'title'), 120);
@@ -531,26 +546,27 @@ function normalizePostConversation(post, history) {
         author = groupForumProfileForModel(normalizeGroupForumProfile(ownValue(post, 'author')));
         normalizedParticipants = participants.map((profile) => groupForumProfileForModel(normalizeGroupForumProfile(profile)));
     } catch { return null; }
-    const normalizedHistory = normalizeHistory(history);
+    const normalizedHistory = normalizeHistory(history, playerNickname);
     if (!normalizedHistory) return null;
     return Object.freeze({ topic, title, body, author, participants: Object.freeze(normalizedParticipants), history: normalizedHistory });
 }
 
 export function buildForumPostUpdateContext({ state, post, history } = {}) {
-    const normalizedPost = normalizePostConversation(post, history);
+    const playerPublicProfile = projectPublicPlayerProfile(state?.玩家);
+    const normalizedPost = normalizePostConversation(post, history, playerPublicProfile.昵称);
     if (!normalizedPost) {
         return { ...updateFailure('forum_post_context_invalid'), diagnostic: groupDiagnostic({ stage: '上下文构建', field: 'post/history', hint: '帖子公开投影或讨论历史未通过安全校验，未调用模型' }) };
     }
     return Object.freeze({ ok: true, context: Object.freeze({
         contentMode: state?.软件?.内容模式 === 'NSFW' ? 'NSFW' : 'SFW',
-        playerPublicProfile: projectPublicPlayerProfile(state?.玩家),
+        playerPublicProfile,
         post: normalizedPost,
     }) });
 }
 
 /** 校验帖内讨论更新。成功返回 { update }；失败返回 { diagnostic } 说明具体不合规点。 */
-function normalizeForumConversationUpdate(value, profiles) {
-    const reject = (record) => ({ diagnostic: groupDiagnostic({ stage: '响应校验', ...record }) });
+function normalizeForumConversationUpdate(value, profiles, playerPublicProfile) {
+    const reject = (record, code = 'forum_update_response_invalid') => ({ code, diagnostic: groupDiagnostic({ stage: '响应校验', code, ...record }) });
     if (!ownRecord(value) || Object.keys(value).sort().join(',') !== 'messages,participants') {
         return reject({ field: 'participants/messages', expected: '恰含 participants 与 messages 两个字段的 JSON 对象' });
     }
@@ -577,6 +593,12 @@ function normalizeForumConversationUpdate(value, profiles) {
             });
         }
         const key = profile.nickname.normalize('NFKC').toLowerCase();
+        if (isReservedPlayerIdentityName(profile.nickname, playerPublicProfile)) {
+            return reject({
+                field: `participants[${index}].nickname`, actual: profile.nickname,
+                hint: '玩家昵称与“我/玩家本人”是保留身份，不能注册成临时评论者',
+            }, 'forum_update_player_identity_conflict');
+        }
         // A restated existing person keeps the canonical stored profile instead of failing the batch.
         if (names.has(key)) continue;
         names.add(key);
@@ -591,6 +613,12 @@ function normalizeForumConversationUpdate(value, profiles) {
         const text = cleanGroupLlmText(ownValue(message, 'text'), 480);
         if (!speaker) return reject({ field: `messages[${index}].speaker`, expected: '1-80 字纯文本昵称' });
         if (!text || !isSafeGroupLlmOutput(text, 480)) return reject({ field: `messages[${index}].text`, expected: '1-480 字安全纯文本', hint: '文本超限或被安全扫描拒绝' });
+        if (isReservedPlayerIdentityName(speaker, playerPublicProfile)) {
+            return reject({
+                field: `messages[${index}].speaker`, actual: speaker,
+                hint: '模型只能生成其他社区成员的评论，不能替玩家本人发言',
+            }, 'forum_update_player_identity_conflict');
+        }
         if (!names.has(speaker.normalize('NFKC').toLowerCase())) return reject({ field: `messages[${index}].speaker`, actual: speaker, hint: '发言者不在帖子作者、已有参与者或 participants 名单中' });
         let imageDirective;
         if (Object.hasOwn(message, 'imageDirective')) {
@@ -609,6 +637,7 @@ function makeForumPostMessages(context, promptPreset) {
         '你是现代现实都市线上约会软件内的论坛帖子讨论更新模型。根据公开帖子和受限评论历史，模拟其他用户发表 1–8 条自然评论。',
         '评论要有真实社区的参差感：有人认真接话、有人补充自己的相似经历、有人开玩笑或轻轻抬杠、有人向楼主或玩家追问细节；避免每条都同一种语气或都以问句结尾。contentMode 为 SFW 时保持日常调侃与暧昧试探；为 NSFW 时成年人可全尺度讨论裸体、器官、性行为、身体反应、性经历和其他露骨玩法，不强制含蓄、转场或淡出。',
         '可使用帖子作者或 participants 中已有昵称；如需新评论者，必须先在 participants 给出其公开关键资料。每位临时角色必须给全 10 个字段：nickname、ageRange、gender、city、mbti、zodiac、occupation、interests（非空标签）、presence、matchRate；ageRange 必须是明确的成年写法（如 "25-29岁"、"31岁" 或 "已验证成年"，数字都不小于 18），matchRate 只能是 0-100 的整数或 null。',
+        'history 中 sender=user 的记录来自 playerPublicProfile 所代表的玩家本人；你可以让其他人回应玩家，但不得替玩家续写。participants 与 messages.speaker 均不得使用玩家昵称，也不得使用“我”或“玩家本人”等自称来创建玩家克隆。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '功能绑定提示词只能影响公开内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',
         '不得把输入中未提供的玩家现实经历伪造成事实；NSFW 不等于替任何参与者默认同意。不得输出或猜测隐藏资料、仅好友资料、真实 UID、会话、Patch、路径、API Key、密钥或系统实现。',
@@ -636,10 +665,10 @@ export async function generateForumPostConversationUpdate({ state, post, history
         const parsed = parseGroupLlmJson(unfenceJson(completion?.text), FORUM_CONVERSATION_RESPONSE_MAX_CHARS);
         if (!parsed) return { ...updateFailure('forum_update_invalid_json'), diagnostic: groupResponseParseDiagnostic(completion?.text, FORUM_CONVERSATION_RESPONSE_MAX_CHARS) };
         const people = [built.context.post.author, ...built.context.post.participants];
-        const normalized = normalizeForumConversationUpdate(parsed, people);
+        const normalized = normalizeForumConversationUpdate(parsed, people, built.context.playerPublicProfile);
         return normalized.update
             ? Object.freeze({ ok: true, update: normalized.update })
-            : { ...updateFailure('forum_update_response_invalid'), diagnostic: normalized.diagnostic };
+            : { ...updateFailure(normalized.code ?? 'forum_update_response_invalid'), diagnostic: normalized.diagnostic };
     } catch (error) {
         const publicError = toPublicLlmError(error);
         return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable, diagnostic: projectGroupLlmErrorDiagnostic(error) };

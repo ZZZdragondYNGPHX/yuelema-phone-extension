@@ -13,6 +13,7 @@ export const GROUP_FORUM_SCHEMA_ID = 'yuelema.group-forum';
 export const GROUP_FORUM_SCHEMA_VERSION = 4;
 // Keep the established key so schema v1 browser caches can be migrated in place.
 export const GROUP_FORUM_STORAGE_KEY = 'yuelema.group-forum.v1';
+const PLAYER_SELF_ALIAS_KEYS = new Set(['我', '玩家本人'].map((value) => value.normalize('NFKC').toLowerCase()));
 export const MAX_LOCAL_GROUPS = 24;
 export const MAX_GROUP_MESSAGES = 240;
 export const MAX_FORUM_POSTS = 80;
@@ -325,6 +326,28 @@ export function normalizeForumAutoSettings(value, { legacy = false } = {}) {
 function normalizeTargetKey(value) {
     if (typeof value !== 'string' || !(LOCAL_GROUP_ID_PATTERN.test(value) || EXTERNAL_GROUP_KEY_PATTERN.test(value))) fail('INVALID_TARGET');
     return value;
+}
+
+function normalizedIdentityKey(value) {
+    return typeof value === 'string' ? value.trim().normalize('NFKC').toLowerCase() : '';
+}
+
+function isReservedPlayerIdentity(value, playerNickname) {
+    const key = normalizedIdentityKey(value);
+    const playerKey = normalizedIdentityKey(playerNickname);
+    return Boolean(key && (PLAYER_SELF_ALIAS_KEYS.has(key) || (playerKey && key === playerKey)));
+}
+
+function assertNoPlayerIdentityCollision(update, playerNickname) {
+    for (const profile of update.participants ?? []) {
+        if (isReservedPlayerIdentity(profile.nickname, playerNickname)) fail('PLAYER_IDENTITY_CONFLICT');
+    }
+    for (const message of update.messages ?? []) {
+        if (isReservedPlayerIdentity(message.speaker, playerNickname)) fail('PLAYER_IDENTITY_CONFLICT');
+    }
+    for (const post of update.posts ?? []) {
+        if (isReservedPlayerIdentity(post.author, playerNickname)) fail('PLAYER_IDENTITY_CONFLICT');
+    }
 }
 
 function normalizeMessage(value) {
@@ -788,8 +811,9 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
         }
     }
 
-    function appendModelUpdate(conversation, next, update, knownProfiles) {
+    function appendModelUpdate(conversation, next, update, knownProfiles, reservedPlayerNickname = '') {
         const normalized = normalizeIncomingUpdate(update);
+        assertNoPlayerIdentityCollision(normalized, reservedPlayerNickname);
         const known = new Map();
         for (const profile of [...knownProfiles, ...conversation.temporaryMembers ?? [], ...conversation.participants ?? []]) {
             const safe = normalizeGroupForumProfile(profile);
@@ -929,23 +953,24 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
         });
     }
 
-    async function appendGroupModelUpdate({ key, title, update, members = [] } = {}) {
+    async function appendGroupModelUpdate({ key, title, update, members = [], reservedPlayerNickname = '' } = {}) {
         return enqueue(async () => {
             await ensureLoaded();
             if (!Array.isArray(members)) fail('INVALID_GROUP');
             const next = clone(document);
             const thread = threadFor(next, key, title);
-            appendModelUpdate(thread, next, update, members);
+            appendModelUpdate(thread, next, update, members, reservedPlayerNickname);
             await commit(next);
             return project(thread);
         });
     }
 
-    async function saveForumRefresh({ update, communityProfiles = [], replace = false } = {}) {
+    async function saveForumRefresh({ update, communityProfiles = [], replace = false, reservedPlayerNickname = '' } = {}) {
         return enqueue(async () => {
             await ensureLoaded();
             if (!Array.isArray(communityProfiles)) fail('INVALID_FORUM_REFRESH');
             const normalized = normalizeForumRefresh(update);
+            assertNoPlayerIdentityCollision(normalized, reservedPlayerNickname);
             const known = new Map();
             for (const profile of communityProfiles) {
                 const safe = normalizeGroupForumProfile(profile);
@@ -1006,6 +1031,24 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
         });
     }
 
+    /**
+     * Deletes exactly one browser-local forum post. Comments, summaries and
+     * summary status are nested in the post and leave with it. The current
+     * forum auto settings and postBindings are forum-wide, not post-specific,
+     * so deleting one post deliberately leaves them unchanged.
+     */
+    async function deleteForumPost({ postId } = {}) {
+        return enqueue(async () => {
+            await ensureLoaded();
+            const next = clone(document);
+            const post = requirePost(next, postId);
+            const index = next.posts.findIndex((item) => item.id === post.id);
+            next.posts.splice(index, 1);
+            await commit(next);
+            return Object.freeze({ postId: post.id });
+        });
+    }
+
     async function appendForumUserComment({ postId, content } = {}) {
         return enqueue(async () => {
             await ensureLoaded();
@@ -1017,12 +1060,12 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
         });
     }
 
-    async function appendForumModelUpdate({ postId, update } = {}) {
+    async function appendForumModelUpdate({ postId, update, reservedPlayerNickname = '' } = {}) {
         return enqueue(async () => {
             await ensureLoaded();
             const next = clone(document);
             const post = requirePost(next, postId);
-            appendModelUpdate(post, next, update, [post.author]);
+            appendModelUpdate(post, next, update, [post.author], reservedPlayerNickname);
             await commit(next);
             return project(post);
         });
@@ -1105,6 +1148,7 @@ export function createGroupForumStore({ storage = createMemoryGroupForumStorage(
         addForumRefresh,
         replaceForumPosts,
         updateExistingForumPosts,
+        deleteForumPost,
         appendForumUserComment,
         appendForumModelUpdate,
         getConversation,

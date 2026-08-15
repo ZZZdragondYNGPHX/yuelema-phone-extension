@@ -294,19 +294,61 @@ test('opened forum posts use forum binding for local comment updates and reject 
         summaryStatus: { status: 'idle', startFloor: 0, endFloor: 0, message: '' }, createdAt: '2026-07-22T04:00:00.000Z',
     };
     const history = { summaries: [], messages: [{ sender: 'user', speaker: '我', content: '这家店周末人多吗？' }] };
-    assert.equal(buildForumPostUpdateContext({ state: state(), post, history }).ok, true);
+    const built = buildForumPostUpdateContext({ state: state(), post, history });
+    assert.equal(built.ok, true);
+    assert.equal(built.context.post.history.messages[0].speaker, '玩家', '模型历史必须使用当前玩家公开昵称，不能把“我”伪装成人物昵称');
     const result = await generateForumPostConversationUpdate({
         state: state(), post, history, settingsStore: { resolveFunction: settings },
         llmClient: { async chat(input) { request = input; return { text: JSON.stringify({ participants: [], messages: [{ speaker: '苏晴', text: '上午会比较安静，欢迎早点来。' }] }) }; } },
     });
     assert.equal(result.ok, true);
     assert.match(request.messages[0].content, /论坛帖子讨论更新模型/u);
+    assert.match(request.messages[0].content, /不得使用玩家昵称|玩家克隆/u);
 
     const rejected = await generateForumPostConversationUpdate({
         state: state(), post, history, settingsStore: { resolveFunction: settings },
         llmClient: { async chat() { return { text: JSON.stringify({ participants: [localProfile('未成年人', { ageRange: '17岁' })], messages: [{ speaker: '未成年人', text: '不应显示。' }] }) }; } },
     });
     assert.equal(rejected.code, 'forum_update_response_invalid');
+});
+
+test('forum home and post updates reject player nickname or self aliases as model-owned identities', async () => {
+    const source = state();
+    const playerClone = localProfile('玩家', { city: '杭州', interests: ['书店'] });
+
+    const clonedParticipant = await generateForumHomeRefresh({
+        state: source, existingTitles: [], settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ participants: [playerClone], posts: forumRefreshPosts('玩家') }) }; } },
+    });
+    assert.equal(clonedParticipant.code, 'forum_update_player_identity_conflict');
+    assert.equal(clonedParticipant.diagnostic.field, 'participants[0].nickname');
+
+    const clonedAuthor = await generateForumHomeRefresh({
+        state: source, existingTitles: [], settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ participants: [], posts: forumRefreshPosts('玩家') }) }; } },
+    });
+    assert.equal(clonedAuthor.code, 'forum_update_player_identity_conflict');
+    assert.equal(clonedAuthor.diagnostic.field, 'posts[0].author');
+
+    const post = {
+        id: 'local_post_1', topic: '同城瞬间', title: '午后花店', body: '阳光很好，适合慢慢挑花。', tags: ['同城'],
+        author: localProfile('苏晴'), participants: [], messages: [], summaries: [],
+        summaryStatus: { status: 'idle', startFloor: 0, endFloor: 0, message: '' }, createdAt: '2026-07-22T04:00:00.000Z',
+    };
+    const history = { summaries: [], messages: [{ sender: 'user', speaker: '我', content: '这家店周末人多吗？' }] };
+    const clonedCommenter = await generateForumPostConversationUpdate({
+        state: source, post, history, settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ participants: [localProfile('我')], messages: [{ speaker: '我', text: '冒充玩家的评论。' }] }) }; } },
+    });
+    assert.equal(clonedCommenter.code, 'forum_update_player_identity_conflict');
+    assert.equal(clonedCommenter.diagnostic.field, 'participants[0].nickname');
+
+    const forgedPlayerSpeech = await generateForumPostConversationUpdate({
+        state: source, post, history, settingsStore: { resolveFunction: settings },
+        llmClient: { async chat() { return { text: JSON.stringify({ participants: [], messages: [{ speaker: '玩家本人', text: '替玩家续写的评论。' }] }) }; } },
+    });
+    assert.equal(forgedPlayerSpeech.code, 'forum_update_player_identity_conflict');
+    assert.equal(forgedPlayerSpeech.diagnostic.field, 'messages[0].speaker');
 });
 
 // —— 阶段 77：失败结果附带控制台诊断（错误码 + 具体不合规点，永不引用模型正文原文）——

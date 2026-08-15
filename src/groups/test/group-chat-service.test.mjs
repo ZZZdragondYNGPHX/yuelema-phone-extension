@@ -120,6 +120,7 @@ test('group conversation update accepts only a compact local/public projection a
     };
     const built = buildGroupChatUpdateContext({ state: state(), group, history });
     assert.equal(built.ok, true);
+    assert.equal(built.context.history.messages[0].speaker, '玩家', '模型历史必须使用当前玩家公开昵称，不能把“我”伪装成人物昵称');
     assert.doesNotMatch(JSON.stringify(built.context), /玩家私密信息|NPC 私密信息|会话秘密|UID/u);
 
     const result = await generateGroupChatUpdate({
@@ -133,8 +134,30 @@ test('group conversation update accepts only a compact local/public projection a
     assert.equal(result.update.participants[0].nickname, '周遥');
     assert.equal(result.update.messages[0].speaker, '周遥');
     assert.match(request.messages[1].content, /用户刚刚发言后的更新/u);
+    assert.match(request.messages[0].content, /不得使用玩家昵称|玩家克隆/u);
     assert.ok(request.messages[0].content.indexOf('只写线上群聊') < request.messages[0].content.indexOf('严格形状'), '提示词预设只能影响内容，固定群聊合同必须后置');
     assert.doesNotMatch(JSON.stringify(request.messages), /玩家私密信息|NPC 私密信息|会话秘密|must-never-be-in-messages/u);
+});
+
+test('group updates reject player nickname and self aliases as model-owned participants or speakers', async () => {
+    const group = { scope: 'local', name: '同城周末搭子', description: '公开活动交流。', members: [localProfile('林澈')] };
+    const history = { summaries: [], messages: [{ sender: 'user', speaker: '我', content: '今天聊什么？' }] };
+    const run = (payload) => generateGroupChatUpdate({
+        state: state(), group, history, settingsStore: { resolveFunction: resolved },
+        llmClient: { async chat() { return { text: JSON.stringify(payload) }; } },
+    });
+
+    const clonedPlayer = await run({ participants: [localProfile('玩家')], messages: [{ speaker: '玩家', text: '冒充玩家的群消息。' }] });
+    assert.equal(clonedPlayer.code, 'group_update_player_identity_conflict');
+    assert.equal(clonedPlayer.diagnostic.field, 'participants[0].nickname');
+
+    const selfAlias = await run({ participants: [localProfile('我')], messages: [{ speaker: '我', text: '冒充玩家的群消息。' }] });
+    assert.equal(selfAlias.code, 'group_update_player_identity_conflict');
+    assert.equal(selfAlias.diagnostic.field, 'participants[0].nickname');
+
+    const forgedPlayerSpeech = await run({ participants: [], messages: [{ speaker: '玩家本人', text: '替玩家续写的群消息。' }] });
+    assert.equal(forgedPlayerSpeech.code, 'group_update_player_identity_conflict');
+    assert.equal(forgedPlayerSpeech.diagnostic.field, 'messages[0].speaker');
 });
 
 test('group conversation update rejects minor temporary people and arbitrary model write shapes', async () => {

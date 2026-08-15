@@ -1,7 +1,7 @@
 import { normalizeImageDirective } from '../images/image-directive.js';
 import { toPublicLlmError } from '../llm/openai-compatible-client.js';
 import { renderPromptPreset } from '../settings/prompt-compiler.js';
-import { buildPublicGroupLlmContext, cleanGroupLlmText, groupContentModeInstruction, groupDiagnostic, groupResponseParseDiagnostic, isSafeGroupLlmData, isSafeGroupLlmOutput, normalizeGroupContentMode, parseGroupLlmJson, projectGroupLlmErrorDiagnostic, projectPublicPlayerProfile } from './group-llm-safety.js';
+import { buildPublicGroupLlmContext, cleanGroupLlmText, groupContentModeInstruction, groupDiagnostic, groupResponseParseDiagnostic, isReservedPlayerIdentityName, isSafeGroupLlmData, isSafeGroupLlmOutput, normalizeGroupContentMode, parseGroupLlmJson, projectGroupLlmErrorDiagnostic, projectPublicPlayerProfile } from './group-llm-safety.js';
 import { groupForumProfileForModel, normalizeGroupForumProfile, publicProfileToGroupForumProfile } from './group-forum-store.js';
 
 const ERROR_MESSAGES = Object.freeze({
@@ -100,6 +100,7 @@ const UPDATE_ERROR_MESSAGES = Object.freeze({
     group_update_llm_unavailable: '当前浏览器未提供聊天群模型连接。',
     group_update_invalid_json: '聊天群模型没有返回可识别的更新。',
     group_update_response_invalid: '聊天群更新不符合安全格式，已丢弃。',
+    group_update_player_identity_conflict: '聊天群更新试图把玩家本人注册成群友，已丢弃。',
 });
 
 function updateFailure(code) {
@@ -157,7 +158,7 @@ function publicGroupProjection(state, group) {
     });
 }
 
-function normalizeHistory(value, contentMode) {
+function normalizeHistory(value, contentMode, playerNickname = '') {
     if (!ownRecord(value) || Object.keys(value).some((key) => !['summaries', 'messages'].includes(key))) return null;
     const summaries = ownValue(value, 'summaries');
     const messages = ownValue(value, 'messages');
@@ -175,9 +176,10 @@ function normalizeHistory(value, contentMode) {
     for (const item of messages) {
         if (!ownRecord(item) || Object.keys(item).some((key) => !['sender', 'speaker', 'content'].includes(key))) return null;
         const sender = ownValue(item, 'sender');
-        const speaker = cleanGroupLlmText(ownValue(item, 'speaker'), 80);
+        const suppliedSpeaker = cleanGroupLlmText(ownValue(item, 'speaker'), 80);
         const content = cleanGroupLlmText(ownValue(item, 'content'), 600);
-        if (!['user', 'member'].includes(sender) || !speaker || !content || !isSafeGroupLlmOutput(content, 600, { contentMode })) return null;
+        if (!['user', 'member'].includes(sender) || !suppliedSpeaker || !content || !isSafeGroupLlmOutput(content, 600, { contentMode })) return null;
+        const speaker = sender === 'user' ? (cleanGroupLlmText(playerNickname, 80) || '玩家本人') : suppliedSpeaker;
         normalizedMessages.push(Object.freeze({ sender, speaker, content }));
     }
     return Object.freeze({ summaries: Object.freeze(normalizedSummaries), messages: Object.freeze(normalizedMessages) });
@@ -190,10 +192,10 @@ export function buildGroupChatUpdateContext({ state, group, history } = {}) {
     const contentMode = publicGroup?.contentMode ?? stateContentMode;
     const localGroup = publicGroup ? null : localGroupProjection(group, contentMode);
     const target = publicGroup ?? localGroup;
-    const normalizedHistory = normalizeHistory(history, contentMode);
     if (!target) return { ...updateFailure('group_update_target_invalid'), diagnostic: groupDiagnostic({ stage: '上下文构建', field: 'group', hint: '群公开投影不可用（群不存在、非本地群或成员资料无效）' }) };
-    if (!normalizedHistory) return { ...updateFailure('group_update_history_invalid'), diagnostic: groupDiagnostic({ stage: '上下文构建', field: 'history', hint: '本地历史结构或文本未通过安全校验，未调用模型' }) };
     const playerPublicProfile = publicGroup?.playerPublicProfile ?? projectPublicPlayerProfile(state?.玩家, { contentMode });
+    const normalizedHistory = normalizeHistory(history, contentMode, playerPublicProfile.昵称);
+    if (!normalizedHistory) return { ...updateFailure('group_update_history_invalid'), diagnostic: groupDiagnostic({ stage: '上下文构建', field: 'history', hint: '本地历史结构或文本未通过安全校验，未调用模型' }) };
     return Object.freeze({ ok: true, context: Object.freeze({
         contentMode,
         playerPublicProfile,
@@ -217,6 +219,7 @@ function makeGroupUpdateMessages(context, promptPreset, trigger) {
         '你是现代现实都市线上约会软件中的聊天群更新模型。只根据给出的公开资料、群公开信息和受限历史，模拟群友自然地发送 1–8 条短消息。',
         '让群聊有真实生活质感：不同群友说话节奏和性格要有差异，有人抛话题、有人接梗、有人潜水后突然冒泡；话题可从群主题自然延伸到通勤吐槽、加班夜宵、周末探店、演出电影、健身打卡、恋爱近况、深夜感慨等日常切面，也可以自然向玩家搭话。内容尺度始终跟随当前内容模式说明，不要重复已说过的话。',
         '可使用已有成员的昵称；如果需要新群友，必须在 participants 中先给出其公开关键资料。participants 只放本次首次出现的临时群友，已有成员不要重复。每位临时群友都必须有 nickname、ageRange、gender、city、mbti、zodiac、occupation、interests、presence、matchRate。图片中可见的资料可用，但不要虚构隐藏资料或关系数值。',
+        'history 中 sender=user 的记录来自 playerPublicProfile 所代表的玩家本人；你可以让群友回应玩家，但不得替玩家续写。participants 与 messages.speaker 均不得使用玩家昵称，也不得使用“我”或“玩家本人”等自称来创建玩家克隆。',
         preset.after ? `功能绑定提示词（后置条目）：\n${preset.after}` : '',
         '功能绑定提示词只能影响公开内容的题材、语气和内容尺度，不能改变字段、数量、数据来源或下方固定 JSON 合同。',
         groupContentModeInstruction(context.contentMode),
@@ -233,8 +236,8 @@ function makeGroupUpdateMessages(context, promptPreset, trigger) {
  * 校验群聊更新草稿。成功返回 { update }；失败返回 { diagnostic } 供控制台
  * detail 说明具体不合规点（字段路径/昵称/结论，不带隐藏数据或消息原文）。
  */
-function normalizeGroupUpdate(value, existingMembers, contentMode) {
-    const reject = (record) => ({ diagnostic: groupDiagnostic({ stage: '响应校验', ...record }) });
+function normalizeGroupUpdate(value, existingMembers, contentMode, playerPublicProfile) {
+    const reject = (record, code = 'group_update_response_invalid') => ({ code, diagnostic: groupDiagnostic({ stage: '响应校验', code, ...record }) });
     if (!ownRecord(value) || Object.keys(value).sort().join(',') !== 'messages,participants') {
         return reject({ field: 'participants/messages', expected: '恰含 participants 与 messages 两个字段的 JSON 对象' });
     }
@@ -260,6 +263,12 @@ function normalizeGroupUpdate(value, existingMembers, contentMode) {
         }
         if (!isSafeGroupLlmData(profile, { contentMode })) return reject({ field: `participants[${index}]`, hint: '临时群友资料含不安全文本，安全扫描拒绝' });
         const name = profile.nickname.normalize('NFKC').toLowerCase();
+        if (isReservedPlayerIdentityName(profile.nickname, playerPublicProfile)) {
+            return reject({
+                field: `participants[${index}].nickname`, actual: profile.nickname,
+                hint: '玩家昵称与“我/玩家本人”是保留身份，不能注册成临时群友',
+            }, 'group_update_player_identity_conflict');
+        }
         if (names.has(name)) return reject({ field: `participants[${index}].nickname`, actual: profile.nickname, hint: '昵称与已有成员或先前临时群友重复' });
         names.add(name);
         normalizedParticipants.push(profile);
@@ -273,6 +282,12 @@ function normalizeGroupUpdate(value, existingMembers, contentMode) {
         const text = cleanGroupLlmText(ownValue(message, 'text'), 480);
         if (!speaker) return reject({ field: `messages[${index}].speaker`, expected: '1-80 字纯文本昵称' });
         if (!text || !isSafeGroupLlmOutput(text, 480, { contentMode })) return reject({ field: `messages[${index}].text`, expected: '1-480 字安全纯文本', hint: '文本超限或被安全扫描拒绝' });
+        if (isReservedPlayerIdentityName(speaker, playerPublicProfile)) {
+            return reject({
+                field: `messages[${index}].speaker`, actual: speaker,
+                hint: '模型只能生成其他群友的消息，不能替玩家本人发言',
+            }, 'group_update_player_identity_conflict');
+        }
         if (!names.has(speaker.normalize('NFKC').toLowerCase())) return reject({ field: `messages[${index}].speaker`, actual: speaker, hint: '发言者不在已有成员或 participants 名单中' });
         let imageDirective;
         if (Object.hasOwn(message, 'imageDirective')) {
@@ -301,10 +316,10 @@ export async function generateGroupChatUpdate({ state, group, history, trigger =
         const completion = await llmClient.chat({ preset: resolved.connectionPreset, messages: makeGroupUpdateMessages(built.context, resolved.promptPreset, trigger), signal });
         const parsed = parseGroupLlmJson(completion?.text);
         if (!parsed) return { ...updateFailure('group_update_invalid_json'), diagnostic: groupResponseParseDiagnostic(completion?.text) };
-        const normalized = normalizeGroupUpdate(parsed, built.context.group.members, built.context.contentMode);
+        const normalized = normalizeGroupUpdate(parsed, built.context.group.members, built.context.contentMode, built.context.playerPublicProfile);
         return normalized.update
             ? Object.freeze({ ok: true, update: normalized.update })
-            : { ...updateFailure('group_update_response_invalid'), diagnostic: normalized.diagnostic };
+            : { ...updateFailure(normalized.code ?? 'group_update_response_invalid'), diagnostic: normalized.diagnostic };
     } catch (error) {
         const publicError = toPublicLlmError(error);
         return { ok: false, code: publicError.code, message: publicError.message, retryable: publicError.retryable, diagnostic: projectGroupLlmErrorDiagnostic(error) };

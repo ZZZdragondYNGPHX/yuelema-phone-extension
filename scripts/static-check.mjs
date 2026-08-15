@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.1.1') fail('manifest.version 必须与扩展版本 1.1.1 统一');
+if (manifest.version !== '1.1.2') fail('manifest.version 必须与扩展版本 1.1.2 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -122,7 +122,7 @@ const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
 const onboardingFlow = await readFile(resolve(root, 'src/onboarding/onboarding-flow.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.1.1'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.1.1 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.1.2'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.1.2 统一（必须位于壳层 app-shell.js）');
 if (!appShellCore.includes("import { createOnboardingFlow } from './onboarding/onboarding-flow.js'")
     || !appShellCore.includes('saveProfile: (profile) => actionBridge.runSavePlayerPublicProfile(profile)')
     || !uiModel.includes('玩家已建档 === false')

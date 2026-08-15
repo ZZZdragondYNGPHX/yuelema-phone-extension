@@ -48,6 +48,37 @@ async function flushUi() {
     await new Promise((resolve) => setImmediate(resolve));
 }
 
+function installStyleRecorder(node) {
+    const values = Object.create(null);
+    node.style = new Proxy({
+        setProperty(name, value) { values[name] = String(value); },
+        getPropertyValue(name) { return values[name] ?? ''; },
+    }, {
+        get(target, key) { return key in target ? target[key] : values[key] ?? ''; },
+        set(_target, key, value) { values[key] = String(value); return true; },
+    });
+    return values;
+}
+
+function assertDialogInsideViewport(dialog, viewport, label) {
+    const rect = dialog.getBoundingClientRect();
+    const centerX = (rect.left + rect.right) / 2;
+    const centerY = (rect.top + rect.bottom) / 2;
+    assert.ok(Math.abs(centerX - (viewport.offsetLeft + viewport.width / 2)) <= 1, `${label} 横向居中`);
+    assert.ok(Math.abs(centerY - (viewport.offsetTop + viewport.height / 2)) <= 1, `${label} 纵向居中`);
+    assert.ok(rect.left >= viewport.offsetLeft + 13.5 && rect.top >= viewport.offsetTop + 13.5, `${label} 左上不越界`);
+    assert.ok(rect.right <= viewport.offsetLeft + viewport.width - 13.5, `${label} 右边不越界`);
+    assert.ok(rect.bottom <= viewport.offsetTop + viewport.height - 13.5, `${label} 底边不越界`);
+}
+
+function assertViewportCover(node, viewport, label) {
+    const rect = node.getBoundingClientRect();
+    assert.ok(Math.abs(rect.left - viewport.offsetLeft) <= 1, `${label} 左边覆盖`);
+    assert.ok(Math.abs(rect.top - viewport.offsetTop) <= 1, `${label} 顶边覆盖`);
+    assert.ok(Math.abs(rect.right - (viewport.offsetLeft + viewport.width)) <= 1, `${label} 右边覆盖`);
+    assert.ok(Math.abs(rect.bottom - (viewport.offsetTop + viewport.height)) <= 1, `${label} 底边覆盖`);
+}
+
 test('设置页提供图片管理入口并挂载浏览器本地图片面板', async () => {
     const imageLibrary = createImageLibraryStore({ storage: createMemoryImageLibraryStorage() });
     const mounted = mountPhoneApp({
@@ -90,6 +121,86 @@ test('设置页提供图片管理入口并挂载浏览器本地图片面板', as
         assert.equal(miniDom.document.querySelector('.yl-image-manager-side').hidden, false, '返回后恢复图片库');
     } finally {
         mounted.destroy();
+    }
+});
+
+test('图片关键词编辑弹窗也经共享仿射定位管线收敛到移动视口', async () => {
+    const previousDefaultView = miniDom.document.defaultView;
+    const windowRef = new EventTarget();
+    const visualViewport = new EventTarget();
+    Object.assign(windowRef, { innerWidth: 360, innerHeight: 640, visualViewport });
+    Object.assign(visualViewport, { offsetLeft: 0, offsetTop: 0, width: 360, height: 640 });
+    miniDom.document.defaultView = windowRef;
+    const imageLibrary = createImageLibraryStore({ storage: createMemoryImageLibraryStorage() });
+    await imageLibrary.add({
+        id: 'affine_editor_image',
+        source: { kind: 'embedded', dataUrl: IMAGE_DATA_URL },
+        keywordWeights: [{ keyword: '夜景', weight: 4 }],
+    });
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document,
+        rootId: 'ylm-test-image-editor-affine',
+        actionBridge: { emit() {}, isPending() { return false; } },
+        settingsStore: null,
+        llmClient: null,
+        characterLibrary: null,
+        imageLibrary,
+        readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelector('.yl-phone-launcher'));
+        click(miniDom.document.querySelectorAll('.yl-phone-nav-item').find((node) => node.dataset.page === 'profile'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.textContent.includes('图片素材')));
+        await flushUi();
+
+        const editor = miniDom.document.querySelector('.yl-image-keyword-editor');
+        const styles = installStyleRecorder(editor);
+        const model = { scaleX: 0.78, scaleY: 1.2, offsetX: 112, offsetY: -128 };
+        const backdrop = miniDom.document.querySelector('.yl-image-keyword-backdrop');
+        const backdropStyles = installStyleRecorder(backdrop);
+        backdrop.getBoundingClientRect = () => {
+            const cssLeft = Number.parseFloat(backdropStyles.left) || 0;
+            const cssTop = Number.parseFloat(backdropStyles.top) || 0;
+            const cssWidth = Number.parseFloat(backdropStyles.width) || 1;
+            const cssHeight = Number.parseFloat(backdropStyles.height) || 1;
+            const left = model.offsetX + (cssLeft * model.scaleX);
+            const top = model.offsetY + (cssTop * model.scaleY);
+            const width = cssWidth * model.scaleX;
+            const height = cssHeight * model.scaleY;
+            return { left, top, width, height, right: left + width, bottom: top + height };
+        };
+        editor.getBoundingClientRect = () => {
+            const cssLeft = Number.parseFloat(styles.left) || 0;
+            const cssTop = Number.parseFloat(styles.top) || 0;
+            const maxWidth = Number.parseFloat(styles['max-width']);
+            const maxHeight = Number.parseFloat(styles['max-height']);
+            const cssWidth = Math.min(390, Number.isFinite(maxWidth) ? maxWidth : 390);
+            const cssHeight = Math.min(650, Number.isFinite(maxHeight) ? maxHeight : 650);
+            const width = cssWidth * model.scaleX;
+            const height = cssHeight * model.scaleY;
+            const centerX = model.offsetX + (cssLeft * model.scaleX);
+            const centerY = model.offsetY + (cssTop * model.scaleY);
+            return {
+                left: centerX - width / 2, top: centerY - height / 2,
+                width, height, right: centerX + width / 2, bottom: centerY + height / 2,
+            };
+        };
+
+        const card = miniDom.document.querySelector('.yl-image-card');
+        card.dispatchEvent(new Event('contextmenu', { cancelable: true }));
+        click(miniDom.document.querySelector('.yl-image-context-action'));
+        assert.equal(editor.hidden, false);
+        assertViewportCover(backdrop, visualViewport, '图片编辑 backdrop');
+        assertDialogInsideViewport(editor, visualViewport, '图片关键词 editor');
+
+        Object.assign(model, { scaleX: 1.18, scaleY: 0.7, offsetX: -86, offsetY: 132 });
+        Object.assign(visualViewport, { offsetLeft: 16, offsetTop: 28, width: 620, height: 350 });
+        visualViewport.dispatchEvent(new Event('resize'));
+        assertViewportCover(backdrop, visualViewport, '旋转后图片编辑 backdrop');
+        assertDialogInsideViewport(editor, visualViewport, '旋转后图片关键词 editor');
+    } finally {
+        mounted.destroy();
+        miniDom.document.defaultView = previousDefaultView;
     }
 });
 

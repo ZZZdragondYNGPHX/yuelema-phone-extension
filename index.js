@@ -18,7 +18,7 @@ import { createRemoteImageImporter } from './src/images/remote-image-import.js';
 import { createGroupForumStore } from './src/groups/group-forum-store.js';
 import { createHostExtensionUpdater } from './src/host-extension-update.js';
 import { createPhoneClock } from './src/chat/phone-clock.js';
-import { acquireExtensionRuntimeLease, createExtensionRestartController } from './src/update-restart.js';
+import { acquireExtensionRuntimeLease, createExtensionRestartController, removeStaleExtensionRoots } from './src/update-restart.js';
 
 const EXTENSION_ROOT_ID = 'yuelema-phone-extension-root';
 const browserStorage = createBrowserSettingsStorage();
@@ -134,8 +134,9 @@ export async function onActivate() {
         return;
     }
 
-    // Hot-reload protection: do not leave a stale root owned by an old module copy.
-    documentRef.getElementById(EXTENSION_ROOT_ID)?.remove();
+    // Hot-reload recovery must remove every duplicate root. getElementById()
+    // only returns one node and used to leave an inert settings dialog on top.
+    removeStaleExtensionRoots(documentRef);
 
     const mvu = () => globalThis.Mvu;
     const getContext = globalThis.SillyTavern?.getContext?.bind(globalThis.SillyTavern);

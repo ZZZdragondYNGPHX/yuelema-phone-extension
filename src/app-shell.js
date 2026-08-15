@@ -29,7 +29,7 @@ import { createProfilePage } from './pages/profile.js';
 import { createOnboardingFlow } from './onboarding/onboarding-flow.js';
 import { createPhoneClock } from './chat/phone-clock.js';
 
-const UI_VERSION = '1.1.1';
+const UI_VERSION = '1.1.2';
 
 function downloadImagePackJson(json) {
     if (typeof json !== 'string' || typeof globalThis.Blob !== 'function'
@@ -71,12 +71,12 @@ const LOCAL_PAGE_COPY = Object.freeze({
 });
 function pageCopy(pageId) { return PAGE_COPY[pageId] ?? LOCAL_PAGE_COPY[pageId] ?? null; }
 const PRIMARY_PAGE_FOR = Object.freeze({
-    group_chat: 'groups', group_chat_room: 'groups', group_chat_create: 'groups', group_chat_summary: 'groups', group_forum: 'groups', forum_post: 'groups', forum_post_summary: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
+    group_chat: 'groups', group_chat_room: 'groups', group_chat_create: 'groups', group_chat_summary: 'groups', group_forum: 'groups', forum_post: 'groups', forum_participant_detail: 'groups', forum_post_summary: 'groups', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
     settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'profile', settings_personalization_preference: 'profile', settings_images: 'profile', settings_images_generate: 'profile', settings_image_generation: 'profile', settings_image_cache: 'profile', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'profile', settings_chat_summary_history: 'profile', settings_chat_summary_history_detail: 'profile', private_chat_summary: 'messages', about: 'profile', service_hub: 'service_hub', candidate_detail: 'home',
 });
 // E1 裁平（裁决 D7）：settings 目录页已删除，全部设置二级页与“关于软件”直接挂在「我的」下。
 const PAGE_PARENT_FOR = Object.freeze({
-    group_chat: 'groups', group_chat_room: 'group_chat', group_chat_create: 'group_chat', group_chat_summary: 'group_chat_room', group_forum: 'groups', forum_post: 'group_forum', forum_post_summary: 'forum_post', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
+    group_chat: 'groups', group_chat_room: 'group_chat', group_chat_create: 'group_chat', group_chat_summary: 'group_chat_room', group_forum: 'groups', forum_post: 'group_forum', forum_participant_detail: 'forum_post', forum_post_summary: 'forum_post', private_chat: 'messages', profile_editor: 'profile', character_creator: 'profile', favorites: 'profile',
     settings_connections: 'profile', settings_prompts: 'profile', settings_privacy: 'profile', settings_personalization: 'settings_privacy', settings_personalization_preference: 'settings_personalization', settings_images: 'profile', settings_images_generate: 'settings_images', settings_image_generation: 'profile', settings_image_cache: 'settings_image_generation', settings_preferences: 'profile', settings_console: 'profile', settings_chat_summary: 'profile', settings_chat_summary_config: 'settings_chat_summary', settings_chat_summary_history: 'settings_chat_summary', settings_chat_summary_history_detail: 'settings_chat_summary_history', private_chat_summary: 'private_chat', about: 'profile', candidate_detail: 'home',
 });
 const FEATURE_BINDING_FOR_PAGE = Object.freeze({
@@ -191,6 +191,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
     // 所有由壳层打开的二级 dialog 都登记在这里，保证 visualViewport 变化时
     // （Termux 地址栏、软键盘、横竖屏）能统一重新定位到真实可见屏幕中心。
     const managedDialogs = new Set();
+    const dialogPlacementEpoch = new WeakMap();
+    const dialogGeometryTargets = new WeakMap();
+    const dialogPlacementModes = new WeakMap();
+    const dialogCoverTargets = new WeakMap();
     const root = documentRef.createElement('section');
     root.id = rootId;
     root.className = 'yl-phone-extension';
@@ -316,6 +320,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
     const imageAssetsReady = new Set();
     const privateImageDirectives = new Map();
     const conversationImageStates = new Map();
+    const deletedForumConversationIds = new Set();
     for (const record of conversationImageStore?.list?.() ?? []) {
         const key = imageDirectiveStateKey(record.kind, record.conversationId, record.messageId);
         conversationImageStates.set(key, { status: 'ready', directive: record.directive, imageSource: record.imageSource, message: '' });
@@ -332,6 +337,14 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
     let lastLauncherTouchAt = 0;
     const launcherDiagnostics = [];
 
+    function focusWithoutViewportScroll(node) {
+        if (!node || typeof node.focus !== 'function') return false;
+        try { node.focus({ preventScroll: true }); return true; }
+        catch {
+            try { node.focus(); return true; }
+            catch { return false; }
+        }
+    }
     /** 弹窗关闭兜底：opener 已被页面重渲替换时，焦点不得滞留在隐藏弹窗内，落到当前页标题。 */
     function settleFocusAfterDialogClose(dialog) {
         const active = documentRef.activeElement ?? null;
@@ -345,12 +358,22 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         const heading = content.querySelector?.('.yl-page-heading')?.querySelector?.('h1') ?? null;
         if (!heading || typeof heading.focus !== 'function') return;
         heading.setAttribute('tabindex', '-1');
-        try { heading.focus(); } catch { /* 焦点兜底失败保持静默 */ }
+        focusWithoutViewportScroll(heading);
     }
-    function closeManagedDialog(dialog) {
-        dialogController.close(dialog);
+    function closeManagedDialog(dialog, options = {}) {
+        dialogPlacementEpoch.set(dialog, (dialogPlacementEpoch.get(dialog) ?? 0) + 1);
+        dialogController.close(dialog, options);
         managedDialogs.delete(dialog);
-        settleFocusAfterDialogClose(dialog);
+        dialogGeometryTargets.delete(dialog);
+        dialogPlacementModes.delete(dialog);
+        dialogCoverTargets.delete(dialog);
+        if (options.restoreFocus !== false) settleFocusAfterDialogClose(dialog);
+    }
+    function closeManagedDialogsWithin(container) {
+        if (!container) return;
+        for (const dialog of [...managedDialogs]) {
+            if (nodeIsWithin(dialog, container)) closeManagedDialog(dialog, { restoreFocus: false });
+        }
     }
     /** 结构性关闭图标：本地 SVG 白名单，不再依赖 Unicode “×” 字符渲染。 */
     function applyCloseIcon(button) {
@@ -666,6 +689,26 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
     function imageDirectiveStateKey(kind, conversationId, messageId) {
         return String(kind) + ':' + String(conversationId) + ':' + String(messageId);
     }
+    function forumConversationWasDeleted(kind, conversationId) {
+        return kind === 'forum' && deletedForumConversationIds.has(String(conversationId));
+    }
+    async function removeForumConversationArtifacts(postId) {
+        const id = String(postId ?? '');
+        if (!/^local_post_[1-9]\d*$/u.test(id)) return Object.freeze({ ok: false, imageCacheRemoved: false, imageSettingsRemoved: false });
+        deletedForumConversationIds.add(id);
+        const prefix = imageDirectiveStateKey('forum', id, '');
+        for (const key of conversationImageStates.keys()) {
+            if (key.startsWith(prefix)) conversationImageStates.delete(key);
+        }
+        if (imageCacheDeleteRecord?.kind === 'forum' && imageCacheDeleteRecord.conversationId === id) closeImageCacheDeleteDialog();
+        let imageCacheRemoved = true;
+        let imageSettingsRemoved = true;
+        try { await conversationImageStore?.removeConversation?.('forum', id); }
+        catch { imageCacheRemoved = false; }
+        try { settingsStore?.removeConversationImageGenerationSettings?.('forum', id); }
+        catch { imageSettingsRemoved = false; }
+        return Object.freeze({ ok: imageCacheRemoved && imageSettingsRemoved, imageCacheRemoved, imageSettingsRemoved });
+    }
     function imageDirectiveKindLabel(kind) {
         return ({ share_photo: '分享照片', selfie: '自拍', scene_snapshot: '场景快照', private_photo: '私照' })[kind] || '图片';
     }
@@ -750,6 +793,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
     }
     async function generateConversationImage({ kind, conversationId, messageId, characterUid = '', directive, automatic = false }) {
         const key = imageDirectiveStateKey(kind, conversationId, messageId);
+        if (forumConversationWasDeleted(kind, conversationId)) return;
         if (typeof actionBridge.generateConversationImage !== 'function') {
             conversationImageStates.set(key, { status: 'failed', directive, message: '生图服务当前未接入。' });
             if (!automatic) setFeedback('生图服务当前未接入。');
@@ -761,7 +805,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         let result;
         try { result = await actionBridge.generateConversationImage({ kind, conversationId, messageId, characterUid, directive, signal: abortController.signal }); }
         catch { result = { ok: false }; }
-        if (isDestroyed) return;
+        if (isDestroyed || forumConversationWasDeleted(kind, conversationId)) {
+            conversationImageStates.delete(key);
+            return;
+        }
         const source = safeConversationImageSource(result?.image?.src ?? result?.image?.dataUrl ?? result?.dataUrl);
         if (result?.ok && source) {
             let persisted = true;
@@ -773,6 +820,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
                 }
             } else {
                 persisted = false;
+            }
+            if (forumConversationWasDeleted(kind, conversationId)) {
+                conversationImageStates.delete(key);
+                try { await conversationImageStore?.removeConversation?.('forum', conversationId); } catch { /* deletion already won; orphan cleanup remains best effort */ }
+                return;
             }
             conversationImageStates.set(key, { status: 'ready', directive, imageSource: source, message: '' });
             if (kind === 'private') privateImageDirectives.set(`${conversationId}:${messageId}`, directive);
@@ -800,7 +852,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
             state = { status: 'queued', directive, message: '已识别生图结构，等待自动生成…' };
             conversationImageStates.set(key, state);
             queueMicrotask(() => {
-                if (isDestroyed || conversationImageStates.get(key)?.status !== 'queued') return;
+                if (isDestroyed || forumConversationWasDeleted(kind, conversationId) || conversationImageStates.get(key)?.status !== 'queued') return;
                 void generateConversationImage({ kind, conversationId, messageId, characterUid, directive, automatic: true });
             });
         }
@@ -959,10 +1011,47 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         panel.style.setProperty('--yl-phone-viewport-width', Math.max(1, Math.round(viewport.width)) + 'px');
         panel.style.setProperty('--yl-phone-viewport-height', Math.max(1, Math.round(viewport.height)) + 'px');
     }
+    function measuredDialogRect(dialog) {
+        const rect = dialog.getBoundingClientRect?.();
+        const left = Number(rect?.left);
+        const top = Number(rect?.top);
+        const width = Number(rect?.width);
+        const height = Number(rect?.height);
+        const right = Number(rect?.right);
+        const bottom = Number(rect?.bottom);
+        const centerX = Number.isFinite(left) && Number.isFinite(right)
+            ? (left + right) / 2
+            : (Number.isFinite(left) && Number.isFinite(width) ? left + (width / 2) : Number.NaN);
+        const centerY = Number.isFinite(top) && Number.isFinite(bottom)
+            ? (top + bottom) / 2
+            : (Number.isFinite(top) && Number.isFinite(height) ? top + (height / 2) : Number.NaN);
+        return Number.isFinite(centerX) && Number.isFinite(centerY) && width > 0 && height > 0
+            ? { x: centerX, y: centerY, width, height }
+            : null;
+    }
+    function dialogCorrectionStep(target, current, coordinate, previous, limit) {
+        const delta = target - current;
+        if (Math.abs(delta) <= 0.5) return 0;
+        let response = Number.NaN;
+        if (previous && coordinate !== previous.coordinate) {
+            response = (current - previous.center) / (coordinate - previous.coordinate);
+        }
+        const step = Number.isFinite(response) && response > 0.05 && response < 8
+            ? delta / response
+            : delta;
+        return Math.max(-limit, Math.min(limit, step));
+    }
+    function inlineDialogPixels(style, property, camelProperty) {
+        const direct = Number.parseFloat(style?.[camelProperty]);
+        if (Number.isFinite(direct)) return direct;
+        if (typeof style?.getPropertyValue !== 'function') return Number.NaN;
+        return Number.parseFloat(style.getPropertyValue(property));
+    }
     /**
-     * 把二级弹窗实测居中到实际可视视口，并补偿 SillyTavern/Termux 可能给 html
-     * 加入的 transform（它会让 fixed 元素错误地相对宿主盒而非手机屏幕定位）。
-     * 宽高同时受 visualViewport 限制，软键盘、横竖屏变化时仍可完整滚动和关闭。
+     * 把二级弹窗实测居中到实际可视视口。宿主坐标不一定只是 1:1 平移：
+     * Termux/移动 Chrome 还可能通过 transform/zoom 缩放 fixed containing block。
+     * 因此以实测中心误差做短迭代，并用第二次测量估算每轴缩放，不再从一次
+     * rect 反推固定原点。宽高同时受 visualViewport 限制，关闭按钮始终可达。
      */
     function centerDialogInViewport(dialog) {
         if (!dialog || dialog.hidden || !dialog.style?.setProperty) return;
@@ -974,37 +1063,180 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
 
         const targetCenterX = viewport.left + (viewport.width / 2);
         const targetCenterY = viewport.top + (viewport.height / 2);
-        dialog.style.setProperty('left', Math.round(targetCenterX) + 'px');
-        dialog.style.setProperty('top', Math.round(targetCenterY) + 'px');
-
-        const rect = dialog.getBoundingClientRect?.();
-        const width = Number(rect?.width);
-        const height = Number(rect?.height);
-        const measuredLeft = Number(rect?.left);
-        const measuredTop = Number(rect?.top);
-        if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0
-            || !Number.isFinite(measuredLeft) || !Number.isFinite(measuredTop)) return;
-
-        const targetLeft = targetCenterX - (width / 2);
-        const targetTop = targetCenterY - (height / 2);
-        const originX = measuredLeft - targetLeft;
-        const originY = measuredTop - targetTop;
-        if (originX || originY) {
-            dialog.style.setProperty('left', Math.round(targetCenterX - originX) + 'px');
-            dialog.style.setProperty('top', Math.round(targetCenterY - originY) + 'px');
+        let left = targetCenterX;
+        let top = targetCenterY;
+        dialog.style.setProperty('left', left.toFixed(2) + 'px');
+        dialog.style.setProperty('top', top.toFixed(2) + 'px');
+        // Host scale/zoom can make a CSS max-size larger than the visual viewport.
+        // Tighten the inline limits from the measured result before centering.
+        for (let fit = 0; fit < 2; fit += 1) {
+            const measured = measuredDialogRect(dialog);
+            if (!measured) return;
+            let changed = false;
+            if (measured.width > availableWidth + 0.5) {
+                const current = inlineDialogPixels(dialog.style, 'max-width', 'maxWidth');
+                if (Number.isFinite(current) && current > 0) {
+                    dialog.style.setProperty('max-width', Math.max(1, current * (availableWidth / measured.width)).toFixed(2) + 'px');
+                    changed = true;
+                }
+            }
+            if (measured.height > availableHeight + 0.5) {
+                const current = inlineDialogPixels(dialog.style, 'max-height', 'maxHeight');
+                if (Number.isFinite(current) && current > 0) {
+                    dialog.style.setProperty('max-height', Math.max(1, current * (availableHeight / measured.height)).toFixed(2) + 'px');
+                    changed = true;
+                }
+            }
+            if (!changed) break;
         }
+        let previousX = null;
+        let previousY = null;
+        for (let iteration = 0; iteration < 4; iteration += 1) {
+            dialog.style.setProperty('left', left.toFixed(2) + 'px');
+            dialog.style.setProperty('top', top.toFixed(2) + 'px');
+            const measured = measuredDialogRect(dialog);
+            if (!measured) return;
+            const stepX = dialogCorrectionStep(targetCenterX, measured.x, left, previousX, viewport.width * 4);
+            const stepY = dialogCorrectionStep(targetCenterY, measured.y, top, previousY, viewport.height * 4);
+            if (stepX === 0 && stepY === 0) return;
+            previousX = { coordinate: left, center: measured.x };
+            previousY = { coordinate: top, center: measured.y };
+            left += stepX;
+            top += stepY;
+        }
+        dialog.style.setProperty('left', left.toFixed(2) + 'px');
+        dialog.style.setProperty('top', top.toFixed(2) + 'px');
+    }
+    /**
+     * BottomSheet 的焦点节点是内部 panel，几何节点则是包含 scrim 的 root。
+     * 将 root 的实测四边拟合到 visualViewport，内部 CSS 仍自行决定
+     * phone 吸底或 desktop 居中，不让 JS 感知布局模式。
+     */
+    function coverVisualViewport(surface) {
+        if (!surface?.style?.setProperty) return;
+        const viewport = phoneVisualViewport();
+        surface.style.setProperty('position', 'fixed');
+        surface.style.setProperty('right', 'auto');
+        surface.style.setProperty('bottom', 'auto');
+        surface.style.setProperty('margin', '0');
+        surface.style.setProperty('max-width', 'none');
+        surface.style.setProperty('max-height', 'none');
+        surface.style.setProperty('overflow', 'hidden');
+        let left = viewport.left;
+        let top = viewport.top;
+        let width = viewport.width;
+        let height = viewport.height;
+        let previousX = null;
+        let previousY = null;
+        for (let iteration = 0; iteration < 4; iteration += 1) {
+            surface.style.setProperty('left', left.toFixed(2) + 'px');
+            surface.style.setProperty('top', top.toFixed(2) + 'px');
+            surface.style.setProperty('width', Math.max(1, width).toFixed(2) + 'px');
+            surface.style.setProperty('height', Math.max(1, height).toFixed(2) + 'px');
+            const rect = surface.getBoundingClientRect?.();
+            const measuredLeft = Number(rect?.left);
+            const measuredTop = Number(rect?.top);
+            const measuredWidth = Number(rect?.width);
+            const measuredHeight = Number(rect?.height);
+            if (!Number.isFinite(measuredLeft) || !Number.isFinite(measuredTop)
+                || !(measuredWidth > 0) || !(measuredHeight > 0)) return;
+            const stepX = dialogCorrectionStep(viewport.left, measuredLeft, left, previousX, viewport.width * 4);
+            const stepY = dialogCorrectionStep(viewport.top, measuredTop, top, previousY, viewport.height * 4);
+            const widthRatio = viewport.width / measuredWidth;
+            const heightRatio = viewport.height / measuredHeight;
+            const nextWidth = Number.isFinite(widthRatio) && widthRatio > 0 ? width * widthRatio : width;
+            const nextHeight = Number.isFinite(heightRatio) && heightRatio > 0 ? height * heightRatio : height;
+            const sizeSettled = Math.abs(measuredWidth - viewport.width) <= 0.5
+                && Math.abs(measuredHeight - viewport.height) <= 0.5;
+            if (stepX === 0 && stepY === 0 && sizeSettled) return;
+            previousX = { coordinate: left, center: measuredLeft };
+            previousY = { coordinate: top, center: measuredTop };
+            left += stepX;
+            top += stepY;
+            width = Math.max(1, Math.min(viewport.width * 8, nextWidth));
+            height = Math.max(1, Math.min(viewport.height * 8, nextHeight));
+        }
+        surface.style.setProperty('left', left.toFixed(2) + 'px');
+        surface.style.setProperty('top', top.toFixed(2) + 'px');
+        surface.style.setProperty('width', width.toFixed(2) + 'px');
+        surface.style.setProperty('height', height.toFixed(2) + 'px');
+    }
+    function placeManagedDialog(dialog) {
+        const geometryTarget = dialogGeometryTargets.get(dialog) ?? dialog;
+        const coverTarget = dialogCoverTargets.get(dialog);
+        if (coverTarget) coverVisualViewport(coverTarget);
+        if (dialogPlacementModes.get(dialog) === 'viewport-cover') coverVisualViewport(geometryTarget);
+        else centerDialogInViewport(geometryTarget);
     }
     function openManagedDialog(dialog, options = {}) {
-        dialogController.open(dialog, options);
+        if (!dialog) return;
+        if (!nodeIsWithin(dialog, documentRef)) {
+            // BottomSheet 在页构建阶段请求打开，此时尚未 append 到 content。
+            // 延到微任务后再入栈；若页已重绘/关闭，epoch 与连接性守卫会取消。
+            const epoch = (dialogPlacementEpoch.get(dialog) ?? 0) + 1;
+            dialogPlacementEpoch.set(dialog, epoch);
+            queueMicrotask(() => {
+                if (isDestroyed || dialog.hidden || dialogPlacementEpoch.get(dialog) !== epoch
+                    || !nodeIsWithin(dialog, documentRef)) return;
+                openManagedDialog(dialog, options);
+            });
+            return;
+        }
+        const { geometryTarget = dialog, coverTarget = null, placement = 'center', ...controllerOptions } = options;
+        const resolvedOptions = {
+            ...controllerOptions,
+            opener: controllerOptions.opener ?? documentRef.activeElement ?? null,
+        };
+        // Reveal and place before focus. On mobile, focusing an off-screen fixed
+        // element can scroll the transformed host and invalidate the measurement.
+        dialog.hidden = false;
+        dialog.setAttribute('aria-modal', 'true');
+        if (geometryTarget && 'hidden' in geometryTarget) geometryTarget.hidden = false;
+        if (coverTarget && 'hidden' in coverTarget) coverTarget.hidden = false;
         managedDialogs.add(dialog);
-        centerDialogInViewport(dialog);
+        dialogGeometryTargets.set(dialog, geometryTarget);
+        dialogPlacementModes.set(dialog, placement);
+        if (coverTarget) dialogCoverTargets.set(dialog, coverTarget);
+        else dialogCoverTargets.delete(dialog);
+        placeManagedDialog(dialog);
+        dialogController.open(dialog, resolvedOptions);
+        placeManagedDialog(dialog);
+        scheduleDialogRecentering(dialog);
+    }
+    function scheduleDialogRecentering(dialog) {
+        const epoch = (dialogPlacementEpoch.get(dialog) ?? 0) + 1;
+        dialogPlacementEpoch.set(dialog, epoch);
+        const apply = () => {
+            if (isDestroyed || dialog.hidden || !managedDialogs.has(dialog)
+                || dialogPlacementEpoch.get(dialog) !== epoch) return false;
+            placeManagedDialog(dialog);
+            return true;
+        };
+        queueMicrotask(apply);
+        const windowRef = documentRef.defaultView;
+        if (typeof windowRef?.requestAnimationFrame !== 'function') return;
+        windowRef.requestAnimationFrame(() => {
+            if (!apply()) return;
+            windowRef.requestAnimationFrame(apply);
+        });
     }
     function centerOpenDialogs() {
         for (const dialog of managedDialogs) {
-            if (dialog?.hidden) { managedDialogs.delete(dialog); continue; }
-            centerDialogInViewport(dialog);
+            if (dialog?.hidden) {
+                managedDialogs.delete(dialog);
+                dialogGeometryTargets.delete(dialog);
+                dialogPlacementModes.delete(dialog);
+                dialogCoverTargets.delete(dialog);
+                continue;
+            }
+            placeManagedDialog(dialog);
+            scheduleDialogRecentering(dialog);
         }
     }
+    const managedDialogFacade = Object.freeze({
+        open: (dialog, options) => openManagedDialog(dialog, options),
+        close: (dialog, options) => closeManagedDialog(dialog, options),
+    });
     function clampPanelPosition(left, top, width, height) {
         // 移动端地址栏/软键盘会让可视视口偏离布局视口；钳制一律以 visualViewport 为准
         // （无该 API 时 phoneVisualViewport 自带 window 尺寸回退，offset 为 0，行为不变）。
@@ -1244,18 +1476,30 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
     function writeLauncherToolsViewportPosition(left, top) {
         if (!launcherTools.style?.setProperty) return;
         launcherTools.style.setProperty('position', 'fixed');
-        launcherTools.style.setProperty('left', Math.round(left) + 'px');
-        launcherTools.style.setProperty('top', Math.round(top) + 'px');
         launcherTools.style.setProperty('right', 'auto');
         launcherTools.style.setProperty('bottom', 'auto');
-        const measured = launcherTools.getBoundingClientRect?.();
-        const measuredLeft = Number(measured?.left);
-        const measuredTop = Number(measured?.top);
-        if (!Number.isFinite(measuredLeft) || !Number.isFinite(measuredTop)) return;
-        const originX = measuredLeft - left;
-        const originY = measuredTop - top;
-        if (originX) launcherTools.style.setProperty('left', Math.round(left - originX) + 'px');
-        if (originY) launcherTools.style.setProperty('top', Math.round(top - originY) + 'px');
+        let cssLeft = left;
+        let cssTop = top;
+        let previousX = null;
+        let previousY = null;
+        const viewport = phoneVisualViewport();
+        for (let iteration = 0; iteration < 4; iteration += 1) {
+            launcherTools.style.setProperty('left', cssLeft.toFixed(2) + 'px');
+            launcherTools.style.setProperty('top', cssTop.toFixed(2) + 'px');
+            const measured = launcherTools.getBoundingClientRect?.();
+            const measuredLeft = Number(measured?.left);
+            const measuredTop = Number(measured?.top);
+            if (!Number.isFinite(measuredLeft) || !Number.isFinite(measuredTop)) return;
+            const stepX = dialogCorrectionStep(left, measuredLeft, cssLeft, previousX, viewport.width * 4);
+            const stepY = dialogCorrectionStep(top, measuredTop, cssTop, previousY, viewport.height * 4);
+            if (stepX === 0 && stepY === 0) return;
+            previousX = { coordinate: cssLeft, center: measuredLeft };
+            previousY = { coordinate: cssTop, center: measuredTop };
+            cssLeft += stepX;
+            cssTop += stepY;
+        }
+        launcherTools.style.setProperty('left', cssLeft.toFixed(2) + 'px');
+        launcherTools.style.setProperty('top', cssTop.toFixed(2) + 'px');
     }
     function positionLauncherTools() {
         if (launcherTools.hidden) return;
@@ -1278,15 +1522,13 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         if (launcherTools.hidden) return;
         launcherTools.hidden = true;
         launcher.setAttribute('aria-expanded', 'false');
-        if (restoreFocus) {
-            try { launcher.focus?.(); } catch { /* optional host focus support */ }
-        }
+        if (restoreFocus) focusWithoutViewportScroll(launcher);
     }
     function openLauncherTools() {
         launcherTools.hidden = false;
         launcher.setAttribute('aria-expanded', 'true');
         positionLauncherTools();
-        try { resetLayoutButton.focus?.(); } catch { /* optional host focus support */ }
+        focusWithoutViewportScroll(resetLayoutButton);
     }
     function cancelLauncherToolsHold(inputType = '') {
         if (!launcherToolsHold || (inputType && launcherToolsHold.inputType !== inputType)) return;
@@ -1655,12 +1897,15 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
             recordLauncherDiagnostic('open_refresh_complete', launcherGeometry());
         }
         else {
+            closeManagedDialogsWithin(content);
             // 关闭面板只隐藏引导并恢复主界面交互；未完成的公开资料草稿仍只留在本次内存会话。
             onboardingFlow.hide();
             setOnboardingSurfaceActive(false);
             ctx.stopGroupAutoTimer();
             ctx.stopForumAutoTimer();
             ctx.cancelForumPullInteractions();
+            ctx.resetForumPostDeletion();
+            ctx.resetForumParticipantActions?.();
             ctx.closeGroupAutoDialog();
             ctx.resetGroupRoomMenu();
             ctx.closeForumSettingsDialog();
@@ -1682,6 +1927,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
     }
     function setActivePage(pageId, { preserveOperation = false } = {}) {
         if (!pageCopy(pageId)) return;
+        if (pageId !== activePage) {
+            ctx.resetForumPostDeletion();
+            ctx.resetForumParticipantActions?.();
+        }
         const privateChatRoute = (page) => page === 'private_chat' || page === 'private_chat_summary';
         if (privateChatRoute(activePage) && !privateChatRoute(pageId)) {
             privateChatRequestGeneration += 1;
@@ -2113,6 +2362,11 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         operationClose.textContent = state === 'loading' ? '关闭提示' : '关闭';
         // 仅在“关闭 → 打开”过渡时接管焦点；状态更新（loading → success 等）不反复抢焦点。
         if (wasHidden) openManagedDialog(operationDialog, { initialFocus: operationClose, onRequestClose: hideOperationDialog });
+        else {
+            // 加载中、成功与失败文案的高度可不同；不抢焦点，但必须按新矩形重做 fit/center。
+            centerDialogInViewport(operationDialog);
+            scheduleDialogRecentering(operationDialog);
+        }
         if (Number.isFinite(autoCloseMs) && autoCloseMs > 0) {
             const delay = Math.max(1000, Math.min(10000, Math.round(autoCloseMs)));
             operationAutoCloseTimer = globalThis.setTimeout(() => {
@@ -2428,6 +2682,9 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
             viewCode: currentView?.code ?? '',
         });
         ctx.cancelForumPullInteractions();
+        // 页面重绘前把旧 content 内的 sheet/editor 从统一焦点栈移除，
+        // 避免 detached dialog 在下一次 Escape 时先截获键盘。
+        closeManagedDialogsWithin(content);
         imageManagerPanel?.dispose?.();
         imageManagerPanel = null;
         const copy = pageCopy(activePage);
@@ -2453,6 +2710,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         else if (activePage === 'group_chat_summary') page.appendChild(ctx.buildLocalConversationSummaryPage('group'));
         else if (activePage === 'group_forum') page.appendChild(ctx.buildForumPage());
         else if (activePage === 'forum_post') page.appendChild(ctx.buildForumPostPage());
+        else if (activePage === 'forum_participant_detail') page.appendChild(ctx.buildForumParticipantDetailPage());
         else if (activePage === 'forum_post_summary') page.appendChild(ctx.buildLocalConversationSummaryPage('post'));
         else if (activePage === 'profile') page.appendChild(ctx.buildProfileHub());
         else if (activePage === 'profile_editor') page.appendChild(ctx.buildProfileEditor());
@@ -2636,7 +2894,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
             imageManagerPanel = createImageManagerPanel({
                 documentRef,
                 imageLibrary,
-                dialogController,
+                dialogController: managedDialogFacade,
                 openDialog: openManagedDialog,
                 importRemoteImageFile: remoteImageImporter ? (url) => remoteImageImporter.importImageFile(url) : null,
                 compressImageFile: async (file) => (await compressLocalAvatar(file)).dataUrl,
@@ -2668,7 +2926,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         const section = element('section', { className: 'yl-settings-detail' });
         section.appendChild(buildSettingsPanel({
             settingsStore, llmClient, imageGenerationClient, signal: abortController.signal, view,
-            contentMode: currentView.mode, dialogController, openDialog: openManagedDialog,
+            contentMode: currentView.mode, dialogController: managedDialogFacade, openDialog: openManagedDialog,
             onFeedback: createOperationFeedbackHandler(), onRerender: renderPage, onNavigate: setActivePage,
         }));
         return section;
@@ -2778,7 +3036,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         buildImageDirectiveCard, canAppendServiceExperienceDraft, candidateImageState, characterLibrary, chatDrafts, nsfwTurnConsentSessions, clearMatchedImageState, closeManagedDialog, content,
         dialogController, disableServiceHub, openManagedDialog, documentRef, formatDirectiveForDisplay, forumCommentDrafts, forumSettingsContent, forumSettingsDialog, forumSettingsTitle,
         groupAutoContent, groupAutoDialog, groupAutoTitle, groupForumStore, groupMemberPickerContent, groupMemberPickerDialog, groupMessageDrafts, imageAssetFailures,
-        conversationImageStore, characterAvatarStore,
+        conversationImageStore, characterAvatarStore, removeForumConversationArtifacts,
         imageAssetsReady, imageMatchPending, imageProfileKey, localProfileCharacterUid, matchedImageFor, meetupDrafts, nav, openAvatarDialog,
         openFeatureBinding, openMark, operationActivity, playerAvatarStore, privateImageDirectives,
         requestPrivateChatScrollToBottom(sessionUid) {
@@ -2869,7 +3127,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
         positionLauncherTools();
         centerOpenDialogs();
     };
-    if (windowRef?.addEventListener) listen(root, windowRef, 'resize', handleViewportChange, abortController.signal);
+    if (windowRef?.addEventListener) {
+        listen(root, windowRef, 'resize', handleViewportChange, abortController.signal);
+        listen(root, windowRef, 'scroll', handleViewportChange, abortController.signal);
+    }
     if (windowRef?.visualViewport?.addEventListener) {
         listen(root, windowRef.visualViewport, 'resize', handleViewportChange, abortController.signal);
         listen(root, windowRef.visualViewport, 'scroll', handleViewportChange, abortController.signal);

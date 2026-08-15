@@ -25,6 +25,7 @@ export const PAGE_COPY = Object.freeze({
     group_chat_summary: { title: '聊天总结' },
     group_forum: { title: '社区' },
     forum_post: { title: '帖子' },
+    forum_participant_detail: { title: '公开资料' },
     forum_post_summary: { title: '聊天总结' },
     profile: { title: '我的' },
     profile_editor: { title: '个人资料' },

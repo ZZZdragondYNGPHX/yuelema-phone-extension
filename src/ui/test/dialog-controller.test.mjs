@@ -49,6 +49,32 @@ test('open reveals dialog, sets aria-modal, and focuses the first focusable elem
     }
 });
 
+test('open and close focus without scrolling the mobile host viewport', () => {
+    const env = installMiniDom();
+    try {
+        const document = env.document;
+        const controller = createDialogController({ documentRef: document });
+        const opener = makeButton(document, '打开');
+        document.body.appendChild(opener);
+        const action = makeButton(document, '确定');
+        const dialog = makeDialog(document, [action]);
+        const actionCalls = [];
+        const openerCalls = [];
+        const focusAction = action.focus.bind(action);
+        const focusOpener = opener.focus.bind(opener);
+        action.focus = (options) => { actionCalls.push(options); focusAction(); };
+        opener.focus = (options) => { openerCalls.push(options); focusOpener(); };
+
+        controller.open(dialog, { opener });
+        controller.close(dialog);
+
+        assert.deepEqual(actionCalls, [{ preventScroll: true }]);
+        assert.deepEqual(openerCalls, [{ preventScroll: true }]);
+    } finally {
+        env.restore();
+    }
+});
+
 test('open prefers initialFocus over the first focusable element', () => {
     const env = installMiniDom();
     try {

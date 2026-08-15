@@ -710,9 +710,14 @@ test('生图设置严格隔离密钥并按对话类型保存自动生图开关',
     });
     store.setConversationImageGenerationSettings('private', 'chat_1', { autoGenerate: true });
     store.setConversationImageGenerationSettings('group', 'group_1', { autoGenerate: false });
+    store.setConversationImageGenerationSettings('forum', 'post_1', { autoGenerate: true });
     assert.deepEqual(store.getConversationImageGenerationSettings('private', 'chat_1'), { autoGenerate: true });
     assert.deepEqual(store.getConversationImageGenerationSettings('group', 'chat_1'), { autoGenerate: false });
+    assert.deepEqual(store.getConversationImageGenerationSettings('forum', 'post_1'), { autoGenerate: true });
+    assert.equal(store.removeConversationImageGenerationSettings('forum', 'post_1'), true);
+    assert.equal(store.removeConversationImageGenerationSettings('forum', 'post_1'), false, '删除不存在的会话覆盖项应为无写入操作');
     assert.deepEqual(store.getConversationImageGenerationSettings('forum', 'post_1'), { autoGenerate: false });
+    assert.doesNotMatch(store.exportJson(), /post_1/u, '删除会话后不得留下占用数量上限的自动生图设置键');
     assert.doesNotMatch(store.exportJson(), /apiKey|authorization|bearer|secret-value/iu);
 
     assert.throws(() => store.setImageGenerationSettings({ ...base, apiKey: 'secret-value' }), errorCode('UNSAFE_INPUT'));
@@ -723,6 +728,7 @@ test('生图设置严格隔离密钥并按对话类型保存自动生图开关',
     assert.throws(() => store.setImageGenerationSettings({ ...base, width: 255 }), errorCode('INVALID_SETTINGS'));
     assert.throws(() => store.setImageGenerationSettings({ ...base, positivePrefix: 'masterpiece\nhigh detail' }), errorCode('INVALID_IMAGE_GENERATION'));
     assert.throws(() => store.setConversationImageGenerationSettings('private', 'bad/id', { autoGenerate: true }), errorCode('INVALID_IMAGE_GENERATION'));
+    assert.throws(() => store.removeConversationImageGenerationSettings('forum', 'bad/id'), errorCode('INVALID_IMAGE_GENERATION'));
 
     assert.doesNotThrow(() => store.setImageGenerationSettings({ ...base, baseUrl: 'http://127.0.0.1:7860' }));
 });
