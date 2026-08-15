@@ -2689,7 +2689,7 @@
 }
 .yl-community-title { flex: 0 0 auto; font-family: var(--yl-font-display); font-size: var(--yl-type-headline); font-weight: 780; letter-spacing: -.01em; }
 .yl-community-topbar .yl-seg { flex: 1; max-width: 220px; }
-.yl-community-topbar .yl-btn--icon { margin-left: auto; }
+.yl-community-topbar .yl-community-settings-button { flex: 0 0 auto; margin-left: auto; }
 .yl-community-actions { display: flex; gap: var(--yl-space-2); }
 .yl-community-actions .yl-btn { flex: 1; }
 /* §8.3-1 群列表 ListRow：叠放成员头像组（最多 3 + “+N”） */
