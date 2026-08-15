@@ -203,7 +203,7 @@ export function createCommunityPage(ctx) {
         persistCommunityTabPreference(tabId);
         ctx.setActivePage(tabId === 'chat' ? 'group_chat' : 'group_forum');
     }
-    // 两个 tab 页共用的页头：标题「社区」+ SegmentedControl；广场侧带「⋯」设置入口（§8.2-3）。
+    // 两个 tab 页共用的页头：标题「社区」+ SegmentedControl；广场侧提供明确可见的设置入口（§8.2-3）。
     function buildCommunityTopbar(activeTabId) {
         const bar = element('div', { className: 'yl-community-topbar' });
         bar.appendChild(element('h2', { className: 'yl-community-title', text: '社区' }));
@@ -216,10 +216,12 @@ export function createCommunityPage(ctx) {
         });
         bar.appendChild(segmented.element);
         if (activeTabId === 'square') {
-            bar.appendChild(createButton({
-                documentRef: ctx.documentRef, variant: 'icon', icon: 'more_vertical', ariaLabel: '社区设置',
+            const settingsButton = createButton({
+                documentRef: ctx.documentRef, variant: 'tonal', label: '设置', icon: 'settings', ariaLabel: '社区设置',
                 onClick: () => openForumSettingsDialog(),
-            }));
+            });
+            settingsButton.classList.add('yl-community-settings-button');
+            bar.appendChild(settingsButton);
         }
         return bar;
     }

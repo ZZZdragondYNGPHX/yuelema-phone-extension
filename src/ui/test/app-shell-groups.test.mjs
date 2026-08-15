@@ -1970,7 +1970,11 @@ test('P2-C: community lands directly on content, remembers the last tab locally,
         assert.ok(miniDom.document.querySelector('.yl-community-topbar'), '社区自绘 topbar 应存在');
         assert.ok(miniDom.document.querySelector('.yl-seg'), '顶部应有「广场｜群聊」SegmentedControl');
         assert.equal(miniDom.document.querySelectorAll('.yl-channel-chip').length, 8, '广场应有 8 个频道横滑 chip');
-        assert.ok(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '社区设置'), '广场页头应有「⋯」社区设置入口');
+        const forumSettings = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '社区设置');
+        assert.ok(forumSettings, '广场页头应有社区设置入口');
+        assert.equal(forumSettings.textContent, '设置', '社区设置入口应显示文字');
+        assert.ok(forumSettings.classList.contains('yl-btn--tonal'), '社区设置入口应使用醒目的次级按钮样式');
+        assert.equal(forumSettings.querySelector('svg')?.dataset.icon, 'settings', '社区设置入口应使用齿轮图标');
         // 切到群聊并写入本地 tab 记忆
         click(segItem('群聊'));
         await flushUi();
