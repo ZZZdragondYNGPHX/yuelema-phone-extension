@@ -2886,20 +2886,25 @@
     opacity: 0;
     pointer-events: none;
     transform: translate(-50%, calc(-38px + var(--yl-forum-pull-offset)));
+    /* transform 绝对不能进 transition：本 transform 的唯一变量来源是自定义属性
+       --yl-forum-pull-offset，Chrome 在这种情况下不会重绘补间（浏览器实测：var 已是
+       95px，computed transform 仍停在 matrix(…,-38)，指示器整段手势原地不动）。
+       注册 @property 后把过渡挂到自定义属性上同样冻结。行程只靠 JS 逐帧写 var，
+       淡入淡出交给 opacity。 */
     transition: opacity 100ms ease, color 100ms ease, border-color 100ms ease;
 }
 .yl-forum-pull-indicator.is-visible { opacity: 1; }
 .yl-forum-pull-indicator.is-armed { border-color: color-mix(in srgb, var(--yl-accent) 70%, transparent); color: var(--yl-accent); }
+/* 停靠点由 --yl-forum-pull-offset（JS 按 1/4 可视窗口实测计算）驱动；
+   这里不能再写 top: 25%——那是帖子流 section 的 25%，长列表里会落到屏幕外。 */
 .yl-forum-pull-indicator.is-refreshing {
-    top: 25%;
     opacity: 1;
     border-color: color-mix(in srgb, var(--yl-accent-2) 65%, transparent);
     color: var(--yl-accent-2);
-    transform: translate(-50%, 0);
     animation: yl-forum-refresh-pulse 900ms ease-in-out infinite alternate;
 }
 .yl-forum-append-indicator { position: relative; top: auto; left: 50%; width: max-content; margin: 2px 0 var(--yl-space-2); transform: translate(-50%, calc(-8px + var(--yl-forum-pull-offset))); }
-.yl-forum-append-indicator.is-refreshing { top: auto; transform: translate(-50%, 0); }
+.yl-forum-append-indicator.is-refreshing { top: auto; }
 /* 刷新指示器补充：SVG 品牌色 spinner（is-refreshing 时旋转，reduced-motion 由 motion 区全局降级） */
 .yl-forum-pull-indicator { gap: 5px; }
 .yl-forum-pull-indicator span { white-space: nowrap; }

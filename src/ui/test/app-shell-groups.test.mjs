@@ -84,6 +84,18 @@ function wheel(deltaY, deltaMode = 0) {
     return event;
 }
 
+// MiniDOM 不实现 style；给单个节点挂一个最小 CSSStyleDeclaration 探针，用来断言
+// 指示器位移的方向与行程（正=向下、负=向上；到达阈值时等于 1/4 可视窗口高）。
+function pullOffsetProbe(node) {
+    const properties = new Map();
+    node.style = {
+        setProperty(name, value) { properties.set(String(name), String(value)); },
+        removeProperty(name) { properties.delete(String(name)); },
+        getPropertyValue(name) { return properties.get(String(name)) ?? ''; },
+    };
+    return () => node.style.getPropertyValue('--yl-forum-pull-offset');
+}
+
 function segItem(label) {
     return miniDom.document.querySelectorAll('button').find((node) => node.classList.contains('yl-seg__item') && node.textContent === label);
 }
@@ -1430,10 +1442,15 @@ test('desktop wheel pull refreshes only from the forum top after the wheel settl
         assert.equal(armed.classList.contains('is-armed'), true);
         const cancelledTimer = timers.at(-1);
         assert.equal(cancelledTimer.delay, 180);
-        content.dispatchEvent(wheel(40));
-        assert.equal(cancelledTimer.cleared, true);
-        assert.equal(armed.classList.contains('is-visible'), false);
-        cancelledTimer.callback();
+        // 反向滚轮 = 手指反向：按钮快速回移（同样滚动量比前进快 1.6 倍），退回起点才消失，本轮不提交。
+        content.dispatchEvent(wheel(100));
+        assert.equal(cancelledTimer.cleared, true, '反向滚动必须重置“停滚即提交”计时');
+        assert.equal(armed.classList.contains('is-armed'), false, '反向滚动后不得继续停留在可提交状态');
+        assert.equal(armed.classList.contains('is-visible'), true, '还没退回起点时按钮应仍在视野内快速回移');
+        const retreatTimer = timers.at(-1);
+        content.dispatchEvent(wheel(100));
+        assert.equal(armed.classList.contains('is-visible'), false, '退回起点后按钮必须消失');
+        retreatTimer.callback();
         await flushUi();
         assert.equal(homeCalls, 0, '反向向下滚动必须取消本轮刷新');
 
@@ -1448,6 +1465,131 @@ test('desktop wheel pull refreshes only from the forum top after the wheel settl
         mounted.destroy();
         globalThis.setTimeout = previousSetTimeout;
         globalThis.clearTimeout = previousClearTimeout;
+    }
+});
+
+test('forum top pull is owned by Touch Events, parks at a quarter of the visible window, survives jitter, and never commits on interruption', async () => {
+    let homeCalls = 0;
+    const temporaryProfile = {
+        nickname: '苏晴', ageRange: '25-29', gender: '女', city: '上海', mbti: 'ISFP', zodiac: '天秤座', occupation: '花艺师', interests: ['花店'], presence: '在线', matchRate: null,
+    };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    // 复刻 Chrome 真机：宿主提供 Touch Events，且 pointerdown 先于 touchstart 派发。
+    const previousTouchEvent = globalThis.TouchEvent;
+    globalThis.TouchEvent = class {};
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-touch-park',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async generateForumHomeRefresh() {
+                homeCalls += 1;
+                return { ok: true, communityProfiles: [], update: { participants: [temporaryProfile], posts: forumRefreshPosts('苏晴') } };
+            },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('广场');
+        const content = miniDom.document.querySelector('.yl-phone-content');
+        content.clientHeight = 600; content.scrollHeight = 2000; content.scrollTop = 0;
+        const surface = miniDom.document.querySelector('.yl-forum-home');
+        const top = miniDom.document.querySelector('.yl-forum-pull-indicator');
+        const offset = pullOffsetProbe(top);
+
+        surface.dispatchEvent(pointer('pointerdown', 0, 7, 'touch'));
+        surface.dispatchEvent(pointer('pointermove', 60, 7, 'touch'));
+        assert.equal(offset(), '', '触摸手势必须交给 Touch Events：pointer 流抢先接管会让 touchmove 永远无法 preventDefault');
+
+        surface.dispatchEvent(touch('touchstart', 0, 7));
+        const halfway = touch('touchmove', 44, 7);
+        assert.equal(surface.dispatchEvent(halfway), false, 'touchmove 必须被 preventDefault，否则浏览器会抢走竖向手势');
+        assert.equal(offset(), '75px', '行进一半时应走到停靠点的一半（1/4×600=150）');
+        assert.equal(top.classList.contains('is-armed'), false);
+        surface.dispatchEvent(touch('touchmove', 88, 7));
+        assert.equal(offset(), '150px', '到达阈值时指示器必须正好向下停在 1/4 可视窗口处');
+        assert.equal(top.classList.contains('is-armed'), true);
+
+        surface.dispatchEvent(touch('touchmove', 82, 7));
+        assert.equal(offset(), '140px', '按钮必须跟手回退，而不是一抖就消失');
+        surface.dispatchEvent(touch('touchmove', 96, 7));
+        assert.equal(top.classList.contains('is-armed'), true, '抖动之后继续下拉必须能重新解锁');
+        surface.dispatchEvent(touch('touchmove', -4, 7));
+        assert.equal(offset(), '0px');
+        assert.equal(top.classList.contains('is-visible'), false, '手指反向回到起点后按钮必须消失');
+        surface.dispatchEvent(touch('touchend', -4, 7, { ended: true }));
+        await flushUi();
+        assert.equal(homeCalls, 0, '手指反向取消后不得刷新');
+
+        surface.dispatchEvent(touch('touchstart', 0, 8));
+        surface.dispatchEvent(touch('touchmove', 120, 8));
+        assert.equal(top.classList.contains('is-armed'), true);
+        surface.dispatchEvent(pointer('pointercancel', 120, 8, 'touch'));
+        assert.equal(top.classList.contains('is-visible'), false, '浏览器接管手势后按钮必须收起');
+        surface.dispatchEvent(touch('touchend', 120, 8, { ended: true }));
+        await flushUi();
+        assert.equal(homeCalls, 0, '被中断（pointercancel）的手势绝不能当成松手确认去刷新');
+
+        surface.dispatchEvent(touch('touchstart', 0, 9));
+        surface.dispatchEvent(touch('touchmove', 120, 9));
+        surface.dispatchEvent(touch('touchend', 120, 9, { ended: true }));
+        await flushUi();
+        assert.equal(homeCalls, 1, '停在停靠点后松开手指才刷新全部帖子');
+    } finally {
+        mounted.destroy();
+        globalThis.TouchEvent = previousTouchEvent;
+    }
+});
+
+test('forum bottom pull moves the append badge upward and keeps the gesture alive when its own layout grows the scroll range', async () => {
+    let refreshMode = null;
+    let homeCalls = 0;
+    const temporaryProfile = {
+        nickname: '林岸', ageRange: '25-29', gender: '女', city: '上海', mbti: 'ENFP', zodiac: '双子座', occupation: '编辑', interests: ['书店'], presence: '在线', matchRate: null,
+    };
+    const groupForumStore = createGroupForumStore({ now: () => new Date('2026-07-22T04:00:00.000Z') });
+    await groupForumStore.ready();
+    const previousTouchEvent = globalThis.TouchEvent;
+    globalThis.TouchEvent = class {};
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-forum-append-park',
+        actionBridge: {
+            emit() {}, isPending() { return false; },
+            async generateForumHomeRefresh(request) {
+                homeCalls += 1; refreshMode = request.refreshMode;
+                return { ok: true, communityProfiles: [], update: { participants: [temporaryProfile], posts: forumRefreshPosts('林岸', { cityTitle: '旧书市集', cityBody: '想找人一起逛周末书市。' }) } };
+            },
+        },
+        settingsStore: null, llmClient: null, characterLibrary: null, groupForumStore, readState: readResult,
+    });
+    try {
+        click(miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机'));
+        await openCommunityTab('广场');
+        const content = miniDom.document.querySelector('.yl-phone-content');
+        content.clientHeight = 600; content.scrollHeight = 2000; content.scrollTop = 1400;
+        const surface = miniDom.document.querySelector('.yl-forum-home');
+        const badge = miniDom.document.querySelector('.yl-forum-append-indicator');
+        const offset = pullOffsetProbe(badge);
+
+        surface.dispatchEvent(touch('touchstart', 400, 5));
+        const rise = touch('touchmove', 312, 5);
+        assert.equal(surface.dispatchEvent(rise), false, '底部上拉同样必须 preventDefault 才能接管手势');
+        assert.equal(offset(), '-150px', '追加徽标必须朝上移动（负位移）；正位移会把它推出可视区');
+        assert.equal(badge.classList.contains('is-armed'), true);
+
+        // 真机反馈环复刻：徽标位移会撑大滚动范围。手势接管后不得再因此判死自己。
+        content.scrollHeight = 2060;
+        surface.dispatchEvent(touch('touchmove', 300, 5));
+        assert.equal(badge.classList.contains('is-armed'), true, '接管后 scrollHeight 变化不得取消上拉手势');
+        surface.dispatchEvent(touch('touchend', 300, 5, { ended: true }));
+        await flushUi();
+        assert.equal(homeCalls, 1, '底部上拉到停靠点松手后必须追加帖子');
+        assert.equal(refreshMode, 'append');
+        assert.match(miniDom.document.body.textContent, /旧书市集/u);
+    } finally {
+        mounted.destroy();
+        globalThis.TouchEvent = previousTouchEvent;
     }
 });
 
