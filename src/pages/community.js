@@ -16,6 +16,19 @@ import { buildErrorDetail } from '../ui/operation-activity.js';
 import { buildWaitCaptions } from './shared.js';
 
 const FORUM_PULL_THRESHOLD = 88;
+// 停靠点合同（用户 2026-08-16 规格）：指示器行进到阈值时正好停在「1/4 窗口」——
+// 顶部下拉向下 1/4、底部上拉向上 1/4；越过阈值只留一点阻尼余量，不会被拖到屏幕中间。
+// 1/4 必须按可视窗口（ctx.content 的 clientHeight）算，不能按帖子流 section 算：
+// 长列表的 25% 会落到屏幕外，旧实现的 CSS `top: 25%` 就是这么失效的。
+const FORUM_PULL_PARK_RATIO = 0.25;
+const FORUM_PULL_PARK_MIN = 56;
+const FORUM_PULL_PARK_MAX = 220;
+const FORUM_PULL_PARK_FALLBACK = 120;
+const FORUM_PULL_OVERSHOOT = 24;
+// 横向优先判定：频道 chip 条要能左右滑，别被下拉刷新吞掉。
+const FORUM_PULL_AXIS_SLACK = 6;
+// 反向滚轮的退回倍率：按规格「快速移动直到消失」，比前进快一些。
+const FORUM_WHEEL_RETREAT_RATIO = 1.6;
 // P3-G 等待期趣味文案（纯 CSS 轮播）：广场整刷等待时替代干等。
 const FORUM_WAIT_CAPTIONS = Object.freeze(['正在刷新广场风向…', '收集大家的新鲜事…', '八个频道的热帖正在赶来…', '整理今天值得看的动态…']);
 const FORUM_WAIT_SHIFT_TEXT = '内容有点多，再等一小会…';
@@ -1050,10 +1063,52 @@ export function createCommunityPage(ctx) {
         indicator.style?.setProperty?.('--yl-forum-pull-offset', '0px');
         setForumPullIndicatorContent(indicator, kind === 'append' ? '上拉加载更多' : '下拉刷新');
     }
-    function updateForumPullIndicator(indicator, distance, armed, { source = 'touch', kind = 'replace' } = {}) {
+    function forumPullParkOffset() {
+        const height = Number(ctx.content?.clientHeight);
+        const base = Number.isFinite(height) && height > 0 ? height * FORUM_PULL_PARK_RATIO : FORUM_PULL_PARK_FALLBACK;
+        return Math.round(Math.min(FORUM_PULL_PARK_MAX, Math.max(FORUM_PULL_PARK_MIN, base)));
+    }
+    // 实测停靠行程：徽标静止位置由 CSS 决定（顶部徽标藏在可视区上方、追加徽标贴在帖子流末尾），
+    // 所以「停在 1/4 窗口」= 1/4 窗口高 − 静止位置到该侧边缘的既有距离。一次手势只量一次。
+    function measureForumPullPark(indicator, kind) {
+        const box = ctx.content?.getBoundingClientRect?.();
+        const rect = indicator?.getBoundingClientRect?.();
+        if (!box || !rect || !(box.height > 0)) return forumPullParkOffset();
+        const rest = kind === 'append' ? box.bottom - rect.bottom : rect.top - box.top;
+        // .yl-phone-panel 常态带 scale(0.97)，getBoundingClientRect 给的是缩放后的屏幕像素，
+        // 而 --yl-forum-pull-offset 写进去的是 CSS 像素；不除以缩放比，停靠点会短 3%。
+        const height = Number(ctx.content?.clientHeight);
+        const scale = Number.isFinite(height) && height > 0 ? box.height / height : 1;
+        const park = (box.height * FORUM_PULL_PARK_RATIO - rest) / (scale > 0 ? scale : 1);
+        return Math.round(Math.min(FORUM_PULL_PARK_MAX, Math.max(FORUM_PULL_PARK_MIN, park)));
+    }
+    // 手指/滚轮行进距离 → 指示器位移：到达阈值正好停在 1/4 窗口，之后只有阻尼余量。
+    function forumPullTravel(distance, park = forumPullParkOffset()) {
+        const reach = Math.max(0, Number(distance) || 0);
+        if (reach <= 0) return 0;
+        if (reach < FORUM_PULL_THRESHOLD) return Math.round((park * reach) / FORUM_PULL_THRESHOLD);
+        return park + Math.min(FORUM_PULL_OVERSHOOT, Math.round((reach - FORUM_PULL_THRESHOLD) * 0.18));
+    }
+    // 追加指示器挂在帖子流末尾，位移必须朝「上」：正位移会把它推出可视区，而且被 transform
+    // 撑大的滚动范围会让 forumIsAtBottom() 立刻变假，把上拉手势自己掐断（真机上就是「上拉没反应」）。
+    function applyForumPullOffset(indicator, kind, travel) {
+        const signed = kind === 'append' ? -travel : travel;
+        indicator?.style?.setProperty?.('--yl-forum-pull-offset', `${signed}px`);
+    }
+    // 刷新进行中：把指示器钉在 1/4 窗口停靠点，和手势松手那一刻的位置一致。
+    function parkForumPullIndicator(indicator, kind = 'replace') {
         if (!indicator) return;
-        const offset = Math.min(160, Math.max(0, Math.round(distance * 0.55)));
-        indicator.style?.setProperty?.('--yl-forum-pull-offset', `${offset}px`);
+        applyForumPullOffset(indicator, kind, forumPullParkOffset());
+    }
+    // renderPage 之后指示器已经挂载，可以按实测几何把「正在刷新」的徽标精确对到 1/4 窗口。
+    function parkMountedForumIndicator(kind) {
+        const indicator = ctx.content?.querySelector?.('.yl-forum-pull-indicator.is-refreshing');
+        if (!indicator) return;
+        applyForumPullOffset(indicator, kind, measureForumPullPark(indicator, kind));
+    }
+    function updateForumPullIndicator(indicator, distance, armed, { source = 'touch', kind = 'replace', park = undefined } = {}) {
+        if (!indicator) return;
+        applyForumPullOffset(indicator, kind, forumPullTravel(distance, park ?? forumPullParkOffset()));
         indicator.classList.toggle('is-visible', distance > 0); indicator.classList.toggle('is-armed', armed); indicator.classList.toggle('is-append', kind === 'append');
         if (kind === 'append') {
             setForumPullIndicatorContent(indicator, armed ? (source === 'wheel' ? '停止滚轮以加载' : '松开加载更多') : (source === 'wheel' ? '向下滚动加载' : '继续上拉加载'));
@@ -1088,8 +1143,28 @@ export function createCommunityPage(ctx) {
     function bindForumPullToRefresh(surface, replacementIndicator, appendIndicator) {
         const controller = new AbortController();
         ctx.forumInteractionAbortController = controller;
+        // 触摸手势必须由 Touch Events 主导：只有非 passive 的 touchmove 能 preventDefault，
+        // 把竖向手势从浏览器原生滚动 / overscroll 手里接过来。Chrome 的真实派发顺序是
+        // pointerdown → touchstart，旧实现让 pointer 分支先占住状态（PointerEvent 根本没有
+        // inputType，判断永远落到 'pointer'），于是 touchMove 整段跳过、preventDefault 永不执行，
+        // 真机上只会把页面拽出橡皮筋然后收到 pointercancel——这就是「下拉失效」的根因。
+        const view = ctx.documentRef?.defaultView ?? null;
+        const touchEventsAvailable = typeof view?.TouchEvent === 'function' || typeof globalThis.TouchEvent === 'function';
+        const clearPull = (state) => {
+            if (ctx.forumPullState === state) ctx.forumPullState = null;
+            if (state.inputType === 'pointer') {
+                try { surface.releasePointerCapture?.(state.pointerId); } catch { /* 捕获可能已随手势结束释放。 */ }
+            }
+            resetForumPullIndicator(state.indicator, state.kind);
+        };
+        const ensurePark = (state) => {
+            if (state.park === null) state.park = measureForumPullPark(state.indicator, state.kind);
+            return state.park;
+        };
         const start = (event) => {
             if (ctx.forumRefreshing || event?.isPrimary === false || event?.pointerType === 'mouse') return;
+            if (event?.pointerType === 'touch' && event?.inputType !== 'touch' && touchEventsAvailable) return;
+            if (ctx.forumPullState) return;
             const atTop = forumIsAtTop(surface);
             const atBottom = forumIsAtBottom(surface);
             const kind = atTop && atBottom ? 'pending' : (atTop ? 'replace' : (atBottom ? 'append' : ''));
@@ -1097,47 +1172,64 @@ export function createCommunityPage(ctx) {
             cancelForumWheelPull();
             ctx.forumPullState = {
                 pointerId: event?.pointerId,
+                startX: Number(event?.clientX) || 0,
                 startY: Number(event?.clientY) || 0,
-                peak: 0,
-                cancelled: false,
+                distance: 0,
+                origin: kind,
                 kind,
+                park: null,
                 direction: kind === 'append' ? -1 : (kind === 'replace' ? 1 : 0),
                 indicator: kind === 'append' ? appendIndicator : (kind === 'replace' ? replacementIndicator : null),
                 inputType: event?.inputType === 'touch' ? 'touch' : 'pointer',
+                owned: false,
             };
             if (ctx.forumPullState.inputType === 'pointer') surface.setPointerCapture?.(event?.pointerId);
         };
         const move = (event) => {
             const state = ctx.forumPullState;
             if (!state || (state.pointerId !== undefined && event?.pointerId !== undefined && state.pointerId !== event.pointerId)) return;
+            // 触摸手势只认 touchmove；同一根手指的 pointermove 是重复播报，跳过以免双写。
+            if (state.inputType === 'touch' && event?.inputType !== 'touch') return;
             const movement = (Number(event?.clientY) || 0) - state.startY;
+            const drift = (Number(event?.clientX) || 0) - state.startX;
+            if (!state.owned && Math.abs(drift) > Math.abs(movement) + FORUM_PULL_AXIS_SLACK) { clearPull(state); return; }
             if (state.kind === 'pending') {
                 if (movement === 0) return;
                 state.kind = movement < 0 ? 'append' : 'replace';
                 state.direction = state.kind === 'append' ? -1 : 1;
                 state.indicator = state.kind === 'append' ? appendIndicator : replacementIndicator;
+                state.park = null;
             }
+            // 边界只在手势尚未接管前复测：接管之后我们每一帧都 preventDefault，滚动位置不可能再变，
+            // 重复测量只会被指示器自身的布局变化误伤（追加指示器一动就撑大 scrollHeight）。
+            if (!state.owned && !(state.kind === 'replace' ? forumIsAtTop(surface) : forumIsAtBottom(surface))) { clearPull(state); return; }
             const distance = movement * state.direction;
-            const stillAtBoundary = state.kind === 'replace' ? forumIsAtTop(surface) : forumIsAtBottom(surface);
-            if (!stillAtBoundary || distance <= 0 || distance < state.peak - 4) {
-                if (state.peak > 0) state.cancelled = true;
-                resetForumPullIndicator(state.indicator, state.kind); return;
+            if (distance <= 0) {
+                // 反向：按钮快速回到起点并消失，本轮不提交，滚动交还浏览器；
+                // 手指再拉回来可以重新蓄力——不再有「抖动 4px 就永久作废」的闩锁。
+                state.distance = 0; state.owned = false;
+                resetForumPullIndicator(state.indicator, state.kind);
+                if (state.origin === 'pending') { state.kind = 'pending'; state.direction = 0; state.indicator = null; state.park = null; }
+                return;
             }
-            state.peak = Math.max(state.peak, distance);
-            const armed = distance >= FORUM_PULL_THRESHOLD && !state.cancelled;
-            updateForumPullIndicator(state.indicator, distance, armed, { source: 'touch', kind: state.kind });
-            if (distance > 0) event?.preventDefault?.();
+            state.owned = true;
+            state.distance = distance;
+            updateForumPullIndicator(state.indicator, distance, distance >= FORUM_PULL_THRESHOLD, { source: 'touch', kind: state.kind, park: ensurePark(state) });
+            event?.preventDefault?.();
         };
         const end = (event) => {
             const state = ctx.forumPullState;
             if (!state || (state.pointerId !== undefined && event?.pointerId !== undefined && state.pointerId !== event.pointerId)) return;
-            if (state.inputType === 'pointer') {
-                try { surface.releasePointerCapture?.(state.pointerId); } catch { /* Pointer capture may already be gone. */ }
-            }
-            ctx.forumPullState = null;
-            const shouldRefresh = !state.cancelled && state.peak >= FORUM_PULL_THRESHOLD;
-            resetForumPullIndicator(state.indicator, state.kind);
+            if (state.inputType === 'touch' && event?.inputType !== 'touch') return;
+            // 松手当下的实时距离决定提交：停在 1/4 窗口停靠点（阈值）以上才刷新。
+            const shouldRefresh = state.kind !== 'pending' && state.distance >= FORUM_PULL_THRESHOLD;
+            clearPull(state);
             if (shouldRefresh) void runForumHomeRefresh({ mode: state.kind });
+        };
+        // 中断（浏览器接管手势、系统打断、多指干扰）一律作废，绝不能当成「松手确认」去刷新。
+        const cancelGesture = () => {
+            const state = ctx.forumPullState;
+            if (state) clearPull(state);
         };
         const touchPoint = (event, pointerId = undefined) => {
             const points = [...(event?.touches ?? []), ...(event?.changedTouches ?? [])];
@@ -1145,66 +1237,85 @@ export function createCommunityPage(ctx) {
             return points.find((point) => point?.identifier === pointerId) ?? null;
         };
         const touchStart = (event) => {
-            if (ctx.forumPullState?.inputType === 'pointer') return;
             const point = touchPoint(event);
             if (!point) return;
-            start({ pointerId: point.identifier, clientY: point.clientY, isPrimary: true, inputType: 'touch' });
+            start({ pointerId: point.identifier, clientX: point.clientX, clientY: point.clientY, isPrimary: true, inputType: 'touch' });
         };
         const touchMove = (event) => {
             const state = ctx.forumPullState;
             if (!state || state.inputType !== 'touch') return;
             const point = touchPoint(event, state.pointerId);
             if (!point) return;
-            move({ pointerId: point.identifier, clientY: point.clientY, preventDefault: () => event.preventDefault?.() });
+            move({ pointerId: point.identifier, clientX: point.clientX, clientY: point.clientY, inputType: 'touch', preventDefault: () => event.preventDefault?.() });
         };
         const touchEnd = (event) => {
             const state = ctx.forumPullState;
             if (!state || state.inputType !== 'touch') return;
             const point = touchPoint(event, state.pointerId);
-            end({ pointerId: point?.identifier ?? state.pointerId });
+            end({ pointerId: point?.identifier ?? state.pointerId, inputType: 'touch' });
         };
+        const settleWheelPull = (state) => {
+            if (state.releaseTimer !== null) clearTimeout(state.releaseTimer);
+            state.releaseTimer = setTimeout(() => {
+                if (ctx.forumWheelPullState !== state) return;
+                ctx.forumWheelPullState = null;
+                const stillAtBoundary = state.kind === 'replace' ? forumIsAtTop(surface) : forumIsAtBottom(surface);
+                const shouldRefresh = stillAtBoundary && state.distance >= FORUM_PULL_THRESHOLD;
+                resetForumPullIndicator(state.indicator, state.kind);
+                if (shouldRefresh) void runForumHomeRefresh({ mode: state.kind });
+            }, FORUM_WHEEL_RELEASE_DELAY);
+        };
+        // 电脑端与手机端同一套逻辑，只是驱动源换成滚轮：继续滚 = 继续拉，
+        // 停止滚轮 = 松手（提交），反向滚 = 手指反向（按钮快速退回直到消失）。
         const wheel = (event) => {
             if (ctx.forumRefreshing || event?.ctrlKey || ctx.forumPullState) return;
             const delta = normalizedWheelDelta(event);
             if (!delta) return;
             if (Math.abs(Number(event?.deltaX) || 0) > Math.abs(delta)) return;
+            const step = Math.min(72, Math.max(8, Math.abs(delta) * 0.55));
+            const active = ctx.forumWheelPullState;
+            if (active) {
+                if (active.kind === 'append' ? delta > 0 : delta < 0) {
+                    active.distance = Math.min(FORUM_WHEEL_MAX_DISTANCE, active.distance + step);
+                    updateForumPullIndicator(active.indicator, active.distance, active.distance >= FORUM_PULL_THRESHOLD, { source: 'wheel', kind: active.kind, park: active.park });
+                    event?.preventDefault?.();
+                    settleWheelPull(active);
+                    return;
+                }
+                active.distance = Math.max(0, active.distance - step * FORUM_WHEEL_RETREAT_RATIO);
+                const stillAtBoundary = active.kind === 'replace' ? forumIsAtTop(surface) : forumIsAtBottom(surface);
+                // 反向不 preventDefault：把滚动交还浏览器，用户改主意就正常往回滚。
+                if (active.distance <= 0 || !stillAtBoundary) { cancelForumWheelPull(); return; }
+                updateForumPullIndicator(active.indicator, active.distance, active.distance >= FORUM_PULL_THRESHOLD, { source: 'wheel', kind: active.kind, park: active.park });
+                settleWheelPull(active);
+                return;
+            }
             const requestedKind = delta < 0 && forumIsAtTop(surface)
                 ? 'replace'
                 : (delta > 0 && forumIsAtBottom(surface) ? 'append' : '');
-            let state = ctx.forumWheelPullState;
-            if (state && (!requestedKind || state.kind !== requestedKind)) { cancelForumWheelPull(); return; }
-            if (!state) {
-                if (!requestedKind) return;
-                state = {
-                    kind: requestedKind,
-                    distance: 0,
-                    indicator: requestedKind === 'append' ? appendIndicator : replacementIndicator,
-                    releaseTimer: null,
-                };
-                ctx.forumWheelPullState = state;
-            }
-            const increment = Math.min(72, Math.max(8, Math.abs(delta) * 0.55));
-            state.distance = Math.min(FORUM_WHEEL_MAX_DISTANCE, state.distance + increment);
-            updateForumPullIndicator(state.indicator, state.distance, state.distance >= FORUM_PULL_THRESHOLD, { source: 'wheel', kind: state.kind });
+            if (!requestedKind) return;
+            const indicator = requestedKind === 'append' ? appendIndicator : replacementIndicator;
+            const state = {
+                kind: requestedKind,
+                distance: Math.min(FORUM_WHEEL_MAX_DISTANCE, step),
+                indicator,
+                park: measureForumPullPark(indicator, requestedKind),
+                releaseTimer: null,
+            };
+            ctx.forumWheelPullState = state;
+            updateForumPullIndicator(state.indicator, state.distance, state.distance >= FORUM_PULL_THRESHOLD, { source: 'wheel', kind: state.kind, park: state.park });
             event?.preventDefault?.();
-            if (state.releaseTimer !== null) clearTimeout(state.releaseTimer);
-            state.releaseTimer = setTimeout(() => {
-                if (ctx.forumWheelPullState !== state) return;
-                ctx.forumWheelPullState = null;
-                const shouldRefresh = state.distance >= FORUM_PULL_THRESHOLD;
-                resetForumPullIndicator(state.indicator, state.kind);
-                if (shouldRefresh) void runForumHomeRefresh({ mode: state.kind });
-            }, FORUM_WHEEL_RELEASE_DELAY);
+            settleWheelPull(state);
         };
         listen(surface, surface, 'pointerdown', start, controller.signal);
         listen(surface, surface, 'pointermove', move, controller.signal);
         listen(surface, surface, 'pointerup', end, controller.signal);
-        listen(surface, surface, 'pointercancel', end, controller.signal);
+        listen(surface, surface, 'pointercancel', cancelGesture, controller.signal);
         // Older embedded WebViews may expose Touch Events without Pointer Events.
         surface.addEventListener('touchstart', touchStart, { passive: true, signal: controller.signal });
         surface.addEventListener('touchmove', touchMove, { passive: false, signal: controller.signal });
         surface.addEventListener('touchend', touchEnd, { passive: true, signal: controller.signal });
-        surface.addEventListener('touchcancel', touchEnd, { passive: true, signal: controller.signal });
+        surface.addEventListener('touchcancel', cancelGesture, { passive: true, signal: controller.signal });
         // The persistent phone content area is the browser's actual scroll container.
         // Listening there makes a wheel over the forum heading and feed behave alike.
         listen(surface, ctx.content, 'wheel', wheel, controller.signal);
@@ -1369,6 +1480,9 @@ export function createCommunityPage(ctx) {
         setForumPullIndicatorContent(pull, replacing ? '正在替换广场帖子…' : '下拉刷新');
         const appendPull = element('div', { className: appending ? 'yl-forum-append-indicator yl-forum-pull-indicator is-visible is-refreshing is-append' : 'yl-forum-append-indicator yl-forum-pull-indicator is-append' });
         setForumPullIndicatorContent(appendPull, appending ? '正在追加广场帖子…' : '上拉加载更多');
+        // 刷新进行中的指示器停在与松手那一刻相同的 1/4 窗口位置（由位移变量驱动，不靠 CSS 百分比）。
+        if (replacing) parkForumPullIndicator(pull, 'replace');
+        if (appending) parkForumPullIndicator(appendPull, 'append');
         const selectedChannel = activeForumChannel();
         section.appendChild(pull); bindForumPullToRefresh(section, pull, appendPull);
         section.appendChild(buildCommunityTopbar('square'));
@@ -1421,7 +1535,7 @@ export function createCommunityPage(ctx) {
             const bottom = (Number(ctx.content.scrollHeight) || 0) - (Number(ctx.content.clientHeight) || 0);
             ctx.content.scrollTop = toAppendZone ? Math.max(appendAnchorTop, bottom) : appendAnchorTop;
         };
-        ctx.forumRefreshing = true; ctx.forumRefreshMode = mode; ctx.renderPage(); restoreAppendScroll({ toAppendZone: true });
+        ctx.forumRefreshing = true; ctx.forumRefreshMode = mode; ctx.renderPage(); restoreAppendScroll({ toAppendZone: true }); parkMountedForumIndicator(mode);
         const activity = ctx.operationActivity.start('广场刷新', replacing ? '正在替换旧帖子并刷新全部八个频道。' : '正在保留旧帖子并追加全部八个频道。');
         let result;
         let bridgeError = null;
@@ -1981,7 +2095,10 @@ export function createCommunityPage(ctx) {
         runGroupConversationUpdate,
         forumIsAtTop,
         forumIsAtBottom,
+        forumPullParkOffset,
+        forumPullTravel,
         resetForumPullIndicator,
+        parkForumPullIndicator,
         updateForumPullIndicator,
         cancelForumWheelPull,
         cancelForumPullInteractions,
