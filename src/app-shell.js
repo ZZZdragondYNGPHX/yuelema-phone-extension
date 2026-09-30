@@ -29,7 +29,7 @@ import { createProfilePage } from './pages/profile.js';
 import { createOnboardingFlow } from './onboarding/onboarding-flow.js';
 import { createPhoneClock } from './chat/phone-clock.js';
 
-const UI_VERSION = '1.1.2';
+const UI_VERSION = '1.2.0';
 
 function downloadImagePackJson(json) {
     if (typeof json !== 'string' || typeof globalThis.Blob !== 'function'
@@ -1922,7 +1922,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
             aboutClickStreak = 0;
             invalidateServiceProfileGeneration();
             invalidateServiceOrderOperations();
-            serviceXpSearchDraft = ''; serviceXpSearchApplied = '';
+            clearLocalServiceDrafts();
         }
     }
     function setActivePage(pageId, { preserveOperation = false } = {}) {
@@ -1959,10 +1959,10 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
     }
     function scheduleServiceOrderCompletion() {
         const orders = Array.isArray(currentView?.serviceOrders) ? currentView.serviceOrders : [];
-        const isTerminal = (item) => item?.status === '已完成' || item?.status === '已取消';
-        // 主链：正文写满合法结束条件的进行中订单 → 受控完成+归档+终态删除。
-        // 兜底：活动表中的终态订单（正文违规直写终态或此前 finalize 失败）→ 补记本地历史后移除。
-        const order = orders.find((item) => item?.mode === currentView.mode && item?.completionReady === true && item.status === '进行中')
+        const isTerminal = (item) => ['已完成', '已取消', '已中止'].includes(item?.status);
+        // 正文撤回候选优先暂停；完成候选必须留给玩家在界面确认，绝不自动结单。
+        // 兜底仅处理已存在的终态记录（正文旧逻辑直写终态或此前 finalize 失败）。
+        const order = orders.find((item) => item?.mode === currentView.mode && item?.withdrawalReady === true && item.status === '进行中')
             ?? orders.find((item) => item?.mode === currentView.mode && isTerminal(item)) ?? null;
         if (!order || serviceOrderMutationPendingId || scheduledServiceCompletionOrderId === order.id) return;
         scheduledServiceCompletionOrderId = order.id;
@@ -1970,7 +1970,7 @@ export function mountPhoneApp({ documentRef, rootId, actionBridge, phoneClock = 
             try {
                 const latest = Array.isArray(currentView?.serviceOrders) ? currentView.serviceOrders.find((item) => item?.id === order.id && item?.mode === currentView.mode) : null;
                 if (isDestroyed || !latest || latest.mode !== currentView.mode || serviceOrderMutationPendingId) return;
-                if (latest.completionReady === true && latest.status === '进行中') await ctx.archiveAndFinalizeServiceOrder(latest, '已完成');
+                if (latest.withdrawalReady === true && latest.status === '进行中') await ctx.pauseServiceOrder(latest);
                 else if (isTerminal(latest)) await ctx.recoverTerminalServiceOrder(latest);
             } finally { if (scheduledServiceCompletionOrderId === order.id) scheduledServiceCompletionOrderId = ''; }
         });

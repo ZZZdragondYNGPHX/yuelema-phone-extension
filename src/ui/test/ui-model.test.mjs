@@ -436,19 +436,22 @@ test('service order projection replaces unsafe time text with state-derived copy
     const unsafeStarted = 'mail@example.com';
     const unsafeEnded = 'QQ号 12345678';
     const unsafeCancelledEnded = 'https://secret.example/receipt';
+    const unsafeAbortedEnded = '门牌 3 号 201 室';
     const projected = projectServiceOrderView(serviceState({
         service_1: serviceOrder({ 状态: '待确认', 发起时间: unsafeInitiated, 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '' }),
         service_2: serviceOrder({ 状态: '进行中', 发起时间: '2026-07-25 20:00', 开始时间: unsafeStarted, 结束时间: '', 结束摘要: '', 已确认边界: '已确认边界' }),
         service_3: serviceOrder({ 状态: '已完成', 结束时间: unsafeEnded }),
         service_4: serviceOrder({ 状态: '已取消', 开始时间: '', 已确认边界: '', 结束时间: unsafeCancelledEnded, 结束摘要: '本次未继续。' }),
+        service_5: serviceOrder({ 状态: '已中止', 结束时间: unsafeAbortedEnded, 结束摘要: '本次由玩家安全中止。' }),
     }));
     const byId = Object.fromEntries(projected.map((order) => [order.id, order]));
     assert.equal(byId.service_1.initiatedAt, '订单已建立');
     assert.equal(byId.service_2.initiatedAt, '2026-07-25 20:00');
     assert.equal(byId.service_2.startedAt, '已在正文中确认');
-    assert.equal(byId.service_3.endedAt, '订单已完成');
-    assert.equal(byId.service_4.endedAt, '订单已取消');
-    assert.doesNotMatch(JSON.stringify(projected), /张江路|mail@example[.]com|12345678|secret[.]example/u);
+    assert.equal(byId.service_3.endedAt, '本轮已完成');
+    assert.equal(byId.service_4.endedAt, '本轮已取消');
+    assert.equal(byId.service_5.endedAt, '本轮已中止');
+    assert.doesNotMatch(JSON.stringify(projected), /张江路|mail@example[.]com|12345678|secret[.]example|门牌/u);
 });
 
 test('service order projection replaces an entire terminal summary when conservative sensitive checks match', () => {
@@ -469,7 +472,9 @@ test('service order projection replaces an entire terminal summary when conserva
     assert.doesNotMatch(JSON.stringify(projected), /qa@example[.]com|private[.]example|12345678|private_handle|张江路|收款码|尾款/u);
 });
 
-test('service order summaries apply SFW-only transaction filtering while preserving shared privacy and process limits', () => {
+test('transaction wording is now filtered in BOTH modes while shared privacy and process limits stay in force', () => {
+    // 双模式产品语言改版后，NSFW 约炮不再有价格/退款/成交/服务者语义，
+    // 因此交易措辞在两种模式下都必须被脱敏，而不再是「仅 SFW 过滤」。
     const state = serviceState({
         service_1: serviceOrder({ 结束摘要: '本次服务涉及尾款支付安排。' }),
         service_2: serviceOrder({
@@ -484,13 +489,18 @@ test('service order summaries apply SFW-only transaction filtering while preserv
             内容模式: 'NSFW', 服务分类: 'private_service', 服务主题: '私密成人服务：与林澈的文字协商',
             结束摘要: '联系邮箱 qa@example.com，其他内容不得展示。',
         }),
+        service_5: serviceOrder({
+            内容模式: 'NSFW', 服务分类: 'private_service', 服务主题: '私密成人服务：与林澈的文字协商',
+            结束摘要: '本次邂逅已在双方共识下安全收尾。',
+        }),
     });
     const byId = Object.fromEntries(projectServiceOrderView(state).map((order) => [order.id, order]));
-    assert.equal(byId.service_1.summary, '该记录包含不适合展示的敏感内容，已隐藏。');
-    assert.equal(byId.service_2.summary, '本次成人角色扮演已收尾，排期与支付安排由正文处理。');
+    assert.equal(byId.service_1.summary, '该记录包含不适合展示的敏感内容，已隐藏。', 'SFW 交易措辞继续脱敏');
+    assert.equal(byId.service_2.summary, '该记录包含不适合展示的敏感内容，已隐藏。', 'NSFW 的排期/支付措辞同样必须脱敏');
     assert.equal(byId.service_3.summary, '该记录包含不适合展示的敏感内容，已隐藏。');
     assert.equal(byId.service_4.summary, '该记录包含不适合展示的敏感内容，已隐藏。');
-    assert.doesNotMatch(JSON.stringify(byId), /qa@example[.]com|完整露骨过程/u);
+    assert.equal(byId.service_5.summary, '本次邂逅已在双方共识下安全收尾。', '不含交易或隐私措辞的 NSFW 终态摘要仍可展示');
+    assert.doesNotMatch(JSON.stringify(byId), /qa@example[.]com|完整露骨过程|支付|尾款/u);
 });
 
 test('service order failure messages explain mode races and invalid bridge results', () => {
@@ -499,16 +509,20 @@ test('service order failure messages explain mode races and invalid bridge resul
 });
 
 
-test('service order projection supports every unified person category in SFW and NSFW while preserving legacy activity history', () => {
-    const sfwCategories = { girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品' };
-    const nsfwCategories = { girl_shuren: '熟人性爱幻想', girl_luren: '陌生约炮邂逅', random_generation: '随机性癖体验' };
+test('service order projection derives mode-specific display categories from stable ids while legacy activity history stays readable', () => {
+    // 稳定 ID 与 canonical 主题（用于持久化完整性校验）不变；
+    // 面向玩家的分类文案改由 mode + categoryId 派生。
+    const canonicalSfw = { girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品' };
+    const canonicalNsfw = { girl_shuren: '熟人性爱幻想', girl_luren: '陌生约炮邂逅', random_generation: '随机性癖体验' };
+    const displaySfw = { girl_shuren: '默契恋人', girl_luren: '初见恋人', random_generation: '惊喜恋人' };
+    const displayNsfw = { girl_shuren: '熟人默契', girl_luren: '陌生邂逅', random_generation: '随机偏好' };
     const orders = {};
-    for (const [categoryId, category] of Object.entries(sfwCategories)) {
+    for (const [categoryId, category] of Object.entries(canonicalSfw)) {
         orders[`service_sfw_${categoryId}`] = serviceOrder({
             服务分类: categoryId, 服务主题: `${category}：与林澈的文字协商`,
         });
         orders[`service_nsfw_${categoryId}`] = serviceOrder({
-            内容模式: 'NSFW', 服务分类: categoryId, 服务主题: `${nsfwCategories[categoryId]}：与林澈的文字协商`,
+            内容模式: 'NSFW', 服务分类: categoryId, 服务主题: `${canonicalNsfw[categoryId]}：与林澈的文字协商`,
         });
     }
     orders.service_legacy_sfw = serviceOrder();
@@ -517,14 +531,25 @@ test('service order projection supports every unified person category in SFW and
     });
 
     const byId = Object.fromEntries(projectServiceOrderView(serviceState(orders)).map((order) => [order.id, order]));
-    for (const [categoryId, category] of Object.entries(sfwCategories)) {
-        assert.equal(byId[`service_sfw_${categoryId}`].category, category);
-        assert.equal(byId[`service_nsfw_${categoryId}`].category, nsfwCategories[categoryId]);
-        assert.equal(byId[`service_sfw_${categoryId}`].mode, 'SFW');
-        assert.equal(byId[`service_nsfw_${categoryId}`].mode, 'NSFW');
+    for (const categoryId of Object.keys(canonicalSfw)) {
+        const sfw = byId[`service_sfw_${categoryId}`];
+        const nsfw = byId[`service_nsfw_${categoryId}`];
+        assert.equal(sfw.category, displaySfw[categoryId]);
+        assert.equal(nsfw.category, displayNsfw[categoryId]);
+        assert.equal(sfw.categoryId, categoryId, '稳定分类 ID 必须原样保留给复约与历史');
+        assert.equal(nsfw.categoryId, categoryId);
+        assert.equal(sfw.mode, 'SFW');
+        assert.equal(nsfw.mode, 'NSFW');
+        assert.match(sfw.topic, /心动租约/u);
+        assert.match(nsfw.topic, /夜色邀约/u);
     }
-    assert.equal(byId.service_legacy_sfw.category, '咖啡与散步');
-    assert.equal(byId.service_legacy_nsfw.category, '成人直白陪伴');
+    // canonical 主题只用于校验，不得作为显示文案漏进投影。
+    assert.doesNotMatch(JSON.stringify(byId), /熟人商品|路人商品|随机商品|熟人性爱幻想|陌生约炮邂逅|随机性癖体验/u);
+    // 旧活动分类没有新显示映射：只读降级为中性文案，不再冒充新分类。
+    assert.equal(byId.service_legacy_sfw.category, '旧版约伴记录');
+    assert.equal(byId.service_legacy_nsfw.category, '旧版邀约记录');
+    assert.equal(byId.service_legacy_sfw.categoryId, 'coffee_walk');
+    assert.equal(byId.service_legacy_nsfw.categoryId, 'adult_companion');
 });
 
 

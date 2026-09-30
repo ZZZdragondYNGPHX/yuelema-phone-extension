@@ -4,6 +4,8 @@ import { deriveMeetupAccess, deriveRelationshipSafetyState } from './chat/relati
 import { validateRelationshipNarrative } from './mvu/relationship-narrative.js';
 import { isActiveNsfwConsent, validateNsfwConsent } from './mvu/nsfw-consent.js';
 import { projectRealisticChatState } from './mvu/realistic-chat.js';
+import { classifyServiceOrderLifecycle, isValidServiceSignal, projectServiceContractSummary } from './service/service-order-contract.js';
+import { deriveServiceDisplayTopic, getServiceDisplayCategory } from './service/service-ui-contract.js';
 
 export const NAV_ITEMS = Object.freeze([
     { id: 'home', label: '发现', iconName: 'home' },
@@ -368,7 +370,7 @@ export function projectPrivateChatView(state) {
 }
 
 const SERVICE_ORDER_UID_PATTERN = /^service_[a-z0-9][a-z0-9_-]{0,63}$/i;
-const SERVICE_ORDER_STATES = new Set(['待确认', '进行中', '已完成', '已取消']);
+const SERVICE_ORDER_STATES = new Set(['待确认', '进行中', '暂停中', '已完成', '已取消', '已中止']);
 const SERVICE_PRODUCT_CATEGORY_LABELS_SFW = Object.freeze({
     girl_shuren: '熟人商品', girl_luren: '路人商品', random_generation: '随机商品',
 });
@@ -384,14 +386,13 @@ const SERVICE_CATEGORY_LABELS = Object.freeze({
     SFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS_SFW, ...SERVICE_LEGACY_CATEGORY_LABELS.SFW }),
     NSFW: Object.freeze({ ...SERVICE_PRODUCT_CATEGORY_LABELS_NSFW, ...SERVICE_LEGACY_CATEGORY_LABELS.NSFW }),
 });
-const SERVICE_ORDER_LIFECYCLE_FIELDS = Object.freeze(['发起时间', '开始时间', '结束时间', '结束摘要', '已确认边界']);
 const SERVICE_TIME_SAFE_PATTERNS = Object.freeze([
     /^(?:待正文确认|刚刚|今天|昨天)$/u,
     /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])(?:[ T](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?(?:Z|[+-](?:0\d|1\d|2[0-3]):[0-5]\d)?)?$/u,
     /^(?:正文)?第\s?[1-9]\d{0,5}\s?轮$/u,
 ]);
 const SERVICE_SUMMARY_ALWAYS_SENSITIVE_PATTERN = /(?:身份证|身份證|护照|護照|银行卡|銀行卡|(?:手机|電話|电话)(?:号码|號碼)?|手机号|座机|座機|(?:微信|WeChat)(?:号|號|账号|帳號)?|QQ(?:号|號|号码|號碼|群)?|(?:Telegram|TG|Discord|LINE)(?:账号|帳號|号|號)?|精确地址|详细地址|詳細地址|具体住址|家庭住址|收货地址|收貨地址|现住址|現住址|门牌|楼栋|樓棟|单元|單元|房间号|房間號|房号|房號|经纬度|經緯度|定位|(?:完整|详细|詳細).{0,12}(?:露骨|色情|性).{0,8}(?:过程|過程)|\b(?:\d{15,18}[0-9Xx]|(?:\+?86[-\s]?)?1[3-9]\d{9}|0\d{2,3}[-\s]?\d{7,8})\b|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|(?:https?:\/\/|www\.)\S+|\b(?:[a-z0-9-]+\.)+(?:com|net|org|cn|io|me|app|xyz|top)\b|(?:省|市|区|區|县|縣).{0,32}(?:路|街|巷|弄|号|號|栋|棟|室))/iu;
-const SERVICE_SUMMARY_SFW_TRANSACTION_PATTERN = /(?:支付(?:宝|寶)?|收款码|收款碼|付款码|付款碼|转账|轉帳|汇款|匯款|打款|定金|尾款|现金交易|現金交易)/iu;
+const SERVICE_SUMMARY_TRANSACTION_PATTERN = /(?:价格|退款|投诉|信用|商品|成交|下单|服务者|支付(?:宝|寶)?|收款码|收款碼|付款码|付款碼|转账|轉帳|汇款|匯款|打款|定金|尾款|现金交易|現金交易)/iu;
 const PUBLIC_MINOR_AGE_PATTERN = /(?:未成年|未滿|未满\s*18|minor|underage|(?:^|[^0-9])1[0-7]\s*(?:岁|歲)?(?:$|[^0-9]))/iu;
 
 function verifiedAdultProfile(profile) {
@@ -406,28 +407,6 @@ function hasOrderText(value) {
     return typeof value === 'string' && value.trim().length > 0;
 }
 
-function isCurrentServiceOrderSnapshot(raw) {
-    if (!SERVICE_ORDER_LIFECYCLE_FIELDS.every((field) => typeof raw[field] === 'string')) return false;
-    const initiated = hasOrderText(raw.发起时间);
-    const started = hasOrderText(raw.开始时间);
-    const ended = hasOrderText(raw.结束时间);
-    const summary = hasOrderText(raw.结束摘要);
-    const confirmedBoundaries = hasOrderText(raw.已确认边界);
-    switch (raw.状态) {
-    case '待确认':
-        return initiated && !started && !ended && !summary && !confirmedBoundaries;
-    case '进行中':
-        return initiated && started && !ended && !summary && confirmedBoundaries;
-    case '已完成':
-        return initiated && started && ended && summary && confirmedBoundaries;
-    case '已取消':
-        return initiated && ended && summary
-            && ((started && confirmedBoundaries) || (!started && !confirmedBoundaries));
-    default:
-        return false;
-    }
-}
-
 function projectServiceTime(value, fallback) {
     const time = safeText(value, 160);
     return SERVICE_TIME_SAFE_PATTERNS.some((pattern) => pattern.test(time)) ? time : fallback;
@@ -437,15 +416,19 @@ function projectServiceSummary(value, mode) {
     const rawSummary = typeof value === 'string' ? value.trim() : '';
     if (!rawSummary) return '';
     const sensitive = SERVICE_SUMMARY_ALWAYS_SENSITIVE_PATTERN.test(rawSummary)
-        || (mode === 'SFW' && SERVICE_SUMMARY_SFW_TRANSACTION_PATTERN.test(rawSummary));
+        || SERVICE_SUMMARY_TRANSACTION_PATTERN.test(rawSummary);
     return sensitive ? '该记录包含不适合展示的敏感内容，已隐藏。' : safeText(rawSummary, 600);
 }
 
 function hasCompletionSignal(raw) {
     const signal = raw?.合法结束条件;
-    return ownRecord(signal) && raw?.状态 === '进行中' && signal.已满足 === true
-        && typeof signal.摘要 === 'string' && signal.摘要.trim().length > 0
-        && typeof signal.记录时间 === 'string' && signal.记录时间.trim().length > 0;
+    return raw?.状态 === '进行中' && isValidServiceSignal(signal, { flagKey: '已满足', required: true }) && signal.已满足 === true;
+}
+
+function hasWithdrawalSignal(raw) {
+    const signal = raw?.撤回候选;
+    return ['进行中', '暂停中'].includes(raw?.状态)
+        && isValidServiceSignal(signal, { flagKey: '已提出', required: true }) && signal.已提出 === true;
 }
 
 /**
@@ -458,16 +441,24 @@ export function projectServiceOrderView(state) {
     for (const [orderUid, raw] of Object.entries(state.服务订单)) {
         if (!SERVICE_ORDER_UID_PATTERN.test(orderUid) || !ownRecord(raw) || !SERVICE_ORDER_STATES.has(raw.状态)) continue;
         const roleUids = Array.isArray(raw.角色UID列表) && raw.角色UID列表.length ? raw.角色UID列表 : [raw.角色UID];
-        if (!['SFW', 'NSFW'].includes(raw.内容模式) || typeof raw.角色UID !== 'string' || roleUids.length < 1 || roleUids.length > 3 || roleUids[0] !== raw.角色UID || new Set(roleUids).size !== roleUids.length || !isCurrentServiceOrderSnapshot(raw)) continue;
-        const categoryId = safeText(raw.服务分类, 64); const category = SERVICE_CATEGORY_LABELS[raw.内容模式]?.[categoryId] ?? '';
+        if (!['SFW', 'NSFW'].includes(raw.内容模式) || typeof raw.角色UID !== 'string' || roleUids.length < 1 || roleUids.length > 3 || roleUids[0] !== raw.角色UID || new Set(roleUids).size !== roleUids.length) continue;
+        const lifecycle = classifyServiceOrderLifecycle(raw, { mode: raw.内容模式, participantUids: roleUids });
+        if (lifecycle.kind === 'invalid') continue;
+        const categoryId = safeText(raw.服务分类, 64); const canonicalCategory = SERVICE_CATEGORY_LABELS[raw.内容模式]?.[categoryId] ?? '';
         const profiles = roleUids.map((roleUid) => {
             const role = state.角色池[roleUid]; if (!verifiedAdultProfile(role)) return null;
             return projectPublicProfile(role, roleUid);
         });
-        if (!category || profiles.some((profile) => !profile)) continue;
-        const names = profiles.map((profile) => profile.昵称 || '该角色'); const topic = category + '：与' + names.join('、') + '的文字协商';
-        if (safeText(raw.服务主题, 240) !== topic) continue;
-        const endedFallback = raw.状态 === '已取消' ? '订单已取消' : '订单已完成';
+        if (!canonicalCategory || profiles.some((profile) => !profile)) continue;
+        const names = profiles.map((profile) => profile.昵称 || '该角色');
+        const canonicalTopic = canonicalCategory + '：与' + names.join('、') + '的文字协商';
+        if (safeText(raw.服务主题, 240) !== canonicalTopic) continue;
+        const displayCategory = getServiceDisplayCategory(raw.内容模式, categoryId);
+        const category = displayCategory?.label ?? (raw.内容模式 === 'NSFW' ? '旧版邀约记录' : '旧版约伴记录');
+        const topic = deriveServiceDisplayTopic({ mode: raw.内容模式, categoryId, participantNames: names })
+            || `${category} · 与${names.join('、')}的旧版记录`;
+        const endedFallback = raw.状态 === '已取消' ? '本轮已取消' : raw.状态 === '已中止' ? '本轮已中止' : '本轮已完成';
+        const contractSummary = projectServiceContractSummary(lifecycle.contract);
         orders.push(Object.freeze({
             id: orderUid, roleUid: raw.角色UID, roleUids: Object.freeze([...roleUids]), profile: profiles[0], profiles: Object.freeze(profiles),
             mode: raw.内容模式, categoryId, category, topic, status: raw.状态,
@@ -476,6 +467,11 @@ export function projectServiceOrderView(state) {
             endedAt: hasOrderText(raw.结束时间) ? projectServiceTime(raw.结束时间, endedFallback) : '',
             summary: projectServiceSummary(raw.结束摘要, raw.内容模式),
             completionReady: hasCompletionSignal(raw),
+            withdrawalReady: hasWithdrawalSignal(raw),
+            contractHealth: lifecycle.kind,
+            contractStatus: lifecycle.contractStatus,
+            contractSummary,
+            needsRenegotiation: lifecycle.kind === 'recoverable',
         }));
     }
     return Object.freeze(orders.sort((left, right) => right.id.localeCompare(left.id, 'zh-Hans-CN')));
@@ -566,11 +562,14 @@ export function describeActionFailure(result) {
         service_order_mode_changed: '内容模式已变化，未提交服务订单更新，请刷新后重试。',
         service_order_result_invalid: '正文返回的服务订单结果未通过校验，未写入任何数据。',
         service_order_rebook_invalid: '历史服务角色或当前模式不可用于再次下单。',
-        service_order_start_invalid: '待确认订单或结构化边界无效，未开始服务。',
-        service_order_cancel_invalid: '只有待确认订单可以由玩家取消。',
-        service_order_complete_invalid: '当前订单尚未进入进行中，不能完成归档。',
-        service_order_finalize_invalid: '订单未达到可安全归档的终态。',
-        service_order_conflict: '当前已有另一笔待确认或进行中的订单。',
+        service_order_start_invalid: '待确认约伴或结构化合同无效，未开始本轮体验。',
+        service_order_cancel_invalid: '当前状态无法安全取消或中止本轮体验。',
+        service_order_pause_invalid: '当前约伴不在可暂停状态。',
+        service_order_resume_invalid: '暂停中的约伴需要逐人确认新修订后才能恢复。',
+        service_order_continue_invalid: '当前没有可拒绝的正文完成候选。',
+        service_order_complete_invalid: '正文尚未给出完成候选，或玩家尚未确认结单。',
+        service_order_finalize_invalid: '本轮体验未达到可安全归档的终态。',
+        service_order_conflict: '当前已有另一笔待确认、进行中或暂停中的约伴。',
         mvu_parse_returned_no_data: '本次没有可提交的变量变化。',
         mvu_parse_returned_no_stat_data: 'MVU 未返回可保存的软件状态，本次未写入。',
         mvu_parse_made_no_change: 'MVU 未接受本次修改（状态未发生变化），未写入任何数据。',

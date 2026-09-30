@@ -32,6 +32,19 @@ function adultCandidate(name) {
     return { 成人验证: true, 公开资料: { 昵称: name, 年龄段: '25-29', 简介: '本地草稿角色。', 兴趣标签: ['看展', '散步'] } };
 }
 
+/** Minimal three-phase archive store stub (staged → terminal_confirmed → finalized). */
+function historyStoreStub({ history = [], staged = [], archived = [], discarded = [] } = {}) {
+    return {
+        list: () => history,
+        stage: (source, options = {}) => { staged.push([source.id, options.status, options.summary]); return { localId: 'history_stage_1' }; },
+        markTerminalConfirmed: () => true,
+        markArchived: (localId) => { archived.push(localId); return true; },
+        finalize: (localId) => { archived.push(localId); return true; },
+        discardStage: (localId) => { discarded.push(localId); return true; },
+        remove: () => true,
+    };
+}
+
 function createHarness({ bridge = {}, orders = [], issues = [], history = [], mode = 'SFW', activeTab = 'home' } = {}) {
     const container = miniDom.document.createElement('div');
     miniDom.document.body.appendChild(container);
@@ -42,7 +55,7 @@ function createHarness({ bridge = {}, orders = [], issues = [], history = [], mo
         abortController: new AbortController(),
         currentView: { mode, serviceOrders: orders, serviceOrderIssues: issues },
         actionBridge: bridge,
-        serviceOrderHistoryStore: { list: () => history, stage: () => ({ localId: 'history_stage_1' }), markArchived: () => true, remove: () => true },
+        serviceOrderHistoryStore: historyStoreStub({ history }),
         serviceLocalProfiles: [],
         serviceGenerationBatches: new Map(),
         selectedServiceProfileIds: new Set(),
@@ -73,30 +86,33 @@ function createHarness({ bridge = {}, orders = [], issues = [], history = [], mo
     return { ctx, page, container, feedback, destroy };
 }
 
-test('约伴页收成三 tab：精选/订单/记录，旧 tab id 折算且可来回切换', () => {
+test('约伴页收成三 tab：稳定 id 不变、显示文案按模式派生，旧 tab id 折算且可来回切换', () => {
     const harness = createHarness();
     const { ctx, container } = harness;
     try {
         const tabs = () => container.querySelectorAll('.yl-service-tab');
-        assert.deepEqual(tabs().map((tab) => tab.textContent), ['精选', '订单', '记录']);
+        // 稳定 id 仍是 featured/orders/records；SFW 显示为租借恋人语言。
+        assert.deepEqual(tabs().map((tab) => tab.textContent), ['租伴', '租约', '记录']);
         assert.deepEqual(
             tabs().map((tab) => tab.querySelector('svg')?.dataset.icon),
             ['sparkle', 'service_hub', 'clock'],
             '三 tab 使用本地 SVG 结构图标',
         );
-        // 壳层复位写入的旧 id「home」应折算为精选并渲染 hero。
+        // 壳层复位写入的旧 id「home」应折算为 featured 并渲染模式 Hero。
         assert.equal(tabs()[0].getAttribute('aria-selected'), 'true');
-        assert.match(container.textContent, /今日心动档案/u);
+        assert.match(container.textContent, /SFW · 租借恋人/u);
+        assert.match(container.textContent, /心动租约/u);
+        assert.match(container.textContent, /全部角色明确成年 · 本轮逐人确认 · 可撤回 · 不自动发送/u, '固定信任条必须在首屏');
         assert.ok(container.querySelector('[name="service-category-girl_shuren"]'), '精选应包含分类卡');
 
         click(container.querySelector('[name="service-hub-tab-orders"]'));
         assert.equal(ctx.activeServiceHubTab, 'orders');
-        assert.match(container.textContent, /暂无进行中的服务/u);
-        assert.match(container.textContent, /「精选」/u, '订单空态引导指向精选而非旧「发现」');
+        assert.match(container.textContent, /暂无进行中的约伴/u);
+        assert.match(container.textContent, /「租伴」/u, '订单空态引导使用当前模式的 featured 文案');
 
         click(container.querySelector('[name="service-hub-tab-records"]'));
         assert.equal(ctx.activeServiceHubTab, 'records');
-        assert.match(container.textContent, /暂无历史记录/u);
+        assert.match(container.textContent, /暂无足迹/u);
 
         // 旧内部命名统一折算。
         ctx.activeServiceHubTab = 'service';
@@ -112,21 +128,29 @@ test('约伴页收成三 tab：精选/订单/记录，旧 tab id 折算且可来
         assert.equal(normalizeServiceHubTab('service'), 'orders');
         assert.equal(normalizeServiceHubTab('history'), 'records');
         assert.equal(normalizeServiceHubTab('未知值'), 'featured');
+
+        // SFW 不得出现旧商品语义或 NSFW 约炮语义。
+        assert.doesNotMatch(container.textContent, /商品|服务者|下单|成交|约炮|XP/u);
     } finally {
         harness.destroy();
     }
 });
 
-test('NSFW 陪伴首页使用色情目标分类并把全尺度合同传给角色生成', () => {
+test('NSFW 探索首页使用成年约炮语言、去除交易措辞，并把全尺度合同传给角色生成', () => {
     const harness = createHarness({ mode: 'NSFW' });
     const { page, container } = harness;
     try {
-        assert.match(container.textContent, /进入即按全尺度成人内容生成/u);
-        assert.match(container.textContent, /熟人性爱幻想/u);
-        assert.match(container.textContent, /陌生约炮邂逅/u);
-        assert.match(container.textContent, /随机性癖体验/u);
+        assert.match(container.textContent, /NSFW · 成年约炮/u);
+        assert.match(container.textContent, /夜色邀约/u);
+        assert.deepEqual(container.querySelectorAll('.yl-service-tab').map((tab) => tab.textContent), ['探索', '邀约', '足迹']);
+        assert.match(container.textContent, /熟人默契/u);
+        assert.match(container.textContent, /陌生邂逅/u);
+        assert.match(container.textContent, /随机偏好/u);
         assert.doesNotMatch(container.textContent, /熟人商品|路人商品|随机商品/u);
-        assert.equal(container.querySelector('[name="service-xp-search"]').getAttribute('placeholder'), '例如：主导、臣服、捆绑、群体、公开场景幻想');
+        // 约炮不是有偿性交易：交易措辞不得进入 NSFW DOM。
+        assert.doesNotMatch(container.textContent, /价格|退款|投诉|信用|商品|成交|下单|服务者/u);
+        assert.match(container.textContent, /公开意向不是本次同意/u);
+        assert.equal(container.querySelector('[name="service-xp-search"]').getAttribute('placeholder'), '想探索怎样的对象、节奏或偏好？');
         const copy = page.serviceHubModeCopy('NSFW');
         const brief = page.serviceCreativeBrief(page.serviceCategory(copy, 'girl_luren'), 'NSFW', 'BDSM');
         assert.match(brief, /全尺度色情分类/u);
@@ -193,14 +217,14 @@ test('三席生成器：空席虚线框、生成中骨架、完成后角色卡�
         await flushUi();
         setChecked(container.querySelector('[name="service-profile-select-service_local_2"]'), true);
         await flushUi();
-        assert.match(createButton().textContent, /以已选 2 位创建服务订单/u);
+        assert.match(createButton().textContent, /发起租约 · 2 位/u);
         assert.equal(createButton().disabled, false);
 
         click(createButton());
         await flushUi();
         assert.equal(handoffCalls, 1, '多选下单仍走 runServiceOrderHandoff 原调用链');
         assert.equal(handoffDrafts.length, 1);
-        assert.match(handoffDrafts[0], /与「林澄、顾晴」体验「熟人商品」租借陪伴主题/u);
+        assert.match(handoffDrafts[0], /与「林澄、顾晴」体验「默契恋人」/u, '正文草稿使用模式化显示分类');
         assert.doesNotMatch(handoffDrafts[0], /service_1|npc_service_/u, '正文草稿不得暴露内部 UID');
     } finally {
         harness.destroy();
@@ -218,8 +242,8 @@ test('订单 Stepper：详情页内三步流转、可回跳、确认成交只在
         appendMeetupDraft(draft) { dealDrafts.push(String(draft ?? '')); return { ok: true }; },
     };
     const order = {
-        id: 'service_1', mode: 'SFW', status: '待确认', category: '熟人商品',
-        topic: '熟人商品：与林澄、顾晴的文字协商', summary: '', initiatedAt: '待正文确认',
+        id: 'service_1', mode: 'SFW', status: '待确认', category: '默契恋人',
+        topic: '默契恋人 · 与林澄、顾晴的心动租约', summary: '', initiatedAt: '待正文确认',
         profiles: [{ 昵称: '林澄' }, { 昵称: '顾晴' }],
     };
     const harness = createHarness({ bridge, orders: [order], activeTab: 'orders' });
@@ -229,11 +253,11 @@ test('订单 Stepper：详情页内三步流转、可回跳、确认成交只在
         assert.ok(container.querySelector('[name="service-order-open-detail"]'), '待处理订单在列表中提供详情入口');
         assert.equal(container.querySelector('.yl-service-step-tab'), null, '列表态不直接平铺 Stepper');
         click(container.querySelector('[name="service-order-open-detail"]'));
-        // 第 1 步：边界字段可见；服务信息与确认钮都不出现；取消/重填始终可见。
+        // 第 1 步：边界字段可见；本轮安排与确认钮都不出现；取消/重填始终可见。
         assert.equal(container.querySelectorAll('.yl-service-step-tab').length, 3);
         assert.ok(container.querySelector('[name="service-boundary-主题"]'));
-        assert.equal(container.querySelector('[name="service-information-价格"]'), null);
-        assert.equal(container.querySelector('[name="service-order-start"]'), null, '确认成交只允许出现在第三步');
+        assert.equal(container.querySelector('[name="service-arrangement-时长"]'), null);
+        assert.equal(container.querySelector('[name="service-order-start"]'), null, '逐人签约只允许出现在第三步');
         assert.ok(container.querySelector('[name="service-order-cancel"]'));
         assert.ok(container.querySelector('[name="service-order-refill-draft"]'));
         assert.equal(container.querySelector('[name="service-step-3"]').disabled, true, '未到达的步骤不可跳跃');
@@ -241,22 +265,28 @@ test('订单 Stepper：详情页内三步流转、可回跳、确认成交只在
         typeInto(container.querySelector('[name="service-boundary-主题"]'), '今晚看展');
         click(container.querySelector('[name="service-step-next"]'));
 
-        // 第 2 步：两列服务信息网格 + 第 1 步摘要行。
+        // 第 2 步：两列本轮安排网格 + 第 1 步摘要行。SFW 才有剧情内虚构体验价。
         assert.ok(container.querySelector('.yl-service-grid-2'));
-        assert.ok(container.querySelector('[name="service-information-价格"]'));
-        assert.ok(container.querySelector('[name="service-information-服务者信用"]'));
+        assert.ok(container.querySelector('[name="service-arrangement-时长"]'));
+        assert.ok(container.querySelector('[name="service-arrangement-虚构价格"]'));
+        assert.match(container.textContent, /剧情内虚构体验价（不接入现实支付）/u);
+        // 旧交易字段没有 v2 通道，界面上必须彻底消失。
+        for (const legacy of ['价格', '评价', '投诉', '退款', '服务者信用']) {
+            assert.equal(container.querySelector(`[name="service-information-${legacy}"]`), null, `旧服务信息字段 ${legacy} 不得回流`);
+        }
         assert.equal(container.querySelector('[name="service-order-start"]'), null);
-        assert.match(container.textContent, /第 1 步 · 边界与强度：今晚看展/u);
+        assert.match(container.textContent, /第 1 步 · 相处边界：今晚看展/u);
 
         click(container.querySelector('[name="service-step-next"]'));
 
         // 第 3 步：玩家勾选 + 每位 NPC 一张同意小卡；确认钮出现但默认禁用。
         assert.equal(container.querySelectorAll('.yl-service-consent-card').length, 2);
         assert.ok(container.querySelector('[name="service-boundary-player-consent"]'));
+        assert.match(container.textContent, /我已同意本次合同修订 v1/u);
         const start = () => container.querySelector('[name="service-order-start"]');
         assert.ok(start());
-        assert.equal(start().disabled, true, '未逐人确认前不可接单');
-        assert.match(container.textContent, /已填写 0\/8 项服务信息/u, '第 2 步完成后显示摘要行');
+        assert.equal(start().disabled, true, '未逐人确认前不可开始');
+        assert.match(container.textContent, /已填写 0\/5 项本轮安排/u, '第 2 步完成后显示摘要行');
 
         // 回跳：步骤条可回到第 1 步，再直接跳回已到访的第 3 步。
         click(container.querySelector('[name="service-step-1"]'));
@@ -268,7 +298,7 @@ test('订单 Stepper：详情页内三步流转、可回跳、确认成交只在
         setChecked(container.querySelector('[name="service-boundary-player-consent"]'), true);
         setChecked(container.querySelector('[name="service-boundary-npc-consent-1"]'), true);
         setChecked(container.querySelector('[name="service-boundary-npc-consent-2"]'), true);
-        assert.equal(start().disabled, false, '逐人确认后开放接单');
+        assert.equal(start().disabled, false, '逐人确认后开放开始');
 
         click(start());
         await flushUi();
@@ -276,22 +306,27 @@ test('订单 Stepper：详情页内三步流转、可回跳、确认成交只在
         assert.equal(startPayloads[0].orderUid, 'service_1');
         assert.equal(startPayloads[0].expectedContentMode, 'SFW');
         assert.deepEqual(startPayloads[0].boundaries, {
+            协议版本: 2,
+            修订号: 1,
             内容模式: 'SFW',
+            体验类型: '租借恋人',
             主题: '今晚看展',
-            允许项: '由双方在正文中确认的内容',
-            排除项: '未明确同意的内容',
-            强度: '轻松陪伴',
-            隐私处理: '仅保留最小化订单摘要',
-            服务信息: { 价格: '', 时长: '', 排期: '', 套餐: '', 评价: '', 投诉: '', 退款: '', 服务者信用: '' },
+            允许项: '由双方在正文中确认的约会内容',
+            排除项: '未明确同意、已撤回或无法确认的内容',
+            强度: '轻松、尊重且可随时调整',
+            隐私处理: '仅保留最小化终态摘要，不记录完整过程',
+            安排: { 时长: '', 时间窗: '', 场景类型: '', 组合摘要: '', 虚构价格: '' },
             玩家已同意: true,
             NPC明确同意: [true, true],
-        }, '三步 Stepper 重排 UI 后提交的数据结构必须与原一张卡完全一致');
-        assert.equal(dealDrafts.length, 1, '确认成交后必须把成交提示词填入正文输入框');
-        assert.match(dealDrafts[0], /【订单已成交】/u);
-        assert.match(dealDrafts[0], /「林澄、顾晴」/u, '成交提示词包含对象信息');
-        assert.match(dealDrafts[0], /主题「今晚看展」/u, '成交提示词包含本次服务内容要求');
-        assert.match(dealDrafts[0], /合法结束条件/u, '成交提示词说明正文完成后的变量更新约定');
-        assert.doesNotMatch(dealDrafts[0], /service_1|npc_service_/u, '成交提示词不得暴露内部 UID');
+        }, '三步 Stepper 提交的是不含 UID 的 v2 草稿；身份与修订由受控 builder 派生');
+        assert.equal(Object.hasOwn(startPayloads[0].boundaries, '服务信息'), false, 'UI 不再提交旧 v1 服务信息容器');
+        assert.equal(JSON.stringify(startPayloads[0].boundaries).includes('npc_service_'), false, 'UI payload 绝不提供角色 UID');
+        assert.equal(dealDrafts.length, 1, '确认开始后必须把执行提示词填入正文输入框');
+        assert.match(dealDrafts[0], /【约伴确认开始】/u);
+        assert.match(dealDrafts[0], /「林澄、顾晴」/u, '提示词包含对象信息');
+        assert.match(dealDrafts[0], /完成候选/u, '提示词说明正文只写完成候选、由玩家确认结单');
+        assert.match(dealDrafts[0], /不自动结单/u);
+        assert.doesNotMatch(dealDrafts[0], /service_1|npc_service_/u, '提示词不得暴露内部 UID');
     } finally {
         harness.destroy();
     }
@@ -306,21 +341,17 @@ test('订单详情页：展示对象公开资料、返回列表，取消订单�
         appendMeetupDraft() { return { ok: true }; },
     };
     const order = {
-        id: 'service_1', mode: 'SFW', status: '待确认', category: '熟人商品',
-        topic: '熟人商品：与林澄的文字协商', summary: '', initiatedAt: '待正文确认',
+        id: 'service_1', mode: 'SFW', status: '待确认', category: '默契恋人',
+        topic: '默契恋人 · 与林澄的心动租约', summary: '', initiatedAt: '待正文确认',
         profiles: [{ 昵称: '林澄', 年龄段: '25-29', 性别: '女', 城市: '上海', 简介: '喜欢看展的独立策展人。', 兴趣标签: ['看展', '散步', '咖啡'] }],
         roleUids: ['npc_service_1'],
     };
     const staged = [];
     const archived = [];
+    const discarded = [];
     const harness = createHarness({ bridge, orders: [order], activeTab: 'orders' });
     const { ctx, container } = harness;
-    ctx.serviceOrderHistoryStore = {
-        list: () => [],
-        stage: (source, options) => { staged.push([source.id, options.status]); return { localId: 'history_service_1' }; },
-        markArchived: (localId) => { archived.push(localId); return true; },
-        remove: () => true,
-    };
+    ctx.serviceOrderHistoryStore = historyStoreStub({ staged, archived, discarded });
     try {
         // 列表 → 详情：对象公开资料在详情页可见，隐藏资料字段不存在。
         click(container.querySelector('[name="service-order-open-detail"]'));
@@ -333,7 +364,7 @@ test('订单详情页：展示对象公开资料、返回列表，取消订单�
         assert.match(profileCard.textContent, /喜欢看展的独立策展人/u);
         assert.match(profileCard.textContent, /看展/u);
         assert.ok(container.querySelector('[name="service-order-cancel"]'), '详情页提供取消订单');
-        assert.equal(container.querySelector('[name="service-order-start"]'), null, '第 1 步不出现确认成交');
+        assert.equal(container.querySelector('[name="service-order-start"]'), null, '第 1 步不出现逐人签约');
 
         // 返回列表后再进入详情。
         click(container.querySelector('[name="service-order-detail-back"]'));
@@ -341,18 +372,50 @@ test('订单详情页：展示对象公开资料、返回列表，取消订单�
         assert.ok(container.querySelector('[name="service-order-open-detail"]'));
         click(container.querySelector('[name="service-order-open-detail"]'));
 
-        // 取消订单：先本地暂存历史，再取消，最后终态删除并标记归档。
+        // 取消订单：先本地暂存历史，受控取消成功后才确认终态阶段，最后终态删除并归档。
         click(container.querySelector('[name="service-order-cancel"]'));
         await flushUi();
-        assert.deepEqual(staged, [['service_1', '已取消']]);
+        assert.deepEqual(staged, [['service_1', '已取消', undefined]]);
         assert.deepEqual(calls, [['cancel', 'service_1', 'SFW'], ['finalize', 'service_1']]);
-        assert.deepEqual(archived, ['history_service_1']);
+        assert.deepEqual(archived, ['history_stage_1']);
+        assert.deepEqual(discarded, [], '成功路径不得丢弃本地暂存');
     } finally {
         harness.destroy();
     }
 });
 
-test('自动结单：合法结束条件就绪的进行中订单走完成→归档→终态删除链；未就绪则拒绝', async () => {
+test('受控取消失败时必须丢弃本地暂存，绝不留下伪归档记录', async () => {
+    const calls = [];
+    const bridge = {
+        async runServiceOrderCancel({ orderUid }) { calls.push(['cancel', orderUid]); return { ok: false, code: 'service_order_cancel_invalid' }; },
+        async runServiceOrderFinalize({ orderUid }) { calls.push(['finalize', orderUid]); return { ok: true }; },
+        appendMeetupDraft() { return { ok: true }; },
+    };
+    const order = {
+        id: 'service_1', mode: 'SFW', status: '待确认', category: '默契恋人',
+        topic: '默契恋人 · 与林澄的心动租约', summary: '', initiatedAt: '待正文确认',
+        profiles: [{ 昵称: '林澄' }], roleUids: ['npc_service_1'],
+    };
+    const staged = [];
+    const archived = [];
+    const discarded = [];
+    const harness = createHarness({ bridge, orders: [order], activeTab: 'orders' });
+    const { ctx, container } = harness;
+    ctx.serviceOrderHistoryStore = historyStoreStub({ staged, archived, discarded });
+    try {
+        click(container.querySelector('[name="service-order-open-detail"]'));
+        click(container.querySelector('[name="service-order-cancel"]'));
+        await flushUi();
+        assert.deepEqual(staged, [['service_1', '已取消', undefined]], '暂存发生在受控迁移之前');
+        assert.deepEqual(calls, [['cancel', 'service_1']], '转换失败后不得继续 finalize');
+        assert.deepEqual(archived, [], 'MVU 仍有开放订单时绝不能标记归档');
+        assert.deepEqual(discarded, ['history_stage_1'], '失败的暂存必须被撤销，避免伪归档分叉');
+    } finally {
+        harness.destroy();
+    }
+});
+
+test('玩家确认结单：完成候选就绪才允许完成→确认终态→归档删除链；未就绪则拒绝', async () => {
     const calls = [];
     const bridge = {
         async runServiceOrderCancel({ orderUid }) { calls.push(['cancel', orderUid]); return { ok: true }; },
@@ -361,33 +424,85 @@ test('自动结单：合法结束条件就绪的进行中订单走完成→归�
         appendMeetupDraft() { return { ok: true }; },
     };
     const order = {
-        id: 'service_1', mode: 'SFW', status: '进行中', category: '熟人商品',
-        topic: '熟人商品：与林澄的文字协商', summary: '', initiatedAt: '待正文确认', startedAt: '玩家已确认接单',
+        id: 'service_1', mode: 'SFW', status: '进行中', category: '默契恋人',
+        topic: '默契恋人 · 与林澄的心动租约', summary: '', initiatedAt: '待正文确认', startedAt: '玩家已确认开始',
         profiles: [{ 昵称: '林澄' }], roleUids: ['npc_service_1'], completionReady: false,
     };
     const staged = [];
     const archived = [];
     const harness = createHarness({ bridge, orders: [order], activeTab: 'orders' });
     const { ctx, page, feedback } = harness;
-    ctx.serviceOrderHistoryStore = {
-        list: () => [],
-        stage: (source, options) => { staged.push([source.id, options.status]); return { localId: 'history_service_1' }; },
-        markArchived: (localId) => { archived.push(localId); return true; },
-        remove: () => true,
-    };
+    ctx.serviceOrderHistoryStore = historyStoreStub({ staged, archived });
     try {
-        // 正文尚未写入完整结束条件：拒绝完成，不触发任何 MVU 写入。
+        // 正文尚未写入完整完成候选：拒绝结单，不触发任何 MVU 写入。
         await page.archiveAndFinalizeServiceOrder(order, '已完成');
         assert.deepEqual(calls, []);
         assert.deepEqual(staged, []);
         assert.match(feedback.join('\n'), /正文尚未写入完整的结束条件/u);
 
-        // VARIABLE_UPDATE_ENDED 刷新投影后 completionReady=true：自动完成并归档。
+        // VARIABLE_UPDATE_ENDED 刷新投影后 completionReady=true：玩家确认后才结单归档。
         const readyOrder = { ...order, completionReady: true };
         await page.archiveAndFinalizeServiceOrder(readyOrder, '已完成');
-        assert.deepEqual(staged, [['service_1', '已完成']]);
+        assert.deepEqual(staged, [['service_1', '已完成', undefined]]);
         assert.deepEqual(calls, [['complete', 'service_1', 'SFW'], ['finalize', 'service_1']]);
-        assert.deepEqual(archived, ['history_service_1']);
+        assert.deepEqual(archived, ['history_stage_1']);
+    } finally {
+        harness.destroy();
+    }
+});
+
+test('完成候选不自动结单：进行中详情同时提供「确认完成」与「继续」，拒绝时只清候选', async () => {
+    const calls = [];
+    const bridge = {
+        async runServiceOrderComplete({ orderUid }) { calls.push(['complete', orderUid]); return { ok: true }; },
+        async runServiceOrderContinue({ orderUid, expectedContentMode }) { calls.push(['continue', orderUid, expectedContentMode]); return { ok: true }; },
+        async runServiceOrderPause({ orderUid }) { calls.push(['pause', orderUid]); return { ok: true }; },
+        async runServiceOrderFinalize({ orderUid }) { calls.push(['finalize', orderUid]); return { ok: true }; },
+        appendMeetupDraft() { return { ok: true }; },
+    };
+    const order = {
+        id: 'service_1', mode: 'SFW', status: '进行中', category: '默契恋人',
+        topic: '默契恋人 · 与林澄的心动租约', summary: '', initiatedAt: '待正文确认', startedAt: '玩家已确认开始',
+        profiles: [{ 昵称: '林澄' }], roleUids: ['npc_service_1'], completionReady: true, withdrawalReady: false,
+    };
+    const harness = createHarness({ bridge, orders: [order], activeTab: 'orders' });
+    const { container } = harness;
+    try {
+        click(container.querySelector('[name="service-order-open-detail"]'));
+        assert.match(container.textContent, /正文提出完成候选，请由玩家决定完成或继续/u);
+        const keepGoing = container.querySelector('[name="service-order-continue"]');
+        assert.ok(keepGoing, '完成候选就绪时必须提供「继续」出口，否则等于自动结单');
+        assert.ok(container.querySelector('[name="service-order-pause"]'), '进行中始终可暂停');
+
+        click(keepGoing);
+        await flushUi();
+        assert.deepEqual(calls, [['continue', 'service_1', 'SFW']], '拒绝完成候选只清信号，不得迁移状态或归档');
+    } finally {
+        harness.destroy();
+    }
+});
+
+test('正文撤回候选优先暂停：进行中详情提示优先暂停并调用受控暂停', async () => {
+    const calls = [];
+    const bridge = {
+        async runServiceOrderPause({ orderUid, expectedContentMode }) { calls.push(['pause', orderUid, expectedContentMode]); return { ok: true }; },
+        appendMeetupDraft() { return { ok: true }; },
+    };
+    const order = {
+        id: 'service_1', mode: 'SFW', status: '进行中', category: '默契恋人',
+        topic: '默契恋人 · 与林澄的心动租约', summary: '', initiatedAt: '待正文确认', startedAt: '玩家已确认开始',
+        profiles: [{ 昵称: '林澄' }], roleUids: ['npc_service_1'], completionReady: false, withdrawalReady: true,
+    };
+    const harness = createHarness({ bridge, orders: [order], activeTab: 'orders' });
+    const { container } = harness;
+    try {
+        click(container.querySelector('[name="service-order-open-detail"]'));
+        assert.match(container.textContent, /正文提出了撤回候选，请优先暂停/u);
+        const pause = container.querySelector('[name="service-order-pause"]');
+        assert.match(pause.textContent, /优先暂停（正文已撤回）/u);
+        click(pause);
+        await flushUi();
+        assert.deepEqual(calls, [['pause', 'service_1', 'SFW']]);
     } finally {
         harness.destroy();
     }
@@ -401,21 +516,16 @@ test('终态兜底：活动表中的终态订单先补记本地历史再 finaliz
         appendMeetupDraft() { return { ok: true }; },
     };
     const terminalOrder = {
-        id: 'service_1', mode: 'SFW', status: '已完成', category: '熟人商品',
-        topic: '熟人商品：与林澄的文字协商', summary: '正文直写的结束摘要。', initiatedAt: '待正文确认',
-        startedAt: '玩家已确认接单', endedAt: '订单已完成',
+        id: 'service_1', mode: 'SFW', status: '已完成', category: '默契恋人',
+        topic: '默契恋人 · 与林澄的心动租约', summary: '正文直写的结束摘要。', initiatedAt: '待正文确认',
+        startedAt: '玩家已确认开始', endedAt: '本轮已完成',
         profiles: [{ 昵称: '林澄' }], roleUids: ['npc_service_1'], completionReady: false,
     };
     const staged = [];
     const archived = [];
     const harness = createHarness({ bridge, orders: [terminalOrder], activeTab: 'orders' });
     const { ctx, page } = harness;
-    ctx.serviceOrderHistoryStore = {
-        list: () => [],
-        stage: (source, options) => { staged.push([source.id, options.status, options.summary]); return { localId: 'history_service_1' }; },
-        markArchived: (localId) => { archived.push(localId); return true; },
-        remove: () => true,
-    };
+    ctx.serviceOrderHistoryStore = historyStoreStub({ staged, archived });
     try {
         // 进行中订单不属于兜底范围：直接忽略，不写本地历史也不发 MVU 请求。
         await page.recoverTerminalServiceOrder({ ...terminalOrder, status: '进行中' });
@@ -428,18 +538,53 @@ test('终态兜底：活动表中的终态订单先补记本地历史再 finaliz
         await page.recoverTerminalServiceOrder(terminalOrder);
         assert.deepEqual(staged, [['service_1', '已完成', '正文直写的结束摘要。']]);
         assert.deepEqual(calls, [['finalize', 'service_1']]);
-        assert.deepEqual(archived, ['history_service_1']);
+        assert.deepEqual(archived, ['history_stage_1']);
+
+        // 新增终态 已中止 同样纳入兜底范围。
+        staged.length = 0; calls.length = 0; archived.length = 0;
+        await page.recoverTerminalServiceOrder({ ...terminalOrder, status: '已中止', endedAt: '本轮已中止' });
+        assert.deepEqual(staged, [['service_1', '已中止', '正文直写的结束摘要。']]);
+        assert.deepEqual(calls, [['finalize', 'service_1']]);
     } finally {
         harness.destroy();
     }
 });
 
-test('进行中订单详情：重新填入成交提示词不含边界草稿也不暴露 UID，且绝不自动发送', () => {
+test('终态兜底的本地阶段确认失败时保持 MVU 原样，不删除也不伪造归档', async () => {
+    const calls = [];
+    const bridge = {
+        async runServiceOrderFinalize({ orderUid }) { calls.push(['finalize', orderUid]); return { ok: true }; },
+        appendMeetupDraft() { return { ok: true }; },
+    };
+    const terminalOrder = {
+        id: 'service_1', mode: 'SFW', status: '已完成', category: '默契恋人',
+        topic: '默契恋人 · 与林澄的心动租约', summary: '正文直写的结束摘要。', initiatedAt: '待正文确认',
+        startedAt: '玩家已确认开始', endedAt: '本轮已完成',
+        profiles: [{ 昵称: '林澄' }], roleUids: ['npc_service_1'],
+    };
+    const archived = [];
+    const harness = createHarness({ bridge, orders: [terminalOrder], activeTab: 'orders' });
+    const { ctx, page, feedback } = harness;
+    ctx.serviceOrderHistoryStore = {
+        ...historyStoreStub({ archived }),
+        markTerminalConfirmed: () => false,
+    };
+    try {
+        await page.recoverTerminalServiceOrder(terminalOrder);
+        assert.deepEqual(calls, [], '本地阶段未确认时绝不发起 finalize 删除');
+        assert.deepEqual(archived, []);
+        assert.match(feedback.join('\n'), /本地归档确认失败/u);
+    } finally {
+        harness.destroy();
+    }
+});
+
+test('进行中订单详情：重新填入执行提示词不含边界草稿也不暴露 UID，且绝不自动发送', () => {
     const dealDrafts = [];
     const bridge = { appendMeetupDraft(draft) { dealDrafts.push(String(draft ?? '')); return { ok: true }; } };
     const order = {
-        id: 'service_1', mode: 'SFW', status: '进行中', category: '熟人商品',
-        topic: '熟人商品：与林澄的文字协商', summary: '', initiatedAt: '待正文确认', startedAt: '玩家已确认接单',
+        id: 'service_1', mode: 'SFW', status: '进行中', category: '默契恋人',
+        topic: '默契恋人 · 与林澄的心动租约', summary: '', initiatedAt: '待正文确认', startedAt: '玩家已确认开始',
         profiles: [{ 昵称: '林澄' }], completionReady: false,
     };
     const harness = createHarness({ bridge, orders: [order], activeTab: 'orders' });
@@ -447,12 +592,13 @@ test('进行中订单详情：重新填入成交提示词不含边界草稿也�
     try {
         click(container.querySelector('[name="service-order-open-detail"]'));
         const refill = container.querySelector('[name="service-order-refill-draft"]');
-        assert.ok(refill, '进行中订单在详情页提供重新填入成交提示词');
+        assert.ok(refill, '进行中订单在详情页提供重新填入执行提示词');
         click(refill);
         assert.equal(dealDrafts.length, 1);
-        assert.match(dealDrafts[0], /【订单已成交】/u);
+        assert.match(dealDrafts[0], /【约伴确认开始】/u);
         assert.match(dealDrafts[0], /「林澄」/u);
-        assert.doesNotMatch(dealDrafts[0], /service_1|npc_service_/u, '成交提示词不得暴露内部 UID');
+        assert.match(dealDrafts[0], /完成候选/u, '提示词要求正文只写完成候选，由玩家确认结单');
+        assert.doesNotMatch(dealDrafts[0], /service_1|npc_service_/u, '提示词不得暴露内部 UID');
     } finally {
         harness.destroy();
     }
@@ -509,7 +655,7 @@ test('记录 tab：ListRow + 状态 chip，动作收进行尾「⋯」菜单', a
     }
 });
 
-test('精选 tab：发布面板折叠于底部，分类卡横排选择不再自动生成', () => {
+test('精选 tab：候选批次面板折叠于底部，分类卡横排选择不再自动生成', () => {
     const harness = createHarness();
     const { container } = harness;
     try {
@@ -522,13 +668,37 @@ test('精选 tab：发布面板折叠于底部，分类卡横排选择不再自�
         const toggle = () => container.querySelector('[name="service-publication-toggle"]');
         assert.ok(toggle());
         assert.equal(toggle().getAttribute('aria-expanded'), 'false');
-        assert.doesNotMatch(container.textContent, /服务者发布服务/u, '折叠时不渲染发布面板');
+        assert.match(toggle().textContent, /展开候选批次面板/u);
+        assert.doesNotMatch(container.textContent, /本地候选批次/u, '折叠时不渲染批次面板');
         click(toggle());
         assert.equal(toggle().getAttribute('aria-expanded'), 'true');
-        assert.match(container.textContent, /服务者发布服务/u);
+        assert.match(toggle().textContent, /收起候选批次面板/u);
+        assert.match(container.textContent, /本地候选批次/u);
         assert.ok(container.querySelector('[name="service-published-open-girl_shuren"]'));
         click(toggle());
         assert.equal(toggle().getAttribute('aria-expanded'), 'false');
+    } finally {
+        harness.destroy();
+    }
+});
+
+test('精选 tab：主题馆、推荐与探索图鉴均为本地确定性派生，不触发任何模型请求', () => {
+    let llmCalls = 0;
+    const bridge = { generateServiceProfileDraft: () => { llmCalls += 1; return new Promise(() => {}); } };
+    const history = [
+        { localId: 'h1', mode: 'SFW', categoryId: 'girl_shuren', status: '已完成', profile: { 昵称: '林澄', 兴趣标签: ['看展', '散步'] } },
+    ];
+    const harness = createHarness({ bridge, history });
+    const { container } = harness;
+    try {
+        assert.match(container.textContent, /今日灵感馆/u, '本地固定主题馆存在');
+        assert.match(container.textContent, /按你的最小足迹推荐/u, '推荐来自最小本地历史');
+        // 切换 tab / 分类 / 展开折叠都不得调用模型。
+        click(container.querySelector('[name="service-hub-tab-records"]'));
+        click(container.querySelector('[name="service-hub-tab-featured"]'));
+        click(container.querySelector('[name="service-category-random_generation"]'));
+        click(container.querySelector('[name="service-publication-toggle"]'));
+        assert.equal(llmCalls, 0, '浏览、筛选与折叠不得触发任何服务角色生成请求');
     } finally {
         harness.destroy();
     }
@@ -548,7 +718,7 @@ function createConsoleHarness({ bridge = {} } = {}) {
         currentView: { mode: 'SFW', serviceOrders: [], serviceOrderIssues: [] },
         actionBridge: bridge,
         operationActivity,
-        serviceOrderHistoryStore: { list: () => [], stage: () => ({ localId: 'history_stage_1' }), markArchived: () => true, remove: () => true },
+        serviceOrderHistoryStore: historyStoreStub(),
         serviceLocalProfiles: [],
         serviceGenerationBatches: new Map(),
         selectedServiceProfileIds: new Set(),
@@ -620,29 +790,31 @@ test('移除损坏订单失败：detail 透传受控管线 reason 与错误码�
     }
 });
 
-test('确认成交失败：detail 携带边界字段级 reason；成功路径条目为 success 且不阻断原链路', async () => {
+test('确认开始失败：detail 携带逐人确认级 reason；成功路径条目为 success 且不阻断原链路', async () => {
     let startCalls = 0;
     const harness = createConsoleHarness({
         bridge: {
             async runServiceOrderStart() {
                 startCalls += 1;
                 return startCalls === 1
-                    ? { ok: false, status: 'rejected', code: 'service_order_start_invalid', reason: '结构化边界校验未通过：字段 NPC明确同意：尚有参与者未逐人确认' }
+                    ? { ok: false, status: 'rejected', code: 'service_order_start_invalid', reason: '结构化边界校验未通过：玩家与每位参与者必须逐人确认同一份合同' }
                     : { ok: true, status: 'committed' };
             },
             appendMeetupDraft: () => ({ ok: true }),
         },
     });
     try {
-        const order = { id: 'service_1', mode: 'SFW', status: '待确认', category: '熟人商品', profiles: [{ 昵称: '林澈' }] };
+        const order = { id: 'service_1', mode: 'SFW', status: '待确认', category: '默契恋人', profiles: [{ 昵称: '林澈' }] };
         await harness.page.startServiceOrder(order);
-        const failed = harness.operationActivity.snapshot().entries.find((item) => item.name === '确认成交');
+        const failed = harness.operationActivity.snapshot().entries.find((item) => item.name === '确认开始');
+        assert.ok(failed, '确认开始失败必须在控制台留下条目');
         assert.equal(failed.status, 'failure');
         assert.match(failed.detail, /service_order_start_invalid/u);
-        assert.match(failed.detail, /NPC明确同意/u);
+        assert.match(failed.detail, /逐人确认同一份合同/u);
+        assert.doesNotMatch(failed.detail, /npc_service_|service_1/u, 'detail 不得泄漏内部 UID');
 
         await harness.page.startServiceOrder(order);
-        const succeeded = harness.operationActivity.snapshot().entries.find((item) => item.name === '确认成交' && item.status === 'success');
+        const succeeded = harness.operationActivity.snapshot().entries.find((item) => item.name === '确认开始' && item.status === 'success');
         assert.ok(succeeded, '成功路径必须落成 success 条目');
         assert.equal(startCalls, 2, '控制台接线不得改变 runServiceOrderStart 调用链');
     } finally {

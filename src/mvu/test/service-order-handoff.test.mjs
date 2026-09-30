@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderRebookPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRepairPatch, buildServiceHistoryRolesDeletionPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
+import { buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderRebookPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderPausePatch, buildServiceOrderResumePatch, buildServiceOrderContinuePatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRepairPatch, buildServiceHistoryRolesDeletionPatch, validateControlledPatchAgainstState } from '../controlled-patch.js';
 import { normalizeGeneratedCandidate } from '../../recommendation/candidate.js';
 import { createEmptyBodyRelationshipCandidate } from '../body-relationship-candidate.js';
 import { createEmptyRelationshipNarrative } from '../relationship-narrative.js';
@@ -116,6 +116,7 @@ test('a complete terminal service order repeats exactly as a fresh pending order
         角色UID: 'npc_service_1', 角色UID列表: ['npc_service_1'], 内容模式: 'SFW', 服务分类: 'girl_shuren', 服务主题: '熟人商品：与林澈的文字协商',
         状态: '待确认', 发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '',
         合法结束条件: { 已满足: false, 摘要: '', 记录时间: '' },
+        撤回候选: { 已提出: false, 摘要: '', 记录时间: '' },
     });
     assert.equal(validateControlledPatchAgainstState(state, second.value.patch).ok, true);
 
@@ -223,9 +224,22 @@ test('service lifecycle permits only exact start, cancel, complete, finalize, an
     const start = buildServiceOrderStartPatch(pending, { orderUid: 'service_1', boundaries });
     assert.deepEqual(start.value.map(({ op, path }) => [op, path]), [
         ['replace', '/服务订单/service_1/状态'], ['replace', '/服务订单/service_1/开始时间'], ['replace', '/服务订单/service_1/已确认边界'],
+        ['replace', '/服务订单/service_1/合法结束条件'], ['add', '/服务订单/service_1/撤回候选'],
     ]);
     assert.equal(validateControlledPatchAgainstState(pending, start.value).ok, true);
-    assert.deepEqual(JSON.parse(start.value[2].value).服务信息, baseBoundaries.服务信息, 'the controlled contract keeps bounded service information while the history store omits it');
+    // v1 草稿被受控升级为 v2：旧 服务信息 只按 时长/排期/套餐/价格 映射进 安排，
+    // 评价/投诉/退款/服务者信用 没有 v2 通道，必须被丢弃而不是塞进不相干的键。
+    const startedContract = JSON.parse(start.value[2].value);
+    assert.equal(startedContract.协议版本, 2);
+    assert.equal(startedContract.修订号, 1);
+    assert.equal(startedContract.体验类型, '租借恋人');
+    assert.deepEqual(startedContract.安排, { 时长: '两小时', 时间窗: '本周末', 场景类型: '', 组合摘要: '基础陪伴', 虚构价格: '正文协商' });
+    assert.equal(Object.hasOwn(startedContract, '服务信息'), false, 'v2 合同不再保留旧 服务信息 容器');
+    assert.equal(start.value[2].value.includes('新服务者'), false, '旧服务者信用没有 v2 通道，不得被夹带持久化');
+    assert.deepEqual(startedContract.确认快照, {
+        玩家: { 状态: '已同意', 修订号: 1 },
+        角色: [{ 角色UID: 'npc_service_1', 状态: '已同意', 修订号: 1 }],
+    }, '逐 UID 确认快照由 builder 从订单参与者派生，UI 不提供身份');
     const forgedStart = structuredClone(start.value); forgedStart[0].value = '已完成';
     assert.equal(validateControlledPatchAgainstState(pending, forgedStart).ok, false);
 
@@ -237,6 +251,7 @@ test('service lifecycle permits only exact start, cancel, complete, finalize, an
     const complete = buildServiceOrderCompletePatch(pending, { orderUid: 'service_1' });
     assert.deepEqual(complete.value.map(({ op, path }) => [op, path]), [
         ['replace', '/服务订单/service_1/状态'], ['replace', '/服务订单/service_1/结束时间'], ['replace', '/服务订单/service_1/结束摘要'],
+        ['add', '/服务订单/service_1/撤回候选'],
     ]);
     assert.equal(validateControlledPatchAgainstState(pending, complete.value).ok, true);
     pending.服务订单.service_1.状态 = '已完成';
@@ -267,6 +282,122 @@ test('service lifecycle permits only exact start, cancel, complete, finalize, an
     const cancel = buildServiceOrderCancelPatch(cancelled, { orderUid: 'service_1' });
     assert.equal(validateControlledPatchAgainstState(cancelled, cancel.value).ok, true);
     assert.equal(buildServiceOrderCompletePatch(cancelled, { orderUid: 'service_1' }).code, 'service_order_complete_invalid');
+});
+
+/** Builds a state whose single order is already 进行中 under a confirmed v2 revision. */
+function activeContractState({ participants = 1 } = {}) {
+    const state = serviceState();
+    const names = ['林澈', '顾晴', '周岚'].slice(0, participants);
+    const handoff = buildServiceOrderHandoffPatch(state, { candidates: names.map((name) => adultCandidate(name)), categoryId: 'girl_shuren' });
+    assert.equal(handoff.ok, true);
+    for (const [index, uid] of handoff.value.npcUids.entries()) {
+        state.角色池[uid] = handoff.value.patch[index * 4].value;
+        state.正文记忆[uid] = '';
+        state.关系叙事[uid] = handoff.value.patch[index * 4 + 2].value;
+        state.正文关系候选[uid] = handoff.value.patch[index * 4 + 3].value;
+    }
+    state.服务订单.service_1 = structuredClone(handoff.value.patch.at(-3).value);
+    state.系统.UID计数器.角色 = participants;
+    state.系统.UID计数器.服务订单 = 1;
+    const boundaries = {
+        协议版本: 2, 修订号: 1, 内容模式: 'SFW', 体验类型: '租借恋人',
+        主题: '默契恋人的城市漫步', 允许项: '并肩散步与聊天', 排除项: '未协商的身体接触', 强度: '轻松陪伴', 隐私处理: '仅保留最小摘要',
+        安排: { 时长: '两小时', 时间窗: '周末午后', 场景类型: '城市漫步', 组合摘要: '基础陪伴', 虚构价格: '268 心动币' },
+        玩家已同意: true, NPC明确同意: names.map(() => true),
+    };
+    const start = buildServiceOrderStartPatch(state, { orderUid: 'service_1', boundaries });
+    assert.equal(start.ok, true, start.reason ?? '');
+    assert.equal(validateControlledPatchAgainstState(state, start.value).ok, true);
+    state.服务订单.service_1.状态 = '进行中';
+    state.服务订单.service_1.开始时间 = start.value[1].value;
+    state.服务订单.service_1.已确认边界 = start.value[2].value;
+    return { state, boundaries, names };
+}
+
+test('a body withdrawal candidate pauses instead of ending, and resuming demands a brand-new revision confirmed by everyone', () => {
+    const { state, boundaries, names } = activeContractState({ participants: 2 });
+    // 正文只能提出撤回候选；状态迁移仍由受控 builder 决定。
+    state.服务订单.service_1.撤回候选 = { 已提出: true, 摘要: '一位参与者表示想先停下。', 记录时间: '正文最新回合' };
+    const pause = buildServiceOrderPausePatch(state, { orderUid: 'service_1' });
+    assert.equal(pause.ok, true, pause.reason ?? '');
+    assert.deepEqual(pause.value.map(({ op, path }) => [op, path]), [
+        ['replace', '/服务订单/service_1/状态'], ['replace', '/服务订单/service_1/合法结束条件'], ['add', '/服务订单/service_1/撤回候选'],
+    ]);
+    assert.equal(pause.value[0].value, '暂停中');
+    assert.deepEqual(pause.value[2].value, { 已提出: false, 摘要: '', 记录时间: '' }, '暂停时撤回候选必须复位，不留待处理信号');
+    assert.equal(validateControlledPatchAgainstState(state, pause.value).ok, true);
+    assert.equal(pause.value.some(({ path }) => path.endsWith('/已确认边界')), false, '暂停不得改写已确认合同，旧修订仍需可读以派生下一修订');
+
+    state.服务订单.service_1.状态 = '暂停中';
+    state.服务订单.service_1.撤回候选 = { 已提出: false, 摘要: '', 记录时间: '' };
+
+    // 旧修订号不能静默恢复：修改任何边界都必须递增修订号并让全部旧确认失效。
+    const staleRevision = buildServiceOrderResumePatch(state, { orderUid: 'service_1', boundaries: structuredClone(boundaries) });
+    assert.equal(staleRevision.ok, false);
+    assert.equal(staleRevision.code, 'service_order_resume_invalid');
+    assert.equal(staleRevision.reason, '新修订合同校验未通过：字段 修订号：与本次受控修订不一致');
+
+    const revised = { ...structuredClone(boundaries), 修订号: 2, 排除项: '本次新增：不去人多的场所' };
+    const partialConsent = { ...structuredClone(revised), NPC明确同意: [true, false] };
+    assert.equal(buildServiceOrderResumePatch(state, { orderUid: 'service_1', boundaries: partialConsent }).reason, '新修订合同校验未通过：玩家与每位参与者必须逐人确认同一份合同');
+    const playerOnly = { ...structuredClone(revised), 玩家已同意: false };
+    assert.equal(buildServiceOrderResumePatch(state, { orderUid: 'service_1', boundaries: playerOnly }).ok, false, '玩家自身也必须重新确认新修订');
+
+    const resume = buildServiceOrderResumePatch(state, { orderUid: 'service_1', boundaries: revised });
+    assert.equal(resume.ok, true, resume.reason ?? '');
+    assert.deepEqual(resume.value.map(({ op, path }) => [op, path]), [
+        ['replace', '/服务订单/service_1/状态'], ['replace', '/服务订单/service_1/已确认边界'],
+        ['replace', '/服务订单/service_1/合法结束条件'], ['add', '/服务订单/service_1/撤回候选'],
+    ]);
+    assert.equal(resume.value[0].value, '进行中');
+    const resumedContract = JSON.parse(resume.value[1].value);
+    assert.equal(resumedContract.修订号, 2);
+    assert.equal(resumedContract.确认快照.玩家.修订号, 2);
+    assert.deepEqual(resumedContract.确认快照.角色, names.map((_, index) => ({ 角色UID: `npc_service_${index + 1}`, 状态: '已同意', 修订号: 2 })), '新修订的逐 UID 确认由 builder 从订单参与者派生');
+    assert.equal(validateControlledPatchAgainstState(state, resume.value).ok, true);
+
+    // 暂停中也允许受控中止：终态为 已中止 而不是 已取消。
+    const abort = buildServiceOrderCancelPatch(state, { orderUid: 'service_1' });
+    assert.equal(abort.ok, true, abort.reason ?? '');
+    assert.equal(abort.value[0].value, '已中止');
+    assert.equal(validateControlledPatchAgainstState(state, abort.value).ok, true);
+});
+
+test('a body completion candidate never auto-settles: the player may reject it and keep the same contract running', () => {
+    const { state } = activeContractState();
+    assert.equal(buildServiceOrderContinuePatch(state, { orderUid: 'service_1' }).code, 'service_order_continue_invalid', '没有完成候选时无可拒绝对象');
+    state.服务订单.service_1.合法结束条件 = { 已满足: true, 摘要: '正文认为本次已到收尾。', 记录时间: '正文最新回合' };
+
+    const keepGoing = buildServiceOrderContinuePatch(state, { orderUid: 'service_1' });
+    assert.equal(keepGoing.ok, true, keepGoing.reason ?? '');
+    assert.deepEqual(keepGoing.value, [{ op: 'replace', path: '/服务订单/service_1/合法结束条件', value: { 已满足: false, 摘要: '', 记录时间: '' } }]);
+    assert.equal(keepGoing.value.some(({ path }) => path.endsWith('/状态')), false, '拒绝完成候选绝不迁移状态，也不写结束时间或摘要');
+    assert.equal(validateControlledPatchAgainstState(state, keepGoing.value).ok, true);
+
+    // 同一状态下玩家也可以确认结单；两条路径互斥且都必须是受控精确迁移。
+    const settle = buildServiceOrderCompletePatch(state, { orderUid: 'service_1' });
+    assert.equal(settle.ok, true, settle.reason ?? '');
+    assert.equal(settle.value[0].value, '已完成');
+    assert.equal(validateControlledPatchAgainstState(state, settle.value).ok, true);
+});
+
+test('the UI can only clear the body-owned completion and withdrawal signals, never fabricate a satisfied one', () => {
+    const { state } = activeContractState();
+    for (const [field, forged] of [
+        ['合法结束条件', { 已满足: true, 摘要: '界面伪造的结束信号。', 记录时间: '现在' }],
+        ['撤回候选', { 已提出: true, 摘要: '界面伪造的撤回信号。', 记录时间: '现在' }],
+    ]) {
+        for (const op of ['replace', 'add']) {
+            const forgedPatch = [{ op, path: `/服务订单/service_1/${field}`, value: forged }];
+            assert.equal(validateControlledPatchAgainstState(state, forgedPatch).code, 'patch_path_not_whitelisted', `界面不得以 ${op} 伪造 ${field}`);
+        }
+    }
+    // 复位到空信号是界面唯一允许的写法，但仍要通过第二道「精确迁移」门禁：
+    // 没有待拒绝的完成候选时，孤立的复位不是任何合法迁移。
+    const lonelyClear = [{ op: 'replace', path: '/服务订单/service_1/合法结束条件', value: { 已满足: false, 摘要: '', 记录时间: '' } }];
+    assert.equal(validateControlledPatchAgainstState(state, lonelyClear).code, 'patch_not_exact_ui_transition');
+    state.服务订单.service_1.合法结束条件 = { 已满足: true, 摘要: '正文认为本次已到收尾。', 记录时间: '正文最新回合' };
+    assert.equal(validateControlledPatchAgainstState(state, lonelyClear).ok, true, '存在完成候选时，同一复位就是玩家拒绝结单的受控迁移');
 });
 
 test('three-person handoff derives ordered service roles atomically and rejects a fourth or duplicated name', () => {

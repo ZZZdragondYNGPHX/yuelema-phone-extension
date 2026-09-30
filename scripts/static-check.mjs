@@ -6,7 +6,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const requiredFiles = [
     'manifest.json', 'index.js', 'style.css', 'README.md', 'AGENTS.md', 'RELEASE_REVIEW.md', 'test/extension-lifecycle.test.mjs',
-    'src/app-shell.js', 'src/host-extension-update.js', 'src/update-restart.js', 'src/test/update-restart.test.mjs', 'src/service-order-history-store.js', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/onboarding/onboarding-flow.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
+    'src/app-shell.js', 'src/host-extension-update.js', 'src/update-restart.js', 'src/test/update-restart.test.mjs', 'src/service-order-history-store.js', 'src/service/service-order-contract.js', 'src/service/service-ui-contract.js', 'src/service/test/service-order-contract.test.mjs', 'src/service/test/service-ui-contract.test.mjs', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/onboarding/onboarding-flow.js', 'src/settings-panel.js', 'src/ui/avatar-view.js', 'src/ui/operation-activity.js', 'src/ui/test/avatar-view.test.mjs', 'src/ui/test/operation-activity.test.mjs',
     'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
     'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/nsfw-consent.js', 'src/mvu/body-relationship-candidate.js', 'src/mvu/realistic-chat.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/nsfw-consent.test.mjs', 'src/mvu/test/body-relationship-candidate.test.mjs', 'src/mvu/test/realistic-chat.test.mjs', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.1.2') fail('manifest.version 必须与扩展版本 1.1.2 统一');
+if (manifest.version !== '1.2.0') fail('manifest.version 必须与扩展版本 1.2.0 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -57,7 +57,7 @@ console.log('✓ manifest 基础字段与 lifecycle hooks');
 
 const sourceRelativeFiles = [
     'index.js', 'test/extension-lifecycle.test.mjs',
-    'src/app-shell.js', 'src/host-extension-update.js', 'src/update-restart.js', 'src/test/update-restart.test.mjs', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/onboarding/onboarding-flow.js', 'src/settings-panel.js',
+    'src/app-shell.js', 'src/host-extension-update.js', 'src/update-restart.js', 'src/test/update-restart.test.mjs', 'src/service-order-history-store.js', 'src/service/service-order-contract.js', 'src/service/service-ui-contract.js', 'src/service/test/service-order-contract.test.mjs', 'src/service/test/service-ui-contract.test.mjs', 'src/dom.js', 'src/action-bridge.js', 'src/ui-model.js', 'src/onboarding/onboarding-flow.js', 'src/settings-panel.js',
     'src/pages/shared.js', 'src/pages/discover.js', 'src/pages/match.js', 'src/pages/messages.js', 'src/pages/chat.js', 'src/pages/community.js', 'src/pages/service.js', 'src/pages/profile.js',
     'src/mvu/json-pointer.js', 'src/mvu/relationship-narrative.js', 'src/mvu/nsfw-consent.js', 'src/mvu/body-relationship-candidate.js', 'src/mvu/realistic-chat.js', 'src/mvu/controlled-patch.js', 'src/mvu/adapter.js', 'src/mvu/readiness.js', 'src/mvu/test/nsfw-consent.test.mjs', 'src/mvu/test/body-relationship-candidate.test.mjs', 'src/mvu/test/realistic-chat.test.mjs', 'src/mvu/test/mvu-adapter.test.mjs', 'src/mvu/test/readiness.test.mjs',
     'src/llm/session-key-store.js', 'src/llm/openai-compatible-client.js', 'src/llm/image-generation-client.js', 'src/llm/test/session-key-store.test.mjs', 'src/llm/test/openai-compatible-client.test.mjs', 'src/llm/test/image-generation-client.test.mjs',
@@ -122,7 +122,7 @@ const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
 const onboardingFlow = await readFile(resolve(root, 'src/onboarding/onboarding-flow.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.1.2'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.1.2 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.2.0'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.2.0 统一（必须位于壳层 app-shell.js）');
 if (!appShellCore.includes("import { createOnboardingFlow } from './onboarding/onboarding-flow.js'")
     || !appShellCore.includes('saveProfile: (profile) => actionBridge.runSavePlayerPublicProfile(profile)')
     || !uiModel.includes('玩家已建档 === false')
@@ -384,7 +384,7 @@ const imageGenerationClient = await readFile(resolve(root, 'src/llm/image-genera
 const drawingDnaRules = await readFile(resolve(root, 'src/recommendation/drawing-dna-rules.js'), 'utf8');
 if (!index.includes('createImageGenerationClient') || !actionBridge.includes('generateConversationImage')) fail('缺少生图客户端注入或对话生图桥接');
 if (!appShell.includes("'settings_image_generation'") || !appShell.includes("'settings_image_cache'") || !appShell.includes('buildConversationImageControls') || !appShell.includes('buildImageDirectiveCard') || !appShell.includes('buildConversationImageCachePage') || !appShell.includes('openImageOriginalDialog') || !appShell.includes('generateConversationImage')) fail('缺少生图设置 / 缓存路由、会话开关、结构化指令或原图 UI 接线');
-if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 23') || !settingsStore.includes('IMAGE_CLIENT_MODES') || !settingsStore.includes('NAI_SAMPLER_OPTIONS') || !settingsStore.includes('NAI_NOISE_SCHEDULE_OPTIONS')
+if (!settingsStore.includes('SETTINGS_SCHEMA_VERSION = 24') || !settingsStore.includes('IMAGE_CLIENT_MODES') || !settingsStore.includes('NAI_SAMPLER_OPTIONS') || !settingsStore.includes('NAI_NOISE_SCHEDULE_OPTIONS')
     || !settingsStore.includes('openaiBaseUrl') || !settingsStore.includes('openaiWidth') || !settingsStore.includes('comfyBaseUrl') || !settingsStore.includes('promptPresets') || !settingsStore.includes('activePromptPresetIds') || !settingsStore.includes('getImageGenerationSettings') || !settingsStore.includes('getConversationImageGenerationSettings')) {
     fail('缺少生图设置 schema、三接口独立提示词预设、客户端模式、NAI 固定选项、OpenAI/ComfyUI 专属配置或逐会话自动生图隔离');
 }
