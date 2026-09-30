@@ -109,7 +109,32 @@ test('SFW 内置提示词升级为恋爱 App 质感的指导式文案（v15 基�
     assert.match(byId.get(BUILTIN_PROMPT_PRESET_IDS.voiceMatchSfw).content, /不读取、不考虑、不假设玩家的性别、性取向/, '描述匹配必须保持纯关键词驱动、不读玩家资料');
     assert.match(byId.get(BUILTIN_PROMPT_PRESET_IDS.recommendationSfw).content, /性别与性取向必须服从程序给出的基础匹配硬条件/, '推荐刷新必须尊重候选人性别硬条件');
     assert.match(byId.get(BUILTIN_PROMPT_PRESET_IDS.privateChatSfw).content, /只要尊重已知边界，就不是冒犯/, '私聊必须带 SFW 版友好直白宽容条款');
-    assert.match(byId.get(BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw).content, /租借陪伴服务者/, '约伴 SFW 必须是租借伴侣式日常/恋爱陪伴定位');
+    assert.match(byId.get(BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw).content, /虚构租借恋人/, '约伴 SFW 必须是虚构成年租借恋人定位');
+});
+
+test('约伴内置提示词分别落实租借恋人与成年约炮产品合同', () => {
+    const byId = new Map(createBuiltinPromptPresets().map((preset) => [preset.id, preset]));
+    const sfw = byId.get(BUILTIN_PROMPT_PRESET_IDS.serviceProfileSfw);
+    const nsfw = byId.get(BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw);
+
+    assert.match(sfw.name, /租借恋人/u);
+    assert.match(sfw.content, /明确成年的虚构租借恋人/u);
+    assert.match(sfw.content, /针对当次安排/u);
+    assert.match(nsfw.name, /成年约炮对象/u);
+    assert.match(nsfw.content, /明确成年、虚构且自主表达约炮意向/u);
+    assert.match(nsfw.content, /当次共识/u);
+
+    for (const preset of [sfw, nsfw]) {
+        assert.match(preset.content, /双向性别\/性取向兼容/u);
+        assert.match(preset.content, /同意可撤回/u);
+        assert.match(preset.content, /隐私/u);
+        assert.match(preset.content, /不得自动安排、发送或执行现实行动/u);
+    }
+    assert.doesNotMatch(
+        nsfw.content,
+        /商品|服务者|价格|退款|投诉|信用|成交|成人菜单/u,
+        'NSFW 邀约不得残留有偿交易化表述',
+    );
 });
 
 test('NSFW 内置提示词以明确成年、自愿的全尺度色情表达为默认', () => {
@@ -149,7 +174,7 @@ test('NSFW 内置提示词从许可式升级为指导式：各职能带具体情
         [BUILTIN_PROMPT_PRESET_IDS.chatSummaryNsfw]: [/关键节点/, /称呼/, /兴奋点/, /未完成悬念/],
         [BUILTIN_PROMPT_PRESET_IDS.characterCompletionNsfw]: [/咬合/, /具体场景、动作、节奏/, /身体反应/, /口癖/],
         [BUILTIN_PROMPT_PRESET_IDS.characterAuthoringNsfw]: [/人格化/, /延伸或反差/, /具体场景、动作、器官/, /钩子/, /欲望层次/],
-        [BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw]: [/动作、器官、节奏/, /成人菜单/, /招牌玩法/, /互相咬合/],
+        [BUILTIN_PROMPT_PRESET_IDS.serviceProfileNsfw]: [/自主表达约炮意向/, /当次共识/, /动作、器官、节奏/, /互相咬合/],
         [BUILTIN_PROMPT_PRESET_IDS.soulMatchNsfw]: [/具体欲望维度/, /身体部位/, /玩法组合/, /同一种色/],
         [BUILTIN_PROMPT_PRESET_IDS.voiceMatchNsfw]: [/主导或顺从/, /身体部位/, /玩法组合/, /节奏/],
         [BUILTIN_PROMPT_PRESET_IDS.imageMatchNsfw]: [/构图/, /光线/, /身体细节/, /完整色情场景/],

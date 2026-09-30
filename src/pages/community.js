@@ -216,7 +216,7 @@ export function createCommunityPage(ctx) {
         persistCommunityTabPreference(tabId);
         ctx.setActivePage(tabId === 'chat' ? 'group_chat' : 'group_forum');
     }
-    // 两个 tab 页共用的页头：标题「社区」+ SegmentedControl；广场侧提供明确可见的设置入口（§8.2-3）。
+    // 两个 tab 页共用的页头：标题「社区」+ SegmentedControl；广场侧带明确可见的设置入口（§8.2-3）。
     function buildCommunityTopbar(activeTabId) {
         const bar = element('div', { className: 'yl-community-topbar' });
         bar.appendChild(element('h2', { className: 'yl-community-title', text: '社区' }));

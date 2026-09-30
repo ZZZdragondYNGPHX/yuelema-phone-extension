@@ -107,13 +107,14 @@ test('确认成交失败：边界字段级 reason（含参与者逐人确认与�
     noConsent.NPC明确同意 = [false];
     const consentFailure = buildServiceOrderStartPatch(state, { orderUid: 'service_1', boundaries: noConsent });
     assert.equal(consentFailure.code, 'service_order_start_invalid');
-    assert.equal(consentFailure.reason, '结构化边界校验未通过：字段 NPC明确同意：尚有参与者未逐人确认');
+    assert.equal(consentFailure.reason, '结构化边界校验未通过：玩家与每位参与者必须逐人确认同一份合同');
+    assert.equal(/npc_service_1|service_1/u.test(consentFailure.reason), false, 'reason 不得泄漏内部 UID');
 
     const emptyTopic = validBoundaries();
     emptyTopic.主题 = '   ';
     const topicFailure = buildServiceOrderStartPatch(state, { orderUid: 'service_1', boundaries: emptyTopic });
     assert.equal(topicFailure.code, 'service_order_start_invalid');
-    assert.equal(topicFailure.reason, '结构化边界校验未通过：字段 主题：不能为空');
+    assert.equal(topicFailure.reason, '结构化边界校验未通过：主题、允许项、排除项、强度与隐私处理均须为 1–240 字纯文本');
 
     const missingOrder = buildServiceOrderStartPatch(state, { orderUid: 'service_99', boundaries: validBoundaries() });
     assert.equal(missingOrder.code, 'service_order_start_invalid');
@@ -121,11 +122,18 @@ test('确认成交失败：边界字段级 reason（含参与者逐人确认与�
 });
 
 test('取消/结单/归档失败的 reason 说明实际订单状态或缺失字段', () => {
+    // 合同 v2 起，进行中/暂停中订单可受控中止（终态 已中止），但必须先具备开始时间与边界合同。
     const state = pendingOrderState();
     state.服务订单.service_1.状态 = '进行中';
     const cancel = buildServiceOrderCancelPatch(state, { orderUid: 'service_1' });
     assert.equal(cancel.code, 'service_order_cancel_invalid');
-    assert.equal(cancel.reason, '只能取消 待确认 订单，实际状态为 进行中');
+    assert.equal(cancel.reason, '开放订单缺少开始时间或边界合同，无法确认安全终止范围');
+
+    const terminal = pendingOrderState();
+    terminal.服务订单.service_1.状态 = '已完成';
+    const cancelTerminal = buildServiceOrderCancelPatch(terminal, { orderUid: 'service_1' });
+    assert.equal(cancelTerminal.code, 'service_order_cancel_invalid');
+    assert.equal(cancelTerminal.reason, '只能取消待确认订单或中止开放订单，实际状态为 已完成');
 
     const pending = pendingOrderState();
     const complete = buildServiceOrderCompletePatch(pending, { orderUid: 'service_1' });

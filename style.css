@@ -306,7 +306,7 @@
 .yl-sheet { position: fixed; z-index: 10130; inset: 0; }
 .yl-sheet[hidden] { display: none; }
 /* 玻璃 blur 3 处之三：弹层遮罩（sheet 遮罩与图片关键词遮罩共用同一条声明） */
-.yl-sheet__scrim, .yl-image-keyword-backdrop {
+.yl-sheet__scrim, .yl-image-keyword-backdrop, .yl-service-sheet-backdrop {
     background: var(--yl-scrim);
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
@@ -3549,12 +3549,75 @@
 .yl-service-hub .yl-settings-summary, .yl-service-hub .yl-phone-page-description { color: var(--yl-luxe-text-2); }
 .yl-service-hub .yl-settings-section { border-color: var(--yl-luxe-border); background: var(--yl-luxe-surface); }
 .yl-service-hub .yl-phone-placeholder, .yl-service-hub .yl-console-empty { border-color: var(--yl-luxe-border); color: var(--yl-luxe-text-2); background: color-mix(in srgb, var(--yl-luxe-surface) 72%, transparent); }
+.yl-service-trust-line { color: var(--yl-luxe-gold) !important; font-weight: 700; }
+.yl-service-inspiration, .yl-service-recommendation-strip {
+    display: grid;
+    gap: var(--yl-space-2);
+    padding: var(--yl-space-3);
+    border: 1px solid var(--yl-luxe-border);
+    border-radius: var(--yl-radius-card);
+    background: linear-gradient(145deg, color-mix(in srgb, var(--yl-luxe-gold) 8%, transparent), transparent 58%), var(--yl-luxe-surface);
+}
+.yl-service-theme-grid, .yl-service-scenario-grid, .yl-service-atlas-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--yl-space-2); }
+.yl-service-theme-grid .yl-service-card, .yl-service-scenario-grid .yl-service-card, .yl-service-atlas-grid .yl-service-card { box-shadow: none; }
+.yl-service-filter-row { grid-column: 1 / -1; display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 4px; scrollbar-width: thin; }
+.yl-service-filter-chip, .yl-service-selection-chip {
+    min-height: 34px;
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    border: 1px solid var(--yl-luxe-border);
+    border-radius: var(--yl-radius-pill);
+    color: var(--yl-luxe-text-2);
+    background: transparent;
+    font-size: var(--yl-type-xs);
+}
+.yl-service-filter-chip.is-active { border-color: var(--yl-luxe-gold); color: var(--yl-luxe-gold); background: color-mix(in srgb, var(--yl-luxe-gold) 12%, transparent); }
+.yl-service-selection-tray {
+    position: sticky;
+    z-index: 5;
+    bottom: var(--yl-space-2);
+    display: grid;
+    gap: var(--yl-space-2);
+    padding: var(--yl-space-3);
+    border: 1px solid color-mix(in srgb, var(--yl-luxe-gold) 48%, transparent);
+    border-radius: var(--yl-radius-card);
+    color: var(--yl-luxe-text);
+    background: color-mix(in srgb, var(--yl-luxe-bg) 92%, transparent);
+    box-shadow: var(--yl-shadow-2);
+}
+.yl-service-selection-tray > p { color: var(--yl-luxe-text-2); font-size: var(--yl-type-xs); line-height: 1.5; }
+.yl-service-selection-chip { color: var(--yl-luxe-gold); }
+.yl-service-sheet-backdrop {
+    position: fixed;
+    z-index: 1000;
+    inset: 0;
+    display: grid;
+    align-items: end;
+    padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+}
+.yl-service-candidate-sheet {
+    display: grid;
+    width: min(100%, 620px);
+    max-height: min(82dvh, 720px);
+    gap: var(--yl-space-3);
+    justify-self: center;
+    overflow-y: auto;
+    padding: var(--yl-space-4);
+    border: 1px solid color-mix(in srgb, var(--yl-luxe-gold) 52%, transparent);
+    border-radius: 22px 22px var(--yl-radius-card) var(--yl-radius-card);
+    color: var(--yl-luxe-text);
+    background: var(--yl-luxe-bg);
+    box-shadow: var(--yl-shadow-3);
+}
+.yl-service-candidate-sheet h3 { font-size: var(--yl-type-title); }
+.yl-service-candidate-sheet > p { color: var(--yl-luxe-text-2); line-height: 1.6; }
+.yl-service-sheet-close { justify-self: end; }
 @media (max-width: 430px) {
     .yl-service-search, .yl-service-xp-search, .yl-service-search-form { grid-template-columns: minmax(0, 1fr) auto; }
     .yl-service-search-submit, .yl-service-xp-search-submit { grid-column: 1 / -1; width: 100%; }
     .yl-service-category-row { display: flex; overflow-x: auto; padding-bottom: var(--yl-space-1); }
     .yl-service-category-row .yl-service-category { flex: 0 0 136px; }
-    .yl-service-slot-row, .yl-service-grid-2 { grid-template-columns: minmax(0, 1fr); }
+    .yl-service-slot-row, .yl-service-grid-2, .yl-service-theme-grid, .yl-service-scenario-grid, .yl-service-atlas-grid { grid-template-columns: minmax(0, 1fr); }
 }
 /* —— P3-G 三席生成等待：等待文案轮播换 luxe 配色 —— */
 .yl-service-slot--loading .yl-wait-feedback { margin-top: var(--yl-space-2); }
@@ -5209,7 +5272,7 @@
 /* —— 宿主性能开关 —— */
 body.no-blur .yl-phone-extension .yl-phone-nav,
 body.no-blur .yl-phone-extension .yl-phone-page > .yl-page-heading,
-body.no-blur .yl-phone-extension :is(.yl-sheet__scrim, .yl-image-keyword-backdrop) {
+body.no-blur .yl-phone-extension :is(.yl-sheet__scrim, .yl-image-keyword-backdrop, .yl-service-sheet-backdrop) {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
 }

@@ -57,6 +57,7 @@ function readResultWithPlayer(nickname = '原玩家ID') {
 }
 
 function click(node) {
+    assert.ok(node, '要点击的控件必须存在');
     node.dispatchEvent(new Event('click'));
 }
 
@@ -505,7 +506,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             click(version());
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
-            assert.match(dialog.textContent, /当前版本：1.1.2/u);
+            assert.match(dialog.textContent, /当前版本：1.2.0/u);
         }
         const modeEntry = miniDom.document.querySelector('[name="about-content-mode-entry"]');
         assert.ok(modeEntry, '连续五次版本信息后应显示内容模式隐藏入口');
@@ -523,14 +524,12 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
             const dialog = miniDom.document.querySelector('.yl-operation-dialog');
             assert.equal(dialog.hidden, false);
             assert.match(dialog.textContent, /最近三次更新/u);
-            assert.match(dialog.textContent, /v1.1.2/u);
+            assert.match(dialog.textContent, /v1\.2\.0/u);
+            assert.match(dialog.textContent, /心动租约/u);
+            assert.match(dialog.textContent, /夜色邀约/u);
+            assert.match(dialog.textContent, /完成候选/u, '更新日志必须说明结单改为玩家确认');
+            assert.match(dialog.textContent, /v1\.1\.2/u);
             assert.match(dialog.textContent, /切换页面不再呈现整台小手机刷新/u);
-            assert.match(dialog.textContent, /社区回帖显示玩家当前昵称/u);
-            assert.match(dialog.textContent, /v1.1.1/u);
-            assert.match(dialog.textContent, /飞出屏幕/u);
-            assert.match(dialog.textContent, /双实例/u);
-            assert.match(dialog.textContent, /v1.1.0/u);
-            assert.match(dialog.textContent, /自动重载页面并重开小手机/u);
         }
         const serviceEntry = miniDom.document.querySelector('[name="about-service-entry"]');
         assert.ok(serviceEntry, '连续五次更新日志后应显示专属服务入口');
@@ -542,9 +541,9 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         const primaryNavPages = miniDom.document.querySelectorAll('.yl-phone-nav-item').map((node) => node.dataset.page);
         assert.ok(primaryNavPages.indexOf('groups') < primaryNavPages.indexOf('service_hub'));
         assert.ok(primaryNavPages.indexOf('service_hub') < primaryNavPages.indexOf('profile'));
-        assert.match(miniDom.document.body.textContent, /今日心动档案/u);
+        assert.match(miniDom.document.body.textContent, /心动租约/u);
         const serviceTabs = () => miniDom.document.querySelectorAll('.yl-service-tab');
-        assert.deepEqual(serviceTabs().map((node) => node.textContent), ['精选', '订单', '记录']);
+        assert.deepEqual(serviceTabs().map((node) => node.textContent), ['租伴', '租约', '记录']);
         assert.deepEqual(
             serviceTabs().map((tab) => tab.querySelector('svg')?.dataset.icon),
             ['sparkle', 'service_hub', 'clock'],
@@ -572,11 +571,11 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         assert.equal(completedProfiles.length, 3);
         assert.deepEqual(completedProfiles.map((node) => node.querySelector('strong')?.textContent), ['林澄', '顾晴', '周岚'], '重复昵称不得进入最终三席');
         assert.match(miniDom.document.body.textContent, /选择此角色/u);
-        assert.match(miniDom.document.body.textContent, /以已选 0 位创建服务订单/u);
+        assert.match(miniDom.document.body.textContent, /发起租约 · 0 位/u);
         click(serviceTabs()[0]);
         /* P2-D：发布面板收纳在精选底部折叠区，需先展开 */
         click(miniDom.document.querySelector('[name="service-publication-toggle"]'));
-        assert.match(miniDom.document.body.textContent, /服务者发布服务/u);
+        assert.match(miniDom.document.body.textContent, /本地候选批次/u);
         assert.ok(miniDom.document.querySelector('[name="service-published-open-girl_shuren"]'));
         assert.ok(miniDom.document.querySelector('[name="service-published-refresh-girl_shuren"]'));
         click(miniDom.document.querySelector('[name="service-published-open-girl_shuren"]'));
@@ -586,8 +585,8 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         serviceState.软件.内容模式 = 'NSFW';
         mounted.refreshState();
         click(serviceTabs()[0]);
-        assert.match(miniDom.document.body.textContent, /夜色心动档案/u);
-        assert.match(miniDom.document.body.textContent, /熟人性爱幻想/u);
+        assert.match(miniDom.document.body.textContent, /夜色邀约/u);
+        assert.match(miniDom.document.body.textContent, /熟人默契/u);
         assert.equal(miniDom.document.querySelectorAll('.yl-phone-extension').find((node) => node.id === 'ylm-test-about').dataset.contentMode, 'NSFW');
         assert.doesNotMatch(miniDom.document.body.textContent, /林澄/u, 'SFW 候补不得泄漏到 NSFW 列表');
         serviceState.软件.内容模式 = 'SFW';
@@ -606,34 +605,34 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         secondProfileSelect.checked = true;
         secondProfileSelect.dispatchEvent(new Event('change'));
         await flushUi();
-        assert.match(miniDom.document.body.textContent, /以已选 2 位创建服务订单/u);
+        assert.match(miniDom.document.body.textContent, /发起租约 · 2 位/u);
         const createSelected = miniDom.document.querySelector('[name="service-order-create-selected"]');
         click(createSelected);
         await flushUi();
         assert.equal(serviceHandoffCalls, 1);
         assert.equal(handoffDrafts.length, 1);
-        assert.match(handoffDrafts[0], /【本次新建的待确认订单】/u);
+        assert.match(handoffDrafts[0], /【本次新建的待确认约伴】/u);
         assert.doesNotMatch(handoffDrafts[0], /service_1/u, '正文草稿不得暴露内部订单 UID');
-        assert.match(handoffDrafts[0], /与「林澄、顾晴」体验「熟人商品」租借陪伴主题/u);
+        assert.match(handoffDrafts[0], /与「林澄、顾晴」体验「默契恋人」的一段虚构租借恋人时光/u);
         assert.doesNotMatch(miniDom.document.body.textContent, /npc_service_|service_\d/u, '页面正文不得显示内部 UID');
         assert.doesNotMatch(handoffDrafts[0], /自动发送/u);
         click(serviceTabs()[1]);
-        /* 订单 tab 先显示摘要列表；点开详情后才出现 Stepper（详情页含对象公开资料与确认成交/取消订单）。 */
+        /* 订单 tab 先显示摘要列表；点开详情后才出现 Stepper（详情页含对象公开资料与逐人签约/取消）。 */
         click(miniDom.document.querySelector('[name="service-order-open-detail"]'));
-        /* P2-D：结构化服务信息位于订单 Stepper 第 2 步 */
-        assert.equal(miniDom.document.querySelector('[name="service-information-价格"]'), null, '第 1 步不应预渲染服务信息表单');
+        /* 合同 v2：结构化「本轮安排」位于 Stepper 第 2 步，旧交易字段已无通道 */
+        assert.equal(miniDom.document.querySelector('[name="service-arrangement-时长"]'), null, '第 1 步不应预渲染本轮安排表单');
         click(miniDom.document.querySelector('[name="service-step-next"]'));
-        assert.ok(miniDom.document.querySelector('[name="service-information-价格"]'), 'pending-order editor must expose structured service information');
-        assert.ok(miniDom.document.querySelector('[name="service-information-服务者信用"]'));
+        assert.ok(miniDom.document.querySelector('[name="service-arrangement-时长"]'), 'pending-order editor must expose the structured v2 arrangement');
+        assert.ok(miniDom.document.querySelector('[name="service-arrangement-虚构价格"]'), 'SFW 才有剧情内虚构体验价');
+        assert.equal(miniDom.document.querySelector('[name="service-information-服务者信用"]'), null, '旧服务者信用字段不得回流');
         assert.match(miniDom.document.body.textContent, /林澄/u);
-        assert.match(miniDom.document.body.textContent, /待确认/u);
+        assert.match(miniDom.document.body.textContent, /待签约/u);
 
         serviceState.服务订单.service_1.状态 = '进行中';
         serviceState.服务订单.service_1.开始时间 = '已开始';
         serviceState.服务订单.service_1.已确认边界 = 'hidden-boundary-must-not-render';
         mounted.refreshState();
-        assert.match(miniDom.document.body.textContent, /进行中/u);
-        assert.match(miniDom.document.body.textContent, /等待正文写入完整结束条件/u);
+        assert.match(miniDom.document.body.textContent, /约会进行中/u);
         assert.equal(miniDom.document.querySelector('[name="service-order-complete"]'), null, 'without the body signal the UI must not stage a false completed history record');
         assert.doesNotMatch(miniDom.document.body.textContent, /hidden-boundary-must-not-render/u);
 
@@ -642,7 +641,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         serviceState.服务订单.service_1.结束摘要 = '双方已确认结束，未包含现实信息。';
         serviceHistory.push({ localId: 'history_service_1', orderUid: 'service_1', roleUid: 'npc_service_1', roleUids: ['npc_service_1', 'npc_service_2'], status: '已完成', archiveState: 'archived', mode: 'SFW', categoryId: 'girl_shuren', category: '熟人商品', topic: '熟人商品：与林澄、顾晴的文字协商', initiatedAt: '待正文确认', startedAt: '已开始', endedAt: '已结束', summary: '双方已确认结束，未包含现实信息。', profile: { 昵称: '林澄', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }, profiles: [{ 昵称: '林澄', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }, { 昵称: '顾晴', 年龄段: '25-29', 简介: '喜欢看展和散步。', 兴趣标签: ['电影'] }] });
         mounted.refreshState();
-        assert.match(miniDom.document.body.textContent, /暂无进行中的服务/u);
+        assert.match(miniDom.document.body.textContent, /暂无进行中的约伴/u);
         click(serviceTabs()[2]);
         assert.match(miniDom.document.body.textContent, /林澄/u);
         /* P2-D：历史动作先开行尾「⋯」菜单 */
@@ -653,7 +652,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
         await flushUi();
         assert.equal(serviceRepeatCalls, 1);
         assert.equal(handoffDrafts.length, 2);
-        assert.match(handoffDrafts[1], /【本次新建的待确认订单】/u);
+        assert.match(handoffDrafts[1], /【本次新建的待确认约伴】/u);
         assert.doesNotMatch(handoffDrafts[1], /service_2/u, '复约草稿不得暴露内部订单 UID');
         click(serviceTabs()[1]);
         assert.match(miniDom.document.body.textContent, /待确认/u);
@@ -665,7 +664,7 @@ test('about child page exposes version/update dialogs, hidden mode control, and 
     }
 });
 
-test('service completion stays mode-scoped and stages only after returning to the matching mode', async () => {
+test('a body completion candidate is never auto-settled in either mode; only the player may confirm it', async () => {
     const serviceState = {
         软件: { 内容模式: 'SFW' },
         角色池: { npc_service_1: adultCharacter('林澈') },
@@ -681,7 +680,10 @@ test('service completion stays mode-scoped and stages only after returning to th
     const historyStore = {
         list() { return []; },
         stage(order, { status }) { calls.stage += 1; assert.equal(order.mode, 'SFW'); assert.equal(status, '已完成'); return { localId: 'history_service_1' }; },
+        markTerminalConfirmed() { return true; },
         markArchived(localId) { calls.archived += 1; assert.equal(localId, 'history_service_1'); return true; },
+        finalize(localId) { calls.archived += 1; assert.equal(localId, 'history_service_1'); return true; },
+        discardStage() { return true; },
     };
     const bridge = {
         emit() {}, isPending() { return false; },
@@ -691,7 +693,7 @@ test('service completion stays mode-scoped and stages only after returning to th
         async runServiceOrderFinalize({ orderUid }) { calls.finalize += 1; assert.equal(orderUid, 'service_1'); return { ok: true }; },
     };
     const mounted = mountPhoneApp({
-        documentRef: miniDom.document, rootId: 'ylm-test-service-completion-mode-race', actionBridge: bridge,
+        documentRef: miniDom.document, rootId: 'ylm-test-service-completion-candidate', actionBridge: bridge,
         settingsStore: null, llmClient: null, characterLibrary: null, serviceOrderHistoryStore: historyStore, readState: () => ({ ok: true, state: serviceState }),
     });
     try {
@@ -701,13 +703,72 @@ test('service completion stays mode-scoped and stages only after returning to th
         await flushUi();
         assert.deepEqual(calls, { stage: 0, complete: 0, finalize: 0, archived: 0 }, 'a completion signal from the hidden mode must not create a false local terminal record');
 
+        // 关键改动（蓝图 §14.4）：回到匹配模式后也不再自动结单。
+        // 程序只能验证信号形状，不能证明正文真的结束了，所以完成必须留给玩家在界面确认。
         serviceState.软件.内容模式 = 'SFW';
         mounted.refreshState();
         await flushUi();
-        assert.deepEqual(calls, { stage: 1, complete: 1, finalize: 1, archived: 1 });
+        assert.deepEqual(calls, { stage: 0, complete: 0, finalize: 0, archived: 0 }, 'a completion candidate must never auto-settle; the player confirms it in the UI');
+        assert.ok(serviceState.服务订单.service_1, 'the MVU order stays open until the player decides');
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('a body withdrawal candidate auto-pauses, but only after returning to the matching mode', async () => {
+    const serviceState = {
+        软件: { 内容模式: 'SFW' },
+        角色池: { npc_service_1: adultCharacter('林澈') },
+        服务订单: {
+            service_1: {
+                角色UID: 'npc_service_1', 角色UID列表: ['npc_service_1'], 内容模式: 'SFW', 服务分类: 'girl_shuren', 服务主题: '熟人商品：与林澈的文字协商',
+                状态: '进行中', 发起时间: '待正文确认', 开始时间: '正文第 2 轮', 结束时间: '', 结束摘要: '', 已确认边界: '已确认边界',
+                合法结束条件: { 已满足: false, 摘要: '', 记录时间: '' },
+                撤回候选: { 已提出: true, 摘要: '一位参与者希望先停下。', 记录时间: '正文最新回合' },
+            },
+        },
+    };
+    const calls = { pause: 0, complete: 0, stage: 0 };
+    const historyStore = {
+        list() { return []; },
+        stage() { calls.stage += 1; return { localId: 'history_service_1' }; },
+        markTerminalConfirmed() { return true; },
+        markArchived() { return true; },
+        finalize() { return true; },
+        discardStage() { return true; },
+    };
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        async runServiceOrderPause({ orderUid, expectedContentMode }) {
+            calls.pause += 1; assert.equal(orderUid, 'service_1'); assert.equal(expectedContentMode, 'SFW');
+            serviceState.服务订单.service_1.状态 = '暂停中';
+            serviceState.服务订单.service_1.撤回候选 = { 已提出: false, 摘要: '', 记录时间: '' };
+            return { ok: true };
+        },
+        async runServiceOrderComplete() { calls.complete += 1; return { ok: true }; },
+        async runServiceOrderFinalize() { return { ok: true }; },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-service-withdrawal-pause', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, serviceOrderHistoryStore: historyStore, readState: () => ({ ok: true, state: serviceState }),
+    });
+    try {
+        serviceState.软件.内容模式 = 'NSFW';
         mounted.refreshState();
         await flushUi();
-        assert.equal(calls.stage, 1, 'the same completed order must never be archived twice');
+        assert.deepEqual(calls, { pause: 0, complete: 0, stage: 0 }, '隐藏模式的撤回候选不得跨模式迁移状态');
+
+        serviceState.软件.内容模式 = 'SFW';
+        mounted.refreshState();
+        await flushUi();
+        assert.equal(calls.pause, 1, '撤回候选必须优先暂停，而不是结单');
+        assert.equal(calls.complete, 0, '撤回绝不能被解释成完成');
+        assert.equal(calls.stage, 0, '暂停不是终态，不写本地最小历史');
+        assert.equal(serviceState.服务订单.service_1.状态, '暂停中');
+
+        mounted.refreshState();
+        await flushUi();
+        assert.equal(calls.pause, 1, '同一撤回候选不得反复触发暂停');
     } finally {
         mounted.destroy();
     }
@@ -725,11 +786,15 @@ test('a terminal order written directly by the body text is staged locally and f
             },
         },
     };
-    const calls = { stage: 0, complete: 0, finalize: 0, archived: 0 };
+    const calls = { stage: 0, complete: 0, finalize: 0, archived: 0, confirmed: 0, discarded: 0 };
     const historyStore = {
         list() { return []; },
         stage(order, { status }) { calls.stage += 1; assert.equal(order.id, 'service_1'); assert.equal(status, '已完成'); return { localId: 'history_service_1' }; },
+        // P1-B：本地暂存必须显式确认终态阶段后才允许归档，否则 MVU 仍开放却被标记已归档。
+        markTerminalConfirmed(localId) { calls.confirmed += 1; assert.equal(localId, 'history_service_1'); return true; },
         markArchived(localId) { calls.archived += 1; assert.equal(localId, 'history_service_1'); return true; },
+        finalize(localId) { calls.archived += 1; assert.equal(localId, 'history_service_1'); return true; },
+        discardStage() { calls.discarded += 1; return true; },
     };
     const bridge = {
         emit() {}, isPending() { return false; },
@@ -743,10 +808,10 @@ test('a terminal order written directly by the body text is staged locally and f
     try {
         mounted.refreshState();
         await flushUi();
-        assert.deepEqual(calls, { stage: 1, complete: 0, finalize: 1, archived: 1 }, 'the fallback must archive and delete without invoking the completion transition');
+        assert.deepEqual(calls, { stage: 1, complete: 0, finalize: 1, archived: 1, confirmed: 1, discarded: 0 }, 'the fallback must archive and delete without invoking the completion transition');
         mounted.refreshState();
         await flushUi();
-        assert.deepEqual(calls, { stage: 1, complete: 0, finalize: 1, archived: 1 }, 'a finalized order must not be recovered twice');
+        assert.deepEqual(calls, { stage: 1, complete: 0, finalize: 1, archived: 1, confirmed: 1, discarded: 0 }, 'a finalized order must not be recovered twice');
     } finally {
         mounted.destroy();
     }
@@ -1857,6 +1922,7 @@ test('late service-order handoff after close preserves the MVU result without fi
         const lateSelect = miniDom.document.querySelector('[name="service-profile-select-service_local_1"]');
         lateSelect.checked = true;
         lateSelect.dispatchEvent(new Event('change'));
+        await flushUi();
         click(miniDom.document.querySelector('[name="service-order-create-selected"]'));
         await Promise.resolve();
         assert.equal(typeof resolveHandoff, 'function');
@@ -1868,8 +1934,8 @@ test('late service-order handoff after close preserves the MVU result without fi
 
         click(launcher);
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
-        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '订单'));
-        assert.match(miniDom.document.body.textContent, /待确认/u, 'the already-committed MVU order remains recoverable after reopening');
+        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '租约'));
+        assert.match(miniDom.document.body.textContent, /待签约/u, 'the already-committed MVU order remains recoverable after reopening');
     } finally {
         mounted.destroy();
     }
@@ -1883,11 +1949,15 @@ test('pending service-history archive retries finalize only and leaves rebooking
             service_archive: { 角色UID: 'npc_service_archive', 角色UID列表: ['npc_service_archive'], 内容模式: 'SFW', 服务分类: 'coffee_walk', 服务主题: '咖啡与散步：与归档候补的文字协商', 状态: '已完成', 发起时间: '待正文确认', 开始时间: '正文第 2 轮', 结束时间: '正文第 6 轮', 结束摘要: '正文已完成。', 已确认边界: '已确认边界' },
         },
     };
-    const record = { localId: 'history_archive', orderUid: 'service_archive', roleUid: 'npc_service_archive', roleUids: ['npc_service_archive'], mode: 'SFW', categoryId: 'coffee_walk', category: '咖啡与散步', topic: '咖啡与散步：与归档候补的文字协商', status: '已完成', archiveState: 'pending_archive', summary: '正文已完成。', profile: { 昵称: '归档候补', 年龄段: '25-29', 简介: '公开资料', 兴趣标签: [] }, profiles: [] };
-    const calls = { finalize: 0, archived: 0, rebook: 0 };
+    // 真实 store 会把旧 pending_archive 迁移为最安全的 staged_before_transition 阶段。
+    const record = { localId: 'history_archive', orderUid: 'service_archive', roleUid: 'npc_service_archive', roleUids: ['npc_service_archive'], mode: 'SFW', categoryId: 'coffee_walk', category: '咖啡与散步', topic: '咖啡与散步：与归档候补的文字协商', status: '已完成', archiveState: 'pending_archive', archivePhase: 'staged_before_transition', summary: '正文已完成。', profile: { 昵称: '归档候补', 年龄段: '25-29', 简介: '公开资料', 兴趣标签: [] }, profiles: [] };
+    const calls = { finalize: 0, archived: 0, rebook: 0, confirmed: 0 };
     const historyStore = {
         list() { return [record]; },
-        markArchived(localId) { calls.archived += 1; assert.equal(localId, record.localId); record.archiveState = 'archived'; return true; },
+        markTerminalConfirmed(localId) { calls.confirmed += 1; assert.equal(localId, record.localId); record.archivePhase = 'terminal_confirmed'; return true; },
+        markArchived(localId) { calls.archived += 1; assert.equal(localId, record.localId); record.archiveState = 'archived'; record.archivePhase = 'finalized'; return true; },
+        finalize(localId) { calls.archived += 1; assert.equal(localId, record.localId); record.archiveState = 'archived'; record.archivePhase = 'finalized'; return true; },
+        discardStage() { return true; },
     };
     const bridge = {
         emit() {}, isPending() { return false; },
@@ -1912,11 +1982,57 @@ test('pending service-history archive retries finalize only and leaves rebooking
         assert.ok(miniDom.document.querySelector('[name="service-history-finalize"]'));
         click(miniDom.document.querySelector('[name="service-history-finalize"]'));
         await flushUi();
-        assert.deepEqual(calls, { finalize: 1, archived: 0, rebook: 0 }, 'a failed retry must not archive or create another order');
+        assert.deepEqual(calls, { finalize: 1, archived: 0, rebook: 0, confirmed: 1 }, 'a failed retry must not archive or create another order');
         click(miniDom.document.querySelector('[name="service-history-menu-history_archive"]'));
         click(miniDom.document.querySelector('[name="service-history-finalize"]'));
         await flushUi();
-        assert.deepEqual(calls, { finalize: 2, archived: 1, rebook: 0 });
+        assert.deepEqual(calls, { finalize: 2, archived: 1, rebook: 0, confirmed: 1 });
+    } finally {
+        mounted.destroy();
+    }
+});
+
+test('P1-B: a pre-transition stage whose MVU order is still open is refused instead of being falsely archived', async () => {
+    const state = {
+        软件: { 内容模式: 'SFW' }, 推荐: { 当前队列: [], 临时候选池: {} },
+        角色池: { npc_service_open: adultCharacter('仍开放候补') },
+        服务订单: {
+            // 受控取消/完成失败后的现实情形：MVU 仍是开放订单，本地却已存在转换前暂存。
+            service_open: { 角色UID: 'npc_service_open', 角色UID列表: ['npc_service_open'], 内容模式: 'SFW', 服务分类: 'coffee_walk', 服务主题: '咖啡与散步：与仍开放候补的文字协商', 状态: '待确认', 发起时间: '待正文确认', 开始时间: '', 结束时间: '', 结束摘要: '', 已确认边界: '' },
+        },
+    };
+    const record = { localId: 'history_open', orderUid: 'service_open', roleUid: 'npc_service_open', roleUids: ['npc_service_open'], mode: 'SFW', categoryId: 'coffee_walk', category: '咖啡与散步', topic: '咖啡与散步：与仍开放候补的文字协商', status: '已取消', archiveState: 'pending_archive', archivePhase: 'staged_before_transition', summary: '玩家取消。', profile: { 昵称: '仍开放候补', 年龄段: '25-29', 简介: '公开资料', 兴趣标签: [] }, profiles: [] };
+    const calls = { finalize: 0, archived: 0 };
+    const historyStore = {
+        list() { return [record]; },
+        markTerminalConfirmed() { return true; },
+        markArchived() { calls.archived += 1; return true; },
+        finalize() { calls.archived += 1; return true; },
+        discardStage() { return true; },
+    };
+    const bridge = {
+        emit() {}, isPending() { return false; },
+        async runServiceOrderFinalize() { calls.finalize += 1; return { ok: true }; },
+    };
+    const mounted = mountPhoneApp({
+        documentRef: miniDom.document, rootId: 'ylm-test-service-false-archive', actionBridge: bridge,
+        settingsStore: null, llmClient: null, characterLibrary: null, serviceOrderHistoryStore: historyStore, readState: () => ({ ok: true, state }),
+    });
+    try {
+        const launcher = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '打开约了吗小手机');
+        click(launcher);
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'profile'));
+        click(miniDom.document.querySelectorAll('.yl-hub-entry').find((node) => node.getAttribute('aria-label') === '关于软件'));
+        for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
+        click(miniDom.document.querySelector('[name="about-service-entry"]'));
+        click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
+        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '记录'));
+        click(miniDom.document.querySelector('[name="service-history-menu-history_open"]'));
+        click(miniDom.document.querySelector('[name="service-history-finalize"]'));
+        await flushUi();
+        assert.deepEqual(calls, { finalize: 0, archived: 0 }, '未观察到 MVU 终态时既不删除也不标记归档');
+        assert.equal(record.archiveState, 'pending_archive', '本地记录保持可诊断的待归档状态');
+        assert.match(miniDom.document.body.textContent, /已拒绝伪归档/u, '必须明确告知玩家为何拒绝');
     } finally {
         mounted.destroy();
     }
@@ -1954,10 +2070,10 @@ test('XP search scopes generated service drafts to the active person category an
         for (let index = 0; index < 5; index += 1) click(miniDom.document.querySelector('[name="about-release-notes"]'));
         click(miniDom.document.querySelector('[name="about-service-entry"]'));
         click(miniDom.document.querySelectorAll('button').find((node) => node.dataset.page === 'service_hub'));
-        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '精选'));
+        click(miniDom.document.querySelectorAll('.yl-service-tab').find((node) => node.textContent === '租伴'));
 
         const search = miniDom.document.querySelector('[name="service-xp-search"]');
-        assert.ok(search, '精选页必须提供本次 XP 搜索输入框');
+        assert.ok(search, '精选页必须提供本次场景与偏好搜索输入框');
         search.value = '眼镜 制服 成熟感';
         search.dispatchEvent(new Event('input'));
         click(miniDom.document.querySelector('[name="service-xp-search-submit"]'));
@@ -1966,7 +2082,7 @@ test('XP search scopes generated service drafts to the active person category an
         assert.equal(creativeBriefs.length, 3, 'XP 搜索应依次生成独立的三席草稿');
         assert.deepEqual(creativeBriefs.map((item) => item.expectedContentMode), ['SFW', 'SFW', 'SFW']);
         assert.equal(creativeBriefs.every((item) => item.creativeBrief.includes('眼镜 制服 成熟感')), true);
-        assert.match(miniDom.document.body.textContent, /当前 XP 搜索：眼镜 制服 成熟感/u);
+        assert.match(miniDom.document.body.textContent, /当前场景与偏好：眼镜 制服 成熟感/u, 'SFW 不得再出现 XP 措辞');
         assert.equal(miniDom.document.querySelectorAll('.yl-local-service-profile').length, 3);
 
         const xpSelect = miniDom.document.querySelector('[name="service-profile-select-service_local_1"]');
@@ -1978,13 +2094,13 @@ test('XP search scopes generated service drafts to the active person category an
         assert.equal(JSON.stringify(handoffPayload).includes('眼镜 制服 成熟感'), false, 'XP 搜索词不得传入受控 MVU 订单 payload');
 
         click(miniDom.document.querySelector('[name="service-xp-search-clear"]'));
-        assert.doesNotMatch(miniDom.document.body.textContent, /当前 XP 搜索/u);
+        assert.doesNotMatch(miniDom.document.body.textContent, /当前场景与偏好：/u);
         assert.equal(miniDom.document.querySelectorAll('.yl-local-service-profile').length, 0, '清除后必须回到不含 XP 搜索的独立候补批次');
 
         state.软件.内容模式 = 'NSFW';
         mounted.refreshState();
         assert.equal(miniDom.document.querySelectorAll('.yl-phone-extension').find((node) => node.id === 'ylm-test-service-xp-search').dataset.contentMode, 'NSFW');
-        assert.equal(miniDom.document.querySelector('[name="service-xp-search"]')?.value, '', '切换模式必须清空本次 XP 搜索状态');
+        assert.equal(miniDom.document.querySelector('[name="service-xp-search"]')?.value, '', '切换模式必须清空本次搜索状态');
     } finally {
         mounted.destroy();
     }
@@ -2114,9 +2230,9 @@ test('P2-C: community lands directly on content, remembers the last tab locally,
         assert.equal(miniDom.document.querySelectorAll('.yl-channel-chip').length, 8, '广场应有 8 个频道横滑 chip');
         const forumSettings = miniDom.document.querySelectorAll('button').find((node) => node.getAttribute('aria-label') === '社区设置');
         assert.ok(forumSettings, '广场页头应有社区设置入口');
-        assert.equal(forumSettings.textContent, '设置', '社区设置入口应显示文字');
-        assert.ok(forumSettings.classList.contains('yl-btn--tonal'), '社区设置入口应使用醒目的次级按钮样式');
-        assert.equal(forumSettings.querySelector('svg')?.dataset.icon, 'settings', '社区设置入口应使用齿轮图标');
+        assert.equal(forumSettings.textContent, '设置', '社区设置入口必须显示明确的“设置”文字');
+        assert.ok(forumSettings.classList.contains('yl-btn--tonal'), '社区设置入口应使用可见的 tonal 按钮');
+        assert.equal(forumSettings.querySelector('svg')?.dataset.icon, 'settings', '社区设置入口应使用设置图标');
         // 切到群聊并写入本地 tab 记忆
         click(segItem('群聊'));
         await flushUi();

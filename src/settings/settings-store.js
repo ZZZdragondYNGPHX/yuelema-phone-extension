@@ -8,7 +8,7 @@ import { builtinPromptPresetIdFor, createBuiltinPromptPresets } from './default-
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, normalizeChatSummarySettings } from '../chat/conversation-summary.js';
 
 export const SETTINGS_SCHEMA_ID = 'yuelema.settings';
-export const SETTINGS_SCHEMA_VERSION = 23;
+export const SETTINGS_SCHEMA_VERSION = 24;
 // v12 rewrote the stock built-in prompt preset copy (阶段 55 内容尺度调整)，
 // v13 enriched the NSFW stock copy with concrete erotic-writing guidance,
 // v14 renamed the「语音匹配」stock presets to「描述匹配」(display name and
@@ -29,7 +29,10 @@ export const SETTINGS_SCHEMA_VERSION = 23;
 // adult-consensual copy. Custom, deleted and SFW presets remain untouched.
 // v23 refreshes only the four surviving stock character completion/authoring
 // presets for selective completion scopes and the role-blueprint contract.
-const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
+// v24 refreshes only the two surviving stock service-profile presets for the
+// SFW rental-lover / NSFW adult-hookup product contract. Custom and deleted
+// presets, non-service stock presets, IDs and bindings remain untouched.
+const UPGRADEABLE_SETTINGS_SCHEMA_VERSIONS = new Set([11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
 export const IMAGE_CLIENT_MODES = Object.freeze(['browser', 'sillytavern']);
 export const NAI_SAMPLER_OPTIONS = Object.freeze([
     { value: 'k_euler_ancestral', label: 'Euler Ancestral' },
@@ -718,6 +721,9 @@ export function normalizeSettingsDocument(input) {
     }
     if (isUpgradeableLegacySchema && candidate.schemaVersion <= 22) {
         promptPresets = refreshCharacterAuthoringBuiltinPromptPresets(promptPresets);
+    }
+    if (isUpgradeableLegacySchema && candidate.schemaVersion <= 23) {
+        promptPresets = refreshServiceBuiltinPromptPresets(promptPresets);
     }
     const connectionIds = new Set(connectionPresets.map((preset) => preset.id));
     const promptIds = new Set(promptPresets.map((preset) => preset.id));

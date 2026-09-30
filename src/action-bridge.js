@@ -1,5 +1,5 @@
 import { applyControlledPatch, readLatestState } from './mvu/adapter.js';
-import { buildAppendRealisticPrivateChatPlayerMessagePatch, buildBodyRelationshipCandidateBackfillPatch, buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildDeliverRealisticPrivateChatMessagesPatch, buildExistingCandidateRecommendationPatch, buildForumPrivateChatSessionPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatNsfwConsentBackfillPatch, buildPrivateChatNsfwConsentPatch, buildPrivateChatNsfwDirectionPatch, buildPrivateChatNsfwRelationshipActionPatch, buildPrivateChatNsfwSafetyPatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRealisticPrivateChatBackfillPatch, buildRealisticPrivateChatProactivePatch, buildRealisticPrivateChatResponsePatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildRelationshipNarrativeBackfillPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch, buildToggleRealisticPrivateChatPatch } from './mvu/controlled-patch.js';
+import { buildAppendRealisticPrivateChatPlayerMessagePatch, buildBodyRelationshipCandidateBackfillPatch, buildCandidateMatchOutcomePatch, buildCharacterRegistrationPatch, buildControlledPatch, buildClearPrivateChatPatch, buildCustomCandidateMatchPatch, buildDeleteCharacterPatch, buildDeliverRealisticPrivateChatMessagesPatch, buildExistingCandidateRecommendationPatch, buildForumPrivateChatSessionPatch, buildMeetupHandoffPatch, buildPlayerPublicProfilePatch, buildPrivateChatNsfwConsentBackfillPatch, buildPrivateChatNsfwConsentPatch, buildPrivateChatNsfwDirectionPatch, buildPrivateChatNsfwRelationshipActionPatch, buildPrivateChatNsfwSafetyPatch, buildPrivateChatPatch, buildPrivateChatSummaryFailurePatch, buildPrivateChatSummaryPatch, buildRealisticPrivateChatBackfillPatch, buildRealisticPrivateChatProactivePatch, buildRealisticPrivateChatResponsePatch, buildRecommendationInitialCandidatePatch, buildRecommendationRefreshPatch, buildRelationshipNarrativeBackfillPatch, buildServiceOrderHandoffPatch, buildServiceOrderRepeatPatch, buildServiceOrderStartPatch, buildServiceOrderCancelPatch, buildServiceOrderPausePatch, buildServiceOrderResumePatch, buildServiceOrderContinuePatch, buildServiceOrderCompletePatch, buildServiceOrderFinalizePatch, buildServiceOrderRebookPatch, buildServiceHistoryRolesDeletionPatch, buildServiceOrderRepairPatch, buildSoulMatchPreferencePatch, buildStoryMemoryBackfillPatch, buildToggleRealisticPrivateChatPatch } from './mvu/controlled-patch.js';
 import { generateRecommendationCandidate } from './recommendation/recommendation-refresh.js';
 import { generatePrivateChatReply, generatePrivateChatSummary, generateRealisticPrivateChatReply } from './chat/private-chat-service.js';
 import { DEFAULT_CHAT_SUMMARY_SETTINGS, isConversationSummaryDue, listUnsummarizedConversationMessages } from './chat/conversation-summary.js';
@@ -1487,6 +1487,30 @@ export function createActionBridge({
         });
     }
 
+    /** Pauses a running contract without discarding its current revision. */
+    async function runServiceOrderPause({ orderUid, expectedContentMode = '' } = {}) {
+        return runServiceOrderTransition({
+            kind: 'service_order_pause', orderUid, expectedContentMode,
+            build: (state) => buildServiceOrderPausePatch(state, { orderUid }),
+        });
+    }
+
+    /** Resumes only after every participant confirms a fresh contract revision. */
+    async function runServiceOrderResume({ orderUid, boundaries, expectedContentMode = '' } = {}) {
+        return runServiceOrderTransition({
+            kind: 'service_order_resume', orderUid, expectedContentMode,
+            build: (state) => buildServiceOrderResumePatch(state, { orderUid, boundaries }),
+        });
+    }
+
+    /** Rejects the current body completion candidate and keeps the contract active. */
+    async function runServiceOrderContinue({ orderUid, expectedContentMode = '' } = {}) {
+        return runServiceOrderTransition({
+            kind: 'service_order_continue', orderUid, expectedContentMode,
+            build: (state) => buildServiceOrderContinuePatch(state, { orderUid }),
+        });
+    }
+
     /** Marks an in-progress order complete only after the body writes its complete legal end signal. */
     async function runServiceOrderComplete({ orderUid, expectedContentMode = '' } = {}) {
         return runServiceOrderTransition({
@@ -1823,7 +1847,7 @@ export function createActionBridge({
         return { ok: true };
     }
 
-    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, setRealisticPrivateChatMode, sendRealisticPrivateChatMessage, runRealisticPrivateChatTick, runPrivateChatNsfwSafety, runPrivateChatNsfwConsent, runPrivateChatNsfwDirection, runPrivateChatNsfwRelationshipAction, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateForumParticipantDetails, runForumParticipantPrivateChat, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, generateLibraryImage, isPending, appendMeetupDraft });
+    return Object.freeze({ emit, runMvuAction, runRecommendationRefresh, runRecommendationInitialCandidate, runPrivateChat, setRealisticPrivateChatMode, sendRealisticPrivateChatMessage, runRealisticPrivateChatTick, runPrivateChatNsfwSafety, runPrivateChatNsfwConsent, runPrivateChatNsfwDirection, runPrivateChatNsfwRelationshipAction, runPrivateChatSummary, clearPrivateChat, deleteCharacter, generateMatchDraft, runCandidateMatch, applySoulMatchPreferenceDraft, runPrivateChatMeetupHandoff, runMeetupHandoff, runSavePlayerPublicProfile, generateGroupChatDraft, generateForumPostDraft, generateGroupConversationUpdate, generateForumHomeRefresh, generateForumExistingPostsUpdate, generateForumPostConversationUpdate, generateForumParticipantDetails, runForumParticipantPrivateChat, generateLocalGroupForumSummary, generateCharacterCompletionDraft, generateCharacterAuthoringDraft, generateServiceProfileDraft, registerCharacter, runServiceOrderHandoff, runServiceOrderRepeat, runServiceOrderRebook, runServiceOrderStart, runServiceOrderCancel, runServiceOrderPause, runServiceOrderResume, runServiceOrderContinue, runServiceOrderComplete, runServiceOrderFinalize, deleteServiceHistoryRoles, repairServiceOrder, generateConversationImage, generateLibraryImage, isPending, appendMeetupDraft });
 }
 
 const FORUM_PUBLIC_TEXT_FIELDS = Object.freeze([
