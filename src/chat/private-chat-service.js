@@ -368,7 +368,8 @@ function buildPrivateChatContextInternal({
             好感: Number.isInteger(relationship.好感) ? relationship.好感 : 0,
             信任: Number.isInteger(relationship.信任) ? relationship.信任 : 0,
             戒备: Number.isInteger(relationship.戒备) ? relationship.戒备 : 0,
-            面基意愿: Number.isInteger(relationship.面基意愿) ? relationship.面基意愿 : 0,
+            // 面基意愿是旧兼容字段，当前面基门禁不读取它。不要把这个
+            // 已废弃数值继续送进模型，避免“初始为 0”被误解为角色必然拒绝见面。
             友情值: Number.isInteger(relationship.友情值) ? relationship.友情值 : 0,
             心动值: Number.isInteger(relationship.心动值) ? relationship.心动值 : 0,
             欲望值: Number.isInteger(relationship.欲望值) ? relationship.欲望值 : 0,
@@ -472,6 +473,7 @@ function makeMessages(context, promptPreset, { realistic = false } = {}) {
             ? 'sfwNarrative 是当前角色专属、由已验证角色资料确定性建档并按阶段裁剪的保护上下文，只能用于当前角色本轮的自然表达。availableDisclosure 以外的秘密一律未知；不得提到阶段名、关系分、阈值、内部字段、UID 或系统。understanding_check 只有在玩家本轮言行确实体现对 availableDisclosure 的准确理解与自愿支持时使用 direct_understanding，否则用 not_yet；awaiting_active_reveal 只有角色在回复中主动讲明所给线索时使用 active_reveal；awaiting_support 只有玩家本轮明确尊重和支持该揭示时使用 post_reveal_support。resolutionAvailable 为 true 时，只有双方在本轮明确达成对应结局，才可使用 romance_confirmed、romance_declined 或 growth_confirmed。其余情况两个 SFW assessment 都必须为 none。eventLibrary 仅是可供正文后续选择的事件类型，不代表事件已经发生。'
             : '本轮不提供 SFW 保护叙事；sfwInsightAssessment 与 sfwResolutionAssessment 必须省略或为 none。',
         '仅当本次内容确实值得以照片分享，且角色性格有分享欲、当前关系与边界允许时，才输出对应 replyIndex 的 imageDirectives。私照必须更严格判断亲密度、信任与自愿边界；不得机械地为每轮或每条回复生图。不需要时省略该字段。scene 只能是描述画面的英文标签，不得包含角色 UID、URL、JSONPatch、完整正负提示词、core_dna、outfit_dna 或凭据。',
+        '上下文不会提供旧版“面基意愿”数值，因为当前面基资格由本地关系路线门禁独立判断。不得因为看不到该字段、关系刚建立或任何旧兼容数值就机械拒绝见面；也不得自行宣布面基已解锁。玩家在文字里提到见面时，只按当前公开资料、已发生聊天和人物性格自然回应。',
         'relationship 仅用于既有互动节奏建议。bondAssessment 必须同时判断玩家本轮消息与角色实际回复：SFW 只允许 none/friendly/romantic_flirt；NSFW 允许 none/friendly/romantic_flirt/romantic_desire/sexual_desire，其中普通问候或日常友好交流应使用 none 或 friendly，只有实际出现浪漫或性欲望时才使用对应 desire 分类。none 必须使用 intensity=0、direction=none；其余分类使用 intensity=1-3 作为轻微/明显/严重的语义等级，并仅在互动确实促进对应关系时使用 increase、确实伤害对应关系时使用 decrease。数值步长、事件 ID、阶段旗标和是否结算均由本地受控规则决定；普通分歧、没有升温或话题平淡使用 none，不得机械扣分。模型不得给友情值、心动值、欲望值的绝对值或增量，也不得给 UID、状态、阈值、Patch、JSON Pointer 或写入路径。',
         context.contentMode === 'NSFW' && !context.onlySfw
             ? 'nsfwConsentAssessment 必须先对照本轮玩家文本与 nsfwConsent.scopes 分类；只有 in_scope 才可给出可结算的 romantic_desire/sexual_desire，withdrawn/out_of_scope/unclear 时 bondAssessment 必须为 none。nsfwSafetyAssessment 默认且通常为 none；只有明确忽视拒绝/撤回、违反已知边界、胁迫或非自愿、现实隐私侵犯时才选择对应非 none 枚举；对方主动撤回本身不是违规。模型不得输出持久同意状态、剩余轮数、修订号、分数、UID、路径、Patch 或路线。'
