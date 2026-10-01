@@ -13,6 +13,7 @@ import { createEmptyState } from '../ui/empty-state.js';
 import { SERVICE_UNLOCK_STORAGE_KEY } from './shared.js';
 
 const RECENT_RELEASE_NOTES = Object.freeze([
+    'v1.2.1：修正匹配结果“数字低但文字却说高度契合”的矛盾：公开说明改为由最终本地评分生成；评分器补充常见城市后缀、寻找意图措辞与包含式公开标签的等价识别，并要求候选生成优先原样复用正向关键词，降低语义一致却因字面不同长期卡在 40 多分的情况。收藏主动私聊未过本地匹配线时不再伪装成“TA 主动拒绝”；私聊模型也不再接收已废弃的初始面基意愿数值，避免刚匹配就被 0 值误导为必然拒绝见面。面基真正门槛仍由现有关系路线与安全规则决定。',
     'v1.2.0：约伴改为双模式产品——SFW 是「心动租约」租借恋人，NSFW 是「夜色邀约」成年自愿约炮，分类、Tab、按钮与合同全部换用对应语言，NSFW 不再出现价格、退款、成交或服务者信用；精选页新增本地固定主题馆、最小足迹推荐、探索图鉴、候选公开详情与 1–3 人组合托盘，全部由公开资料确定性派生，浏览与筛选不调用模型；合同升级为逐人确认的 v2 修订制，可暂停后重新协商、可安全中止，正文只写完成候选并由你在界面确认结单或继续；修正旧边界被当作正常进行中却无法结单，以及状态转换失败后留下伪归档记录的两个问题。',
     'v1.1.2：取消路由与数据重绘时反复播放的整页入场动画，切换页面不再呈现整台小手机刷新般的闪动；修正移动宿主下小弹窗飞屏、刷新后双层设置残留与随后无法打开；社区回帖显示玩家当前昵称并拦截身份克隆，帖子详情可二次确认后只删除当前本地帖子；非玩家楼层头像可查看公开详情或请求私聊，成功后通过受控 MVU 事务原子建立论坛角色与独立会话；补记两次同版本热修复——论坛设置入口恢复可见，广场上拉/下拉刷新指示器停靠在窗口四分之一处。',
     'v1.1.1：修复桌面布局小手机飞出屏幕、归位失效、关闭小手机后匹配设置残留，以及刷新或热重载期间重复激活造成的双实例。',
@@ -570,8 +571,12 @@ export function createProfilePage(ctx) {
         ctx.refreshState();
         if (result.invitationOutcome === 'declined') {
             if (ctx.activePage === pageAtStart) ctx.setActivePage('favorites', { preserveOperation: true });
-            ctx.operationActivity.fail(activityHandle, '对方暂未接受私聊邀请。');
-            ctx.showRomanceResult({ declined: true, title: '这次暂未靠近', message: 'TA 暂时没有接受这次私聊邀请。' }, operationToken);
+            ctx.operationActivity.fail(activityHandle, '公开资料与本地偏好暂未达到私聊匹配线。');
+            ctx.showRomanceResult({
+                declined: true,
+                title: '这次还没达到匹配线',
+                message: '系统按双方公开资料与当前设备偏好计算后，这次还没达到建立私聊的匹配线；这不是角色主动拒绝。',
+            }, operationToken);
             return;
         }
         const sessionUid = result.sessionUid || (ctx.currentView.messageSessions ?? []).find((session) => session.npcUid === candidate.uid)?.sessionUid;
