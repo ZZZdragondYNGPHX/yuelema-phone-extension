@@ -46,7 +46,7 @@ const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8
 for (const key of ['display_name', 'js', 'css', 'author', 'version', 'minimum_client_version']) {
     if (typeof manifest[key] !== 'string' || !manifest[key]) fail(`manifest.${key} 缺失或非字符串`);
 }
-if (manifest.version !== '1.2.0') fail('manifest.version 必须与扩展版本 1.2.0 统一');
+if (manifest.version !== '1.2.1') fail('manifest.version 必须与扩展版本 1.2.1 统一');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 if (packageJson.version !== manifest.version) fail('package.json version 必须与 manifest.version 统一');
 if (manifest.minimum_client_version !== '1.18.0') fail('manifest.minimum_client_version 必须为已核对完整 lifecycle hooks 的 1.18.0');
@@ -122,7 +122,7 @@ const appShell = [appShellCore, pageModuleText].join('\n');
 const actionBridge = await readFile(resolve(root, 'src/action-bridge.js'), 'utf8');
 const uiModel = await readFile(resolve(root, 'src/ui-model.js'), 'utf8');
 const onboardingFlow = await readFile(resolve(root, 'src/onboarding/onboarding-flow.js'), 'utf8');
-if (!appShellCore.includes("const UI_VERSION = '1.2.0'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.2.0 统一（必须位于壳层 app-shell.js）');
+if (!appShellCore.includes("const UI_VERSION = '1.2.1'")) fail('关于软件 UI_VERSION 必须与扩展版本 1.2.1 统一（必须位于壳层 app-shell.js）');
 if (!appShellCore.includes("import { createOnboardingFlow } from './onboarding/onboarding-flow.js'")
     || !appShellCore.includes('saveProfile: (profile) => actionBridge.runSavePlayerPublicProfile(profile)')
     || !uiModel.includes('玩家已建档 === false')
@@ -341,6 +341,10 @@ if (!soulTextMatchService.includes('generateSoulMatchDraft') || !soulTextMatchSe
 const matchCandidateMaterializer = await readFile(resolve(root, 'src/recommendation/match-candidate-materializer.js'), 'utf8');
 const playerAvatarStore = await readFile(resolve(root, 'src/player-avatar-store.js'), 'utf8');
 if (!matchCandidateMaterializer.includes('materializeCandidateMatchDraft') || !matchCandidateMaterializer.includes('normalizeCandidateMatchDraft') || !matchCandidateMaterializer.includes('shouldEstablishSession')) fail('缺少匹配公开草稿的本地角色物化与取消匹配阈值边界');
+if (!matchScoring.includes('explainLocalCandidateMatch') || !matchScoring.includes('tagRelated') || !matchScoring.includes('INTENT_SIGNALS')) fail('缺少 v1.2.1 匹配措辞归一化或本地结果说明');
+if (!matchCandidateMaterializer.includes('explainLocalCandidateMatch(evaluation)')) fail('匹配展示文案必须由最终本地评分生成');
+if (!soulTextMatchService.includes('至少原样复用 1 项') || !soulTextMatchService.includes('最终契合度、接受或婉拒全部由本地算法独立计算')) fail('候选生成未约束为评分一致的公开关键词输出');
+if (!privateChatService.includes('当前面基资格由本地关系路线门禁独立判断') || privateChatService.includes('面基意愿: Number.isInteger(relationship.面基意愿)')) fail('旧面基意愿仍会误导私聊模型');
 if (!playerAvatarStore.includes('PLAYER_AVATAR_STORAGE_KEY') || !playerAvatarStore.includes('createPlayerAvatarStore') || !index.includes('createPlayerAvatarStore')) fail('缺少“我的”页本地头像存储接线');
 console.log('✓ 私聊模型回复、分模式关系成长、面基路线门禁、隐私上下文、列表/会话 UI、主动私聊判定、独立灵魂/描述匹配、本地头像与偏好链已纳入静态检查');
 const avatarView = await readFile(resolve(root, 'src/ui/avatar-view.js'), 'utf8');

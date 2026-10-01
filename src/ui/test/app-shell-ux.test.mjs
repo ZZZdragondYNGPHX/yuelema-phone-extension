@@ -1439,7 +1439,7 @@ test('declined favourite invitation stays out of messages and reports a safe rej
         await flushUi();
         assert.deepEqual(calls, [['start_private_chat', 'npc_1']]);
         assert.equal(miniDom.document.querySelector('.yl-private-chat-screen'), null, '婉拒不得创建或打开私聊会话');
-        assert.match(miniDom.document.body.textContent, /暂时没有接受这次私聊邀请/u);
+        assert.match(miniDom.document.body.textContent, /这不是角色主动拒绝/u);
         assert.equal(miniDom.document.querySelector('.yl-operation-dialog').dataset.visual, 'declined');
         assert.equal(readResult.state.会话.chat_1, undefined);
     } finally {

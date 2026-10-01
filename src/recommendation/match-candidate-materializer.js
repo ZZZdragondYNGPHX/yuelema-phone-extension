@@ -8,7 +8,7 @@
  */
 import { normalizeGeneratedCandidate } from './candidate.js';
 import { getLocalCandidateMatchEvaluation, normalizeCandidateMatchDraft } from './soul-text-match-service.js';
-import { MATCH_ACCEPTANCE_THRESHOLD, scoreLocalCandidateMatch } from './match-scoring.js';
+import { explainLocalCandidateMatch, MATCH_ACCEPTANCE_THRESHOLD, scoreLocalCandidateMatch } from './match-scoring.js';
 import {
     RECOMMENDATION_DIAGNOSTIC_SCOPES,
     recordRecommendationDiagnostics,
@@ -114,7 +114,10 @@ function materializeCandidateMatchDraftUnchecked(draft, {
     const meetsCancellationThreshold = evaluation.eligible !== false && evaluation.score >= cancellationThreshold;
     return Object.freeze({
         candidate,
-        explanation: normalized.explanation,
+        // The model-authored explanation never sees the final deterministic
+        // score and can therefore contradict it. Public result copy must be
+        // derived from the same local evaluation that decides acceptance.
+        explanation: explainLocalCandidateMatch(evaluation),
         matchScore: evaluation.score,
         cancellationThreshold,
         meetsCancellationThreshold,

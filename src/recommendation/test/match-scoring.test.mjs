@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { scoreFavoritePrivateChatInvitation, scoreKeywordOnlyCandidateMatch, scoreLocalCandidateMatch } from '../match-scoring.js';
+import { explainLocalCandidateMatch, scoreFavoritePrivateChatInvitation, scoreKeywordOnlyCandidateMatch, scoreLocalCandidateMatch } from '../match-scoring.js';
 
 test('favourite private-chat invitation combines local keyword taste and heart-card fields before threshold comparison', () => {
     const result = scoreFavoritePrivateChatInvitation({
@@ -100,4 +100,32 @@ test('concise target-gender orientation values are hard reciprocal filters', () 
     const compatibleWoman = { ...incompatibleMan, 性别: '女', 性取向: '异性恋' };
     assert.equal(scoreLocalCandidateMatch(player, incompatibleMan, {}).eligible, false);
     assert.equal(scoreLocalCandidateMatch(player, compatibleWoman, {}).eligible, true);
+});
+
+
+test('common wording variants reuse the same visible intent and tag preference instead of depressing the score', () => {
+    const player = {
+        年龄段: '26-30', 性别: '男', 性取向: '异性恋', 城市: '上海市', 距离范围: '10 km', 寻找意图: '先聊天再认真约会',
+        兴趣标签: ['电影'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
+    };
+    const npc = {
+        年龄段: '25-29', 性别: '女', 性取向: '异性恋', 城市: '上海', 距离范围: '10 km', 寻找意图: '聊得来再约会',
+        兴趣标签: ['独立电影'], 生活方式标签: [], 性格标签: [], 沟通风格标签: [],
+    };
+    const result = scoreLocalCandidateMatch(player, npc, { 电影: 5 });
+    assert.equal(result.heartCardScore, 90, '城市后缀和共同“约会”意图应视作同一公开方向');
+    assert.equal(result.keywordScore, 100, '电影 / 独立电影应复用同一已学习公开标签权重');
+    assert.equal(result.sharedTags, 1);
+    assert.equal(result.score, 94);
+    const keywordOnly = scoreKeywordOnlyCandidateMatch(npc, [{ keyword: '电影', weight: 5 }]);
+    assert.equal(keywordOnly.score, 100);
+    assert.equal(keywordOnly.sharedTags, 1, '描述匹配说明中的命中数也应识别电影 / 独立电影');
+});
+
+test('public match explanation is derived from the final local score band', () => {
+    const low = explainLocalCandidateMatch({ score: 45, eligible: true, reasons: ['关键词命中 1 项'] });
+    assert.match(low, /还没达到匹配线/u);
+    assert.doesNotMatch(low, /高度契合|非常匹配/u);
+    const accepted = explainLocalCandidateMatch({ score: 72, eligible: true, reasons: ['同城', '寻找意图相近'] });
+    assert.match(accepted, /较多交集|契合度较高/u);
 });
