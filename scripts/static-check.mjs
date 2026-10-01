@@ -341,6 +341,10 @@ if (!soulTextMatchService.includes('generateSoulMatchDraft') || !soulTextMatchSe
 const matchCandidateMaterializer = await readFile(resolve(root, 'src/recommendation/match-candidate-materializer.js'), 'utf8');
 const playerAvatarStore = await readFile(resolve(root, 'src/player-avatar-store.js'), 'utf8');
 if (!matchCandidateMaterializer.includes('materializeCandidateMatchDraft') || !matchCandidateMaterializer.includes('normalizeCandidateMatchDraft') || !matchCandidateMaterializer.includes('shouldEstablishSession')) fail('缺少匹配公开草稿的本地角色物化与取消匹配阈值边界');
+if (!matchScoring.includes('explainLocalCandidateMatch') || !matchScoring.includes('tagRelated') || !matchScoring.includes('INTENT_SIGNALS')) fail('缺少 v1.2.1 匹配措辞归一化或本地结果说明');
+if (!matchCandidateMaterializer.includes('explainLocalCandidateMatch(evaluation)')) fail('匹配展示文案必须由最终本地评分生成');
+if (!soulTextMatchService.includes('至少原样复用 1 项') || !soulTextMatchService.includes('最终契合度、接受或婉拒全部由本地算法独立计算')) fail('候选生成未约束为评分一致的公开关键词输出');
+if (!privateChatService.includes('当前面基资格由本地关系路线门禁独立判断') || privateChatService.includes('面基意愿: Number.isInteger(relationship.面基意愿)')) fail('旧面基意愿仍会误导私聊模型');
 if (!playerAvatarStore.includes('PLAYER_AVATAR_STORAGE_KEY') || !playerAvatarStore.includes('createPlayerAvatarStore') || !index.includes('createPlayerAvatarStore')) fail('缺少“我的”页本地头像存储接线');
 console.log('✓ 私聊模型回复、分模式关系成长、面基路线门禁、隐私上下文、列表/会话 UI、主动私聊判定、独立灵魂/描述匹配、本地头像与偏好链已纳入静态检查');
 const avatarView = await readFile(resolve(root, 'src/ui/avatar-view.js'), 'utf8');
