@@ -9,6 +9,25 @@
 const TAG_FIELDS = Object.freeze(['兴趣标签', '生活方式标签', '性格标签', '沟通风格标签']);
 export const MATCH_ACCEPTANCE_THRESHOLD = 50;
 
+export function explainLocalCandidateMatch(evaluation) {
+    const score = Number.isInteger(evaluation?.score) ? evaluation.score : null;
+    if (evaluation?.eligible === false) return '公开资料存在明确的不相容条件，本次没有建立匹配。';
+    if (score === null) return '本地契合度暂时无法确认，本次没有建立匹配。';
+    const evidence = Array.isArray(evaluation?.reasons)
+        ? evaluation.reasons.filter((reason) => typeof reason === 'string' && reason.trim()).slice(0, 3)
+        : [];
+    const lead = score >= 80
+        ? '公开资料与当前偏好整体高度契合。'
+        : score >= 65
+            ? '公开资料与当前偏好有较多交集，整体契合度较高。'
+            : score >= MATCH_ACCEPTANCE_THRESHOLD
+                ? '公开资料与当前偏好达到匹配线，可以先从聊天开始认识。'
+                : score >= 40
+                    ? '有部分公开资料或关键词能够对上，但整体契合度还没达到匹配线。'
+                    : '公开资料或关键词重合较少，本次没有达到匹配线。';
+    return evidence.length ? `${lead} 本地依据：${evidence.join('、')}。` : lead;
+}
+
 function record(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -21,10 +40,41 @@ function comparable(value) {
     return text(value).toLocaleLowerCase('zh-Hans-CN');
 }
 
+const INTENT_SIGNALS = Object.freeze([
+    '聊天', '交友', '朋友', '陪伴', '约会', '恋爱', '长期', '认真', '稳定', '结婚', '婚姻', '短期', '随缘', '约炮', '性关系',
+]);
+
 function intentOverlaps(left, right) {
     const a = comparable(left);
     const b = comparable(right);
-    return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+    if (!a || !b) return false;
+    if (a === b || a.includes(b) || b.includes(a)) return true;
+    const leftSignals = INTENT_SIGNALS.filter((signal) => a.includes(signal));
+    return leftSignals.some((signal) => b.includes(signal));
+}
+
+function comparableCity(value) {
+    return comparable(value).replace(/(?:特别行政区|自治区|自治州|地区|市)$/u, '');
+}
+
+function tagRelated(left, right) {
+    const a = comparable(left);
+    const b = comparable(right);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    if (a.length < 2 || b.length < 2) return false;
+    return a.includes(b) || b.includes(a);
+}
+
+function relatedWeight(tag, weights) {
+    const exact = weights.get(comparable(tag));
+    if (Number.isInteger(exact)) return exact;
+    let best = null;
+    for (const [weightedTag, weight] of weights.entries()) {
+        if (!tagRelated(tag, weightedTag)) continue;
+        if (!best || weightedTag.length > best.tag.length) best = { tag: weightedTag, weight };
+    }
+    return best?.weight ?? 0;
 }
 
 function publicTagSet(profile) {
@@ -114,7 +164,7 @@ export function scoreHeartCardCompatibility(playerProfile, npcProfile) {
         score += 30;
         reasons.push('性别与性取向相容');
     } else score += 15;
-    if (comparable(player.城市) && comparable(player.城市) === comparable(npc.城市)) {
+    if (comparableCity(player.城市) && comparableCity(player.城市) === comparableCity(npc.城市)) {
         score += 15;
         reasons.push('同城');
     }
@@ -141,21 +191,22 @@ export function scoreHeartCardCompatibility(playerProfile, npcProfile) {
  * 0) stay neutral, while shared tags still contribute to a first invitation.
  */
 export function scoreKeywordCompatibility(playerProfile, npcProfile, tagWeights) {
-    const playerTags = publicTagSet(playerProfile);
+    const playerTags = profileTags(playerProfile);
     const npcTags = profileTags(npcProfile);
     if (!npcTags.length) return Object.freeze({ score: 50, sharedTags: 0 });
     const weights = normalizedWeightMap(tagWeights);
     let sharedTags = 0;
     let weightTotal = 0;
     for (const tag of npcTags) {
-        if (playerTags.has(tag)) sharedTags += 1;
-        weightTotal += 50 + ((weights.get(tag) ?? 0) * 10);
+        if (playerTags.some((playerTag) => tagRelated(playerTag, tag))) sharedTags += 1;
+        weightTotal += 50 + (relatedWeight(tag, weights) * 10);
     }
     const learnedScore = weightTotal / npcTags.length;
     const overlapBonus = (sharedTags / npcTags.length) * 25;
-    // Zero learned weight is a genuinely neutral 50. Exact public-tag overlap
-    // is a bounded bonus instead of a second multiplier that used to collapse
-    // an otherwise neutral no-overlap result from 50 to 30.
+    // Zero learned weight is a genuinely neutral 50. Closely phrased public
+    // tags (e.g. “电影” / “独立电影”) count as the same visible preference so
+    // harmless wording variation cannot pin otherwise compatible matches below
+    // the acceptance line.
     return Object.freeze({ score: clampInteger(learnedScore + overlapBonus, 0, 100), sharedTags });
 }
 
@@ -205,7 +256,7 @@ export function scoreKeywordOnlyCandidateMatch(npcProfile, effectiveKeywordWeigh
     let weightTotal = 0;
     for (const tag of npcTags) {
         if (weights.has(tag)) matchedKeywords += 1;
-        weightTotal += 50 + ((weights.get(tag) ?? 0) * 10);
+        weightTotal += 50 + (relatedWeight(tag, weights) * 10);
     }
     const score = clampInteger(weightTotal / npcTags.length, 0, 100);
     const reasons = matchedKeywords > 0 ? [`关键词命中 ${matchedKeywords} 项`] : ['未命中关键词，保持中性探索'];
