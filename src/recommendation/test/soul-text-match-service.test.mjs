@@ -217,8 +217,8 @@ test('candidate soul matching reads saved local keywords and returns a public pr
     assert.equal(result.draft.explanation, candidateRaw().explanation);
     assert.deepEqual(result.draft.drawing, candidateRaw().drawing);
     assert.equal(Object.isFrozen(result.draft.drawing), true);
-    assert.equal(result.draft.matchScore, 68, '模型自报 91 必须被本地算法覆盖');
-    assert.equal(result.evaluation.score, 68);
+    assert.equal(result.draft.matchScore, 77, '模型自报 91 必须被本地算法覆盖，常见寻找意图措辞应按同一方向识别');
+    assert.equal(result.evaluation.score, 77);
     assert.equal(result.evaluation.source, 'local_public_profile_and_keyword_weights');
     assert.deepEqual(result.evaluation.effectiveKeywordWeights, [
         { keyword: '电影', weight: 1 }, { keyword: '咖啡', weight: 2 },
@@ -269,8 +269,8 @@ test('candidate generation accepts the new public-only model contract and ignore
         }));
     }
     assert.deepEqual(results.map((result) => result.ok), [true, true, true]);
-    assert.deepEqual(results.map((result) => result.draft.matchScore), [68, 68, 68]);
-    assert.deepEqual(results.map((result) => result.evaluation.score), [68, 68, 68]);
+    assert.deepEqual(results.map((result) => result.draft.matchScore), [77, 77, 77]);
+    assert.deepEqual(results.map((result) => result.evaluation.score), [77, 77, 77]);
 });
 
 test('candidate drawing DNA contract accepts the project DNA format but keeps credential/PII bans and preserves legacy matchScore', () => {
@@ -395,10 +395,10 @@ test('voice matching derives transient weights first, lets them override local w
     ]);
     assert.equal(result.draft.matchScore, result.evaluation.score);
     // 描述匹配只按临时+本地关键词权重评分：候选 5 个公开标签中，
-    // 电影(5)=100、咖啡(2)=70、其余 3 个未命中=50 → (100+70+50*3)/5 = 64。
+    // 电影(5)=100、咖啡(2)=70、“周末徒步”复用“徒步”(4)=90、其余 2 个未命中=50 → 72。
     assert.equal(result.evaluation.source, 'local_keyword_weights_only');
-    assert.equal(result.evaluation.score, 64);
-    assert.equal(result.evaluation.keywordScore, 64);
+    assert.equal(result.evaluation.score, 72);
+    assert.equal(result.evaluation.keywordScore, 72);
     assert.equal(result.evaluation.heartCardScore, null, '描述匹配不得混入玩家资料心动卡评分');
     const keywordSystem = requests[0].messages.find((message) => message.role === 'system').content;
     const candidateSystem = requests[1].messages.find((message) => message.role === 'system').content;
