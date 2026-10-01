@@ -77,6 +77,12 @@ function relatedWeight(tag, weights) {
     return best?.weight ?? 0;
 }
 
+function hasRelatedWeight(tag, weights) {
+    const normalized = comparable(tag);
+    if (weights.has(normalized)) return true;
+    return [...weights.keys()].some((weightedTag) => tagRelated(tag, weightedTag));
+}
+
 function publicTagSet(profile) {
     const tags = new Set();
     for (const field of TAG_FIELDS) {
@@ -255,7 +261,7 @@ export function scoreKeywordOnlyCandidateMatch(npcProfile, effectiveKeywordWeigh
     let matchedKeywords = 0;
     let weightTotal = 0;
     for (const tag of npcTags) {
-        if (weights.has(tag)) matchedKeywords += 1;
+        if (hasRelatedWeight(tag, weights)) matchedKeywords += 1;
         weightTotal += 50 + (relatedWeight(tag, weights) * 10);
     }
     const score = clampInteger(weightTotal / npcTags.length, 0, 100);
