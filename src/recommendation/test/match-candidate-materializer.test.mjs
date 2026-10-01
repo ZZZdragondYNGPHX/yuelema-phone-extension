@@ -59,6 +59,8 @@ test('materializer never falls back to an unattested legacy model matchScore', (
     assert.equal(result.candidate.与玩家关系.NPC专属匹配度, 41);
     assert.equal(result.meetsCancellationThreshold, false);
     assert.equal(result.shouldEstablishSession, false);
+    assert.match(result.explanation, /还没达到匹配线/u);
+    assert.doesNotMatch(result.explanation, /较高重合|高度契合|非常匹配/u);
 });
 
 test('a 57 percent compatible candidate now clears the shared loose acceptance line', () => {
