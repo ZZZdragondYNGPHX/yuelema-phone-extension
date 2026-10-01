@@ -117,6 +117,9 @@ test('common wording variants reuse the same visible intent and tag preference i
     assert.equal(result.keywordScore, 100, '电影 / 独立电影应复用同一已学习公开标签权重');
     assert.equal(result.sharedTags, 1);
     assert.equal(result.score, 94);
+    const keywordOnly = scoreKeywordOnlyCandidateMatch(npc, [{ keyword: '电影', weight: 5 }]);
+    assert.equal(keywordOnly.score, 100);
+    assert.equal(keywordOnly.sharedTags, 1, '描述匹配说明中的命中数也应识别电影 / 独立电影');
 });
 
 test('public match explanation is derived from the final local score band', () => {
