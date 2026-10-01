@@ -107,7 +107,7 @@ test('private chat context includes public + matched friends-only data, never hi
     const serialized = JSON.stringify(built.context);
     assert.match(serialized, /公开资料/);
     assert.match(serialized, /开放关系/);
-    assert.doesNotMatch(serialized, /绝不泄露|不得发送|角色内部字段|实际年龄|私人备注/);
+    assert.doesNotMatch(serialized, /绝不泄露|不得发送|角色内部字段|实际年龄|私人备注|面基意愿/);
     assert.equal(built.context.recentMessages.length, 1);
     assert.equal(built.context.storyMemory.currentObjectMemory, '玩家与小满在线下见过一次，一起喝了咖啡。');
     assert.deepEqual(built.context.storyMemory.otherObjectMemories, [{
